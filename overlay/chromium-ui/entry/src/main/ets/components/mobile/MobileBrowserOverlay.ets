@@ -24,6 +24,7 @@ import { RecentPanel } from './RecentPanel';
 import { SettingsPanel } from './SettingsPanel';
 import { SitePermissionsPanel } from './SitePermissionsPanel';
 import { normalizeAddress } from './ShellUtils';
+import { IncognitoSwitch, SavedTab } from '../../utils/IncognitoSwitch';
 
 // The floating bars' full vertical extents (top gap + bar height), in vp.
 // AuraShell reports these to the engine through setBrowserControls; the
@@ -43,6 +44,8 @@ const TAB_GRID_GAP_VP: number = 10;
 const TAB_CARD_HEIGHT_VP: number = 208;
 const TAB_CARD_TITLE_VP: number = 36;
 export const TAB_THUMB_HEIGHT_VP: number = TAB_CARD_HEIGHT_VP - TAB_CARD_TITLE_VP;
+// ⋮ 菜单卡片：Lumie 那块是 258 上下、贴着屏幕右侧，左边留出底下网页的宽度。
+const MENU_CARD_WIDTH_VP: number = 258;
 
 enum MobileEdgeAction {
   BACK = 'back',
@@ -67,6 +70,8 @@ export struct MobileBrowserOverlay {
   @StorageProp('auraTopSafeVp') topSafeVp: number = 0;
   @StorageProp('auraBottomSafeVp') bottomSafeVp: number = 0;
   @Prop @Watch('onBrowserStateChanged') browserState: BrowserStateSnapshot;
+  // 无痕会话（重启进来的那一种，见 utils/IncognitoSwitch.ets）。
+  @Prop incognito: boolean = false;
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
 
   @State private menuVisible: boolean = false;
@@ -357,19 +362,17 @@ export struct MobileBrowserOverlay {
         this.FindBar()
       }
 
-      // The ⋮ menu: a dim scrim + a floating card anchored above the dock,
-      // both with pop/fade motion.
+      // ⋮ 菜单：一块悬浮卡片贴在 dock 上方靠右。Lumie 不铺遮罩，这里也只留
+      // 一层透明点击层，点到卡片外面就收起来。
       if (this.menuCardVisible) {
-        Stack({ alignContent: Alignment.Bottom }) {
+        Stack({ alignContent: Alignment.BottomEnd }) {
           Column()
             .width('100%')
             .height('100%')
-            .backgroundColor($r('app.color.modal_scrim'))
+            .backgroundColor(Color.Transparent)
             .onClick(() => {
               this.closeMenuCard();
             })
-            .transition(TransitionEffect.opacity(0)
-              .animation({ duration: 180, curve: Curve.Friction }))
 
           this.MenuCard()
         }
@@ -472,6 +475,14 @@ export struct MobileBrowserOverlay {
                 .width(18)
                 .height(18)
                 .color($r('app.color.accent_primary'))
+            }
+            if (this.incognito) {
+              Text('无痕')
+                .fontSize(11)
+                .fontColor($r('app.color.text_secondary'))
+                .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                .borderRadius(6)
+                .backgroundColor($r('app.color.surface_secondary'))
             }
             Text(this.displayDomain())
               .maxLines(1)
@@ -921,48 +932,68 @@ export struct MobileBrowserOverlay {
     .backgroundColor(Color.Transparent)
   }
 
-  // The ⋮ menu: a floating rounded card above the dock (Lumie-style), not
-  // a sheet. Items: bookmark, share, find in page, print, then the shell
-  // pages row. Incognito tabs and the desktop-site toggle are NOT here:
-  // incognito needs a second WebWindow (multi-window topic) and the engine
-  // exposes no toggle command for requestDesktopSite (state only).
+  // ⋮ 菜单：Lumie 那块悬浮卡片的样子。不铺遮罩（只留一层透明点击层收卡片），
+  // 卡片贴在 dock 上方、靠右；第一行是"域名 · 连接安全"，然后是页面操作，
+  // 再一组是无痕与桌面版，最后一行四个入口。**主页上没有页面可操作，页面类
+  // 的项一律不出现**，只剩无痕与入口行。每一项点完立即关卡片。
   @Builder
   private MenuCard() {
     Column() {
-      Row() {
-        Text(this.menuDomainText())
-          .fontSize(13)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.browserState.url.startsWith('https://') ?
-            '#34A853' : $r('app.color.text_secondary'))
+      if (!this.isHomeSurface()) {
+        this.MenuHeader()
+        this.MenuSeparator()
       }
-      .width('100%')
-      .height(40)
-      .padding({ left: 16, right: 16 })
 
-      Divider()
-        .color($r('app.color.divider'))
-        .margin({ left: 16, right: 16 })
+      if (!this.isHomeSurface()) {
+        // 引擎的状态里没有"当前页是否已收藏"这项（native 有 bookmarked，
+        // 但 HAR 的 BrowserStateSnapshot 还没声明），所以这一项只做加入。
+        this.MenuItem($r('app.media.chromium_bookmark'), '加入书签', '',
+          (): void => {
+            this.closeMenuCard();
+            this.toggleBookmark();
+          })
+        if (this.browserState.readerModeAvailable === true) {
+          this.MenuItem($r('app.media.aura_reader'), '阅读模式',
+            this.browserState.inReaderMode === true ? '开' : '', (): void => {
+              this.closeMenuCard();
+              this.issueCommand({ command: 'toggleReaderMode' });
+            })
+        }
+        this.MenuItem($r('app.media.chromium_share'), '分享 / 发送到我的设备', '', (): void => {
+          this.closeMenuCard();
+          this.shareCurrentPage();
+        })
+        this.MenuItem($r('app.media.chromium_search'), '在页面中查找', '', (): void => {
+          this.closeMenuCard();
+          this.findVisible = true;
+        })
+        this.MenuItem($r('app.media.chromium_print'), '打印', '', (): void => {
+          this.closeMenuCard();
+          this.issueCommand({ command: 'print' });
+        })
+        this.MenuSeparator()
+      }
 
-      this.MenuItem('加入书签', $r('app.media.chromium_bookmark'), (): void => {
-        this.toggleBookmark();
-      })
-      this.MenuItem('分享 / 发送到我的设备', $r('app.media.chromium_share'), (): void => {
-        this.menuCardVisible = false;
-        this.shareCurrentPage();
-      })
-      this.MenuItem('在页面中查找', $r('app.media.chromium_search'), (): void => {
-        this.menuCardVisible = false;
-        this.findVisible = true;
-      })
-      this.MenuItem('打印', $r('app.media.chromium_print'), (): void => {
-        this.menuCardVisible = false;
-        this.issueCommand({ command: 'print' });
-      })
+      if (this.incognito) {
+        this.MenuItem($r('app.media.aura_incognito'), '退出无痕', '', (): void => {
+          this.closeMenuCard();
+          this.leaveIncognito();
+        })
+      } else {
+        this.MenuItem($r('app.media.aura_incognito'), '新建无痕标签页', '', (): void => {
+          this.closeMenuCard();
+          this.enterIncognito();
+        })
+      }
+      if (!this.isHomeSurface()) {
+        this.MenuItem($r('app.media.aura_desktop'), '桌面版网站',
+          this.browserState.requestDesktopSite === true ? '开' : '', (): void => {
+            this.closeMenuCard();
+            this.toggleDesktopSite();
+          })
+      }
 
-      Divider()
-        .color($r('app.color.divider'))
-        .margin({ top: 6 })
+      this.MenuSeparator()
 
       Row({ space: 8 }) {
         this.PanelEntryButton('书签', $r('app.media.chromium_bookmark'), (): void => {
@@ -979,48 +1010,134 @@ export struct MobileBrowserOverlay {
         })
       }
       .width('100%')
-      .padding({ left: 12, right: 12, top: 10, bottom: 12 })
+      .padding({ left: 10, right: 10, top: 10, bottom: 12 })
     }
-    .width('100%')
-    .borderRadius(20)
+    .width(MENU_CARD_WIDTH_VP)
+    .borderRadius(22)
     .backgroundColor($r('app.color.surface_floating'))
-    .shadow({ radius: 24, color: $r('app.color.shadow'), offsetY: 6 })
-    .margin({ left: 14, right: 14, bottom: 84 + this.bottomSafeVp })
+    .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
+    .margin({ right: 14, bottom: 82 + this.bottomSafeVp })
     .transition(TransitionEffect.asymmetric(
       TransitionEffect.opacity(0)
-        .combine(TransitionEffect.translate({ y: 48 }))
-        .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 })),
+        .combine(TransitionEffect.translate({ y: 24 }))
+        .combine(TransitionEffect.scale({ x: 0.97, y: 0.97 })),
       TransitionEffect.opacity(0)
-    ).animation({ duration: 220, curve: Curve.Friction }))
+    ).animation({ duration: 200, curve: Curve.Friction }))
+  }
+
+  // 第一行：连接状态。锁形图标 + 域名 + " · 连接安全/不安全"，与 Lumie 一致。
+  @Builder
+  private MenuHeader() {
+    Row({ space: 10 }) {
+      Image($r('app.media.aura_lock'))
+        .width(18)
+        .height(18)
+        .fillColor(this.isConnectionSecure() ?
+          $r('app.color.text_primary') : $r('app.color.icon_secondary'))
+      Text(this.isConnectionSecure() ?
+        `${this.menuDomainText()} · 连接安全` : `${this.menuDomainText()} · 不安全`)
+        .fontSize(13)
+        .fontColor($r('app.color.text_secondary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+    }
+    .width('100%')
+    .height(44)
+    .padding({ left: 18, right: 16 })
+  }
+
+  @Builder
+  private MenuSeparator() {
+    Divider()
+      .color($r('app.color.divider'))
+      .margin({ left: 18, right: 0 })
+  }
+
+  private isConnectionSecure(): boolean {
+    return this.browserState.url.startsWith('https://');
+  }
+
+  private isHomeSurface(): boolean {
+    return this.isNewTabUrl(this.browserState.url);
   }
 
   private menuDomainText(): string {
-    if (this.isNewTabUrl(this.browserState.url)) {
+    if (this.isHomeSurface()) {
       return '新标签页';
     }
     return this.displayDomain();
   }
 
+  // 一项菜单：图标 + 文字 +（可选的）右侧"开"。整行都可点。
   @Builder
-  private MenuItem(label: string, icon: Resource, action: () => void) {
+  private MenuItem(icon: Resource, label: string, trailing: string, action: () => void) {
     Row({ space: 14 }) {
       Image(icon)
-        .width(20)
-        .height(20)
+        .width(21)
+        .height(21)
         .fillColor($r('app.color.icon_primary'))
       Text(label)
         .fontSize(15)
         .fontColor($r('app.color.text_primary'))
       Blank()
+      if (trailing.length > 0) {
+        Text(trailing)
+          .fontSize(13)
+          .fontColor($r('app.color.accent_primary'))
+      }
     }
     .width('100%')
-    .height(46)
-    .padding({ left: 16, right: 16 })
+    .height(48)
+    .padding({ left: 18, right: 16 })
     .onClick(action)
   }
 
-  // 页内查找: input + match counter + prev/next. findInPage with the same
-  // text steps to the next match; forward:false steps back; stopFind clears.
+  // 进无痕：手机上没有第二个渲染进程可用，先把标签存下来再用另一个 profile
+  // 重启应用（引擎据此换一整套用户数据目录）。存不下就不进，免得回来时标签
+  // 全丢——Lumie 也是这个取舍。
+  private async enterIncognito(): Promise<void> {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (!context) {
+      return;
+    }
+    const saved: SavedTab[] = [];
+    for (const tab of this.browserState.tabs) {
+      if (tab.url && tab.url.length > 0 && !this.isNewTabUrl(tab.url)) {
+        saved.push({ url: tab.url, title: tab.title ?? '' });
+      }
+    }
+    const ok = await IncognitoSwitch.saveTabs(context, saved);
+    if (!ok) {
+      this.getUIContext().getPromptAction().showToast({ message: '保存标签失败，已取消进入无痕', duration: 2500 });
+      return;
+    }
+    IncognitoSwitch.restart(context, true, '');
+  }
+
+  // 退出无痕：重启回普通 profile；无痕那套目录由 EntryAbility 在普通启动时
+  // 整个删掉（IncognitoSwitch.sweepIncognitoProfile）。
+  private leaveIncognito(): void {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (!context) {
+      return;
+    }
+    IncognitoSwitch.restart(context, false, '');
+  }
+
+  // 桌面版网站是每个标签自己的状态，读 requestDesktopSite 再取反。
+  private toggleDesktopSite(): void {
+    if (this.isHomeSurface()) {
+      return;
+    }
+    const enabled = !(this.browserState.requestDesktopSite === true);
+    this.issueCommand({ command: 'setRequestDesktopSite', enabled: enabled });
+    this.getUIContext().getPromptAction().showToast({
+      message: enabled ? '已请求桌面版网站' : '已回到移动版网站',
+      duration: 2000
+    });
+  }
+
   @Builder
   private FindBar() {
     Row({ space: 8 }) {
@@ -1243,6 +1360,7 @@ export struct MobileBrowserOverlay {
 
   private openPanel(page: string): void {
     this.menuVisible = false;
+    this.menuCardVisible = false;
     this.sheetPage = 'tabs';
     this.extensionsFromSettings = false;
     this.panelPage = page;

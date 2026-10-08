@@ -17,8 +17,10 @@ import {
   BrowserProfileState
 } from '../utils/profile/BrowserProfileService';
 import { AppearanceSettings, ColorModeSetting } from '../utils/appearance/AppearanceSettings';
+import { IncognitoSwitch } from '../utils/IncognitoSwitch';
 
 const DOMAIN = 0x0000;
+const AURA_INCOGNITO_KEY = 'auraIncognito';
 const AURA_SURFACE_READY_KEY = 'auraSurfaceReady';
 const AURA_APP_VISIBLE_KEY = 'auraAppVisible';
 const AURA_THEME_FONT_ID_KEY = 'auraThemeFontId';
@@ -80,6 +82,10 @@ export default class EntryAbility extends UIAbility {
     // report mode). Native crashes do not surface here.
     this.registerCrashRecorder();
     this.startupWant = want;
+    // 无痕模式：手机上没有第二个渲染进程，进无痕靠的是"用另一个 profileId
+    // 重启应用"（见 utils/IncognitoSwitch.ets）。启动参数在这里落地，界面层
+    // 据此把 WebWindow 挂到 incognito 这个 profile 上。
+    this.applyIncognitoWant(want);
     const initialThemeFontId = this.context.config.fontId ?? '';
     this.lastThemeFontId = initialThemeFontId;
     this.lastColorScheme = this.resolveColorScheme(this.context.config.colorMode);
@@ -177,11 +183,25 @@ export default class EntryAbility extends UIAbility {
       return;
     }
     this.startupWant = want;
+    this.applyIncognitoWant(want);
     const startUrl = CrossDeviceEntryAdapter.resolveLaunchUrl(want);
     AppStorage.setOrCreate('auraStartUrl', startUrl);
     if (this.mainWindow) {
       this.refreshRouting('newWant');
     }
+  }
+
+  // Reads the incognito flag off the launch want and parks it where the UI
+  // layer reads it. An ordinary launch also sweeps the incognito profile
+  // directory: leaving incognito is what those saved cookies and history
+  // were waiting for.
+  private applyIncognitoWant(want: Want | undefined): void {
+    const incognito = IncognitoSwitch.incognitoFromWant(want);
+    if (!incognito) {
+      IncognitoSwitch.sweepIncognitoProfile(this.context);
+    }
+    AppStorage.setOrCreate(AURA_INCOGNITO_KEY, incognito);
+    hilog.info(DOMAIN, 'AuraShell', 'Incognito launch: %{public}s', incognito ? 'true' : 'false');
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {

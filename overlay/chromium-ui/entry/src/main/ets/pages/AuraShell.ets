@@ -18,6 +18,7 @@ import { window } from '@kit.ArkUI';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { ShellUiPrefs } from '../utils/appearance/ShellUiPrefs';
+import { IncognitoSwitch, SavedTab } from '../utils/IncognitoSwitch';
 import { WebWindow, PictureInPictureSurface } from 'engine';
 import { BOTTOM_DOCK_EXTENT_VP, MobileBrowserOverlay, TOP_BAR_EXTENT_VP } from '../components/mobile/MobileBrowserOverlay';
 import { MobileBackRouter } from '../components/mobile/MobileBackRouter';
@@ -121,6 +122,10 @@ struct AuraShell {
   @StorageLink('auraProfileId') profileId: string = 'local';
   @StorageLink('auraProfileKind') profileKind: string = 'local';
   @StorageLink('auraSyncMode') syncMode: string = 'off';
+  // 无痕会话：EntryAbility 从启动 want 里读出来（进/出无痕都靠重启应用，见
+  // utils/IncognitoSwitch.ets）。置位时 WebWindow 挂到 incognito 这个
+  // profile 上，用的是一整套独立的用户数据目录。
+  @StorageLink('auraIncognito') incognito: boolean = false;
   // v8a diagnostic: the last ArkTS-level crash (written by EntryAbility's
   // crash recorder). Non-empty switches the shell into the crash report
   // page, which keeps the normal UI off the screen so a crash loop can be
@@ -137,6 +142,8 @@ struct AuraShell {
   private readonly currentTabCastSession: CurrentTabCastSession = new CurrentTabCastSession();
   private readonly knockShareSession: HuaweiKnockShareSession = new HuaweiKnockShareSession();
   private launchingPwaWidgets: number[] = [];
+  // One-shot: the tabs saved on the way into incognito come back once.
+  private savedTabsChecked: boolean = false;
 
   aboutToAppear(): void {
     this.startKnockShare();
@@ -277,6 +284,32 @@ struct AuraShell {
     });
   }
 
+  // 无痕回来之后把普通会话的标签放回去。进无痕时存下的那份在这里取用一次，
+  // 取完即清（IncognitoSwitch.takeSavedTabs）；无痕会话自己不留这些标签。
+  private restoreSavedTabs(): void {
+    if (this.savedTabsChecked) {
+      return;
+    }
+    this.savedTabsChecked = true;
+    if (this.incognito) {
+      return;
+    }
+    const context = this.getUIContext().getHostContext() as common.Context | undefined;
+    if (!context) {
+      return;
+    }
+    IncognitoSwitch.takeSavedTabs(context).then((tabs: SavedTab[]): void => {
+      if (tabs.length === 0) {
+        return;
+      }
+      for (const tab of tabs) {
+        this.executeBrowserCommand({ command: 'newTab', url: tab.url, background: true });
+      }
+      // The engine starts on a new tab; the first restored one sits at index 1.
+      this.executeBrowserCommand({ command: 'activateTab', index: 1 });
+    });
+  }
+
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
       if (this.crashReport.length > 0) {
@@ -299,7 +332,9 @@ struct AuraShell {
       } else {
         WebWindow({
         url: this.startUrl,
-        profileId: this.profileId,
+        // Incognito is its own profile directory; the ordinary session keeps
+        // whatever profile the onboarding chose.
+        profileId: this.incognito ? IncognitoSwitch.profileId(true) : this.profileId,
         startupConfigText: this.startupConfigText,
         routingRevision: this.routingRevision,
         appVisible: this.appVisible,
@@ -317,6 +352,7 @@ struct AuraShell {
           }
           if (state.ready) {
             this.configureBrowserControls();
+            this.restoreSavedTabs();
           }
           this.currentTabCastSession.update(state);
           this.knockShareSession.update(state);
@@ -332,6 +368,7 @@ struct AuraShell {
           .height('100%')
         if (this.isMobilePhoneUi() && this.isNewTabPage()) {
           HomeSurface({
+            incognito: this.incognito,
             onCommand: (command: BrowserCommandPayload): void => {
               this.executeBrowserCommand(command);
             }
@@ -343,6 +380,7 @@ struct AuraShell {
         if (this.isMobilePhoneUi()) {
           MobileBrowserOverlay({
             browserState: this.browserState,
+            incognito: this.incognito,
             onCommand: (command: BrowserCommandPayload): void => {
               // Back is asked of the page before it is asked of the tab. A
               // <dialog>, a popover, fullscreen or a page with a CloseWatcher

@@ -24,6 +24,9 @@ function initialOf(site: TopSite): string {
 export struct HomeSurface {
   @StorageLink('auraTopSites') @Watch('onTopSitesChanged') topSitesJson: string = '';
   @StorageLink('auraFavicons') @Watch('onFaviconsChanged') faviconsJson: string = '';
+  // 无痕会话：主页换成无痕的标题与说明，常用网站也不再列（那是普通 profile
+  // 的访问习惯，跟这个会话无关）。
+  @Prop incognito: boolean = false;
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
   @State private topSites: TopSite[] = [];
   @State private query: string = '';
@@ -129,10 +132,18 @@ export struct HomeSurface {
       Blank()
         .height('15%')
 
-      Text('Aura')
-        .fontSize(34)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary'))
+      Row({ space: 8 }) {
+        if (this.incognito) {
+          Image($r('app.media.aura_incognito'))
+            .width(26)
+            .height(26)
+            .fillColor($r('app.color.text_primary'))
+        }
+        Text(this.incognito ? '无痕浏览' : 'Aura')
+          .fontSize(34)
+          .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.text_primary'))
+      }
 
       Row({ space: 10 }) {
         Image($r('app.media.chromium_search'))
@@ -174,7 +185,18 @@ export struct HomeSurface {
       .padding({ left: 16, right: 10 })
       .margin({ top: 26 })
 
-      if (this.topSites.length > 0) {
+      if (this.incognito) {
+        Text('无痕标签页不会保存浏览记录、Cookie 和表单数据；下载的文件和书签会保留。')
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+          .textAlign(TextAlign.Center)
+          .maxLines(3)
+          .width('100%')
+          .padding({ left: 12, right: 12 })
+          .margin({ top: 16 })
+      }
+
+      if (this.topSites.length > 0 && !this.incognito) {
         Flex({ wrap: FlexWrap.Wrap }) {
           ForEach(this.topSites, (site: TopSite) => {
             Column({ space: 7 }) {
