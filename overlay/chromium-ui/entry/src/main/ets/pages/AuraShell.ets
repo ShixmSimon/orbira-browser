@@ -214,7 +214,7 @@ struct AuraShell {
     this.executeBrowserCommand({
       command: 'setBrowserControls',
       top: TOP_BAR_EXTENT_VP + (statusHidden ? 0 : topSafe),
-      minTop: statusHidden ? 0 : topSafe,
+      minTop: 0,
       bottom: BOTTOM_DOCK_EXTENT_VP + Number(AppStorage.get('auraBottomSafeVp') ?? 0)
     });
   }
@@ -744,6 +744,13 @@ struct AuraShell {
       return;
     }
 
+    if (event.event === 'browserChromeRequested') {
+      // 引擎在运行时询问"谁画浏览器 chrome"。我们全程自绘，强制 shell 模式，
+      // 否则引擎会按设备类型默认画出原生标签条（主页左上角那排被裁掉的图标）。
+      this.executeBrowserCommand({ command: 'setBrowserChrome', mode: 'shell' });
+      return;
+    }
+
     if (event.event === 'browserControlsRatio') {
       const ratio = event.ratio ?? 1;
       if (ratio !== this.lastControlsRatio) {
@@ -941,7 +948,7 @@ struct AuraShell {
     this.executeBrowserCommand({
       command: 'setBrowserControls',
       top: TOP_BAR_EXTENT_VP + topSafe,
-      minTop: topSafe,
+      minTop: 0,
       bottom: BOTTOM_DOCK_EXTENT_VP + bottomSafe
     });
     // Pull the search engines once, so the home surface and the address bar

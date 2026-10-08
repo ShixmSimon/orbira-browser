@@ -25,6 +25,22 @@ function initialOf(site: TopSite): string {
   return host.length > 0 ? host.substring(0, 1).toUpperCase() : '?';
 }
 
+// 归一化常用网站 url，让黑名单能跨"https://x.com"与"https://x.com/"这类写法匹配。
+function normUrl(url: string): string {
+  if (!url || url.length === 0) {
+    return url;
+  }
+  let s = url.trim();
+  const idx = s.indexOf('://');
+  if (idx >= 0) {
+    s = s.substring(0, idx).toLowerCase() + s.substring(idx);
+  }
+  if (s.endsWith('/')) {
+    s = s.substring(0, s.length - 1);
+  }
+  return s;
+}
+
 @Component
 export struct HomeSurface {
   @StorageLink('auraTopSites') @Watch('onTopSitesChanged') topSitesJson: string = '';
@@ -103,11 +119,12 @@ export struct HomeSurface {
       }
       this.onCommand({ command: 'removeTopSite', url: site.url });
       const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
-      TopSitesBlocklist.add(context, site.url);
-      this.blocklist.add(site.url);
+      const norm = normUrl(site.url);
+      TopSitesBlocklist.add(context, norm);
+      this.blocklist.add(norm);
       const remaining: TopSite[] = [];
       for (const item of this.topSites) {
-        if (item.url !== site.url) {
+        if (normUrl(item.url) !== norm) {
           remaining.push(item);
         }
       }
@@ -125,7 +142,7 @@ export struct HomeSurface {
     }
     const kept: TopSite[] = [];
     for (const site of this.topSites) {
-      if (!this.blocklist.has(site.url)) {
+      if (!this.blocklist.has(normUrl(site.url))) {
         kept.push(site);
       }
     }
@@ -327,13 +344,18 @@ export struct HomeSurface {
             }
             .width('25%')
             .padding({ top: 14 })
-            .onClick(() => {
-              this.openSite(site);
-            })
-            .gesture(LongPressGesture({ repeat: false })
-              .onAction((): void => {
-                this.confirmRemoveSite(site);
-              }))
+            // 用 GestureGroup 显式声明"单击=打开 / 长按=移除"，避免隐式 onClick 的
+            // tap 手势抢占长按导致长按无反应。Exclusive：两者互斥，先识别到的生效。
+            .gesture(GestureGroup(GestureMode.Exclusive,
+              LongPressGesture({ repeat: false })
+                .onAction((): void => {
+                  this.confirmRemoveSite(site);
+                }),
+              TapGesture({ count: 1 })
+                .onAction((): void => {
+                  this.openSite(site);
+                })
+            ))
           }, (site: TopSite): string => site.url)
         }
         .width('100%')

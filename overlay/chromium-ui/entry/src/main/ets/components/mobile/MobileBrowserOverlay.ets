@@ -426,29 +426,30 @@ export struct MobileBrowserOverlay {
       .backgroundBlurStyle(BlurStyle.COMPONENT_REGULAR)
       .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
 
-      // Separate rounded-square action button on the far right (scan).
+      // 右上角圆形「扩展」按钮：点击进入扩展管理页（扫一扫仍保留在首页搜索框内）。
       if (!this.editingAddress) {
-        Button({ type: ButtonType.Normal, stateEffect: true }) {
-          Image($r('app.media.chromium_scan'))
-            .width(20)
-            .height(20)
+        Button({ type: ButtonType.Circle, stateEffect: true }) {
+          Image($r('app.media.chromium_extensions'))
+            .width(22)
+            .height(22)
             .fillColor($r('app.color.icon_primary'))
         }
         .width(44)
         .height(44)
-        .borderRadius(14)
         .backgroundColor($r('app.color.glass_tint'))
         .border({ width: 0.5, color: $r('app.color.divider') })
         .backgroundBlurStyle(BlurStyle.COMPONENT_REGULAR)
         .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
-        .accessibilityText('扫一扫')
+        .accessibilityText('扩展')
         .onClick(() => {
-          this.startScan();
+          this.openPanel('extensions');
         })
       }
     }
     .width('100%')
-    .translate({ y: -(1 - this.controlsRatioRaw) * TOP_BAR_EXTENT_VP })
+    // 行程必须覆盖"顶部安全区内边距 + 条高"，否则 ratio 到 0 时条底仍卡在安全区
+    // 高度处，露出一条缝（用户看到的"贴边还看得见"）。
+    .translate({ y: -(1 - this.controlsRatioRaw) * (TOP_BAR_EXTENT_VP + this.topSafeVp) })
   }
 
   @Builder
@@ -588,7 +589,8 @@ export struct MobileBrowserOverlay {
     // browser and other HarmonyOS browsers use -- NOT the API-26
     // uiMaterial lightEffect, which is off-limits for floating bars.
     .visualEffect(this.buildDockLightEffect())
-    .translate({ y: (1 - this.controlsRatioRaw) * BOTTOM_DOCK_EXTENT_VP })
+    // 同顶栏：行程要含底部安全区内边距，否则 ratio→0 时 dock 仍留一条缝。
+    .translate({ y: (1 - this.controlsRatioRaw) * (BOTTOM_DOCK_EXTENT_VP + this.bottomSafeVp) })
   }
 
   private buildDockLightEffect(): VisualEffect {

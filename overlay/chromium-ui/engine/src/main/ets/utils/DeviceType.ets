@@ -262,6 +262,8 @@ export class DeviceRoutingPolicy {
       // 按 uiFamily 默认值决定，实测会自行画出原生标签条：主页顶部露出一排
       // 被裁掉下半截的标签卡（用户看到的"左上角截断图标"）。
       browserChrome: 'shell',
+      // 同样强制外壳画长按/右键菜单，不要引擎的原生菜单（功能不全）。
+      contextMenu: 'shell',
       jitless: false,
       fullscreenRequested: routing.fullscreenRequested
     };
