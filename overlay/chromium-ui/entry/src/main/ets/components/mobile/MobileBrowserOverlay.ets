@@ -1,6 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { AVCastPicker, AVCastPickerColorMode, AVCastPickerStyle } from '@kit.AVSessionKit';
 import { hdsEffect } from '@kit.UIDesignKit';
+import uiMaterial from '@ohos.arkui.uiMaterial';
 import { inputMethod } from '@kit.IMEKit';
 import { curves } from '@kit.ArkUI';
 import { showSystemPasteDialog } from './SystemPasteDialog';
@@ -37,6 +38,11 @@ export const TOP_BAR_EXTENT_VP: number = 52;
 // enough to fully leave the screen when the page scrolls (controlsRatio 0).
 export const BOTTOM_DOCK_EXTENT_VP: number = 74;
 
+// The glass bar itself (the Row inside the dock's container): the material
+// plate and the painted fallback must agree on it exactly.
+const DOCK_BAR_HEIGHT_VP: number = 62;
+const DOCK_BAR_RADIUS_VP: number = 24;
+
 // The tab grid: two columns ten vp apart, each card 208 tall of which the
 // title row takes 36. The picture therefore fills TAB_THUMB_HEIGHT_VP of a
 // card (grid width - gap) / 2 wide -- the shape getTabThumbnails is asked to
@@ -64,6 +70,19 @@ interface FindResultSummary {
   matches?: number;
   activeMatch?: number;
   revision?: number;
+}
+
+// HarmonyOS 7 沉浸光感：设备能不能渲染系统沉浸材质（API 26 的 uiMaterial）。
+// 一次探测、进程内固定；系统太旧没有这个命名空间时整体兜底 false（不会抛）。
+function isDockMaterialAvailable(): boolean {
+  try {
+    if (!uiMaterial.isImmersiveMaterialSupported()) {
+      return false;
+    }
+    return uiMaterial.getMaterialInfo().state !== uiMaterial.MaterialState.DISABLE;
+  } catch (error) {
+    return false;
+  }
 }
 
 @Component
@@ -119,13 +138,17 @@ export struct MobileBrowserOverlay {
 
   private readonly holdingHandRouter: HoldingHandRouter = new HoldingHandRouter();
   private readonly currentTabCastSession: CurrentTabCastSession = new CurrentTabCastSession();
-  // Floating-chrome styling note: the system ImmersiveMaterial is
-  // deliberately NOT used for these bars. The HarmonyOS 7 light-sense
-  // contract honors system materials only on dialog-class components or
-  // inside Navigation title bars / Tabs bottom bars -- a free-floating Row
-  // silently loses the effect and would render with no background at all.
-  // The bars therefore always take the painted path: translucent resource
-  // color + component blur. See UI-DESIGN-SPEC.md section 8.
+  // Floating-chrome styling note: HarmonyOS 7 honors the system immersive
+  // material (沉浸光感) for a third-party bar in only two scopes -- the
+  // dialog class, and one of two containers: a Navigation title bar or the
+  // bottom TabBar of a horizontal Tabs. The dock takes that second door
+  // (DockMaterialPlate below); the top bar stays painted. A free-floating
+  // Row with systemMaterial() is dropped silently ("Material inactive: out
+  // of scope"), which is why the dock needs the Tabs backplate at all.
+  private readonly dockMaterialActive: boolean = isDockMaterialAvailable();
+  // Measured once the dock lays out; the material plate needs the concrete
+  // width in vp (its floating bar sizes itself from it).
+  @State private dockGlassWidthVp: number = 0;
 
   private keyboardRecoveryTimers: number[] = [];
   private readonly addressController: TextInputController = new TextInputController();
@@ -574,29 +597,56 @@ export struct MobileBrowserOverlay {
       }
   }
 
-  // 底部 dock：一块悬浮玻璃横条——左右各留 16vp、完整圆角，半透明纯色玻璃
-  // （契约 §8：网页上方不用模糊），网页从它后面穿过，跟手收起。
-  // 引擎不再为 dock 保留网页空间（setBrowserControls bottom = 0）：网页画到
-  // 窗口底部（手势条区除外），dock 只是外壳自己的悬浮层。条区总高 = dock
-  // 自己的容器与行程（BOTTOM_DOCK_EXTENT_VP + 底部安全区）。
+  // 底部 dock：一块悬浮玻璃横条——左右各留 16vp、完整圆角，网页从它后面
+  // 穿过，跟手收起。玻璃走系统沉浸光感的合法通道（横向 Tabs 的底部
+  // TabBar，见 DockMaterialPlate）；拿不到材质时回退半透明纯色玻璃
+  // （契约 §8：网页上方不用模糊）。引擎不给 dock 保留网页空间
+  // （setBrowserControls bottom = 0），网页一直画到窗口底。
   @Builder
   private BottomDock() {
     Column() {
-      Row() {
-        this.BottomDockContent()
+      Stack() {
+        // 材质板：垫在内容下面的背板，裁到胶囊圆角，不参与命中。
+        if (this.usesDockMaterial()) {
+          Stack() {
+            DockMaterialPlate({
+              plateWidth: this.dockGlassWidthVp,
+              plateHeight: DOCK_BAR_HEIGHT_VP
+            })
+          }
+          .width('100%')
+          .height(DOCK_BAR_HEIGHT_VP)
+          .borderRadius(DOCK_BAR_RADIUS_VP)
+          .clip(true)
+          .hitTestBehavior(HitTestMode.None)
+        }
+        Row() {
+          this.BottomDockContent()
+        }
+        .width('100%')
+        .height(DOCK_BAR_HEIGHT_VP)
+        .borderRadius(DOCK_BAR_RADIUS_VP)
+        // 互斥分层：材质生效时让位（官方建议勿与 bg/border/shadow 同链；
+        // 填充叠在材质上还会多一层"白纱"），否则就是这块半透明纯色玻璃。
+        .backgroundColor(this.usesDockMaterial() ? Color.Transparent : $r('app.color.glass_tint'))
+        .border({ width: this.usesDockMaterial() ? 0 : 0.5, color: $r('app.color.divider') })
+        .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+        // System point-light press effect (HDS hdsEffect, API 20+, every
+        // device): a soft white light spot under the finger that follows it
+        // across the bar. On the material path the fill is gone, so the spot
+        // has nothing to land on -- the material's own lightEffect carries
+        // the touch feedback there.
+        .visualEffect(this.buildDockLightEffect())
+        .onAreaChange((_old: Area, next: Area): void => {
+          const measured: number = Number(next.width);
+          if (Number.isFinite(measured) && measured > 0 &&
+              Math.abs(measured - this.dockGlassWidthVp) > 0.5) {
+            this.dockGlassWidthVp = measured;
+          }
+        })
       }
       .width('100%')
-      .height(62)
-      .borderRadius(24)
-      .backgroundColor($r('app.color.glass_tint'))
-      .border({ width: 0.5, color: $r('app.color.divider') })
-      .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
-      // System point-light press effect (HDS hdsEffect, API 20+, every
-      // device): a soft white light spot that appears under the finger and
-      // follows it across the bar. This is the same mechanism the system
-      // browser and other HarmonyOS browsers use -- NOT the API-26
-      // uiMaterial lightEffect, which is off-limits for floating bars.
-      .visualEffect(this.buildDockLightEffect())
+      .height(DOCK_BAR_HEIGHT_VP)
     }
     .width('100%')
     .height(BOTTOM_DOCK_EXTENT_VP + this.bottomSafeVp)
@@ -604,6 +654,11 @@ export struct MobileBrowserOverlay {
     .padding({ top: 12, left: 16, right: 16, bottom: this.bottomSafeVp })
     // 同顶栏：行程要含底部安全区内边距，否则 ratio→0 时 dock 仍留一条缝。
     .translate({ y: (1 - this.controlsRatioRaw) * (BOTTOM_DOCK_EXTENT_VP + this.bottomSafeVp) })
+  }
+
+  // 材质板要具体 vp 宽度，量到之前首帧仍走保底玻璃（不会空一帧）。
+  private usesDockMaterial(): boolean {
+    return this.dockMaterialActive && this.dockGlassWidthVp > 0;
   }
 
   private buildDockLightEffect(): VisualEffect {
@@ -634,22 +689,16 @@ export struct MobileBrowserOverlay {
         })
 
       Button({ type: ButtonType.Normal, stateEffect: true }) {
-        Column({ space: 3 }) {
-          Text(this.browserState.tabCount > 99 ? '99+' : this.browserState.tabCount.toString())
-            .fontSize(10)
-            .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.icon_primary'))
-            .textAlign(TextAlign.Center)
-            .width(22)
-            .height(20)
-            .borderRadius(6)
-            .border({ width: 1.8, color: $r('app.color.icon_primary') })
-          Text('标签页')
-            .fontSize(10)
-            .fontColor($r('app.color.text_secondary'))
-            .maxLines(1)
-        }
-        .alignItems(HorizontalAlign.Center)
+        // 去字后只剩计数徽标。
+        Text(this.browserState.tabCount > 99 ? '99+' : this.browserState.tabCount.toString())
+          .fontSize(10)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.icon_primary'))
+          .textAlign(TextAlign.Center)
+          .width(22)
+          .height(20)
+          .borderRadius(6)
+          .border({ width: 1.8, color: $r('app.color.icon_primary') })
       }
       .layoutWeight(1)
       .height(58)
@@ -673,17 +722,11 @@ export struct MobileBrowserOverlay {
   @Builder
   private DockButton(icon: Resource, label: string, usable: boolean, action: () => void) {
     Button({ type: ButtonType.Normal, stateEffect: true }) {
-      Column({ space: 3 }) {
-        Image(icon)
-          .width(22)
-          .height(22)
-          .fillColor($r('app.color.icon_primary'))
-        Text(label)
-          .fontSize(10)
-          .fontColor($r('app.color.text_secondary'))
-          .maxLines(1)
-      }
-      .alignItems(HorizontalAlign.Center)
+      // 图标即内容（2026-10-09：dock 去字）；label 只留作无障碍名和按压键。
+      Image(icon)
+        .width(22)
+        .height(22)
+        .fillColor($r('app.color.icon_primary'))
     }
     .layoutWeight(1)
     .height(58)
@@ -1569,5 +1612,86 @@ export struct MobileBrowserOverlay {
       .catch((error: Error) => {
         console.error('Huawei Share failed:', error);
       });
+  }
+}
+
+// The dock's system immersive material (沉浸光感), drawn as a bare backplate.
+//
+// HarmonyOS 7 renders the material for a third-party app only in the dialog
+// class, or -- for everything else -- inside a Navigation title bar or the
+// bottom TabBar of a horizontal Tabs (barPosition End). A free-floating Row
+// with systemMaterial() is outside both and is dropped silently ("Material
+// inactive: out of scope"); the immersive-light FAQ names this TabBar as the
+// surface to use instead. So the plate reduces Tabs to that one surface: a
+// single empty TabContent, a transparent tabBar, no bar background or blur
+// (either would cover the material), floating style on -- barOverlap true +
+// vertical false + barPosition End, all three required -- and the material
+// handed to FloatingTabBarStyle.systemMaterial.
+//
+// applyShadow stays false on purpose: the material's own shadow is a
+// rectangle drawn outside any clip, and it is exactly what the earlier HDS
+// backplate showed around every plate as the dirty halo. This field takes a
+// full ImmersiveMaterial (rather than HDS's type/level pair), which is what
+// lets it be switched off.
+@Component
+struct DockMaterialPlate {
+  @Prop plateWidth: number = 0;
+  @Prop plateHeight: number = 0;
+
+  build() {
+    Tabs({ barPosition: BarPosition.End, index: 0 }) {
+      TabContent() {
+        Column()
+          .width('100%')
+          .height('100%')
+      }
+      .tabBar(this.transparentBar)
+    }
+    .vertical(false)
+    .scrollable(false)
+    .barMode(BarMode.Fixed)
+    .barOverlap(true)
+    .barWidth(this.plateWidth)
+    .barHeight(this.plateHeight)
+    .barFloatingStyle(this.resolveFloatingStyle())
+    .width('100%')
+    .height('100%')
+    .clip(true)
+    .hitTestBehavior(HitTestMode.None)
+  }
+
+  @Builder
+  private transparentBar() {
+    // The bar has to physically exist for the material to land on it.
+    Column()
+      .width('100%')
+      .height('100%')
+      .backgroundColor(Color.Transparent)
+  }
+
+  private resolveFloatingStyle(): FloatingTabBarStyle {
+    const width: number = Math.max(1, this.plateWidth);
+    const style: FloatingTabBarStyle = {
+      barSideMargin: 0,
+      barBottomMargin: 0,
+      // A floating bar sizes itself from its tab count, so the concrete vp
+      // width must be carried on all three breakpoints or the single-item
+      // bar collapses into a centered sliver.
+      barWidth: {
+        smallBarWidth: width,
+        mediumBarWidth: width,
+        largeBarWidth: width
+      },
+      systemMaterial: new uiMaterial.ImmersiveMaterial({
+        // 底部导航栏档位取 THICK（官方指南给底栏的建议），比默认 THIN 更实。
+        style: uiMaterial.ImmersiveStyle.THICK,
+        // 材质自带的矩形投影就是 HDS 背板那圈脏影的来源——关掉；投影交给
+        // dock 自己的 shadow。
+        applyShadow: false,
+        // 沉浸光感的触点流光。
+        lightEffect: { color: Color.White }
+      })
+    };
+    return style;
   }
 }

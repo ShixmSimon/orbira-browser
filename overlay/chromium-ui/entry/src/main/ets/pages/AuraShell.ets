@@ -950,24 +950,24 @@ struct AuraShell {
       return;
     }
     this.browserControlsConfigured = true;
-    // The fullscreen-immersive window draws under the status bar and the
-    // navigation pill, so the page's reserved extents include their heights
-    // (EntryAbility stores them in vp). minTop keeps the page below the
-    // system clock even with the bars scrolled away.
+    // The fullscreen-immersive window draws under the status bar, so the
+    // page's reserved extent includes it (EntryAbility stores it in vp).
+    // minTop 0 keeps the page free to start at the very top.
     const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
-    const bottomSafe = Number(AppStorage.get('auraBottomSafeVp') ?? 0);
     this.executeBrowserCommand({
       command: 'setBrowserControls',
       top: TOP_BAR_EXTENT_VP + topSafe,
       minTop: 0,
       bottom: 0
     });
-    // 手势条高度单独用 setViewportInsets 报给引擎：这一段不可收起，也不给网页
-    // 布局——末行内容最多滚到手势条上方，不会被挡住。dock 不在这里，也不在
-    // setBrowserControls 里：它悬浮在网页上，不替网页占位。
+    // 底部不再报任何高度（连手势条也不报）。内核会把这里的 bottom 从**布局**
+    // 尺寸里整段扣掉（ohos-browser-controls.patch → OhosReservedHeight →
+    // GetRequestedRendererSizeDevicePx），网页于是根本不往那一条画——手势条
+    // 区"空一块"就是这么来的。传 0 后网页画满整窗到底，手势条只是浮在网页
+    // 上的系统指示器；dock 同理（bottom 0 + 自绘浮层，不替网页占位）。
     this.executeBrowserCommand({
       command: 'setViewportInsets',
-      bottom: bottomSafe
+      bottom: 0
     });
     // Pull the search engines once, so the home surface and the address bar
     // search the same way the settings page shows before it has been opened.
