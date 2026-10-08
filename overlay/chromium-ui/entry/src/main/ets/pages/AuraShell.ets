@@ -812,14 +812,17 @@ struct AuraShell {
       return;
     }
     this.browserControlsConfigured = true;
-    // The top reserve is zero: the page runs all the way to the top of the
-    // screen and the status bar floats over it (its visibility is driven by
-    // pageScrollSettled events below). Only the floating bottom bar keeps a
-    // reserve, so the last line of a page can still clear it.
+    // The top reserve equals the status bar: the page starts below the
+    // clock, so page controls under it stay tappable -- content painted
+    // under a visible status bar is shadowed by the system's own touch
+    // region. setImmersiveStatusBar re-asserts this pair (top=0 while
+    // immersed, top=topSafe when the bar returns). The floating bottom bar
+    // keeps its reserve so the last line of a page can still clear it.
+    const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
     const bottomSafe = Number(AppStorage.get('auraBottomSafeVp') ?? 0);
     this.executeBrowserCommand({
       command: 'setBrowserControls',
-      top: 0,
+      top: topSafe,
       minTop: 0,
       bottom: BOTTOM_DOCK_EXTENT_VP + bottomSafe
     });
@@ -864,20 +867,46 @@ struct AuraShell {
       }
       return;
     }
-    if (!this.statusBarHidden && delta >= 24) {
+    // The assert is issued even when the status bar is already hidden: a
+    // tap on the compact capsule re-expanded the bar in the overlay, and
+    // the next downward settle has to collapse it again.
+    if (delta >= 24) {
+      const wasHidden = this.statusBarHidden;
       this.setImmersiveStatusBar(true);
-      this.lastStatusSwitchAt = now;
-    } else if (this.statusBarHidden && delta <= -32) {
+      if (!wasHidden) {
+        this.lastStatusSwitchAt = now;
+      }
+    } else if (delta <= -32) {
+      const wasHidden = this.statusBarHidden;
       this.setImmersiveStatusBar(false);
-      this.lastStatusSwitchAt = now;
+      if (wasHidden) {
+        this.lastStatusSwitchAt = now;
+      }
     }
   }
 
   private setImmersiveStatusBar(hidden: boolean): void {
+    // Written even when unchanged: tapping the compact capsule re-expands
+    // the bar in the overlay's own state, and the next downward settle has
+    // to re-assert the immersive state. Writing the same value raises no
+    // @Watch on the storage link, so this is cheap.
+    AppStorage.setOrCreate('auraChromeImmersed', hidden);
     if (this.statusBarHidden === hidden) {
       return;
     }
     this.statusBarHidden = hidden;
+    // The floating bar shares this decision: the overlay collapses to the
+    // compact capsule while immersed and re-expands with the status bar.
+    // The top reserve rides along: with the status bar gone the page owns
+    // the whole screen; when it returns, page controls step back below it.
+    const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
+    const bottomSafe = Number(AppStorage.get('auraBottomSafeVp') ?? 0);
+    this.executeBrowserCommand({
+      command: 'setBrowserControls',
+      top: hidden ? 0 : topSafe,
+      minTop: 0,
+      bottom: BOTTOM_DOCK_EXTENT_VP + bottomSafe
+    });
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
     if (!context) {
       return;

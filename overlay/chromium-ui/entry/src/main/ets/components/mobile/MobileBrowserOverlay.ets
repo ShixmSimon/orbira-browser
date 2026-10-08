@@ -83,6 +83,11 @@ export struct MobileBrowserOverlay {
   // above the keyboard: the address input lives inside the bar, so without
   // this the keyboard would cover the very field the reader is typing in.
   @State private keyboardHeightVp: number = 0;
+  // The immersive decision comes from AuraShell (pageScrollSettled driven):
+  // while immersed the expanded bar crossfades into the compact capsule,
+  // and it re-expands when the reader scrolls back or taps the capsule.
+  @StorageLink('auraChromeImmersed') @Watch('onImmersedChanged') immersedRaw: boolean = false;
+  @State private compactImmersed: boolean = false;
 
   private readonly holdingHandRouter: HoldingHandRouter = new HoldingHandRouter();
   private readonly currentTabCastSession: CurrentTabCastSession = new CurrentTabCastSession();
@@ -164,31 +169,45 @@ export struct MobileBrowserOverlay {
 
   build() {
     Stack() {
-      Column() {
-        this.BottomBar()
+      Stack({ alignContent: Alignment.Bottom }) {
+        // The expanded bar. Both rails stay mounted and already laid out;
+        // collapsing only crossfades, so no re-layout happens while the
+        // finger is still on the page.
+        Column() {
+          this.BottomBar()
+        }
+        .width('100%')
+        .justifyContent(FlexAlign.End)
+        .hitTestBehavior(this.compactImmersed ? HitTestMode.None : HitTestMode.Transparent)
+        .opacity(this.compactImmersed ? 0 : 1)
+        .bindSheet($$this.menuVisible, this.MenuSheet, {
+          height: SheetSize.LARGE,
+          showClose: false,
+          enableOutsideInteractive: false,
+          maskColor: Color.Transparent,
+          onDisappear: (): void => {
+            this.closeMenuSheet();
+          }
+        })
+
+        // The compact capsule: what the bar collapses to while the reader
+        // scrolls (the current domain, 96x32). Tapping it re-expands.
+        Row() {
+          this.CompactCapsule()
+        }
+        .hitTestBehavior(this.compactImmersed ? HitTestMode.Default : HitTestMode.None)
+        .opacity(this.compactImmersed ? 1 : 0)
       }
       .width('100%')
       .height('100%')
-      // The bar hangs from the bottom; nothing occupies the top any more.
-      .justifyContent(FlexAlign.End)
-      // The window is fullscreen-immersive: reserve the navigation pill, and
-      // ride above the soft keyboard when one is up (the address input lives
-      // in the bar's capsule).
+      // Reserve the navigation pill, and ride above the soft keyboard when
+      // one is up (the address input lives in the bar's capsule).
       .padding({
         left: 12,
         right: 12,
         bottom: this.dockBottomInsetVp()
       })
       .hitTestBehavior(HitTestMode.Transparent)
-      .bindSheet($$this.menuVisible, this.MenuSheet, {
-        height: SheetSize.LARGE,
-        showClose: false,
-        enableOutsideInteractive: false,
-        maskColor: Color.Transparent,
-        onDisappear: (): void => {
-          this.closeMenuSheet();
-        }
-      })
 
       if (this.panelPage !== 'none') {
         this.PanelLayer()
@@ -200,6 +219,15 @@ export struct MobileBrowserOverlay {
     // a full-screen panel covers everything, so it takes the events instead.
     .hitTestBehavior(this.panelPage === 'none' ?
       HitTestMode.Transparent : HitTestMode.Default)
+  }
+
+  private onImmersedChanged(): void {
+    if (this.immersedRaw === this.compactImmersed) {
+      return;
+    }
+    animateTo({ duration: 220, curve: curves.springMotion(0.38, 0.78) }, (): void => {
+      this.compactImmersed = this.immersedRaw;
+    });
   }
 
   // The bar's distance from the screen bottom. A raised keyboard claims the
@@ -283,6 +311,30 @@ export struct MobileBrowserOverlay {
     .height(BOTTOM_BAR_HEIGHT_VP)
   }
 
+  // The compact capsule: what the bar collapses to while the reader scrolls
+  // (the current domain, 96x32 like the reference study). Tapping it
+  // re-expands the bar in place.
+  @Builder
+  private CompactCapsule() {
+    Stack() {
+      GlassSurface({ cornerRadius: 16 }) {
+        Text(this.displayDomain())
+          .fontSize(13)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .fontColor($r('app.color.text_primary'))
+          .padding({ left: 10, right: 10 })
+      }
+    }
+    .width(96)
+    .height(32)
+    .onClick((): void => {
+      animateTo({ duration: 220, curve: curves.springMotion(0.38, 0.78) }, (): void => {
+        this.compactImmersed = false;
+      });
+    })
+  }
+
   // System point-light press effect (HDS hdsEffect, API 20+, every device):
   // a soft white light spot that appears under the finger and follows it
   // across the bar. This is the same mechanism the system browser and other
@@ -306,8 +358,8 @@ export struct MobileBrowserOverlay {
       GlassSurface({ cornerRadius: OUTER_RING_VP / 2 }) {
         Column() {
           Image($r('app.media.chromium_back'))
-            .width(22)
-            .height(22)
+            .width(18)
+            .height(18)
             .fillColor($r('app.color.icon_primary'))
         }
         .width('100%')
@@ -345,15 +397,15 @@ export struct MobileBrowserOverlay {
       GlassSurface({ cornerRadius: OUTER_RING_VP / 2 }) {
         Row() {
           Text(this.browserState.tabCount > 99 ? '99+' : this.browserState.tabCount.toString())
-            .fontSize(13)
+            .fontSize(12)
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.icon_primary'))
             .textAlign(TextAlign.Center)
         }
-        .width(30)
-        .height(24)
-        .borderRadius(7)
-        .border({ width: 1.8, color: $r('app.color.icon_primary') })
+        .width(26)
+        .height(22)
+        .borderRadius(6)
+        .border({ width: 1.6, color: $r('app.color.icon_primary') })
         .justifyContent(FlexAlign.Center)
       }
     }
@@ -379,19 +431,18 @@ export struct MobileBrowserOverlay {
   private AddressRestingRow() {
     Row() {
       Button({ type: ButtonType.Circle, stateEffect: true }) {
-        Image(this.browserState.loading ?
-          $r('app.media.chromium_close') : $r('app.media.chromium_reload'))
-          .width(20)
-          .height(20)
+        Image($r('app.media.chromium_home'))
+          .width(18)
+          .height(18)
           .fillColor($r('app.color.icon_primary'))
       }
-      .width(40)
-      .height(40)
+      .width(36)
+      .height(36)
       .margin({ left: 6 })
       .backgroundColor(Color.Transparent)
-      .accessibilityText(this.browserState.loading ? '停止' : '刷新')
+      .accessibilityText('主页')
       .onClick((): void => {
-        this.issueCommand({ command: this.browserState.loading ? 'stop' : 'reload' });
+        this.issueCommand({ command: 'home' });
       })
 
       Row({ space: 8 }) {
@@ -418,12 +469,12 @@ export struct MobileBrowserOverlay {
 
       Button({ type: ButtonType.Circle, stateEffect: true }) {
         Image($r('app.media.chromium_more'))
-          .width(20)
-          .height(20)
+          .width(18)
+          .height(18)
           .fillColor($r('app.color.icon_primary'))
       }
-      .width(40)
-      .height(40)
+      .width(36)
+      .height(36)
       .margin({ right: 6 })
       .backgroundColor(Color.Transparent)
       .accessibilityText('菜单')
@@ -720,7 +771,11 @@ export struct MobileBrowserOverlay {
             .height(58)
             .padding({ left: 4, right: 2 })
             .onClick(() => {
+              // Switch first, then dismiss: the sheet closing must not eat
+              // the tap's follow-through, and the reader expects to land on
+              // the page they tapped.
               this.issueCommand({ command: 'activateTab', index: tab.index });
+              this.closeMenuSheet();
             })
           }
         }, (tab: BrowserTabState): string => tab.index.toString())

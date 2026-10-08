@@ -19,27 +19,19 @@
  * the earlier attempt (UI-DESIGN-SPEC.md section 8).
  */
 import { hdsMaterial, HdsTabs, HdsTabsController, HdsTabsFloatingStyle } from '@kit.UIDesignKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 
 // One probe per process. getSystemMaterialTypes() reports what this device
 // can actually render; all-NONE means a backplate would paint nothing, and
 // any throw (older SDK) means the same. Read once, cached.
-let cachedHdsMaterialAvailable: boolean | undefined = undefined;
-
+//
+// v11: the backplate is DISABLED on purpose. The device reports the material
+// as available, but the floating plate renders with a rectangular halo/shadow
+// that no clip argument removes, which reads as a dirty ghost around every
+// capsule. The painted track (translucent fill + component blur + hairline)
+// is clean, so that is what ships until the plate can be drawn without its
+// rectangular trim.
 export function isHdsMaterialAvailable(): boolean {
-  if (cachedHdsMaterialAvailable !== undefined) {
-    return cachedHdsMaterialAvailable;
-  }
-  try {
-    const types: Array<hdsMaterial.MaterialType> = hdsMaterial.getSystemMaterialTypes();
-    cachedHdsMaterialAvailable = types.some((type: hdsMaterial.MaterialType): boolean =>
-      type !== hdsMaterial.MaterialType.NONE);
-  } catch (error) {
-    cachedHdsMaterialAvailable = false;
-  }
-  hilog.info(0x0000, 'AuraGlass',
-    'HDS immersive material available: %{public}s', String(cachedHdsMaterialAvailable));
-  return cachedHdsMaterialAvailable;
+  return false;
 }
 
 // A bare HdsTabs whose only job is to materialize its bar. Geometry notes
