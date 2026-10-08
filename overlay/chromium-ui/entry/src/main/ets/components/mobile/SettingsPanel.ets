@@ -8,6 +8,7 @@ import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import { AppearanceSettings, ColorModeSetting } from '../../utils/appearance/AppearanceSettings';
+import { ShellUiPrefs } from '../../utils/appearance/ShellUiPrefs';
 import {
   BrowsingDataType,
   BrowsingDataTimeRange,
@@ -28,7 +29,8 @@ const PREF_ROWS: PrefRow[] = [
   { key: 'popupsBlocked', label: '拦截弹窗' },
   { key: 'doNotTrack', label: '发送"请勿追踪"请求' },
   { key: 'preloadPages', label: '预加载网页' },
-  { key: 'forceDarkWebContents', label: '网页强制深色' }
+  { key: 'forceDarkWebContents', label: '网页强制深色' },
+  { key: 'downloadAskWhereToSave', label: '下载前询问' }
 ];
 
 interface RangeRow {
@@ -74,6 +76,8 @@ export struct SettingsPanel {
   @State private clearRange: BrowsingDataTimeRange = 'last4Weeks';
   @State private clearing: boolean = false;
   @State private colorModeSetting: ColorModeSetting = 'system';
+  @State private textScalePercent: number = 100;
+  @StorageLink('auraHideStatusBarOnScroll') hideStatusBarOnScroll: boolean = false;
   // Runtime diagnostics at the bottom of the page: device API level,
   // immersive-material support / switch / level, and both colour-mode
   // values (shell view vs. system configuration).
@@ -153,6 +157,11 @@ export struct SettingsPanel {
         value: map.get(row.key) ?? false
       }));
       this.toggleItems = next;
+      values.forEach((item: ShellPrefValue): void => {
+        if (item.key === 'textScale' && typeof item.value === 'number') {
+          this.textScalePercent = item.value;
+        }
+      });
     } catch (error) {
     }
   }
@@ -496,7 +505,22 @@ export struct SettingsPanel {
               this.page = 'appearance';
             })
             this.CardDivider()
+            this.ShellToggleRow('上滑时隐藏状态栏', '地址栏收起时一起隐藏，网页铺满全屏')
+            this.CardDivider()
+            this.NavRow('网页缩放', `${this.textScalePercent}%`, (): void => {
+              this.page = 'zoom';
+            })
+            this.CardDivider()
             this.ToggleRow('网页强制深色', 'forceDarkWebContents')
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 2, bottom: 2 })
+          .borderRadius(12)
+          .backgroundColor($r('app.color.surface_secondary'))
+
+          this.SectionLabel('下载')
+          Column() {
+            this.ToggleRow('下载前询问', 'downloadAskWhereToSave')
           }
           .width('100%')
           .padding({ left: 16, right: 16, top: 2, bottom: 2 })
@@ -712,6 +736,95 @@ export struct SettingsPanel {
     .height('100%')
   }
 
+  // 外壳偏好（非引擎 prefs）：上滑隐藏状态栏，AppStorage + preferences 持久化。
+  @Builder
+  private ShellToggleRow(label: string, subtitle: string) {
+    Column() {
+      Row() {
+        Column({ space: 2 }) {
+          Text(label)
+            .fontSize(15)
+            .fontColor($r('app.color.text_primary'))
+          if (subtitle.length > 0) {
+            Text(subtitle)
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+          }
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+
+        Toggle({ type: ToggleType.Switch, isOn: this.hideStatusBarOnScroll })
+          .onChange((isOn: boolean) => {
+            AppStorage.setOrCreate('auraHideStatusBarOnScroll', isOn);
+            const context = this.getUIContext().getHostContext() as common.Context | undefined;
+            if (context) {
+              ShellUiPrefs.saveHideStatusBar(context, isOn);
+            }
+          })
+      }
+      .width('100%')
+      .padding({ top: 10, bottom: 10 })
+    }
+    .width('100%')
+  }
+
+  // 网页缩放：整页默认缩放（textScale，50–200）。
+  @Builder
+  private ZoomView() {
+    Column() {
+      this.Header('网页缩放', true)
+
+      Text('整页一起放大或缩小，对所有网页生效。')
+        .fontSize(13)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
+        .margin({ top: 4, bottom: 12 })
+
+      Column() {
+        ForEach([50, 75, 100, 125, 150, 175, 200], (scale: number) => {
+          Row() {
+            Text(`${scale}%`)
+              .fontSize(15)
+              .fontColor(scale === this.textScalePercent ?
+                $r('app.color.accent_primary') : $r('app.color.text_primary'))
+              .fontWeight(scale === this.textScalePercent ? FontWeight.Medium : FontWeight.Regular)
+            Blank()
+            if (scale === this.textScalePercent) {
+              Text('✓')
+                .fontSize(16)
+                .fontColor($r('app.color.accent_primary'))
+            }
+          }
+          .width('100%')
+          .height(50)
+          .onClick(() => {
+            this.setPrefNumber('textScale', scale);
+          })
+          if (scale !== 200) {
+            Divider()
+              .color($r('app.color.divider'))
+          }
+        }, (scale: number): string => scale.toString())
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 2, bottom: 2 })
+      .borderRadius(12)
+      .backgroundColor($r('app.color.surface_secondary'))
+    }
+    .width('100%')
+    .height('100%')
+    .padding({ left: 20, right: 20, bottom: 16 })
+  }
+
+  private setPrefNumber(key: ShellPrefKey, value: number): void {
+    this.textScalePercent = value;
+    this.onCommand({ command: 'setPref', key: key, value: value });
+    setTimeout((): void => {
+      this.reloadPrefs();
+    }, 400);
+  }
+
   build() {
     Column() {
       if (this.page === 'clear') {
@@ -720,6 +833,8 @@ export struct SettingsPanel {
         this.EnginesView()
       } else if (this.page === 'appearance') {
         this.AppearanceView()
+      } else if (this.page === 'zoom') {
+        this.ZoomView()
       } else {
         this.MainView()
       }

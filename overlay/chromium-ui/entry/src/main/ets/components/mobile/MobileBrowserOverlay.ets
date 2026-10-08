@@ -8,7 +8,8 @@ import { ScanService } from './ScanService';
 import {
   BrowserCommandPayload,
   BrowserStateSnapshot,
-  BrowserTabState
+  BrowserTabState,
+  TabThumbnail
 } from 'engine';
 import { HuaweiShareAdapter } from 'engine';
 import { GripSide, HoldingHandRouter } from './HoldingHandRouter';
@@ -32,6 +33,17 @@ import { normalizeAddress } from './ShellUtils';
 export const TOP_BAR_EXTENT_VP: number = 52;
 export const BOTTOM_DOCK_EXTENT_VP: number = 68;
 
+// The tab grid: two columns ten vp apart, each card 208 tall of which the
+// title row takes 36. The picture therefore fills TAB_THUMB_HEIGHT_VP of a
+// card (grid width - gap) / 2 wide -- the shape getTabThumbnails is asked to
+// capture, so a portrait card shows more of the page than the engine's
+// default 4:3 would.
+const TAB_GRID_COLUMNS: number = 2;
+const TAB_GRID_GAP_VP: number = 10;
+const TAB_CARD_HEIGHT_VP: number = 208;
+const TAB_CARD_TITLE_VP: number = 36;
+export const TAB_THUMB_HEIGHT_VP: number = TAB_CARD_HEIGHT_VP - TAB_CARD_TITLE_VP;
+
 enum MobileEdgeAction {
   BACK = 'back',
   MENU = 'menu'
@@ -40,6 +52,13 @@ enum MobileEdgeAction {
 const PRIMARY_ACTION_KEY: string = 'mobilePrimaryAction';
 const FOLLOW_GRIP_KEY: string = 'mobileFollowGrip';
 const LAST_GRIP_SIDE_KEY: string = 'mobileLastGripSide';
+
+// findResult payload parked in AppStorage by AuraShell.
+interface FindResultSummary {
+  matches?: number;
+  activeMatch?: number;
+  revision?: number;
+}
 
 @Component
 export struct MobileBrowserOverlay {
@@ -63,10 +82,22 @@ export struct MobileBrowserOverlay {
   // Which page the sheet shows: the tabs menu only now; kept as the reset
   // value while the sheet opens or closes.
   @State private sheetPage: string = 'tabs';
-  // Which view the sheet hosts: the tab list ('tabs', from the tab-count
-  // button) or the browser menu ('menu', from the ⋮ button). Two entries,
-  // two views -- they used to open the same screen.
-  @State private sheetKind: string = 'tabs';
+  // The ⋮ menu is a floating card above the dock (Lumie-style), not a
+  // sheet; the sheet hosts the tab switcher only.
+  @State private menuCardVisible: boolean = false;
+  // 页内查找 (findInPage): a small bar under the top area.
+  @State private findVisible: boolean = false;
+  @State private findQuery: string = '';
+  @StorageLink('auraFindResult') findResultJson: string = '';
+  // Tab switcher card previews, keyed by tab id.
+  @StorageLink('auraTabThumbnails') tabThumbnailsJson: string = '';
+  private tabThumbnails: Map<string, string> = new Map();
+  // What to ask getTabThumbnails for: the card's width, and the card's width
+  // over its picture's height. Measured once the grid has laid itself out, so
+  // the first request -- made on the tap that opens the switcher -- falls back
+  // to the engine's own 4:3 and is re-asked for as soon as there is a size.
+  @State private tabThumbWidthVp: number = 160;
+  @State private tabThumbAspect: number = 0;
   // Which full-screen shell page is open ('none' while browsing). The shell's
   // sub-pages are full-screen like Lumie's, not part of the bottom sheet.
   @State private panelPage: string = 'none';
@@ -93,6 +124,7 @@ export struct MobileBrowserOverlay {
   private addressSelectionStart: number = 0;
   private addressSelectionEnd: number = 0;
   private addressEditEpoch: number = 0;
+  private requestSeq: number = 0;
 
   aboutToAppear(): void {
     const storedAction = String(AppStorage.get(PRIMARY_ACTION_KEY) ?? MobileEdgeAction.BACK);
@@ -130,6 +162,14 @@ export struct MobileBrowserOverlay {
       this.editingAddress = false;
       return true;
     }
+    if (this.findVisible) {
+      this.closeFindBar();
+      return true;
+    }
+    if (this.menuCardVisible) {
+      this.closeMenuCard();
+      return true;
+    }
     if (this.menuVisible) {
       this.closeMenuSheet();
       return true;
@@ -153,6 +193,129 @@ export struct MobileBrowserOverlay {
 
   private onBrowserStateChanged(): void {
     this.currentTabCastSession.update(this.browserState);
+  }
+
+  private parseThumbnails(): void {
+    try {
+      const items: TabThumbnail[] = JSON.parse(this.tabThumbnailsJson) as TabThumbnail[];
+      const map: Map<string, string> = new Map();
+      for (const item of items) {
+        map.set(item.id, `data:image/png;base64,${item.pngBase64}`);
+      }
+      this.tabThumbnails = map;
+    } catch (error) {
+      this.tabThumbnails = new Map();
+    }
+  }
+
+  private thumbnailFor(tab: BrowserTabState): string {
+    if (tab.id && tab.id.length > 0) {
+      const value = this.tabThumbnails.get(tab.id);
+      if (value) {
+        return value;
+      }
+    }
+    return '';
+  }
+
+  private requestTabThumbnails(): void {
+    this.parseThumbnails();
+    const ids: string[] = [];
+    for (const tab of this.browserState.tabs) {
+      if (tab.id && tab.id.length > 0) {
+        ids.push(tab.id);
+      }
+    }
+    if (ids.length === 0) {
+      return;
+    }
+    this.requestSeq += 1;
+    // The engine (from build-443425d6) takes an optional card aspect; older
+    // engines ignore it and answer with the same 4:3 picture as before.
+    if (this.tabThumbAspect > 0) {
+      this.issueCommand({
+        command: 'getTabThumbnails',
+        requestId: this.requestSeq,
+        ids: ids,
+        widthVp: this.tabThumbWidthVp,
+        aspect: this.tabThumbAspect
+      });
+    } else {
+      this.issueCommand({
+        command: 'getTabThumbnails',
+        requestId: this.requestSeq,
+        ids: ids,
+        widthVp: this.tabThumbWidthVp
+      });
+    }
+  }
+
+  // Once the grid has a size, ask for pictures shaped like its cards: a card
+  // taller than it is wide then shows more than the top few lines of a page.
+  private measureTabGrid(area: Area): void {
+    const gridWidth: number = Number(area.width);
+    if (gridWidth <= 0) {
+      return;
+    }
+    const cardWidth: number =
+      (gridWidth - TAB_GRID_GAP_VP * (TAB_GRID_COLUMNS - 1)) / TAB_GRID_COLUMNS;
+    const aspect: number = Math.min(Math.max(cardWidth / TAB_THUMB_HEIGHT_VP, 0.4), 2.5);
+    if (Math.abs(aspect - this.tabThumbAspect) < 0.02) {
+      return;
+    }
+    this.tabThumbAspect = aspect;
+    this.tabThumbWidthVp = Math.max(80, Math.round(cardWidth));
+    this.requestTabThumbnails();
+  }
+
+  private closeMenuCard(): void {
+    this.menuCardVisible = false;
+  }
+
+  private closeFindBar(): void {
+    this.findVisible = false;
+    this.findQuery = '';
+    this.issueCommand({ command: 'stopFind' });
+  }
+
+  private findNext(forward: boolean): void {
+    if (this.findQuery.trim().length === 0) {
+      return;
+    }
+    this.issueCommand({ command: 'findInPage', text: this.findQuery, forward: forward });
+  }
+
+  private toggleBookmark(): void {
+    const url = this.browserState.url;
+    if (url.length === 0 || this.isNewTabUrl(url)) {
+      return;
+    }
+    this.issueCommand({
+      command: 'addBookmark',
+      url: url,
+      title: this.browserState.title && this.browserState.title.length > 0 ?
+        this.browserState.title : this.displayDomain()
+    });
+    this.menuCardVisible = false;
+    this.getUIContext().getPromptAction().showToast({ message: '已加入书签', duration: 2000 });
+  }
+
+  private findMatches(): number {
+    try {
+      const data = JSON.parse(this.findResultJson) as FindResultSummary;
+      return data.matches ?? 0;
+    } catch (error) {
+      return 0;
+    }
+  }
+
+  private findActiveMatch(): number {
+    try {
+      const data = JSON.parse(this.findResultJson) as FindResultSummary;
+      return data.activeMatch ?? 0;
+    } catch (error) {
+      return 0;
+    }
   }
 
   build() {
@@ -187,6 +350,31 @@ export struct MobileBrowserOverlay {
 
       if (this.panelPage !== 'none') {
         this.PanelLayer()
+      }
+
+      // 页内查找 bar sits under the status area, above everything else.
+      if (this.findVisible) {
+        this.FindBar()
+      }
+
+      // The ⋮ menu: a dim scrim + a floating card anchored above the dock,
+      // both with pop/fade motion.
+      if (this.menuCardVisible) {
+        Stack({ alignContent: Alignment.Bottom }) {
+          Column()
+            .width('100%')
+            .height('100%')
+            .backgroundColor($r('app.color.modal_scrim'))
+            .onClick(() => {
+              this.closeMenuCard();
+            })
+            .transition(TransitionEffect.opacity(0)
+              .animation({ duration: 180, curve: Curve.Friction }))
+
+          this.MenuCard()
+        }
+        .width('100%')
+        .height('100%')
       }
     }
     .width('100%')
@@ -403,14 +591,13 @@ export struct MobileBrowserOverlay {
         this.handleDockTouch(event, '标签页');
       })
       .onClick((): void => {
-        this.sheetKind = 'tabs';
+        this.requestTabThumbnails();
         this.menuVisible = true;
       })
 
       this.DockButton($r('app.media.chromium_more'), '菜单', true,
         (): void => {
-          this.sheetKind = 'menu';
-          this.menuVisible = true;
+          this.menuCardVisible = true;
         })
   }
 
@@ -453,11 +640,7 @@ export struct MobileBrowserOverlay {
   @Builder
   private MenuSheet() {
     Column() {
-      if (this.sheetKind === 'menu') {
-        this.MenuView()
-      } else {
-        this.TabsView()
-      }
+      this.TabsView()
     }
     .width('100%')
     .height('100%')
@@ -604,95 +787,127 @@ export struct MobileBrowserOverlay {
   private TabsView() {
     Column() {
       Row() {
-        Text('标签页')
+        Text(`${this.browserState.tabCount} 个标签`)
           .fontSize(20)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
         Blank()
-        Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.chromium_add'))
-            .width(22)
-            .height(22)
-            .fillColor($r('app.color.icon_primary'))
-        }
-        .width(44)
-        .height(44)
-        .backgroundColor($r('app.color.surface_secondary'))
-        .accessibilityText('新建标签页')
-        .onClick(() => {
-          this.menuVisible = false;
-          this.sheetKind = 'tabs';
-          this.issueCommand({ command: 'newTab' });
-        })
       }
       .width('100%')
       .height(52)
 
-      List({ space: 2 }) {
+      Grid() {
         ForEach(this.browserState.tabs, (tab: BrowserTabState) => {
-          ListItem() {
-            Row({ space: 10 }) {
-              Row()
-                .width(4)
-                .height(28)
-                .borderRadius(2)
-                .backgroundColor(tab.active ?
-                  $r('app.color.accent_primary') : $r('app.color.transparent'))
-              Column({ space: 2 }) {
+          GridItem() {
+            Column() {
+              Row() {
                 Text(tab.title && tab.title.length > 0 ? tab.title : '新标签页')
                   .maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
-                  .fontSize(16)
+                  .fontSize(13)
                   .fontWeight(tab.active ? FontWeight.Medium : FontWeight.Regular)
-                  .fontColor($r('app.color.text_primary'))
-                Text(this.shortUrl(tab.url))
-                  .maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                  .fontSize(12)
-                  .fontColor($r('app.color.text_secondary'))
+                  .fontColor(tab.active ?
+                    $r('app.color.accent_primary') : $r('app.color.text_primary'))
+                  .layoutWeight(1)
+                Button({ type: ButtonType.Circle }) {
+                  Image($r('app.media.chromium_close'))
+                    .width(16)
+                    .height(16)
+                    .fillColor($r('app.color.icon_secondary'))
+                }
+                .width(30)
+                .height(30)
+                .backgroundColor(Color.Transparent)
+                .accessibilityText('关闭标签页')
+                .onClick(() => {
+                  this.issueCommand({ command: 'closeTab', index: tab.index });
+                })
               }
-              .alignItems(HorizontalAlign.Start)
+              .width('100%')
+              .height(36)
+              .padding({ left: 10, right: 4 })
+
+              Stack() {
+                if (this.thumbnailFor(tab).length > 0) {
+                  Image(this.thumbnailFor(tab))
+                    .objectFit(ImageFit.Cover)
+                } else {
+                  Text(this.shortUrl(tab.url))
+                    .fontSize(12)
+                    .fontColor($r('app.color.text_secondary'))
+                    .textAlign(TextAlign.Center)
+                    .padding(8)
+                }
+              }
+              .width('100%')
               .layoutWeight(1)
-              Button({ type: ButtonType.Circle }) {
-                Image($r('app.media.chromium_close'))
-                  .width(18)
-                  .height(18)
-                  .fillColor($r('app.color.icon_secondary'))
-              }
-              .width(40)
-              .height(40)
-              .backgroundColor(Color.Transparent)
-              .accessibilityText('关闭标签页')
-              .onClick(() => {
-                this.issueCommand({ command: 'closeTab', index: tab.index });
-              })
+              .backgroundColor($r('app.color.surface_secondary'))
             }
             .width('100%')
-            .height(58)
-            .padding({ left: 4, right: 2 })
+            .height(208)
+            .clip(true)
+            .borderRadius(14)
+            .border({
+              width: tab.active ? 2 : 0.5,
+              color: tab.active ? $r('app.color.accent_primary') : $r('app.color.divider')
+            })
+            .backgroundColor($r('app.color.surface_primary'))
             .onClick(() => {
               // Switch first, then dismiss: the reader expects to land on
-              // the page they tapped, with the panel gone.
+              // the page they tapped, with the sheet gone.
               this.issueCommand({ command: 'activateTab', index: tab.index });
               this.closeMenuSheet();
             })
           }
         }, (tab: BrowserTabState): string => tab.index.toString())
       }
+      .columnsTemplate('1fr 1fr')
+      .columnsGap(10)
+      .rowsGap(10)
       .width('100%')
       .layoutWeight(1)
+      .onAreaChange((_oldArea: Area, newArea: Area): void => {
+        this.measureTabGrid(newArea);
+      })
+
+      Row({ space: 10 }) {
+        Button('新建标签页')
+          .layoutWeight(1)
+          .height(44)
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.on_accent'))
+          .backgroundColor($r('app.color.accent_primary'))
+          .borderRadius(22)
+          .onClick(() => {
+            this.closeMenuSheet();
+            this.issueCommand({ command: 'newTab' });
+          })
+        Button('完成')
+          .height(44)
+          .fontSize(15)
+          .fontColor($r('app.color.text_primary'))
+          .backgroundColor($r('app.color.surface_secondary'))
+          .borderRadius(22)
+          .padding({ left: 24, right: 24 })
+          .onClick(() => {
+            this.closeMenuSheet();
+          })
+      }
+      .width('100%')
+      .margin({ top: 10 })
 
       Row() {
         Text('最近关闭的标签页')
-          .fontSize(14)
+          .fontSize(13)
           .fontColor($r('app.color.text_secondary'))
         Blank()
         Text('›')
-          .fontSize(18)
+          .fontSize(16)
           .fontColor($r('app.color.text_secondary'))
       }
       .width('100%')
-      .height(44)
+      .height(40)
       .onClick(() => {
         this.openPanel('recent');
       })
@@ -706,36 +921,48 @@ export struct MobileBrowserOverlay {
     .backgroundColor(Color.Transparent)
   }
 
-  // The ⋮ menu: page commands and the shell's own pages. The tab list lives
-  // in TabsView (tab-count button), so the two dock entries open two
-  // different views instead of the same screen. The old "primary action"
-  // and grip-awareness rows were removed with the floating 3-button bar
-  // they tuned -- the fixed dock has nothing for them to change.
+  // The ⋮ menu: a floating rounded card above the dock (Lumie-style), not
+  // a sheet. Items: bookmark, share, find in page, print, then the shell
+  // pages row. Incognito tabs and the desktop-site toggle are NOT here:
+  // incognito needs a second WebWindow (multi-window topic) and the engine
+  // exposes no toggle command for requestDesktopSite (state only).
   @Builder
-  private MenuView() {
+  private MenuCard() {
     Column() {
       Row() {
-        Text('菜单')
-          .fontSize(20)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
+        Text(this.menuDomainText())
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.browserState.url.startsWith('https://') ?
+            '#34A853' : $r('app.color.text_secondary'))
       }
       .width('100%')
-      .height(52)
+      .height(40)
+      .padding({ left: 16, right: 16 })
 
-      Row({ space: 8 }) {
-        this.CommandButton(
-          this.browserState.loading ? '停止' : '刷新',
-          $r('app.media.chromium_reload'),
-          this.browserState.loading ? 'stop' : 'reload')
-        this.ShareButton()
-        this.CommandButton(
-          '\u6253\u5370',
-          $r('app.media.chromium_print'),
-          'print')
-        this.CastButton()
-      }
-      .width('100%')
+      Divider()
+        .color($r('app.color.divider'))
+        .margin({ left: 16, right: 16 })
+
+      this.MenuItem('加入书签', $r('app.media.chromium_bookmark'), (): void => {
+        this.toggleBookmark();
+      })
+      this.MenuItem('分享 / 发送到我的设备', $r('app.media.chromium_share'), (): void => {
+        this.menuCardVisible = false;
+        this.shareCurrentPage();
+      })
+      this.MenuItem('在页面中查找', $r('app.media.chromium_search'), (): void => {
+        this.menuCardVisible = false;
+        this.findVisible = true;
+      })
+      this.MenuItem('打印', $r('app.media.chromium_print'), (): void => {
+        this.menuCardVisible = false;
+        this.issueCommand({ command: 'print' });
+      })
+
+      Divider()
+        .color($r('app.color.divider'))
+        .margin({ top: 6 })
 
       Row({ space: 8 }) {
         this.PanelEntryButton('书签', $r('app.media.chromium_bookmark'), (): void => {
@@ -747,24 +974,127 @@ export struct MobileBrowserOverlay {
         this.PanelEntryButton('下载', $r('app.media.chromium_download'), (): void => {
           this.openPanel('downloads');
         })
-        this.PanelEntryButton('扩展', $r('app.media.chromium_extensions'), (): void => {
-          this.openPanel('extensions');
-        })
         this.PanelEntryButton('设置', $r('app.media.chromium_settings'), (): void => {
           this.openPanel('settings');
         })
       }
       .width('100%')
-      .margin({ top: 8 })
+      .padding({ left: 12, right: 12, top: 10, bottom: 12 })
+    }
+    .width('100%')
+    .borderRadius(20)
+    .backgroundColor($r('app.color.surface_floating'))
+    .shadow({ radius: 24, color: $r('app.color.shadow'), offsetY: 6 })
+    .margin({ left: 14, right: 14, bottom: 84 + this.bottomSafeVp })
+    .transition(TransitionEffect.asymmetric(
+      TransitionEffect.opacity(0)
+        .combine(TransitionEffect.translate({ y: 48 }))
+        .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 })),
+      TransitionEffect.opacity(0)
+    ).animation({ duration: 220, curve: Curve.Friction }))
+  }
 
+  private menuDomainText(): string {
+    if (this.isNewTabUrl(this.browserState.url)) {
+      return '新标签页';
+    }
+    return this.displayDomain();
+  }
+
+  @Builder
+  private MenuItem(label: string, icon: Resource, action: () => void) {
+    Row({ space: 14 }) {
+      Image(icon)
+        .width(20)
+        .height(20)
+        .fillColor($r('app.color.icon_primary'))
+      Text(label)
+        .fontSize(15)
+        .fontColor($r('app.color.text_primary'))
       Blank()
     }
     .width('100%')
-    .height('100%')
-    .padding({ left: 20, right: 20, top: 8, bottom: 16 })
-    // Transparent for the same reason as TabsView: let the sheet's system
-    // material show through instead of painting over it.
-    .backgroundColor(Color.Transparent)
+    .height(46)
+    .padding({ left: 16, right: 16 })
+    .onClick(action)
+  }
+
+  // 页内查找: input + match counter + prev/next. findInPage with the same
+  // text steps to the next match; forward:false steps back; stopFind clears.
+  @Builder
+  private FindBar() {
+    Row({ space: 8 }) {
+      TextInput({ text: this.findQuery, placeholder: '在页面中查找' })
+        .layoutWeight(1)
+        .height(40)
+        .fontSize(14)
+        .fontColor($r('app.color.text_primary'))
+        .placeholderColor($r('app.color.text_secondary'))
+        .backgroundColor(Color.Transparent)
+        .enterKeyType(EnterKeyType.Done)
+        .onChange((value: string) => {
+          this.findQuery = value;
+          if (value.trim().length > 0) {
+            this.issueCommand({ command: 'findInPage', text: value });
+          }
+        })
+        .onSubmit(() => {
+          this.findNext(true);
+        })
+
+      Text(this.findMatches() > 0 ? `${this.findActiveMatch()}/${this.findMatches()}` : '')
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+
+      Button({ type: ButtonType.Circle }) {
+        Text('↑')
+          .fontSize(16)
+          .fontColor($r('app.color.icon_primary'))
+      }
+      .width(34)
+      .height(34)
+      .backgroundColor(Color.Transparent)
+      .accessibilityText('上一个')
+      .onClick(() => {
+        this.findNext(false);
+      })
+
+      Button({ type: ButtonType.Circle }) {
+        Text('↓')
+          .fontSize(16)
+          .fontColor($r('app.color.icon_primary'))
+      }
+      .width(34)
+      .height(34)
+      .backgroundColor(Color.Transparent)
+      .accessibilityText('下一个')
+      .onClick(() => {
+        this.findNext(true);
+      })
+
+      Button({ type: ButtonType.Circle }) {
+        Image($r('app.media.chromium_close'))
+          .width(18)
+          .height(18)
+          .fillColor($r('app.color.icon_secondary'))
+      }
+      .width(34)
+      .height(34)
+      .backgroundColor(Color.Transparent)
+      .accessibilityText('结束查找')
+      .onClick(() => {
+        this.closeFindBar();
+      })
+    }
+    .width('100%')
+    .padding({ left: 12, right: 8, top: this.topSafeVp + 6, bottom: 6 })
+    .backgroundColor($r('app.color.surface_floating'))
+    .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+    .transition(TransitionEffect.asymmetric(
+      TransitionEffect.opacity(0)
+        .combine(TransitionEffect.translate({ y: -24 })),
+      TransitionEffect.opacity(0)
+    ).animation({ duration: 200, curve: Curve.Friction }))
   }
 
   @Builder
@@ -896,7 +1226,6 @@ export struct MobileBrowserOverlay {
   private closeMenuSheet(): void {
     this.menuVisible = false;
     this.sheetPage = 'tabs';
-    this.sheetKind = 'tabs';
   }
 
   // 扫一扫: system scanner, result goes through the same address/search

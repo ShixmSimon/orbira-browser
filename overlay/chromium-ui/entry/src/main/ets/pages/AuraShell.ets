@@ -14,8 +14,10 @@
  */
 
 import { common } from '@kit.AbilityKit';
+import { window } from '@kit.ArkUI';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { ShellUiPrefs } from '../utils/appearance/ShellUiPrefs';
 import { WebWindow, PictureInPictureSurface } from 'engine';
 import { BOTTOM_DOCK_EXTENT_VP, MobileBrowserOverlay, TOP_BAR_EXTENT_VP } from '../components/mobile/MobileBrowserOverlay';
 import { MobileBackRouter } from '../components/mobile/MobileBackRouter';
@@ -41,6 +43,7 @@ import {
   DownloadUpdatedEvent,
   ExtensionActionsEvent,
   ExtensionDetailsEvent,
+  FaviconsEvent,
   HistoryResultsEvent,
   PasswordCommandResultEvent,
   PasswordRevealedEvent,
@@ -52,6 +55,7 @@ import {
   SearchEnginesEvent,
   ShellDownloadDirectory,
   SiteSettingsEvent,
+  TabThumbnailsEvent,
   TopSitesEvent,
   shellEvent
 } from 'engine';
@@ -104,6 +108,12 @@ struct AuraShell {
   @StorageLink('auraStartupConfig') startupConfigText: string = '';
   @StorageLink('auraStartUrl') startUrl: string = CHROMIUM_HOME_URL;
   @StorageLink('auraAppVisible') @Watch('onAppVisibleChanged') appVisible: boolean = true;
+  // 上滑时隐藏状态栏: address bar collapses -> the status bar hides with it
+  // and the page fills the screen (Lumie's 外观 toggle). Hysteresis keeps
+  // the system bar from flapping at the collapse boundary.
+  @StorageLink('auraBrowserControlsRatio') @Watch('onControlsRatioMoved') scrolledRatio: number = 1;
+  @StorageLink('auraHideStatusBarOnScroll') @Watch('onHideStatusBarPrefChanged') hideStatusBarOnScroll: boolean = false;
+  private statusBarHiddenByScroll: boolean = false;
   @StorageLink('auraThemeFontId') themeFontId: string = '';
   @StorageLink('auraThemeFontRevision') themeFontRevision: number = 0;
   @StorageLink('auraOnboardingReady') onboardingReady: boolean = false;
@@ -132,6 +142,67 @@ struct AuraShell {
     this.startKnockShare();
     this.useSystemDownloadDirectory();
     this.readCrashReport();
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (context) {
+      ShellUiPrefs.loadHideStatusBar(context).then((value: boolean): void => {
+        AppStorage.setOrCreate('auraHideStatusBarOnScroll', value);
+      });
+    }
+  }
+
+  private onControlsRatioMoved(): void {
+    this.updateStatusBarForScroll(this.scrolledRatio);
+  }
+
+  private onHideStatusBarPrefChanged(): void {
+    if (!this.hideStatusBarOnScroll) {
+      this.applyStatusBarHidden(false);
+      this.statusBarHiddenByScroll = false;
+      this.sendScrollTopExtent(false);
+    } else {
+      this.updateStatusBarForScroll(this.scrolledRatio);
+    }
+  }
+
+  // Collapsed address bar -> hide the status bar too, and let the page fill
+  // to the very top (minTop 0). Scrolling back restores both.
+  private updateStatusBarForScroll(ratio: number): void {
+    if (!this.hideStatusBarOnScroll || !this.isMobilePhoneUi()) {
+      return;
+    }
+    if (ratio <= 0.1 && !this.statusBarHiddenByScroll) {
+      this.statusBarHiddenByScroll = true;
+      this.applyStatusBarHidden(true);
+      this.sendScrollTopExtent(true);
+    } else if (ratio >= 0.4 && this.statusBarHiddenByScroll) {
+      this.statusBarHiddenByScroll = false;
+      this.applyStatusBarHidden(false);
+      this.sendScrollTopExtent(false);
+    }
+  }
+
+  private applyStatusBarHidden(hidden: boolean): void {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (!context) {
+      return;
+    }
+    window.getLastWindow(context).then((win: window.Window): void => {
+      win.setSpecificSystemBarEnabled('status', !hidden);
+    }).catch((error: Error) => {
+      hilog.warn(0x0000, 'AuraShell', 'Status bar toggle failed: %{public}s', JSON.stringify(error));
+    });
+  }
+
+  // Re-send the reserved extents: with the status bar hidden the page may
+  // start at the very top (minTop 0); with it shown, below the clock.
+  private sendScrollTopExtent(statusHidden: boolean): void {
+    const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
+    this.executeBrowserCommand({
+      command: 'setBrowserControls',
+      top: TOP_BAR_EXTENT_VP + (statusHidden ? 0 : topSafe),
+      minTop: statusHidden ? 0 : topSafe,
+      bottom: BOTTOM_DOCK_EXTENT_VP + Number(AppStorage.get('auraBottomSafeVp') ?? 0)
+    });
   }
 
   // v8a diagnostic: read / clear / copy the crash file EntryAbility wrote.
@@ -561,6 +632,27 @@ struct AuraShell {
     if (event.event === 'downloadList') {
       AppStorage.setOrCreate('auraPanelDownloads',
         JSON.stringify(shellEvent<DownloadListEvent>(event).items ?? []));
+      return;
+    }
+
+    if (event.event === 'tabThumbnails') {
+      AppStorage.setOrCreate('auraTabThumbnails',
+        JSON.stringify(shellEvent<TabThumbnailsEvent>(event).items ?? []));
+      return;
+    }
+
+    if (event.event === 'favicons') {
+      AppStorage.setOrCreate('auraFavicons',
+        JSON.stringify(shellEvent<FaviconsEvent>(event).items ?? []));
+      return;
+    }
+
+    if (event.event === 'findResult') {
+      AppStorage.setOrCreate('auraFindResult', JSON.stringify({
+        matches: event.matches ?? 0,
+        activeMatch: event.activeMatch ?? 0,
+        revision: Date.now()
+      }));
       return;
     }
 

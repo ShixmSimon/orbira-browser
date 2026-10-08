@@ -185,7 +185,9 @@ export struct DownloadsPanel {
     } else if (item.state === 'paused') {
       state = '已暂停';
     } else if (item.state === 'completed') {
-      state = '已完成';
+      // The engine reports a finished download whose file has gone from the
+      // disk (field added in build-443425d6; older engines never set it).
+      state = item.fileMissing === true ? '文件已不在原位置，可重新下载' : '已完成';
     } else if (item.state === 'cancelled') {
       state = '已取消';
     } else if (item.state === 'failed') {
@@ -274,7 +276,11 @@ export struct DownloadsPanel {
           this.ActionChip('继续', (): void => this.act(item, 'resume'))
           this.DangerChip('取消', (): void => this.act(item, 'cancel'))
         } else if (item.state === 'completed') {
-          if (isCrxFile(item)) {
+          // A complete row whose file is gone: retry fetches the URL again and
+          // the old record goes away on its own (SHELL_CONTRACT.md, 下载).
+          if (item.fileMissing === true) {
+            this.ActionChip('重新下载', (): void => this.act(item, 'retry'))
+          } else if (isCrxFile(item)) {
             this.ActionChip('安装', (): void => this.installCrx(item))
           }
           this.DangerChip('删除', (): void => this.confirmRemove(item))
