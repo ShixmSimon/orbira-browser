@@ -258,6 +258,10 @@ export class DeviceRoutingPolicy {
       isFoldable: routing.identity.isFoldable,
       foldStatus: routing.identity.foldStatus,
       colorScheme,
+      // 本外壳在所有设备形态上都自绘浏览器 chrome。不显式给 'shell' 时引擎
+      // 按 uiFamily 默认值决定，实测会自行画出原生标签条：主页顶部露出一排
+      // 被裁掉下半截的标签卡（用户看到的"左上角截断图标"）。
+      browserChrome: 'shell',
       jitless: false,
       fullscreenRequested: routing.fullscreenRequested
     };

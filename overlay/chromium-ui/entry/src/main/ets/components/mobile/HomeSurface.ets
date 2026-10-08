@@ -9,6 +9,7 @@ import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
 import { normalizeAddress } from './ShellUtils';
 import { ScanService } from './ScanService';
+import { TopSitesBlocklist } from '../../utils/appearance/TopSitesBlocklist';
 
 const TOP_SITE_RETRY_MS: number = 1500;
 const MAX_TOP_SITE_RETRIES: number = 3;
@@ -40,6 +41,9 @@ export struct HomeSurface {
   private requestSeq: number = 0;
   private retryTimer: number = -1;
   private retryCount: number = 0;
+  // 用户长按移除过的 url（本地黑名单）：引擎会重新生成历史衍生的常用网站，
+  // 只靠 removeTopSite 挡不住，解析 topSites 时在这里再过滤一遍。
+  private blocklist: Set<string> = new Set();
 
   aboutToAppear(): void {
     // 种子解析：@StorageLink 的初值不会触发 @Watch，而且引擎回的 JSON 与已存
@@ -49,6 +53,11 @@ export struct HomeSurface {
     this.onFaviconsChanged();
     this.reloadTopSites();
     this.scheduleRetry();
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    TopSitesBlocklist.load(context).then((urls: Set<string>): void => {
+      this.blocklist = urls;
+      this.applyBlocklist();
+    });
   }
 
   aboutToDisappear(): void {
@@ -93,6 +102,9 @@ export struct HomeSurface {
         return;
       }
       this.onCommand({ command: 'removeTopSite', url: site.url });
+      const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+      TopSitesBlocklist.add(context, site.url);
+      this.blocklist.add(site.url);
       const remaining: TopSite[] = [];
       for (const item of this.topSites) {
         if (item.url !== site.url) {
@@ -103,6 +115,23 @@ export struct HomeSurface {
       this.getUIContext().getPromptAction().showToast({ message: '已移除', duration: 1500 });
     }).catch((error: Error): void => {
     });
+  }
+
+  // 本地黑名单过滤：removeTopSite 对历史衍生的常用网站不生效（引擎会按
+  // 访问习惯重新生成），移除过的 url 在这里挡回去。
+  private applyBlocklist(): void {
+    if (this.blocklist.size === 0 || this.topSites.length === 0) {
+      return;
+    }
+    const kept: TopSite[] = [];
+    for (const site of this.topSites) {
+      if (!this.blocklist.has(site.url)) {
+        kept.push(site);
+      }
+    }
+    if (kept.length !== this.topSites.length) {
+      this.topSites = kept;
+    }
   }
 
   private reloadTopSites(): void {
@@ -116,6 +145,7 @@ export struct HomeSurface {
     }
     try {
       this.topSites = JSON.parse(this.topSitesJson) as TopSite[];
+      this.applyBlocklist();
       if (this.topSites.length > 0) {
         this.clearRetry();
       }

@@ -132,6 +132,13 @@ struct AuraShell {
   // read and copied out instead of repeated.
   @State private crashReport: string = '';
   @State private browserState: BrowserStateSnapshot = EMPTY_BROWSER_STATE;
+  // 从主页（快捷方式/搜索框）发起导航后，把主页浮层按住到新页面真正画出来：
+  // URL 一离开 chrome://newtab 就撤浮层的话，会露出垫在下面的引擎原生新
+  // 标签页（白底磁贴，实测会闪一下）。loading true->false 即加载完成；
+  // 回到主页立即放手；8 秒超时兜底（页面卡死时不再捂着主页）。
+  @State private homeHold: boolean = false;
+  private homeHoldSawLoading: boolean = false;
+  private homeHoldTimer: number = -1;
   @StorageLink('auraBrowserCommandText') browserCommandText: string = '';
   @StorageLink('auraBrowserCommandRevision') browserCommandRevision: number = 0;
   @State private auxiliaryWindows: AuxiliaryWindowView[] = [];
@@ -346,6 +353,15 @@ struct AuraShell {
         auxiliaryDismissRevision: this.auxiliaryDismissRevision,
         onBrowserState: (state: BrowserStateSnapshot): void => {
           this.browserState = state;
+          if (this.homeHold) {
+            if (this.isNewTabPage()) {
+              this.releaseHomeHold();
+            } else if (state.loading) {
+              this.homeHoldSawLoading = true;
+            } else if (this.homeHoldSawLoading) {
+              this.releaseHomeHold();
+            }
+          }
           if (!this.systemPermissionReported) {
             this.systemPermissionReported = true;
             this.reportSystemPermissionState();
@@ -366,10 +382,13 @@ struct AuraShell {
         })
           .width('100%')
           .height('100%')
-        if (this.isMobilePhoneUi() && this.isNewTabPage()) {
+        if (this.isMobilePhoneUi() && (this.isNewTabPage() || this.homeHold)) {
           HomeSurface({
             incognito: this.incognito,
             onCommand: (command: BrowserCommandPayload): void => {
+              if (command.command === 'navigate' && this.isNewTabPage()) {
+                this.holdHomeForPaint();
+              }
               this.executeBrowserCommand(command);
             }
           })
@@ -1027,6 +1046,27 @@ struct AuraShell {
     }
     this.auxiliaryDismissWidget = widget;
     this.auxiliaryDismissRevision += 1;
+  }
+
+  // 见 homeHold 字段注释。
+  private holdHomeForPaint(): void {
+    this.homeHold = true;
+    this.homeHoldSawLoading = false;
+    if (this.homeHoldTimer !== -1) {
+      clearTimeout(this.homeHoldTimer);
+    }
+    this.homeHoldTimer = setTimeout((): void => {
+      this.homeHoldTimer = -1;
+      this.releaseHomeHold();
+    }, 8000);
+  }
+
+  private releaseHomeHold(): void {
+    this.homeHold = false;
+    if (this.homeHoldTimer !== -1) {
+      clearTimeout(this.homeHoldTimer);
+      this.homeHoldTimer = -1;
+    }
   }
 
   private isNewTabPage(): boolean {

@@ -843,11 +843,15 @@ export struct MobileBrowserOverlay {
                   Image(this.thumbnailFor(tab))
                     .objectFit(ImageFit.Cover)
                 } else {
-                  Text(this.shortUrl(tab.url))
-                    .fontSize(12)
+                  // 没抓到快照（后台标签被回收等）：别把整条 URL 糊上来，
+                  // 用页面标题占位更可读。
+                  Text(tab.title.length > 0 ? tab.title : this.shortUrl(tab.url))
+                    .fontSize(13)
                     .fontColor($r('app.color.text_secondary'))
                     .textAlign(TextAlign.Center)
-                    .padding(8)
+                    .maxLines(3)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .padding(10)
                 }
               }
               .width('100%')
