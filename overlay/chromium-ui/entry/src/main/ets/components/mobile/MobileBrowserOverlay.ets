@@ -340,8 +340,8 @@ export struct MobileBrowserOverlay {
       .height('100%')
       // On the home surface only the dock remains; SpaceBetween with a
       // single child pins it to the START (top), so pin to END there.
-      // The bands do their own safe-area + edge padding (they must reach
-      // the screen edges), so this layer carries no padding of its own.
+      // The floating bars carry their own safe-area padding, so this layer
+      // carries none of its own.
       .justifyContent(this.isNewTabUrl(this.browserState.url) ?
         FlexAlign.End : FlexAlign.SpaceBetween)
       .hitTestBehavior(HitTestMode.Transparent)
@@ -407,17 +407,17 @@ export struct MobileBrowserOverlay {
     .onClick(() => this.handleEdgeAction(action))
   }
 
-  // Lumie 式通宽色带：整条顶栏（含状态栏高度）与地址胶囊用同一种玻璃材质
-  // （glass_tint + 组件模糊），胶囊只靠 0.5 描边区分。此前胶囊浮在引擎留出的
-  // 黑底上，用户看到"胶囊内外颜色不一致、外面不透明"——色带让内外天然一致。
-  // 带子总高 = 引擎通过 setBrowserControls top 保留的高度
-  // （TOP_BAR_EXTENT_VP + 顶部安全区），页面顶边从带子下沿开始。
+  // 悬浮地址胶囊：只有「胶囊 + 扩展圆钮」两块玻璃，周围留边、悬浮在页面上，
+  // 没有通宽色带（色带会把胶囊和屏幕边连成一条，不再是悬浮动画）。
+  // 材质用 glass_tint 半透明纯色：网页走 SURFACE 独立图层，模糊采不到它的内容，
+  // 契约 §8 明确"网页上方不要叠模糊控件"，所以不用 backgroundBlurStyle。
+  // 条区总高 = 引擎通过 setBrowserControls top 保留的高度
+  // （TOP_BAR_EXTENT_VP + 顶部安全区），页面顶边从条区下沿开始。
   @Builder
   private TopAddressBar() {
     Row({ space: 8 }) {
       // Main pill: back chevron + lock + URL + reload, like the reference
-      // browser's single-capsule address bar. Same glass color as the band
-      // behind it; only the hairline outline separates the two.
+      // browser's single-capsule address bar.
       Row() {
         this.TopBarContent()
       }
@@ -448,12 +448,7 @@ export struct MobileBrowserOverlay {
       }
     }
     .width('100%')
-    .padding({ top: this.topSafeVp + 8, left: 12, right: 12 })
-    .backgroundColor($r('app.color.glass_tint'))
-    .backgroundBlurStyle(BlurStyle.COMPONENT_REGULAR)
-    .borderRadius({ bottomLeft: 16, bottomRight: 16 })
-    .border({ width: { bottom: 0.5 }, color: $r('app.color.divider') })
-    .shadow({ radius: 12, color: $r('app.color.shadow'), offsetY: 2 })
+    .padding({ top: this.topSafeVp + 8, left: 16, right: 16 })
     // 行程必须覆盖"顶部安全区内边距 + 条高"，否则 ratio 到 0 时条底仍卡在安全区
     // 高度处，露出一条缝（用户看到的"贴边还看得见"）。
     .translate({ y: -(1 - this.controlsRatioRaw) * (TOP_BAR_EXTENT_VP + this.topSafeVp) })
@@ -578,9 +573,9 @@ export struct MobileBrowserOverlay {
       }
   }
 
-  // 底部 dock：同样是 Lumie 式通宽色带——顶边两个圆角，向下一直铺到手势条
-  // 底部（bottomSafe 由带子自己吃掉），材质与内容行同一种玻璃。带子总高 =
-  // 引擎通过 setBrowserControls bottom 保留的高度
+  // 底部 dock：一块悬浮玻璃横条——左右各留 16vp、完整圆角，半透明纯色玻璃
+  // （契约 §8：网页上方不用模糊），网页从它后面穿过，跟手收起。
+  // 条区总高 = 引擎通过 setBrowserControls bottom 保留的高度
   // （BOTTOM_DOCK_EXTENT_VP + 底部安全区）。
   @Builder
   private BottomDock() {
@@ -590,6 +585,10 @@ export struct MobileBrowserOverlay {
       }
       .width('100%')
       .height(62)
+      .borderRadius(24)
+      .backgroundColor($r('app.color.glass_tint'))
+      .border({ width: 0.5, color: $r('app.color.divider') })
+      .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
       // System point-light press effect (HDS hdsEffect, API 20+, every
       // device): a soft white light spot that appears under the finger and
       // follows it across the bar. This is the same mechanism the system
@@ -599,12 +598,8 @@ export struct MobileBrowserOverlay {
     }
     .width('100%')
     .height(BOTTOM_DOCK_EXTENT_VP + this.bottomSafeVp)
-    .padding({ top: 12, bottom: this.bottomSafeVp })
-    .backgroundColor($r('app.color.glass_tint'))
-    .backgroundBlurStyle(BlurStyle.COMPONENT_REGULAR)
-    .borderRadius({ topLeft: 20, topRight: 20 })
-    .border({ width: { top: 0.5 }, color: $r('app.color.divider') })
-    .shadow({ radius: 12, color: $r('app.color.shadow'), offsetY: -2 })
+    // 左右留边让 dock 悬浮；底部留出安全区，手势条不压到胶囊上。
+    .padding({ top: 12, left: 16, right: 16, bottom: this.bottomSafeVp })
     // 同顶栏：行程要含底部安全区内边距，否则 ratio→0 时 dock 仍留一条缝。
     .translate({ y: (1 - this.controlsRatioRaw) * (BOTTOM_DOCK_EXTENT_VP + this.bottomSafeVp) })
   }
