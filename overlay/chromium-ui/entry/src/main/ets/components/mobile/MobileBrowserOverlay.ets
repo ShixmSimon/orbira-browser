@@ -32,7 +32,9 @@ import { IncognitoSwitch, SavedTab } from '../../utils/IncognitoSwitch';
 // and both bars move together while scrolling (SHELL_CONTRACT.md, "手机：滚动
 // 时收起地址栏和 dock").
 export const TOP_BAR_EXTENT_VP: number = 52;
-export const BOTTOM_DOCK_EXTENT_VP: number = 68;
+// Dock height 62 + container bottom padding 12: the bar must travel far
+// enough to fully leave the screen when the page scrolls (controlsRatio 0).
+export const BOTTOM_DOCK_EXTENT_VP: number = 74;
 
 // The tab grid: two columns ten vp apart, each card 208 tall of which the
 // title row takes 36. The picture therefore fills TAB_THUMB_HEIGHT_VP of a
@@ -410,16 +412,42 @@ export struct MobileBrowserOverlay {
 
   @Builder
   private TopAddressBar() {
-    Row() {
-      this.TopBarContent()
+    Row({ space: 8 }) {
+      // Main pill: back chevron + lock + URL + reload, like the reference
+      // browser's single-capsule address bar.
+      Row() {
+        this.TopBarContent()
+      }
+      .layoutWeight(1)
+      .height(44)
+      .borderRadius(22)
+      .backgroundColor($r('app.color.glass_tint'))
+      .border({ width: 0.5, color: $r('app.color.divider') })
+      .backgroundBlurStyle(BlurStyle.COMPONENT_REGULAR)
+      .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+
+      // Separate rounded-square action button on the far right (scan).
+      if (!this.editingAddress) {
+        Button({ type: ButtonType.Normal, stateEffect: true }) {
+          Image($r('app.media.chromium_scan'))
+            .width(20)
+            .height(20)
+            .fillColor($r('app.color.icon_primary'))
+        }
+        .width(44)
+        .height(44)
+        .borderRadius(14)
+        .backgroundColor($r('app.color.glass_tint'))
+        .border({ width: 0.5, color: $r('app.color.divider') })
+        .backgroundBlurStyle(BlurStyle.COMPONENT_REGULAR)
+        .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+        .accessibilityText('扫一扫')
+        .onClick(() => {
+          this.startScan();
+        })
+      }
     }
     .width('100%')
-    .height(44)
-    .borderRadius(22)
-    .backgroundColor($r('app.color.glass_tint'))
-    .border({ width: 0.5, color: $r('app.color.divider') })
-    .backgroundBlurStyle(BlurStyle.COMPONENT_REGULAR)
-    .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
     .translate({ y: -(1 - this.controlsRatioRaw) * TOP_BAR_EXTENT_VP })
   }
 
@@ -468,13 +496,36 @@ export struct MobileBrowserOverlay {
           this.issueCommand({ command: 'setBrowserControlsState', state: 'both' });
         })
       } else {
+        // Back chevron inside the bar, dimmed when there is nowhere to go.
+        Button({ type: ButtonType.Circle, stateEffect: true }) {
+          Image($r('app.media.chromium_back'))
+            .width(20)
+            .height(20)
+            .fillColor($r('app.color.icon_primary'))
+        }
+        .width(34)
+        .height(34)
+        .margin({ left: 3 })
+        .backgroundColor(Color.Transparent)
+        .opacity(this.browserState.canGoBack ? 1 : 0.4)
+        .enabled(this.browserState.canGoBack)
+        .accessibilityText('返回')
+        .onClick(() => {
+          this.issueCommand({ command: 'back' });
+        })
+
         Button({ type: ButtonType.Normal, stateEffect: true }) {
-          Row({ space: 8 }) {
+          Row({ space: 6 }) {
             if (this.browserState.loading) {
               LoadingProgress()
-                .width(18)
-                .height(18)
+                .width(16)
+                .height(16)
                 .color($r('app.color.accent_primary'))
+            } else {
+              Image($r('app.media.aura_lock'))
+                .width(14)
+                .height(14)
+                .fillColor($r('app.color.icon_secondary'))
             }
             if (this.incognito) {
               Text('无痕')
@@ -490,31 +541,16 @@ export struct MobileBrowserOverlay {
               .fontSize(15)
               .fontWeight(FontWeight.Medium)
               .fontColor($r('app.color.text_primary'))
+              .textAlign(TextAlign.Start)
           }
-          .justifyContent(FlexAlign.Center)
           .width('100%')
         }
         .layoutWeight(1)
         .height(44)
-        .padding({ left: 16, right: 10 })
+        .padding({ left: 6, right: 6 })
         .backgroundColor(Color.Transparent)
         .accessibilityText('地址栏')
         .onClick(() => this.beginAddressEdit())
-
-        Button({ type: ButtonType.Circle, stateEffect: true }) {
-          Image($r('app.media.chromium_scan'))
-            .width(20)
-            .height(20)
-            .fillColor($r('app.color.icon_primary'))
-        }
-        .width(38)
-        .height(38)
-        .margin({ right: 3 })
-        .backgroundColor(Color.Transparent)
-        .accessibilityText('扫一扫')
-        .onClick(() => {
-          this.startScan();
-        })
 
         Button({ type: ButtonType.Circle, stateEffect: true }) {
           Image(this.browserState.loading ?
@@ -540,8 +576,8 @@ export struct MobileBrowserOverlay {
       this.BottomDockContent()
     }
     .width('100%')
-    .height(56)
-    .borderRadius(28)
+    .height(62)
+    .borderRadius(30)
     .backgroundColor($r('app.color.glass_tint'))
     .border({ width: 0.5, color: $r('app.color.divider') })
     .backgroundBlurStyle(BlurStyle.COMPONENT_REGULAR)
@@ -583,18 +619,25 @@ export struct MobileBrowserOverlay {
         })
 
       Button({ type: ButtonType.Normal, stateEffect: true }) {
-        Text(this.browserState.tabCount > 99 ? '99+' : this.browserState.tabCount.toString())
-          .fontSize(11)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.icon_primary'))
-          .textAlign(TextAlign.Center)
-          .width(24)
-          .height(22)
-          .borderRadius(6)
-          .border({ width: 1.8, color: $r('app.color.icon_primary') })
+        Column({ space: 3 }) {
+          Text(this.browserState.tabCount > 99 ? '99+' : this.browserState.tabCount.toString())
+            .fontSize(10)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.icon_primary'))
+            .textAlign(TextAlign.Center)
+            .width(22)
+            .height(20)
+            .borderRadius(6)
+            .border({ width: 1.8, color: $r('app.color.icon_primary') })
+          Text('标签页')
+            .fontSize(10)
+            .fontColor($r('app.color.text_secondary'))
+            .maxLines(1)
+        }
+        .alignItems(HorizontalAlign.Center)
       }
       .layoutWeight(1)
-      .height(52)
+      .height(58)
       .backgroundColor(Color.Transparent)
       .scale({ x: this.pressedDock === '标签页' ? 0.82 : 1, y: this.pressedDock === '标签页' ? 0.82 : 1 })
       .accessibilityText('标签页')
@@ -615,13 +658,20 @@ export struct MobileBrowserOverlay {
   @Builder
   private DockButton(icon: Resource, label: string, usable: boolean, action: () => void) {
     Button({ type: ButtonType.Normal, stateEffect: true }) {
-      Image(icon)
-        .width(22)
-        .height(22)
-        .fillColor($r('app.color.icon_primary'))
+      Column({ space: 3 }) {
+        Image(icon)
+          .width(22)
+          .height(22)
+          .fillColor($r('app.color.icon_primary'))
+        Text(label)
+          .fontSize(10)
+          .fontColor($r('app.color.text_secondary'))
+          .maxLines(1)
+      }
+      .alignItems(HorizontalAlign.Center)
     }
     .layoutWeight(1)
-    .height(52)
+    .height(58)
     .backgroundColor(Color.Transparent)
     .opacity(usable ? 1 : 0.4)
     .enabled(usable)
