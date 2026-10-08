@@ -951,6 +951,13 @@ struct AuraShell {
       minTop: 0,
       bottom: BOTTOM_DOCK_EXTENT_VP + bottomSafe
     });
+    // 契约"手机：滚动时收起地址栏和 dock"第 3 步：手势条高度单独用
+    // setViewportInsets 报给引擎——dock 不能算进来。两根条收起后网页画到
+    // 底，但可视区域缩小这么多：末行内容最多滚到手势条上方，不会被挡住。
+    this.executeBrowserCommand({
+      command: 'setViewportInsets',
+      bottom: bottomSafe
+    });
     // Pull the search engines once, so the home surface and the address bar
     // search the same way the settings page shows before it has been opened.
     this.searchEnginesRequestSeq += 1;

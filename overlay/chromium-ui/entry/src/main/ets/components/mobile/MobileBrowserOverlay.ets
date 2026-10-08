@@ -340,13 +340,10 @@ export struct MobileBrowserOverlay {
       .height('100%')
       // On the home surface only the dock remains; SpaceBetween with a
       // single child pins it to the START (top), so pin to END there.
+      // The bands do their own safe-area + edge padding (they must reach
+      // the screen edges), so this layer carries no padding of its own.
       .justifyContent(this.isNewTabUrl(this.browserState.url) ?
         FlexAlign.End : FlexAlign.SpaceBetween)
-      // Reserve the status bar (top) and the navigation pill (bottom): the
-      // window is fullscreen-immersive, so without these the bars sit under
-      // the system clock and the gesture pill.
-      .padding({ top: 8 + this.topSafeVp, left: 12, right: 12,
-        bottom: 12 + this.bottomSafeVp })
       .hitTestBehavior(HitTestMode.Transparent)
       .bindSheet($$this.menuVisible, this.MenuSheet, {
         height: SheetSize.LARGE,
@@ -410,11 +407,17 @@ export struct MobileBrowserOverlay {
     .onClick(() => this.handleEdgeAction(action))
   }
 
+  // Lumie 式通宽色带：整条顶栏（含状态栏高度）与地址胶囊用同一种玻璃材质
+  // （glass_tint + 组件模糊），胶囊只靠 0.5 描边区分。此前胶囊浮在引擎留出的
+  // 黑底上，用户看到"胶囊内外颜色不一致、外面不透明"——色带让内外天然一致。
+  // 带子总高 = 引擎通过 setBrowserControls top 保留的高度
+  // （TOP_BAR_EXTENT_VP + 顶部安全区），页面顶边从带子下沿开始。
   @Builder
   private TopAddressBar() {
     Row({ space: 8 }) {
       // Main pill: back chevron + lock + URL + reload, like the reference
-      // browser's single-capsule address bar.
+      // browser's single-capsule address bar. Same glass color as the band
+      // behind it; only the hairline outline separates the two.
       Row() {
         this.TopBarContent()
       }
@@ -423,7 +426,6 @@ export struct MobileBrowserOverlay {
       .borderRadius(22)
       .backgroundColor($r('app.color.glass_tint'))
       .border({ width: 0.5, color: $r('app.color.divider') })
-      .backgroundBlurStyle(BlurStyle.COMPONENT_REGULAR)
       .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
 
       // 右上角圆形「扩展」按钮：点击进入扩展管理页（扫一扫仍保留在首页搜索框内）。
@@ -438,7 +440,6 @@ export struct MobileBrowserOverlay {
         .height(44)
         .backgroundColor($r('app.color.glass_tint'))
         .border({ width: 0.5, color: $r('app.color.divider') })
-        .backgroundBlurStyle(BlurStyle.COMPONENT_REGULAR)
         .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
         .accessibilityText('扩展')
         .onClick(() => {
@@ -447,6 +448,12 @@ export struct MobileBrowserOverlay {
       }
     }
     .width('100%')
+    .padding({ top: this.topSafeVp + 8, left: 12, right: 12 })
+    .backgroundColor($r('app.color.glass_tint'))
+    .backgroundBlurStyle(BlurStyle.COMPONENT_REGULAR)
+    .borderRadius({ bottomLeft: 16, bottomRight: 16 })
+    .border({ width: { bottom: 0.5 }, color: $r('app.color.divider') })
+    .shadow({ radius: 12, color: $r('app.color.shadow'), offsetY: 2 })
     // 行程必须覆盖"顶部安全区内边距 + 条高"，否则 ratio 到 0 时条底仍卡在安全区
     // 高度处，露出一条缝（用户看到的"贴边还看得见"）。
     .translate({ y: -(1 - this.controlsRatioRaw) * (TOP_BAR_EXTENT_VP + this.topSafeVp) })
@@ -571,24 +578,33 @@ export struct MobileBrowserOverlay {
       }
   }
 
+  // 底部 dock：同样是 Lumie 式通宽色带——顶边两个圆角，向下一直铺到手势条
+  // 底部（bottomSafe 由带子自己吃掉），材质与内容行同一种玻璃。带子总高 =
+  // 引擎通过 setBrowserControls bottom 保留的高度
+  // （BOTTOM_DOCK_EXTENT_VP + 底部安全区）。
   @Builder
   private BottomDock() {
-    Row() {
-      this.BottomDockContent()
+    Column() {
+      Row() {
+        this.BottomDockContent()
+      }
+      .width('100%')
+      .height(62)
+      // System point-light press effect (HDS hdsEffect, API 20+, every
+      // device): a soft white light spot that appears under the finger and
+      // follows it across the bar. This is the same mechanism the system
+      // browser and other HarmonyOS browsers use -- NOT the API-26
+      // uiMaterial lightEffect, which is off-limits for floating bars.
+      .visualEffect(this.buildDockLightEffect())
     }
     .width('100%')
-    .height(62)
-    .borderRadius(30)
+    .height(BOTTOM_DOCK_EXTENT_VP + this.bottomSafeVp)
+    .padding({ top: 12, bottom: this.bottomSafeVp })
     .backgroundColor($r('app.color.glass_tint'))
-    .border({ width: 0.5, color: $r('app.color.divider') })
     .backgroundBlurStyle(BlurStyle.COMPONENT_REGULAR)
-    .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
-    // System point-light press effect (HDS hdsEffect, API 20+, every
-    // device): a soft white light spot that appears under the finger and
-    // follows it across the bar. This is the same mechanism the system
-    // browser and other HarmonyOS browsers use -- NOT the API-26
-    // uiMaterial lightEffect, which is off-limits for floating bars.
-    .visualEffect(this.buildDockLightEffect())
+    .borderRadius({ topLeft: 20, topRight: 20 })
+    .border({ width: { top: 0.5 }, color: $r('app.color.divider') })
+    .shadow({ radius: 12, color: $r('app.color.shadow'), offsetY: -2 })
     // 同顶栏：行程要含底部安全区内边距，否则 ratio→0 时 dock 仍留一条缝。
     .translate({ y: (1 - this.controlsRatioRaw) * (BOTTOM_DOCK_EXTENT_VP + this.bottomSafeVp) })
   }
