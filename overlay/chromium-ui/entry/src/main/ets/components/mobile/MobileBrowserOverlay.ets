@@ -258,26 +258,29 @@ export struct MobileBrowserOverlay {
   private BottomBar() {
     Row({ space: BAR_GAP_VP }) {
       this.BackRing()
-      GlassSurface({
-        cornerRadius: BOTTOM_BAR_HEIGHT_VP / 2,
-        content: this.CenterCapsuleContent
-      })
-        .layoutWeight(1)
-        .height(BOTTOM_BAR_HEIGHT_VP)
-        .visualEffect(this.buildDockLightEffect())
+      // The v8 build passed the content as a builder reference
+      // (`content: this.CenterCapsuleContent`) and the ArkUI runtime lost
+      // the author's `this` when the surface invoked it -- the trailing
+      // closure form binds the builder to this component, which is the
+      // documented pattern. Chain attributes on the wrapping Stack: the
+      // compiler rejects attributes chained directly onto a trailing
+      // closure.
+      Stack() {
+        GlassSurface({ cornerRadius: BOTTOM_BAR_HEIGHT_VP / 2 }) {
+          if (this.editingAddress) {
+            this.AddressEditingRow()
+          } else {
+            this.AddressRestingRow()
+          }
+        }
+      }
+      .layoutWeight(1)
+      .height(BOTTOM_BAR_HEIGHT_VP)
+      .visualEffect(this.buildDockLightEffect())
       this.TabsRing()
     }
     .width('100%')
     .height(BOTTOM_BAR_HEIGHT_VP)
-  }
-
-  @Builder
-  private CenterCapsuleContent() {
-    if (this.editingAddress) {
-      this.AddressEditingRow()
-    } else {
-      this.AddressRestingRow()
-    }
   }
 
   // System point-light press effect (HDS hdsEffect, API 20+, every device):
@@ -296,85 +299,78 @@ export struct MobileBrowserOverlay {
 
   // Left ring: back, with forward on long press (the same pairing the old
   // dock had, folded into one button so the bar keeps three blocks).
+  // The content is a trailing closure (see BottomBar's note on `this`).
   @Builder
   private BackRing() {
-    GlassSurface({
-      cornerRadius: OUTER_RING_VP / 2,
-      content: this.BackRingContent
-    })
-      .width(OUTER_RING_VP)
-      .height(OUTER_RING_VP)
-      .opacity(this.browserState.canGoBack ? 1 : 0.4)
-      .enabled(this.browserState.canGoBack)
-      .visualEffect(this.buildDockLightEffect())
-      .scale({
-        x: this.pressedDock === '返回' ? 0.86 : 1,
-        y: this.pressedDock === '返回' ? 0.86 : 1
-      })
-      .accessibilityText('返回')
-      .onTouch((event: TouchEvent): void => {
-        this.handleDockTouch(event, '返回');
-      })
-      .onClick((): void => {
-        this.issueCommand({ command: 'back' });
-      })
-      .gesture(LongPressGesture({ repeat: false }).onAction((): void => {
-        if (this.browserState.canGoForward) {
-          this.issueCommand({ command: 'forward' });
+    Stack() {
+      GlassSurface({ cornerRadius: OUTER_RING_VP / 2 }) {
+        Column() {
+          Image($r('app.media.chromium_back'))
+            .width(22)
+            .height(22)
+            .fillColor($r('app.color.icon_primary'))
         }
-      }))
-  }
-
-  @Builder
-  private BackRingContent() {
-    Column() {
-      Image($r('app.media.chromium_back'))
-        .width(22)
-        .height(22)
-        .fillColor($r('app.color.icon_primary'))
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+      }
     }
-    .width('100%')
-    .height('100%')
-    .justifyContent(FlexAlign.Center)
+    .width(OUTER_RING_VP)
+    .height(OUTER_RING_VP)
+    .opacity(this.browserState.canGoBack ? 1 : 0.4)
+    .enabled(this.browserState.canGoBack)
+    .visualEffect(this.buildDockLightEffect())
+    .scale({
+      x: this.pressedDock === '返回' ? 0.86 : 1,
+      y: this.pressedDock === '返回' ? 0.86 : 1
+    })
+    .accessibilityText('返回')
+    .onTouch((event: TouchEvent): void => {
+      this.handleDockTouch(event, '返回');
+    })
+    .onClick((): void => {
+      this.issueCommand({ command: 'back' });
+    })
+    .gesture(LongPressGesture({ repeat: false }).onAction((): void => {
+      if (this.browserState.canGoForward) {
+        this.issueCommand({ command: 'forward' });
+      }
+    }))
   }
 
   // Right ring: the tab count, opening the tab list.
   @Builder
   private TabsRing() {
-    GlassSurface({
-      cornerRadius: OUTER_RING_VP / 2,
-      content: this.TabsRingContent
-    })
-      .width(OUTER_RING_VP)
-      .height(OUTER_RING_VP)
-      .scale({
-        x: this.pressedDock === '标签页' ? 0.86 : 1,
-        y: this.pressedDock === '标签页' ? 0.86 : 1
-      })
-      .visualEffect(this.buildDockLightEffect())
-      .accessibilityText('标签页')
-      .onTouch((event: TouchEvent): void => {
-        this.handleDockTouch(event, '标签页');
-      })
-      .onClick((): void => {
-        this.openMenu('tabs');
-      })
-  }
-
-  @Builder
-  private TabsRingContent() {
-    Row() {
-      Text(this.browserState.tabCount > 99 ? '99+' : this.browserState.tabCount.toString())
-        .fontSize(13)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.icon_primary'))
-        .textAlign(TextAlign.Center)
+    Stack() {
+      GlassSurface({ cornerRadius: OUTER_RING_VP / 2 }) {
+        Row() {
+          Text(this.browserState.tabCount > 99 ? '99+' : this.browserState.tabCount.toString())
+            .fontSize(13)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.icon_primary'))
+            .textAlign(TextAlign.Center)
+        }
+        .width(30)
+        .height(24)
+        .borderRadius(7)
+        .border({ width: 1.8, color: $r('app.color.icon_primary') })
+        .justifyContent(FlexAlign.Center)
+      }
     }
-    .width(30)
-    .height(24)
-    .borderRadius(7)
-    .border({ width: 1.8, color: $r('app.color.icon_primary') })
-    .justifyContent(FlexAlign.Center)
+    .width(OUTER_RING_VP)
+    .height(OUTER_RING_VP)
+    .scale({
+      x: this.pressedDock === '标签页' ? 0.86 : 1,
+      y: this.pressedDock === '标签页' ? 0.86 : 1
+    })
+    .visualEffect(this.buildDockLightEffect())
+    .accessibilityText('标签页')
+    .onTouch((event: TouchEvent): void => {
+      this.handleDockTouch(event, '标签页');
+    })
+    .onClick((): void => {
+      this.openMenu('tabs');
+    })
   }
 
   // The middle capsule while browsing: reload / stop on the leading side,

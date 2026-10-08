@@ -14,6 +14,8 @@
  */
 
 import { common } from '@kit.AbilityKit';
+import { pasteboard } from '@kit.BasicServicesKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
 import { window } from '@kit.ArkUI';
 import { WebWindow, PictureInPictureSurface } from 'engine';
 import { BOTTOM_DOCK_EXTENT_VP, MobileBrowserOverlay } from '../components/mobile/MobileBrowserOverlay';
@@ -115,6 +117,11 @@ struct AuraShell {
   // editing, the menu sheet, a full-screen page); MobileBrowserOverlay
   // writes it, the immersion controller below reads it.
   @StorageLink('auraChromeEngaged') @Watch('onChromeEngagedChanged') chromeEngaged: boolean = false;
+  // v8a diagnostic: the last ArkTS-level crash (written by EntryAbility's
+  // crash recorder). Non-empty switches the shell into the crash report
+  // page, which keeps the normal UI off the screen so a crash loop can be
+  // read and copied out instead of repeated.
+  @State private crashReport: string = '';
   @State private browserState: BrowserStateSnapshot = EMPTY_BROWSER_STATE;
   @StorageLink('auraBrowserCommandText') browserCommandText: string = '';
   @StorageLink('auraBrowserCommandRevision') browserCommandRevision: number = 0;
@@ -130,6 +137,49 @@ struct AuraShell {
   aboutToAppear(): void {
     this.startKnockShare();
     this.useSystemDownloadDirectory();
+    this.readCrashReport();
+  }
+
+  // v8a diagnostic: read / clear / copy the crash file EntryAbility wrote.
+  private crashReportPath(): string {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    return context ? `${context.filesDir}/aura-crash.txt` : '';
+  }
+
+  private readCrashReport(): void {
+    try {
+      const path = this.crashReportPath();
+      if (path.length === 0) {
+        return;
+      }
+      const text = fs.readTextSync(path);
+      this.crashReport = text && text.length > 0 ? text : '';
+    } catch (error) {
+      // No file: the ordinary first-launch case.
+      this.crashReport = '';
+    }
+  }
+
+  private clearCrashReport(): void {
+    try {
+      const path = this.crashReportPath();
+      if (path.length > 0) {
+        fs.unlinkSync(path);
+      }
+    } catch (error) {
+    }
+    this.crashReport = '';
+  }
+
+  private copyCrashReport(): void {
+    try {
+      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, this.crashReport);
+      pasteboard.getSystemPasteboard().setData(data).catch((error: Error): void => {
+        console.error('Failed to copy the crash report:', error.message);
+      });
+    } catch (error) {
+      console.error('Failed to copy the crash report');
+    }
   }
 
   // Downloads go to Download/<bundle>, where the Files app shows them. The
@@ -164,7 +214,9 @@ struct AuraShell {
 
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
-      if (!this.onboardingReady) {
+      if (this.crashReport.length > 0) {
+        this.CrashReportView()
+      } else if (!this.onboardingReady) {
         LoadingProgress()
           .width(40)
           .height(40)
@@ -259,6 +311,57 @@ struct AuraShell {
     .onAreaChange((_oldValue: Area, newValue: Area): void => {
       this.onScreenSizeChanged(Number(newValue.width), Number(newValue.height));
     })
+  }
+
+  // v8a diagnostic: the crash report page. Plain components only -- it must
+  // render even when nothing else can. Copy hands the text to the clipboard
+  // so it can be pasted out; clear removes the record and lets the shell run
+  // normally again (a fresh crash writes a fresh record).
+  @Builder
+  private CrashReportView() {
+    Column({ space: 14 }) {
+      Text('上次启动发生异常')
+        .fontSize(20)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary'))
+      Text('下面是最近一次异常的信息，复制后发给开发者；清除后即可继续使用。')
+        .fontSize(13)
+        .fontColor($r('app.color.text_secondary'))
+      Scroll() {
+        Text(this.crashReport)
+          .fontSize(11)
+          .fontColor($r('app.color.text_primary'))
+          .width('100%')
+          .textAlign(TextAlign.Start)
+      }
+      .layoutWeight(1)
+      .width('100%')
+      .align(Alignment.TopStart)
+      .padding(12)
+      .borderRadius(8)
+      .backgroundColor($r('app.color.surface_secondary'))
+      Row({ space: 12 }) {
+        Button('复制错误信息')
+          .fontSize(15)
+          .layoutWeight(1)
+          .height(46)
+          .onClick((): void => {
+            this.copyCrashReport();
+          })
+        Button('清除并继续')
+          .fontSize(15)
+          .layoutWeight(1)
+          .height(46)
+          .onClick((): void => {
+            this.clearCrashReport();
+          })
+      }
+      .width('100%')
+    }
+    .width('100%')
+    .height('100%')
+    .padding(20)
+    .backgroundColor($r('app.color.surface_primary'))
   }
 
   // Close the topmost modal window on back, the way a phone dismisses a

@@ -1,5 +1,6 @@
-import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want, errorManager } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
 import { window } from '@kit.ArkUI';
 import { http } from '@kit.NetworkKit';
 import display from '@ohos.display';
@@ -74,6 +75,10 @@ export default class EntryAbility extends UIAbility {
     // A tap on a "download complete" notification: open the file; the
     // browser still starts behind it.
     handleDownloadNotificationWant(this.context, want);
+    // v8a diagnostic: record the last ArkTS-level crash into the app sandbox
+    // so the shell can surface it on the next launch (AuraShell's crash
+    // report mode). Native crashes do not surface here.
+    this.registerCrashRecorder();
     this.startupWant = want;
     const initialThemeFontId = this.context.config.fontId ?? '';
     this.lastThemeFontId = initialThemeFontId;
@@ -97,6 +102,32 @@ export default class EntryAbility extends UIAbility {
       AppearanceSettings.apply(this.context, mode);
     });
     this.restoreBrowserProfile();
+  }
+
+  // v8a diagnostic helpers: the crash file lives in the app sandbox; the
+  // shell reads it on its next launch and shows the crash report page.
+  private registerCrashRecorder(): void {
+    try {
+      errorManager.setDefaultErrorHandler((errObject: Error): void => {
+        this.writeCrashRecord(`${errObject.message}\n${errObject.stack ?? ''}`);
+      });
+    } catch (error) {
+      hilog.warn(DOMAIN, 'AuraShell', 'Crash recorder unavailable on this system');
+    }
+  }
+
+  // Synchronous on purpose: this runs inside the crash path, where there is
+  // no time for async work. Appends nothing -- the last crash wins.
+  private writeCrashRecord(message: string): void {
+    try {
+      const path = `${this.context.filesDir}/aura-crash.txt`;
+      const file = fs.openSync(path,
+        fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+      const body = message.length > 4000 ? message.substring(0, 4000) : message;
+      fs.writeSync(file.fd, `${new Date().toISOString()}\n${body}\n`);
+      fs.closeSync(file);
+    } catch (error) {
+    }
   }
 
   onDestroy(): void {
