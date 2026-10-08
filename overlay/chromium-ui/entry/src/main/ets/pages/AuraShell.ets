@@ -16,9 +16,8 @@
 import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
-import { window } from '@kit.ArkUI';
 import { WebWindow, PictureInPictureSurface } from 'engine';
-import { BOTTOM_DOCK_EXTENT_VP, MobileBrowserOverlay } from '../components/mobile/MobileBrowserOverlay';
+import { BOTTOM_DOCK_EXTENT_VP, MobileBrowserOverlay, TOP_BAR_EXTENT_VP } from '../components/mobile/MobileBrowserOverlay';
 import { MobileBackRouter } from '../components/mobile/MobileBackRouter';
 import { HomeSurface } from '../components/mobile/HomeSurface';
 import { CurrentTabCastSession } from '../components/mobile/CurrentTabCastSession';
@@ -45,7 +44,6 @@ import {
   HistoryResultsEvent,
   PasswordCommandResultEvent,
   PasswordRevealedEvent,
-  PageScrollSettledEvent,
   PrefsEvent,
   RecentBookmarksEvent,
   RecentlyClosedEvent,
@@ -113,10 +111,6 @@ struct AuraShell {
   @StorageLink('auraProfileId') profileId: string = 'local';
   @StorageLink('auraProfileKind') profileKind: string = 'local';
   @StorageLink('auraSyncMode') syncMode: string = 'off';
-  // True while the shell chrome that needs the status bar is up (address
-  // editing, the menu sheet, a full-screen page); MobileBrowserOverlay
-  // writes it, the immersion controller below reads it.
-  @StorageLink('auraChromeEngaged') @Watch('onChromeEngagedChanged') chromeEngaged: boolean = false;
   // v8a diagnostic: the last ArkTS-level crash (written by EntryAbility's
   // crash recorder). Non-empty switches the shell into the crash report
   // page, which keeps the normal UI off the screen so a crash loop can be
@@ -246,13 +240,6 @@ struct AuraShell {
         auxiliaryDismissRevision: this.auxiliaryDismissRevision,
         onBrowserState: (state: BrowserStateSnapshot): void => {
           this.browserState = state;
-          // A new tab / navigation is a fresh start: the status bar returns
-          // (the engine brings its own controls back on any page change).
-          if (state.activationEpoch !== this.lastActivationEpoch) {
-            this.lastActivationEpoch = state.activationEpoch;
-            this.lastSettledScrollY = 0;
-            this.setImmersiveStatusBar(false);
-          }
           if (!this.systemPermissionReported) {
             this.systemPermissionReported = true;
             this.reportSystemPermissionState();
@@ -535,14 +522,6 @@ struct AuraShell {
     this.commandChannel.send(command);
   }
 
-  // Top-immersion state: while the reader scrolls down the page the status
-  // bar hides and the page owns the whole screen; an upward scroll (or a
-  // return to the top, or shell chrome that needs it) brings it back.
-  private statusBarHidden: boolean = false;
-  private lastSettledScrollY: number = 0;
-  private lastStatusSwitchAt: number = 0;
-  private lastActivationEpoch: number = -1;
-
   // Counts handleBack requests, so a late answer to an earlier one is not
   // acted on twice.
   private backRequestId: number = 0;
@@ -613,14 +592,6 @@ struct AuraShell {
       const settings = shellEvent<SiteSettingsEvent>(event);
       AppStorage.setOrCreate('auraPanelSiteSettings',
         JSON.stringify({ requestId: settings.requestId, items: settings.items ?? [] }));
-      return;
-    }
-
-    // pageScrollSettled is the only scroll stream left once the top reserve
-    // is gone (browserControlsRatio stops with top = 0), so the immersive
-    // status bar decision is made on each settle.
-    if (event.event === 'pageScrollSettled') {
-      this.handlePageScrollSettled(shellEvent<PageScrollSettledEvent>(event).scrollY ?? 0);
       return;
     }
 
@@ -812,18 +783,16 @@ struct AuraShell {
       return;
     }
     this.browserControlsConfigured = true;
-    // The top reserve equals the status bar: the page starts below the
-    // clock, so page controls under it stay tappable -- content painted
-    // under a visible status bar is shadowed by the system's own touch
-    // region. setImmersiveStatusBar re-asserts this pair (top=0 while
-    // immersed, top=topSafe when the bar returns). The floating bottom bar
-    // keeps its reserve so the last line of a page can still clear it.
+    // The fullscreen-immersive window draws under the status bar and the
+    // navigation pill, so the page's reserved extents include their heights
+    // (EntryAbility stores them in vp). minTop keeps the page below the
+    // system clock even with both bars scrolled away.
     const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
     const bottomSafe = Number(AppStorage.get('auraBottomSafeVp') ?? 0);
     this.executeBrowserCommand({
       command: 'setBrowserControls',
-      top: topSafe,
-      minTop: 0,
+      top: TOP_BAR_EXTENT_VP + topSafe,
+      minTop: topSafe,
       bottom: BOTTOM_DOCK_EXTENT_VP + bottomSafe
     });
     // Pull the search engines once, so the home surface and the address bar
@@ -832,91 +801,6 @@ struct AuraShell {
     this.executeBrowserCommand({
       command: 'getSearchEngines',
       requestId: this.searchEnginesRequestSeq
-    });
-  }
-
-  // While shell chrome that needs the status bar is up, it comes straight
-  // back; the overlay clears its flag when the chrome goes away.
-  private onChromeEngagedChanged(): void {
-    if (this.chromeEngaged) {
-      this.setImmersiveStatusBar(false);
-    }
-  }
-
-  // The immersive decision, made once per scroll settle: a downward settle of
-  // at least 24px hides the status bar, an upward one of at least 32px (or a
-  // return to the top) brings it back. A 400ms cooldown keeps a flick that
-  // ends in a tiny bounce from flipping twice.
-  private handlePageScrollSettled(scrollY: number): void {
-    const y = Math.max(0, Math.floor(scrollY));
-    if (this.chromeEngaged) {
-      this.lastSettledScrollY = y;
-      return;
-    }
-    const now = Date.now();
-    if (now - this.lastStatusSwitchAt < 400) {
-      this.lastSettledScrollY = y;
-      return;
-    }
-    const delta = y - this.lastSettledScrollY;
-    this.lastSettledScrollY = y;
-    if (y <= 8) {
-      if (this.statusBarHidden) {
-        this.setImmersiveStatusBar(false);
-        this.lastStatusSwitchAt = now;
-      }
-      return;
-    }
-    // The assert is issued even when the status bar is already hidden: a
-    // tap on the compact capsule re-expanded the bar in the overlay, and
-    // the next downward settle has to collapse it again.
-    if (delta >= 24) {
-      const wasHidden = this.statusBarHidden;
-      this.setImmersiveStatusBar(true);
-      if (!wasHidden) {
-        this.lastStatusSwitchAt = now;
-      }
-    } else if (delta <= -32) {
-      const wasHidden = this.statusBarHidden;
-      this.setImmersiveStatusBar(false);
-      if (wasHidden) {
-        this.lastStatusSwitchAt = now;
-      }
-    }
-  }
-
-  private setImmersiveStatusBar(hidden: boolean): void {
-    // Written even when unchanged: tapping the compact capsule re-expands
-    // the bar in the overlay's own state, and the next downward settle has
-    // to re-assert the immersive state. Writing the same value raises no
-    // @Watch on the storage link, so this is cheap.
-    AppStorage.setOrCreate('auraChromeImmersed', hidden);
-    if (this.statusBarHidden === hidden) {
-      return;
-    }
-    this.statusBarHidden = hidden;
-    // The floating bar shares this decision: the overlay collapses to the
-    // compact capsule while immersed and re-expands with the status bar.
-    // The top reserve rides along: with the status bar gone the page owns
-    // the whole screen; when it returns, page controls step back below it.
-    const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
-    const bottomSafe = Number(AppStorage.get('auraBottomSafeVp') ?? 0);
-    this.executeBrowserCommand({
-      command: 'setBrowserControls',
-      top: hidden ? 0 : topSafe,
-      minTop: 0,
-      bottom: BOTTOM_DOCK_EXTENT_VP + bottomSafe
-    });
-    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
-    if (!context) {
-      return;
-    }
-    window.getLastWindow(context).then((win: window.Window): void => {
-      win.setSpecificSystemBarEnabled('status', !hidden).catch((error: Error): void => {
-        console.error(`Failed to toggle the status bar (hidden=${hidden}): ${error.message}`);
-      });
-    }).catch((error: Error): void => {
-      console.error(`Failed to get the window for the status bar: ${error.message}`);
     });
   }
 

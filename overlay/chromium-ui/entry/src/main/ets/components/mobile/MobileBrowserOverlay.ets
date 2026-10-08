@@ -1,11 +1,10 @@
 import { common } from '@kit.AbilityKit';
 import { AVCastPicker, AVCastPickerColorMode, AVCastPickerStyle } from '@kit.AVSessionKit';
-import { curves, window } from '@kit.ArkUI';
 import { hdsEffect } from '@kit.UIDesignKit';
 import { inputMethod } from '@kit.IMEKit';
+import { curves } from '@kit.ArkUI';
 import { showSystemPasteDialog } from './SystemPasteDialog';
 import { ScanService } from './ScanService';
-import { GlassSurface } from './GlassSurface';
 import {
   BrowserCommandPayload,
   BrowserStateSnapshot,
@@ -25,21 +24,13 @@ import { SettingsPanel } from './SettingsPanel';
 import { SitePermissionsPanel } from './SitePermissionsPanel';
 import { normalizeAddress } from './ShellUtils';
 
-// The floating bar's full vertical extent (bar height + bottom gap), in vp.
-// AuraShell reports it to the engine through setBrowserControls as the
-// bottom reserve: the page lays out to the screen bottom, but its last line
-// can still be scrolled above the floating bar.
-//
-// The top reserve is gone: top = 0 sends the page all the way to the top of
-// the screen (fully immersive -- the status bar floats over the page), and
-// the status bar itself is hidden while the reader scrolls (AuraShell picks
-// that up from pageScrollSettled events).
-export const BOTTOM_DOCK_EXTENT_VP: number = 62;
-
-// The three-block bar: [back ring] [address capsule] [tabs ring].
-const BOTTOM_BAR_HEIGHT_VP: number = 52;
-const OUTER_RING_VP: number = 52;
-const BAR_GAP_VP: number = 8;
+// The floating bars' full vertical extents (top gap + bar height), in vp.
+// AuraShell reports these to the engine through setBrowserControls; the
+// browserControlsRatio event then drives the bars' translation, so the page
+// and both bars move together while scrolling (SHELL_CONTRACT.md, "手机：滚动
+// 时收起地址栏和 dock").
+export const TOP_BAR_EXTENT_VP: number = 52;
+export const BOTTOM_DOCK_EXTENT_VP: number = 68;
 
 enum MobileEdgeAction {
   BACK = 'back',
@@ -65,44 +56,43 @@ export struct MobileBrowserOverlay {
   @State private primaryAction: MobileEdgeAction = MobileEdgeAction.BACK;
   @State private followGrip: boolean = true;
   @State private lastGripSide: GripSide = GripSide.LEFT;
-  // Which bar button is being pressed (by label), for the springy press
-  // feedback -- the under-damped spring works on any device and target API.
+  // Which dock button is being pressed (by label), for the springy press
+  // feedback. Hand-rolled "jelly": unlike the system interactive material,
+  // the under-damped spring works on any device and target API level.
   @State private pressedDock: string = '';
   // Which page the sheet shows: the tabs menu only now; kept as the reset
   // value while the sheet opens or closes.
   @State private sheetPage: string = 'tabs';
-  // Which view the sheet hosts: the tab list ('tabs', from the tabs ring) or
-  // the browser menu ('menu', from the capsule's menu button).
+  // Which view the sheet hosts: the tab list ('tabs', from the tab-count
+  // button) or the browser menu ('menu', from the ⋮ button). Two entries,
+  // two views -- they used to open the same screen.
   @State private sheetKind: string = 'tabs';
-  // Which full-screen shell page is open ('none' while browsing).
+  // Which full-screen shell page is open ('none' while browsing). The shell's
+  // sub-pages are full-screen like Lumie's, not part of the bottom sheet.
   @State private panelPage: string = 'none';
   // True while the extensions page was opened from settings, so its back
   // button returns there instead of closing to the browser.
   private extensionsFromSettings: boolean = false;
-  // Live soft-keyboard height in vp (0 when down). The floating bar rides
-  // above the keyboard: the address input lives inside the bar, so without
-  // this the keyboard would cover the very field the reader is typing in.
-  @State private keyboardHeightVp: number = 0;
-  // The immersive decision comes from AuraShell (pageScrollSettled driven):
-  // while immersed the expanded bar crossfades into the compact capsule,
-  // and it re-expands when the reader scrolls back or taps the capsule.
-  @StorageLink('auraChromeImmersed') @Watch('onImmersedChanged') immersedRaw: boolean = false;
-  @State private compactImmersed: boolean = false;
+  // 0..1, from the engine: how much of the top bar the page is showing.
+  // 1 keeps both bars in place; 0 has scrolled both fully away. Applied
+  // straight from the storage link so one engine update is one render pass.
+  @StorageLink('auraBrowserControlsRatio') controlsRatioRaw: number = 1;
 
   private readonly holdingHandRouter: HoldingHandRouter = new HoldingHandRouter();
   private readonly currentTabCastSession: CurrentTabCastSession = new CurrentTabCastSession();
-  // Floating-chrome styling note: the bars are painted by GlassSurface,
-  // which prefers the HDS immersive-material backplate and falls back to the
-  // translucent painted face where the material cannot render. See
-  // GlassSurface.ets and UI-DESIGN-SPEC.md section 8.
+  // Floating-chrome styling note: the system ImmersiveMaterial is
+  // deliberately NOT used for these bars. The HarmonyOS 7 light-sense
+  // contract honors system materials only on dialog-class components or
+  // inside Navigation title bars / Tabs bottom bars -- a free-floating Row
+  // silently loses the effect and would render with no background at all.
+  // The bars therefore always take the painted path: translucent resource
+  // color + component blur. See UI-DESIGN-SPEC.md section 8.
 
   private keyboardRecoveryTimers: number[] = [];
   private readonly addressController: TextInputController = new TextInputController();
   private addressSelectionStart: number = 0;
   private addressSelectionEnd: number = 0;
   private addressEditEpoch: number = 0;
-  private dockWindow: window.Window | undefined = undefined;
-  private keyboardListener: ((height: number) => void) | undefined = undefined;
 
   aboutToAppear(): void {
     const storedAction = String(AppStorage.get(PRIMARY_ACTION_KEY) ?? MobileEdgeAction.BACK);
@@ -114,7 +104,6 @@ export struct MobileBrowserOverlay {
     if (this.followGrip) {
       this.startHoldingHandAwareness();
     }
-    this.startKeyboardAwareness();
     // The entry page's onBackPress asks this before letting the system back
     // gesture exit the app.
     MobileBackRouter.handler = (): boolean => this.handleSystemBack();
@@ -126,9 +115,7 @@ export struct MobileBrowserOverlay {
   aboutToDisappear(): void {
     MobileBackRouter.handler = undefined;
     this.clearKeyboardRecoveryTimers();
-    this.stopKeyboardAwareness();
     this.holdingHandRouter.stop();
-    AppStorage.setOrCreate('auraChromeEngaged', false);
     this.currentTabCastSession.stop().catch((error: Error) => {
       console.error('Failed to stop current-tab cast session:', error);
     });
@@ -139,7 +126,8 @@ export struct MobileBrowserOverlay {
   // history, and only leave the app when there is nothing of ours to unwind.
   private handleSystemBack(): boolean {
     if (this.editingAddress) {
-      this.cancelAddressEdit();
+      this.clearKeyboardRecoveryTimers();
+      this.editingAddress = false;
       return true;
     }
     if (this.menuVisible) {
@@ -169,45 +157,33 @@ export struct MobileBrowserOverlay {
 
   build() {
     Stack() {
-      Stack({ alignContent: Alignment.Bottom }) {
-        // The expanded bar. Both rails stay mounted and already laid out;
-        // collapsing only crossfades, so no re-layout happens while the
-        // finger is still on the page.
-        Column() {
-          this.BottomBar()
+      Column() {
+        // The home surface (new tab) already carries a search box; the
+        // address bar would duplicate it right above, so it only shows
+        // while browsing actual pages.
+        if (!this.isNewTabUrl(this.browserState.url)) {
+          this.TopAddressBar()
         }
-        .width('100%')
-        .justifyContent(FlexAlign.End)
-        .hitTestBehavior(this.compactImmersed ? HitTestMode.None : HitTestMode.Transparent)
-        .opacity(this.compactImmersed ? 0 : 1)
-        .bindSheet($$this.menuVisible, this.MenuSheet, {
-          height: SheetSize.LARGE,
-          showClose: false,
-          enableOutsideInteractive: false,
-          maskColor: Color.Transparent,
-          onDisappear: (): void => {
-            this.closeMenuSheet();
-          }
-        })
-
-        // The compact capsule: what the bar collapses to while the reader
-        // scrolls (the current domain, 96x32). Tapping it re-expands.
-        Row() {
-          this.CompactCapsule()
-        }
-        .hitTestBehavior(this.compactImmersed ? HitTestMode.Default : HitTestMode.None)
-        .opacity(this.compactImmersed ? 1 : 0)
+        this.BottomDock()
       }
       .width('100%')
       .height('100%')
-      // Reserve the navigation pill, and ride above the soft keyboard when
-      // one is up (the address input lives in the bar's capsule).
-      .padding({
-        left: 12,
-        right: 12,
-        bottom: this.dockBottomInsetVp()
-      })
+      // On the home surface only the dock remains; SpaceBetween with a
+      // single child pins it to the START (top), so pin to END there.
+      .justifyContent(this.isNewTabUrl(this.browserState.url) ?
+        FlexAlign.End : FlexAlign.SpaceBetween)
+      // Reserve the status bar (top) and the navigation pill (bottom): the
+      // window is fullscreen-immersive, so without these the bars sit under
+      // the system clock and the gesture pill.
+      .padding({ top: 8 + this.topSafeVp, left: 12, right: 12,
+        bottom: 12 + this.bottomSafeVp })
       .hitTestBehavior(HitTestMode.Transparent)
+      .bindSheet($$this.menuVisible, this.MenuSheet, {
+        height: SheetSize.LARGE,
+        showClose: false,
+        enableOutsideInteractive: false,
+        maskColor: Color.Transparent
+      })
 
       if (this.panelPage !== 'none') {
         this.PanelLayer()
@@ -215,131 +191,171 @@ export struct MobileBrowserOverlay {
     }
     .width('100%')
     .height('100%')
-    // While only the floating bar is up, touches fall through to the page;
+    // While only the floating bars are up, touches fall through to the page;
     // a full-screen panel covers everything, so it takes the events instead.
     .hitTestBehavior(this.panelPage === 'none' ?
       HitTestMode.Transparent : HitTestMode.Default)
   }
 
-  private onImmersedChanged(): void {
-    if (this.immersedRaw === this.compactImmersed) {
-      return;
+  @Builder
+  private EdgeButton(action: MobileEdgeAction) {
+    Button({ type: ButtonType.Circle, stateEffect: true }) {
+      Image(action === MobileEdgeAction.BACK ?
+        $r('app.media.chromium_back') : $r('app.media.chromium_more'))
+        .width(24)
+        .height(24)
+        .fillColor($r('app.color.icon_primary'))
     }
-    animateTo({ duration: 220, curve: curves.springMotion(0.38, 0.78) }, (): void => {
-      this.compactImmersed = this.immersedRaw;
-    });
+    .width(52)
+    .height(52)
+    .backgroundColor($r('app.color.surface_floating'))
+    .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+    .visualEffect(this.buildBubbleEffect())
+    .opacity(action === MobileEdgeAction.BACK && !this.browserState.canGoBack ? 0.52 : 1)
+    .enabled(action !== MobileEdgeAction.BACK || this.browserState.canGoBack)
+    .accessibilityText(action === MobileEdgeAction.BACK ? '返回' : '菜单')
+    .onClick(() => this.handleEdgeAction(action))
   }
-
-  // The bar's distance from the screen bottom. A raised keyboard claims the
-  // bottom of the screen (fullscreen window), so the bar rides above it and
-  // the address field stays visible while being typed into.
-  private dockBottomInsetVp(): number {
-    if (this.keyboardHeightVp > 0) {
-      return this.keyboardHeightVp + BAR_GAP_VP;
-    }
-    return 10 + this.bottomSafeVp;
-  }
-
-  // keyboardHeightChange reports physical pixels; vp is what the layout
-  // wants. The listener keeps one reference so it can be unregistered.
-  private startKeyboardAwareness(): void {
-    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
-    if (!context) {
-      return;
-    }
-    window.getLastWindow(context).then((win: window.Window): void => {
-      this.dockWindow = win;
-      this.keyboardListener = (height: number): void => {
-        let next = 0;
-        try {
-          next = height > 0 ? this.getUIContext().px2vp(height) : 0;
-        } catch (error) {
-          next = 0;
-        }
-        if (!Number.isFinite(next) || next === this.keyboardHeightVp) {
-          return;
-        }
-        animateTo({ duration: 160, curve: Curve.EaseOut }, (): void => {
-          this.keyboardHeightVp = next;
-        });
-      };
-      win.on('keyboardHeightChange', this.keyboardListener);
-    }).catch((error: Error): void => {
-      console.error('Failed to watch the keyboard height:', error.message);
-    });
-  }
-
-  private stopKeyboardAwareness(): void {
-    if (this.dockWindow && this.keyboardListener) {
-      try {
-        this.dockWindow.off('keyboardHeightChange', this.keyboardListener);
-      } catch (error) {
-      }
-    }
-    this.dockWindow = undefined;
-    this.keyboardListener = undefined;
-  }
-
-  // ---- The three-block bar -------------------------------------------------
 
   @Builder
-  private BottomBar() {
-    Row({ space: BAR_GAP_VP }) {
-      this.BackRing()
-      // The v8 build passed the content as a builder reference
-      // (`content: this.CenterCapsuleContent`) and the ArkUI runtime lost
-      // the author's `this` when the surface invoked it -- the trailing
-      // closure form binds the builder to this component, which is the
-      // documented pattern. Chain attributes on the wrapping Stack: the
-      // compiler rejects attributes chained directly onto a trailing
-      // closure.
-      Stack() {
-        GlassSurface({ cornerRadius: BOTTOM_BAR_HEIGHT_VP / 2 }) {
-          if (this.editingAddress) {
-            this.AddressEditingRow()
-          } else {
-            this.AddressRestingRow()
-          }
-        }
-      }
-      .layoutWeight(1)
-      .height(BOTTOM_BAR_HEIGHT_VP)
-      .visualEffect(this.buildDockLightEffect())
-      this.TabsRing()
+  private TopAddressBar() {
+    Row() {
+      this.TopBarContent()
     }
     .width('100%')
-    .height(BOTTOM_BAR_HEIGHT_VP)
+    .height(44)
+    .borderRadius(22)
+    .backgroundColor($r('app.color.glass_tint'))
+    .border({ width: 0.5, color: $r('app.color.divider') })
+    .backgroundBlurStyle(BlurStyle.COMPONENT_REGULAR)
+    .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+    .translate({ y: -(1 - this.controlsRatioRaw) * TOP_BAR_EXTENT_VP })
   }
 
-  // The compact capsule: what the bar collapses to while the reader scrolls
-  // (the current domain, 96x32 like the reference study). Tapping it
-  // re-expands the bar in place.
   @Builder
-  private CompactCapsule() {
-    Stack() {
-      GlassSurface({ cornerRadius: 16 }) {
-        Text(this.displayDomain())
-          .fontSize(13)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
+  private TopBarContent() {
+      if (this.editingAddress) {
+        TextInput({ text: this.addressDraft, placeholder: '搜索或输入网址',
+          controller: this.addressController })
+          .id('mobile_address_input')
+          .layoutWeight(1)
+          .height(44)
+          .fontSize(16)
           .fontColor($r('app.color.text_primary'))
-          .padding({ left: 10, right: 10 })
+          .placeholderColor($r('app.color.text_secondary'))
+          .backgroundColor(Color.Transparent)
+          .padding({ left: 16, right: 12 })
+          .enterKeyType(EnterKeyType.Go)
+          .selectAll(true)
+          .onChange((value: string) => {
+            this.addressDraft = value;
+          })
+          .onTextSelectionChange((start: number, end: number): void => {
+            this.addressSelectionStart = start;
+            this.addressSelectionEnd = end;
+          })
+          .onSubmit(() => {
+            this.submitAddress();
+          })
+        Button('粘贴')
+          .fontSize(14)
+          .onClick((): void => this.pasteAddress())
+        Button({ type: ButtonType.Circle }) {
+          Image($r('app.media.chromium_close'))
+            .width(20)
+            .height(20)
+            .fillColor($r('app.color.icon_secondary'))
+        }
+        .width(36)
+        .height(36)
+        .margin({ right: 5 })
+        .backgroundColor(Color.Transparent)
+        .accessibilityText('取消编辑')
+        .onClick(() => {
+          this.clearKeyboardRecoveryTimers();
+          this.editingAddress = false;
+          this.issueCommand({ command: 'setBrowserControlsState', state: 'both' });
+        })
+      } else {
+        Button({ type: ButtonType.Normal, stateEffect: true }) {
+          Row({ space: 8 }) {
+            if (this.browserState.loading) {
+              LoadingProgress()
+                .width(18)
+                .height(18)
+                .color($r('app.color.accent_primary'))
+            }
+            Text(this.displayDomain())
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .fontSize(15)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_primary'))
+          }
+          .justifyContent(FlexAlign.Center)
+          .width('100%')
+        }
+        .layoutWeight(1)
+        .height(44)
+        .padding({ left: 16, right: 10 })
+        .backgroundColor(Color.Transparent)
+        .accessibilityText('地址栏')
+        .onClick(() => this.beginAddressEdit())
+
+        Button({ type: ButtonType.Circle, stateEffect: true }) {
+          Image($r('app.media.chromium_scan'))
+            .width(20)
+            .height(20)
+            .fillColor($r('app.color.icon_primary'))
+        }
+        .width(38)
+        .height(38)
+        .margin({ right: 3 })
+        .backgroundColor(Color.Transparent)
+        .accessibilityText('扫一扫')
+        .onClick(() => {
+          this.startScan();
+        })
+
+        Button({ type: ButtonType.Circle, stateEffect: true }) {
+          Image(this.browserState.loading ?
+            $r('app.media.chromium_close') : $r('app.media.chromium_reload'))
+            .width(20)
+            .height(20)
+            .fillColor($r('app.color.icon_primary'))
+        }
+        .width(38)
+        .height(38)
+        .margin({ right: 3 })
+        .backgroundColor(Color.Transparent)
+        .accessibilityText(this.browserState.loading ? '停止' : '刷新')
+        .onClick(() => {
+          this.issueCommand({ command: this.browserState.loading ? 'stop' : 'reload' });
+        })
       }
-    }
-    .width(96)
-    .height(32)
-    .onClick((): void => {
-      animateTo({ duration: 220, curve: curves.springMotion(0.38, 0.78) }, (): void => {
-        this.compactImmersed = false;
-      });
-    })
   }
 
-  // System point-light press effect (HDS hdsEffect, API 20+, every device):
-  // a soft white light spot that appears under the finger and follows it
-  // across the bar. This is the same mechanism the system browser and other
-  // HarmonyOS browsers use -- NOT the API-26 uiMaterial lightEffect, which
-  // is off-limits for floating bars.
+  @Builder
+  private BottomDock() {
+    Row() {
+      this.BottomDockContent()
+    }
+    .width('100%')
+    .height(56)
+    .borderRadius(28)
+    .backgroundColor($r('app.color.glass_tint'))
+    .border({ width: 0.5, color: $r('app.color.divider') })
+    .backgroundBlurStyle(BlurStyle.COMPONENT_REGULAR)
+    .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+    // System point-light press effect (HDS hdsEffect, API 20+, every
+    // device): a soft white light spot that appears under the finger and
+    // follows it across the bar. This is the same mechanism the system
+    // browser and other HarmonyOS browsers use -- NOT the API-26
+    // uiMaterial lightEffect, which is off-limits for floating bars.
+    .visualEffect(this.buildDockLightEffect())
+    .translate({ y: (1 - this.controlsRatioRaw) * BOTTOM_DOCK_EXTENT_VP })
+  }
+
   private buildDockLightEffect(): VisualEffect {
     return new hdsEffect.HdsEffectBuilder()
       .pointLight({
@@ -349,190 +365,74 @@ export struct MobileBrowserOverlay {
       .buildEffect();
   }
 
-  // Left ring: back, with forward on long press (the same pairing the old
-  // dock had, folded into one button so the bar keeps three blocks).
-  // The content is a trailing closure (see BottomBar's note on `this`).
   @Builder
-  private BackRing() {
-    Stack() {
-      GlassSurface({ cornerRadius: OUTER_RING_VP / 2 }) {
-        Column() {
-          Image($r('app.media.chromium_back'))
-            .width(18)
-            .height(18)
-            .fillColor($r('app.color.icon_primary'))
-        }
-        .width('100%')
-        .height('100%')
-        .justifyContent(FlexAlign.Center)
-      }
-    }
-    .width(OUTER_RING_VP)
-    .height(OUTER_RING_VP)
-    .opacity(this.browserState.canGoBack ? 1 : 0.4)
-    .enabled(this.browserState.canGoBack)
-    .visualEffect(this.buildDockLightEffect())
-    .scale({
-      x: this.pressedDock === '返回' ? 0.86 : 1,
-      y: this.pressedDock === '返回' ? 0.86 : 1
-    })
-    .accessibilityText('返回')
-    .onTouch((event: TouchEvent): void => {
-      this.handleDockTouch(event, '返回');
-    })
-    .onClick((): void => {
-      this.issueCommand({ command: 'back' });
-    })
-    .gesture(LongPressGesture({ repeat: false }).onAction((): void => {
-      if (this.browserState.canGoForward) {
-        this.issueCommand({ command: 'forward' });
-      }
-    }))
-  }
+  private BottomDockContent() {
+      this.DockButton($r('app.media.chromium_back'), '返回', this.browserState.canGoBack,
+        (): void => {
+          this.issueCommand({ command: 'back' });
+        })
+      this.DockButton($r('app.media.chromium_forward'), '前进', this.browserState.canGoForward,
+        (): void => {
+          this.issueCommand({ command: 'forward' });
+        })
+      // 'home' is the engine's own command for chrome://newtab (also what the
+      // keyboard's home key maps to), so the tab lands on the shell's home
+      // surface without pushing a duplicate of the current URL.
+      this.DockButton($r('app.media.chromium_home'), '主页', true,
+        (): void => {
+          this.issueCommand({ command: 'home' });
+        })
 
-  // Right ring: the tab count, opening the tab list.
-  @Builder
-  private TabsRing() {
-    Stack() {
-      GlassSurface({ cornerRadius: OUTER_RING_VP / 2 }) {
-        Row() {
-          Text(this.browserState.tabCount > 99 ? '99+' : this.browserState.tabCount.toString())
-            .fontSize(12)
-            .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.icon_primary'))
-            .textAlign(TextAlign.Center)
-        }
-        .width(26)
-        .height(22)
-        .borderRadius(6)
-        .border({ width: 1.6, color: $r('app.color.icon_primary') })
-        .justifyContent(FlexAlign.Center)
-      }
-    }
-    .width(OUTER_RING_VP)
-    .height(OUTER_RING_VP)
-    .scale({
-      x: this.pressedDock === '标签页' ? 0.86 : 1,
-      y: this.pressedDock === '标签页' ? 0.86 : 1
-    })
-    .visualEffect(this.buildDockLightEffect())
-    .accessibilityText('标签页')
-    .onTouch((event: TouchEvent): void => {
-      this.handleDockTouch(event, '标签页');
-    })
-    .onClick((): void => {
-      this.openMenu('tabs');
-    })
-  }
-
-  // The middle capsule while browsing: reload / stop on the leading side,
-  // the address in the middle (tap to edit), the menu on the trailing side.
-  @Builder
-  private AddressRestingRow() {
-    Row() {
-      Button({ type: ButtonType.Circle, stateEffect: true }) {
-        Image($r('app.media.chromium_home'))
-          .width(18)
-          .height(18)
-          .fillColor($r('app.color.icon_primary'))
-      }
-      .width(36)
-      .height(36)
-      .margin({ left: 6 })
-      .backgroundColor(Color.Transparent)
-      .accessibilityText('主页')
-      .onClick((): void => {
-        this.issueCommand({ command: 'home' });
-      })
-
-      Row({ space: 8 }) {
-        if (this.browserState.loading) {
-          LoadingProgress()
-            .width(18)
-            .height(18)
-            .color($r('app.color.accent_primary'))
-        }
-        Text(this.displayDomain())
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .fontSize(15)
+      Button({ type: ButtonType.Normal, stateEffect: true }) {
+        Text(this.browserState.tabCount > 99 ? '99+' : this.browserState.tabCount.toString())
+          .fontSize(11)
           .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
+          .fontColor($r('app.color.icon_primary'))
+          .textAlign(TextAlign.Center)
+          .width(24)
+          .height(22)
+          .borderRadius(6)
+          .border({ width: 1.8, color: $r('app.color.icon_primary') })
       }
       .layoutWeight(1)
-      .height('100%')
-      .justifyContent(FlexAlign.Center)
-      .accessibilityText('地址栏')
+      .height(52)
+      .backgroundColor(Color.Transparent)
+      .scale({ x: this.pressedDock === '标签页' ? 0.82 : 1, y: this.pressedDock === '标签页' ? 0.82 : 1 })
+      .accessibilityText('标签页')
+      .onTouch((event: TouchEvent): void => {
+        this.handleDockTouch(event, '标签页');
+      })
       .onClick((): void => {
-        this.beginAddressEdit();
+        this.sheetKind = 'tabs';
+        this.menuVisible = true;
       })
 
-      Button({ type: ButtonType.Circle, stateEffect: true }) {
-        Image($r('app.media.chromium_more'))
-          .width(18)
-          .height(18)
-          .fillColor($r('app.color.icon_primary'))
-      }
-      .width(36)
-      .height(36)
-      .margin({ right: 6 })
-      .backgroundColor(Color.Transparent)
-      .accessibilityText('菜单')
-      .onClick((): void => {
-        this.openMenu('menu');
-      })
-    }
-    .width('100%')
-    .height('100%')
+      this.DockButton($r('app.media.chromium_more'), '菜单', true,
+        (): void => {
+          this.sheetKind = 'menu';
+          this.menuVisible = true;
+        })
   }
 
-  // The middle capsule while editing: the field takes the middle, paste and
-  // dismiss sit on the trailing side.
   @Builder
-  private AddressEditingRow() {
-    Row() {
-      TextInput({ text: this.addressDraft, placeholder: '搜索或输入网址',
-        controller: this.addressController })
-        .id('mobile_address_input')
-        .layoutWeight(1)
-        .height('100%')
-        .fontSize(16)
-        .fontColor($r('app.color.text_primary'))
-        .placeholderColor($r('app.color.text_secondary'))
-        .backgroundColor(Color.Transparent)
-        .padding({ left: 16, right: 12 })
-        .enterKeyType(EnterKeyType.Go)
-        .selectAll(true)
-        .onChange((value: string) => {
-          this.addressDraft = value;
-        })
-        .onTextSelectionChange((start: number, end: number): void => {
-          this.addressSelectionStart = start;
-          this.addressSelectionEnd = end;
-        })
-        .onSubmit(() => {
-          this.submitAddress();
-        })
-      Button('粘贴')
-        .fontSize(14)
-        .onClick((): void => this.pasteAddress())
-      Button({ type: ButtonType.Circle }) {
-        Image($r('app.media.chromium_close'))
-          .width(20)
-          .height(20)
-          .fillColor($r('app.color.icon_secondary'))
-      }
-      .width(36)
-      .height(36)
-      .margin({ right: 6 })
-      .backgroundColor(Color.Transparent)
-      .accessibilityText('取消编辑')
-      .onClick((): void => {
-        this.cancelAddressEdit();
-      })
+  private DockButton(icon: Resource, label: string, usable: boolean, action: () => void) {
+    Button({ type: ButtonType.Normal, stateEffect: true }) {
+      Image(icon)
+        .width(22)
+        .height(22)
+        .fillColor($r('app.color.icon_primary'))
     }
-    .width('100%')
-    .height('100%')
+    .layoutWeight(1)
+    .height(52)
+    .backgroundColor(Color.Transparent)
+    .opacity(usable ? 1 : 0.4)
+    .enabled(usable)
+    .scale({ x: this.pressedDock === label ? 0.82 : 1, y: this.pressedDock === label ? 0.82 : 1 })
+    .accessibilityText(label)
+    .onTouch((event: TouchEvent): void => {
+      this.handleDockTouch(event, label);
+    })
+    .onClick(action)
   }
 
   // Press -> quick shrink; release -> under-damped spring back, the
@@ -771,9 +671,8 @@ export struct MobileBrowserOverlay {
             .height(58)
             .padding({ left: 4, right: 2 })
             .onClick(() => {
-              // Switch first, then dismiss: the sheet closing must not eat
-              // the tap's follow-through, and the reader expects to land on
-              // the page they tapped.
+              // Switch first, then dismiss: the reader expects to land on
+              // the page they tapped, with the panel gone.
               this.issueCommand({ command: 'activateTab', index: tab.index });
               this.closeMenuSheet();
             })
@@ -807,9 +706,11 @@ export struct MobileBrowserOverlay {
     .backgroundColor(Color.Transparent)
   }
 
-  // The menu: page commands and the shell's own pages. With the top bar gone
-  // this is also where the commands that used to live on it (scan, home) are
-  // reachable from.
+  // The ⋮ menu: page commands and the shell's own pages. The tab list lives
+  // in TabsView (tab-count button), so the two dock entries open two
+  // different views instead of the same screen. The old "primary action"
+  // and grip-awareness rows were removed with the floating 3-button bar
+  // they tuned -- the fixed dock has nothing for them to change.
   @Builder
   private MenuView() {
     Column() {
@@ -833,17 +734,10 @@ export struct MobileBrowserOverlay {
           $r('app.media.chromium_print'),
           'print')
         this.CastButton()
-        this.PanelEntryButton('扫一扫', $r('app.media.chromium_scan'), (): void => {
-          this.menuVisible = false;
-          this.startScan();
-        })
       }
       .width('100%')
 
       Row({ space: 8 }) {
-        this.PanelEntryButton('主页', $r('app.media.chromium_home'), (): void => {
-          this.openPanelTo('home');
-        })
         this.PanelEntryButton('书签', $r('app.media.chromium_bookmark'), (): void => {
           this.openPanel('bookmarks');
         })
@@ -965,6 +859,12 @@ export struct MobileBrowserOverlay {
     .backgroundColor($r('app.color.surface_secondary'))
   }
 
+  private buildBubbleEffect(): VisualEffect {
+    return new hdsEffect.HdsEffectBuilder()
+      .pressShadow(hdsEffect.PressShadowType.BLEND_GRADIENT)
+      .buildEffect();
+  }
+
   private leftAction(): MobileEdgeAction {
     if (this.lastGripSide === GripSide.LEFT) {
       return this.primaryAction;
@@ -984,25 +884,19 @@ export struct MobileBrowserOverlay {
       MobileEdgeAction.MENU : MobileEdgeAction.BACK;
   }
 
-  private openMenu(kind: string): void {
-    this.sheetKind = kind;
-    this.menuVisible = true;
-    this.updateChromeEngaged();
+  private handleEdgeAction(action: MobileEdgeAction): void {
+    if (action === MobileEdgeAction.BACK) {
+      this.issueCommand({ command: 'back' });
+    } else {
+      this.sheetPage = 'tabs';
+      this.menuVisible = true;
+    }
   }
 
   private closeMenuSheet(): void {
     this.menuVisible = false;
     this.sheetPage = 'tabs';
     this.sheetKind = 'tabs';
-    this.updateChromeEngaged();
-  }
-
-  // While any shell chrome that needs the status bar is up (editing, the
-  // menu sheet, a full-screen page), the status bar must stay visible; the
-  // page-side immersion controller (AuraShell) reads this flag and pins it.
-  private updateChromeEngaged(): void {
-    AppStorage.setOrCreate('auraChromeEngaged',
-      this.editingAddress || this.menuVisible || this.panelPage !== 'none');
   }
 
   // 扫一扫: system scanner, result goes through the same address/search
@@ -1023,20 +917,11 @@ export struct MobileBrowserOverlay {
     this.sheetPage = 'tabs';
     this.extensionsFromSettings = false;
     this.panelPage = page;
-    this.updateChromeEngaged();
-  }
-
-  private openPanelTo(command: string): void {
-    this.menuVisible = false;
-    this.sheetPage = 'tabs';
-    this.extensionsFromSettings = false;
-    this.issueCommand({ command: command });
   }
 
   private closePanel(): void {
     this.panelPage = 'none';
     this.extensionsFromSettings = false;
-    this.updateChromeEngaged();
   }
 
   private displayDomain(): string {
@@ -1069,10 +954,10 @@ export struct MobileBrowserOverlay {
     this.addressSelectionStart = 0;
     this.addressSelectionEnd = this.addressDraft.length;
     this.editingAddress = true;
-    this.updateChromeEngaged();
     this.clearKeyboardRecoveryTimers();
-    // The top bar used to be pinned with setBrowserControlsState here; there
-    // is no top bar any more and the bar is fixed, so nothing needs pinning.
+    // Pin both bars while the keyboard is up (SHELL_CONTRACT.md, "手机：滚动
+    // 时收起地址栏和 dock", step 5).
+    this.issueCommand({ command: 'setBrowserControlsState', state: 'shown' });
     [0, 80, 220, 450].forEach((delay: number): void => {
       this.keyboardRecoveryTimers.push(setTimeout((): void => {
         if (!this.editingAddress) {
@@ -1087,12 +972,6 @@ export struct MobileBrowserOverlay {
         }
       }, delay));
     });
-  }
-
-  private cancelAddressEdit(): void {
-    this.clearKeyboardRecoveryTimers();
-    this.editingAddress = false;
-    this.updateChromeEngaged();
   }
 
   private pasteAddress(): void {
@@ -1130,7 +1009,8 @@ export struct MobileBrowserOverlay {
       this.issueCommand({ command: 'navigate', url: target });
     }
     this.editingAddress = false;
-    this.updateChromeEngaged();
+    // Hand the bars back to scroll control.
+    this.issueCommand({ command: 'setBrowserControlsState', state: 'both' });
   }
 
   private clearKeyboardRecoveryTimers(): void {
