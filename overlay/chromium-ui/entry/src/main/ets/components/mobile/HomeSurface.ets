@@ -6,8 +6,12 @@
  */
 import { BrowserCommandPayload, FaviconImage, TopSite } from 'engine';
 import { common } from '@kit.AbilityKit';
+import { promptAction } from '@kit.ArkUI';
 import { normalizeAddress } from './ShellUtils';
 import { ScanService } from './ScanService';
+
+const TOP_SITE_RETRY_MS: number = 1500;
+const MAX_TOP_SITE_RETRIES: number = 3;
 
 function initialOf(site: TopSite): string {
   const title = site.title.trim();
@@ -34,9 +38,71 @@ export struct HomeSurface {
   // avatar placeholder.
   @State private favicons: Map<string, string> = new Map();
   private requestSeq: number = 0;
+  private retryTimer: number = -1;
+  private retryCount: number = 0;
 
   aboutToAppear(): void {
+    // 种子解析：@StorageLink 的初值不会触发 @Watch，而且引擎回的 JSON 与已存
+    // 的那份逐字节相同时也不会有变更通知 —— 从网页回到主页时组件是新建的，
+    // 只靠 @Watch 就永远等不到，常用网站会整排消失（实测）。
+    this.onTopSitesChanged();
+    this.onFaviconsChanged();
     this.reloadTopSites();
+    this.scheduleRetry();
+  }
+
+  aboutToDisappear(): void {
+    this.clearRetry();
+  }
+
+  // 引擎还没起来 / 回包丢了时的兜底：1.5 秒后仍为空就再问一次，最多三次。
+  private scheduleRetry(): void {
+    this.clearRetry();
+    if (this.retryCount >= MAX_TOP_SITE_RETRIES) {
+      return;
+    }
+    this.retryCount += 1;
+    this.retryTimer = setTimeout((): void => {
+      this.retryTimer = -1;
+      if (this.topSites.length === 0) {
+        this.reloadTopSites();
+        this.scheduleRetry();
+      }
+    }, TOP_SITE_RETRY_MS);
+  }
+
+  private clearRetry(): void {
+    if (this.retryTimer !== -1) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = -1;
+    }
+  }
+
+  // 长按删除：只把这一条加进引擎的黑名单（removeTopSite），下次 getTopSites
+  // 就不会再出现；顺手把本地列表也去掉，不用等回包。
+  private confirmRemoveSite(site: TopSite): void {
+    this.getUIContext().getPromptAction().showDialog({
+      title: '移除快捷方式',
+      message: site.title.length > 0 ? site.title : site.url,
+      buttons: [
+        { text: '取消', color: '#5F6368' },
+        { text: '移除', color: '#E24B4A' }
+      ]
+    }).then((result: promptAction.ShowDialogSuccessResponse): void => {
+      if (result.index !== 1) {
+        return;
+      }
+      this.onCommand({ command: 'removeTopSite', url: site.url });
+      const remaining: TopSite[] = [];
+      for (const item of this.topSites) {
+        if (item.url !== site.url) {
+          remaining.push(item);
+        }
+      }
+      this.topSites = remaining;
+      this.getUIContext().getPromptAction().showToast({ message: '已移除', duration: 1500 });
+    }).catch((error: Error): void => {
+    });
   }
 
   private reloadTopSites(): void {
@@ -50,6 +116,9 @@ export struct HomeSurface {
     }
     try {
       this.topSites = JSON.parse(this.topSitesJson) as TopSite[];
+      if (this.topSites.length > 0) {
+        this.clearRetry();
+      }
       this.requestFavicons();
     } catch (error) {
     }
@@ -231,6 +300,10 @@ export struct HomeSurface {
             .onClick(() => {
               this.openSite(site);
             })
+            .gesture(LongPressGesture({ repeat: false })
+              .onAction((): void => {
+                this.confirmRemoveSite(site);
+              }))
           }, (site: TopSite): string => site.url)
         }
         .width('100%')
