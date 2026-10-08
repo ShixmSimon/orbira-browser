@@ -14,8 +14,11 @@
  */
 
 import { common } from '@kit.AbilityKit';
+import { window } from '@kit.ArkUI';
 import { WebWindow, PictureInPictureSurface } from 'engine';
-import { MobileBrowserOverlay } from '../components/mobile/MobileBrowserOverlay';
+import { BOTTOM_DOCK_EXTENT_VP, MobileBrowserOverlay } from '../components/mobile/MobileBrowserOverlay';
+import { MobileBackRouter } from '../components/mobile/MobileBackRouter';
+import { HomeSurface } from '../components/mobile/HomeSurface';
 import { CurrentTabCastSession } from '../components/mobile/CurrentTabCastSession';
 import { showContextMenuSheet } from '../components/mobile/ContextMenuSheet';
 import { BrowserOnboarding } from '../components/onboarding/BrowserOnboarding';
@@ -30,10 +33,26 @@ import { HuaweiKnockShareSession, HuaweiShareAdapter } from 'engine';
 import { HarmonyFilePickerAdapter, HarmonyFilePickerResult } from 'engine';
 import { PermissionRequestAdapter, PermissionRequestResultPayload } from 'engine';
 import {
+  AboutInfoEvent,
   BrowserCommandChannel,
+  DownloadListEvent,
   DownloadNotifier,
   DownloadUpdatedEvent,
+  ExtensionActionsEvent,
+  ExtensionDetailsEvent,
+  HistoryResultsEvent,
+  PasswordCommandResultEvent,
+  PasswordRevealedEvent,
+  PageScrollSettledEvent,
+  PrefsEvent,
+  RecentBookmarksEvent,
+  RecentlyClosedEvent,
+  SavedPasswordsEvent,
+  SearchEngine,
+  SearchEnginesEvent,
   ShellDownloadDirectory,
+  SiteSettingsEvent,
+  TopSitesEvent,
   shellEvent
 } from 'engine';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -47,6 +66,13 @@ import {
   ScreenSizeVp
 } from 'engine';
 import { BrowserProfileState } from '../utils/profile/BrowserProfileService';
+
+// extensionInstallFailed / extensionCommandFailed have no shell-service
+// interface; they carry Chromium's own sentence for the reader to show.
+interface ExtensionNoticePayload {
+  message?: string;
+  reason?: string;
+}
 
 const EMPTY_BROWSER_STATE: BrowserStateSnapshot = {
   version: 1,
@@ -77,7 +103,7 @@ struct AuraShell {
   @StorageLink('auraRoutingRevision') routingRevision: number = 0;
   @StorageLink('auraStartupConfig') startupConfigText: string = '';
   @StorageLink('auraStartUrl') startUrl: string = CHROMIUM_HOME_URL;
-  @StorageLink('auraAppVisible') appVisible: boolean = true;
+  @StorageLink('auraAppVisible') @Watch('onAppVisibleChanged') appVisible: boolean = true;
   @StorageLink('auraThemeFontId') themeFontId: string = '';
   @StorageLink('auraThemeFontRevision') themeFontRevision: number = 0;
   @StorageLink('auraOnboardingReady') onboardingReady: boolean = false;
@@ -85,6 +111,10 @@ struct AuraShell {
   @StorageLink('auraProfileId') profileId: string = 'local';
   @StorageLink('auraProfileKind') profileKind: string = 'local';
   @StorageLink('auraSyncMode') syncMode: string = 'off';
+  // True while the shell chrome that needs the status bar is up (address
+  // editing, the menu sheet, a full-screen page); MobileBrowserOverlay
+  // writes it, the immersion controller below reads it.
+  @StorageLink('auraChromeEngaged') @Watch('onChromeEngagedChanged') chromeEngaged: boolean = false;
   @State private browserState: BrowserStateSnapshot = EMPTY_BROWSER_STATE;
   @StorageLink('auraBrowserCommandText') browserCommandText: string = '';
   @StorageLink('auraBrowserCommandRevision') browserCommandRevision: number = 0;
@@ -164,9 +194,19 @@ struct AuraShell {
         auxiliaryDismissRevision: this.auxiliaryDismissRevision,
         onBrowserState: (state: BrowserStateSnapshot): void => {
           this.browserState = state;
+          // A new tab / navigation is a fresh start: the status bar returns
+          // (the engine brings its own controls back on any page change).
+          if (state.activationEpoch !== this.lastActivationEpoch) {
+            this.lastActivationEpoch = state.activationEpoch;
+            this.lastSettledScrollY = 0;
+            this.setImmersiveStatusBar(false);
+          }
           if (!this.systemPermissionReported) {
             this.systemPermissionReported = true;
             this.reportSystemPermissionState();
+          }
+          if (state.ready) {
+            this.configureBrowserControls();
           }
           this.currentTabCastSession.update(state);
           this.knockShareSession.update(state);
@@ -180,6 +220,16 @@ struct AuraShell {
         })
           .width('100%')
           .height('100%')
+        if (this.isMobilePhoneUi() && this.isNewTabPage()) {
+          HomeSurface({
+            onCommand: (command: BrowserCommandPayload): void => {
+              this.executeBrowserCommand(command);
+            }
+          })
+            .width('100%')
+            .height('100%')
+            .padding({ top: Number(AppStorage.get('auraTopSafeVp') ?? 0) })
+        }
         if (this.isMobilePhoneUi()) {
           MobileBrowserOverlay({
             browserState: this.browserState,
@@ -223,7 +273,23 @@ struct AuraShell {
         return true;
       }
     }
+    // The browser chrome unwinds first: address editing, the tab menu, a
+    // full-screen shell page, then page history. Only when there is nothing
+    // of ours left does the gesture fall through to leaving the app.
+    const overlayBack = MobileBackRouter.handler;
+    if (overlayBack && overlayBack()) {
+      return true;
+    }
     return false;
+  }
+
+  // The 60-second password window dies in the background: the engine watches
+  // the lock screen itself, but the shell must report app backgrounding.
+  // The watch itself hangs on the appVisible storage link declared above.
+  private onAppVisibleChanged(): void {
+    if (!this.appVisible) {
+      this.executeBrowserCommand({ command: 'passwordAuthReset' });
+    }
   }
 
   private startKnockShare(): void {
@@ -366,6 +432,14 @@ struct AuraShell {
     this.commandChannel.send(command);
   }
 
+  // Top-immersion state: while the reader scrolls down the page the status
+  // bar hides and the page owns the whole screen; an upward scroll (or a
+  // return to the top, or shell chrome that needs it) brings it back.
+  private statusBarHidden: boolean = false;
+  private lastSettledScrollY: number = 0;
+  private lastStatusSwitchAt: number = 0;
+  private lastActivationEpoch: number = -1;
+
   // Counts handleBack requests, so a late answer to an earlier one is not
   // acted on twice.
   private backRequestId: number = 0;
@@ -396,6 +470,154 @@ struct AuraShell {
 
     if (event.event === 'downloadUpdated') {
       this.downloadNotifier?.update(shellEvent<DownloadUpdatedEvent>(event));
+      // The downloads page watches this tick and re-lists (throttled) so
+      // progress on it moves while a download is running.
+      AppStorage.setOrCreate('auraPanelDownloadsTick', Date.now());
+      return;
+    }
+
+    if (event.event === 'downloadList') {
+      AppStorage.setOrCreate('auraPanelDownloads',
+        JSON.stringify(shellEvent<DownloadListEvent>(event).items ?? []));
+      return;
+    }
+
+    if (event.event === 'recentlyClosed') {
+      AppStorage.setOrCreate('auraPanelRecent',
+        JSON.stringify(shellEvent<RecentlyClosedEvent>(event).items ?? []));
+      return;
+    }
+
+    if (event.event === 'savedPasswords') {
+      AppStorage.setOrCreate('auraPanelPasswords',
+        JSON.stringify(shellEvent<SavedPasswordsEvent>(event).items ?? []));
+      return;
+    }
+    if (event.event === 'passwordRevealed') {
+      const revealed = shellEvent<PasswordRevealedEvent>(event);
+      AppStorage.setOrCreate('auraPanelPasswordSecret',
+        JSON.stringify({ requestId: revealed.requestId, id: revealed.id,
+          password: revealed.password, note: revealed.note }));
+      return;
+    }
+    if (event.event === 'passwordCommandResult') {
+      const result = shellEvent<PasswordCommandResultEvent>(event);
+      AppStorage.setOrCreate('auraPanelPasswordResult',
+        JSON.stringify({ command: result.command, ok: result.ok, reason: result.reason ?? '' }));
+      return;
+    }
+    if (event.event === 'siteSettings') {
+      const settings = shellEvent<SiteSettingsEvent>(event);
+      AppStorage.setOrCreate('auraPanelSiteSettings',
+        JSON.stringify({ requestId: settings.requestId, items: settings.items ?? [] }));
+      return;
+    }
+
+    // pageScrollSettled is the only scroll stream left once the top reserve
+    // is gone (browserControlsRatio stops with top = 0), so the immersive
+    // status bar decision is made on each settle.
+    if (event.event === 'pageScrollSettled') {
+      this.handlePageScrollSettled(shellEvent<PageScrollSettledEvent>(event).scrollY ?? 0);
+      return;
+    }
+
+    if (event.event === 'browserControlsRatio') {
+      const ratio = event.ratio ?? 1;
+      if (ratio !== this.lastControlsRatio) {
+        this.lastControlsRatio = ratio;
+        AppStorage.setOrCreate('auraBrowserControlsRatio', ratio);
+      }
+      return;
+    }
+
+    // Profile data for the shell's own pages (bookmarks / history / settings).
+    // The payloads are parked in AppStorage and the mobile panels read them
+    // through @StorageLink (see components/mobile/PanelBridge.ets).
+    if (event.event === 'recentBookmarks') {
+      AppStorage.setOrCreate('auraPanelBookmarks',
+        JSON.stringify(shellEvent<RecentBookmarksEvent>(event).nodes ?? []));
+      return;
+    }
+    if (event.event === 'historyResults') {
+      AppStorage.setOrCreate('auraPanelHistory',
+        JSON.stringify(shellEvent<HistoryResultsEvent>(event).items ?? []));
+      return;
+    }
+    if (event.event === 'prefs') {
+      AppStorage.setOrCreate('auraPanelPrefs',
+        JSON.stringify(shellEvent<PrefsEvent>(event).values ?? []));
+      return;
+    }
+    if (event.event === 'searchEngines') {
+      const engines = shellEvent<SearchEnginesEvent>(event).items ?? [];
+      AppStorage.setOrCreate('auraPanelEngines', JSON.stringify(engines));
+      // Keep the home surface and the address bar searching the way the
+      // settings page shows: the default engine's resolved template.
+      let template = '';
+      engines.forEach((engine: SearchEngine): void => {
+        if (engine.isDefault) {
+          template = engine.searchUrl ?? '';
+        }
+      });
+      if (template.length > 0) {
+        AppStorage.setOrCreate('auraSearchUrlTemplate', template);
+      }
+      return;
+    }
+    if (event.event === 'topSites') {
+      AppStorage.setOrCreate('auraTopSites',
+        JSON.stringify(shellEvent<TopSitesEvent>(event).items ?? []));
+      return;
+    }
+    if (event.event === 'extensionActions') {
+      AppStorage.setOrCreate('auraPanelExtensions',
+        JSON.stringify(shellEvent<ExtensionActionsEvent>(event).items ?? []));
+      return;
+    }
+    if (event.event === 'extensionDetails') {
+      AppStorage.setOrCreate('auraPanelExtensionDetails',
+        JSON.stringify(shellEvent<ExtensionDetailsEvent>(event)));
+      return;
+    }
+    if (event.event === 'extensionActionsChanged') {
+      AppStorage.setOrCreate('auraPanelEvent',
+        JSON.stringify({ kind: 'extensionActionsChanged', revision: Date.now() }));
+      return;
+    }
+    if (event.event === 'extensionInstallFailed') {
+      const notice = shellEvent<ExtensionNoticePayload>(event);
+      AppStorage.setOrCreate('auraPanelEvent',
+        JSON.stringify({
+          kind: 'extensionInstallFailed',
+          revision: Date.now(),
+          message: notice.message ?? '',
+          reason: notice.reason ?? ''
+        }));
+      return;
+    }
+    if (event.event === 'extensionCommandFailed') {
+      const notice = shellEvent<ExtensionNoticePayload>(event);
+      AppStorage.setOrCreate('auraPanelEvent',
+        JSON.stringify({
+          kind: 'extensionCommandFailed',
+          revision: Date.now(),
+          message: notice.message ?? '',
+          reason: notice.reason ?? ''
+        }));
+      return;
+    }
+    if (event.event === 'aboutInfo') {
+      const about = shellEvent<AboutInfoEvent>(event);
+      AppStorage.setOrCreate('auraPanelAbout',
+        JSON.stringify({ chromiumVersion: about.chromiumVersion ?? '' }));
+      return;
+    }
+    if (event.event === 'bookmarkCreated' ||
+      event.event === 'bookmarksChanged' || event.event === 'historyChanged' ||
+      event.event === 'prefsChanged' || event.event === 'clearBrowsingDataDone' ||
+      event.event === 'savedPasswordsChanged') {
+      AppStorage.setOrCreate('auraPanelEvent',
+        JSON.stringify({ kind: event.event, revision: Date.now() }));
       return;
     }
 
@@ -479,6 +701,93 @@ struct AuraShell {
     });
   }
 
+  // Tells the engine the two floating bars' extents once the surface is live
+  // (SHELL_CONTRACT.md, "手机：滚动时收起地址栏和 dock", step 2). The engine
+  // then drives their scroll-away and reports browserControlsRatio events.
+  private configureBrowserControls(): void {
+    if (this.browserControlsConfigured) {
+      return;
+    }
+    this.browserControlsConfigured = true;
+    // The top reserve is zero: the page runs all the way to the top of the
+    // screen and the status bar floats over it (its visibility is driven by
+    // pageScrollSettled events below). Only the floating bottom bar keeps a
+    // reserve, so the last line of a page can still clear it.
+    const bottomSafe = Number(AppStorage.get('auraBottomSafeVp') ?? 0);
+    this.executeBrowserCommand({
+      command: 'setBrowserControls',
+      top: 0,
+      minTop: 0,
+      bottom: BOTTOM_DOCK_EXTENT_VP + bottomSafe
+    });
+    // Pull the search engines once, so the home surface and the address bar
+    // search the same way the settings page shows before it has been opened.
+    this.searchEnginesRequestSeq += 1;
+    this.executeBrowserCommand({
+      command: 'getSearchEngines',
+      requestId: this.searchEnginesRequestSeq
+    });
+  }
+
+  // While shell chrome that needs the status bar is up, it comes straight
+  // back; the overlay clears its flag when the chrome goes away.
+  private onChromeEngagedChanged(): void {
+    if (this.chromeEngaged) {
+      this.setImmersiveStatusBar(false);
+    }
+  }
+
+  // The immersive decision, made once per scroll settle: a downward settle of
+  // at least 24px hides the status bar, an upward one of at least 32px (or a
+  // return to the top) brings it back. A 400ms cooldown keeps a flick that
+  // ends in a tiny bounce from flipping twice.
+  private handlePageScrollSettled(scrollY: number): void {
+    const y = Math.max(0, Math.floor(scrollY));
+    if (this.chromeEngaged) {
+      this.lastSettledScrollY = y;
+      return;
+    }
+    const now = Date.now();
+    if (now - this.lastStatusSwitchAt < 400) {
+      this.lastSettledScrollY = y;
+      return;
+    }
+    const delta = y - this.lastSettledScrollY;
+    this.lastSettledScrollY = y;
+    if (y <= 8) {
+      if (this.statusBarHidden) {
+        this.setImmersiveStatusBar(false);
+        this.lastStatusSwitchAt = now;
+      }
+      return;
+    }
+    if (!this.statusBarHidden && delta >= 24) {
+      this.setImmersiveStatusBar(true);
+      this.lastStatusSwitchAt = now;
+    } else if (this.statusBarHidden && delta <= -32) {
+      this.setImmersiveStatusBar(false);
+      this.lastStatusSwitchAt = now;
+    }
+  }
+
+  private setImmersiveStatusBar(hidden: boolean): void {
+    if (this.statusBarHidden === hidden) {
+      return;
+    }
+    this.statusBarHidden = hidden;
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (!context) {
+      return;
+    }
+    window.getLastWindow(context).then((win: window.Window): void => {
+      win.setSpecificSystemBarEnabled('status', !hidden).catch((error: Error): void => {
+        console.error(`Failed to toggle the status bar (hidden=${hidden}): ${error.message}`);
+      });
+    }).catch((error: Error): void => {
+      console.error(`Failed to get the window for the status bar: ${error.message}`);
+    });
+  }
+
   // Chromium resolves a site's geolocation request against the app's own
   // permission before prompting, so it needs to know that permission. Reported
   // once the native side is live, and again after any request that could have
@@ -500,6 +809,9 @@ struct AuraShell {
   }
 
   private systemPermissionReported: boolean = false;
+  private browserControlsConfigured: boolean = false;
+  private lastControlsRatio: number = -1;
+  private searchEnginesRequestSeq: number = 0;
 
   private completePermissionRequest(result: PermissionRequestResultPayload): void {
     this.reportSystemPermissionState();
@@ -569,6 +881,11 @@ struct AuraShell {
     }
     this.auxiliaryDismissWidget = widget;
     this.auxiliaryDismissRevision += 1;
+  }
+
+  private isNewTabPage(): boolean {
+    const url = this.browserState.url ?? '';
+    return url.startsWith('chrome://newtab');
   }
 
   private isMobilePhoneUi(): boolean {

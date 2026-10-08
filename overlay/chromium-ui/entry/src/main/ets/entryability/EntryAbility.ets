@@ -15,6 +15,7 @@ import {
   BrowserProfileService,
   BrowserProfileState
 } from '../utils/profile/BrowserProfileService';
+import { AppearanceSettings, ColorModeSetting } from '../utils/appearance/AppearanceSettings';
 
 const DOMAIN = 0x0000;
 const AURA_SURFACE_READY_KEY = 'auraSurfaceReady';
@@ -90,11 +91,11 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate(AURA_BROWSER_COMMAND_TEXT_KEY, '');
     AppStorage.setOrCreate(AURA_BROWSER_COMMAND_REVISION_KEY, 0);
     hilog.info(DOMAIN, 'AuraShell', 'Initial theme font configuration: %{public}s', initialThemeFontId);
-    try {
-      this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
-    } catch (err) {
-      hilog.error(DOMAIN, 'AuraShell', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
-    }
+    // Follow the user's saved appearance choice (system/light/dark). Applying
+    // it here re-themes every $r color in the shell together with the engine.
+    AppearanceSettings.load(this.context).then((mode: ColorModeSetting): void => {
+      AppearanceSettings.apply(this.context, mode);
+    });
     this.restoreBrowserProfile();
   }
 
@@ -417,13 +418,17 @@ export default class EntryAbility extends UIAbility {
     }
 
     if (routing.windowPolicy === WindowPolicy.FULLSCREEN) {
+      // Immersive layout: the shell draws BEHIND the status bar and the
+      // navigation pill (their heights reach the shell as avoid-area insets),
+      // so both stay visible like on any system app.
       win.setWindowLayoutFullScreen(true).catch(() => {
       });
       try {
-        win.setSpecificSystemBarEnabled('status', false);
-        win.setSpecificSystemBarEnabled('navigationIndicator', false);
+        win.setSpecificSystemBarEnabled('status', true);
+        win.setSpecificSystemBarEnabled('navigationIndicator', true);
       } catch (error) {
       }
+      this.updateSafeAreaInsets(win, true);
     } else {
       win.setWindowLayoutFullScreen(false).catch(() => {
       });
@@ -432,6 +437,40 @@ export default class EntryAbility extends UIAbility {
         win.setSpecificSystemBarEnabled('navigationIndicator', true);
       } catch (error) {
       }
+      this.updateSafeAreaInsets(win, false);
+    }
+  }
+
+  // In fullscreen-immersive layout the shell draws under the status bar and
+  // the navigation pill, so the mobile chrome needs their heights as vp
+  // insets (AppStorage 'auraTopSafeVp' / 'auraBottomSafeVp'). Non-fullscreen
+  // windows get the system's own insets, so the values reset to zero.
+  private updateSafeAreaInsets(win: window.Window, fullscreen: boolean): void {
+    if (!fullscreen) {
+      AppStorage.setOrCreate('auraTopSafeVp', 0);
+      AppStorage.setOrCreate('auraBottomSafeVp', 0);
+      return;
+    }
+    try {
+      const density = display.getDefaultDisplaySync().densityPixels;
+      if (density <= 0) {
+        return;
+      }
+      let topPx = 0;
+      let bottomPx = 0;
+      try {
+        topPx = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM).topRect.height;
+      } catch (error) {
+      }
+      try {
+        bottomPx = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR)
+          .bottomRect.height;
+      } catch (error) {
+      }
+      AppStorage.setOrCreate('auraTopSafeVp', Math.round(topPx / density));
+      AppStorage.setOrCreate('auraBottomSafeVp', Math.round(bottomPx / density));
+    } catch (error) {
+      hilog.warn(DOMAIN, 'AuraShell', 'Avoid area read failed: %{public}s', JSON.stringify(error));
     }
   }
 

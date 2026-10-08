@@ -59,6 +59,10 @@
     {
       "name": "transparent",
       "value": "#00000000"
+    },
+    {
+      "name": "glass_tint",
+      "value": "#99141414"
     }
   ]
 }

@@ -102,6 +102,17 @@
         ]
       }
     ],
+    // HarmonyOS 7 immersive light (system UI material): app-level switch.
+    // With "enable", dialogs, toasts, menus (bindSheet), Select, Toggle and
+    // friends get system materials by default without per-component code.
+    // Only takes effect in entry modules; requires target API >= 26.
+    // See UI-DESIGN-SPEC.md section 8.5.
+    "metadata": [
+      {
+        "name": "ohos.arkui.UIMaterial.state",
+        "value": "enable"
+      }
+    ],
     "requestPermissions": [
       {
         // Also declared by the engine HAR; listed here so DevEco Studio's
@@ -111,6 +122,16 @@
       {
         "name": "ohos.permission.DETECT_GESTURE",
         "reason": "$string:holding_hand_permission_reason",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
+      },
+      {
+        "name": "ohos.permission.CAMERA",
+        "reason": "$string:scan_permission_reason",
         "usedScene": {
           "abilities": [
             "EntryAbility"
