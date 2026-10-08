@@ -27,10 +27,11 @@ import { normalizeAddress } from './ShellUtils';
 import { IncognitoSwitch, SavedTab } from '../../utils/IncognitoSwitch';
 
 // The floating bars' full vertical extents (top gap + bar height), in vp.
-// AuraShell reports these to the engine through setBrowserControls; the
-// browserControlsRatio event then drives the bars' translation, so the page
-// and both bars move together while scrolling (SHELL_CONTRACT.md, "手机：滚动
-// 时收起地址栏和 dock").
+// AuraShell reports the top bar to the engine through setBrowserControls;
+// the browserControlsRatio event then drives both bars' translation, so the
+// page and both bars move together while scrolling (SHELL_CONTRACT.md,
+// "手机：滚动时收起地址栏和 dock"). The dock is not reported: it reserves
+// no room on the page and floats over it.
 export const TOP_BAR_EXTENT_VP: number = 52;
 // Dock height 62 + container bottom padding 12: the bar must travel far
 // enough to fully leave the screen when the page scrolls (controlsRatio 0).
@@ -575,8 +576,9 @@ export struct MobileBrowserOverlay {
 
   // 底部 dock：一块悬浮玻璃横条——左右各留 16vp、完整圆角，半透明纯色玻璃
   // （契约 §8：网页上方不用模糊），网页从它后面穿过，跟手收起。
-  // 条区总高 = 引擎通过 setBrowserControls bottom 保留的高度
-  // （BOTTOM_DOCK_EXTENT_VP + 底部安全区）。
+  // 引擎不再为 dock 保留网页空间（setBrowserControls bottom = 0）：网页画到
+  // 窗口底部（手势条区除外），dock 只是外壳自己的悬浮层。条区总高 = dock
+  // 自己的容器与行程（BOTTOM_DOCK_EXTENT_VP + 底部安全区）。
   @Builder
   private BottomDock() {
     Column() {

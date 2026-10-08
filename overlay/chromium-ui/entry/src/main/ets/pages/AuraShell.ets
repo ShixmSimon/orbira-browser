@@ -20,7 +20,7 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { ShellUiPrefs } from '../utils/appearance/ShellUiPrefs';
 import { IncognitoSwitch, SavedTab } from '../utils/IncognitoSwitch';
 import { WebWindow, PictureInPictureSurface } from 'engine';
-import { BOTTOM_DOCK_EXTENT_VP, MobileBrowserOverlay, TOP_BAR_EXTENT_VP } from '../components/mobile/MobileBrowserOverlay';
+import { MobileBrowserOverlay, TOP_BAR_EXTENT_VP } from '../components/mobile/MobileBrowserOverlay';
 import { MobileBackRouter } from '../components/mobile/MobileBackRouter';
 import { HomeSurface } from '../components/mobile/HomeSurface';
 import { CurrentTabCastSession } from '../components/mobile/CurrentTabCastSession';
@@ -208,14 +208,16 @@ struct AuraShell {
   }
 
   // Re-send the reserved extents: with the status bar hidden the page may
-  // start at the very top (minTop 0); with it shown, below the clock.
+  // start at the very top (minTop 0); with it shown, below the clock. The
+  // dock reserves no room on the page (bottom 0): the page draws under it,
+  // and it hides with the top bar on the same ratio.
   private sendScrollTopExtent(statusHidden: boolean): void {
     const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
     this.executeBrowserCommand({
       command: 'setBrowserControls',
       top: TOP_BAR_EXTENT_VP + (statusHidden ? 0 : topSafe),
       minTop: 0,
-      bottom: BOTTOM_DOCK_EXTENT_VP + Number(AppStorage.get('auraBottomSafeVp') ?? 0)
+      bottom: 0
     });
   }
 
@@ -931,9 +933,18 @@ struct AuraShell {
     });
   }
 
-  // Tells the engine the two floating bars' extents once the surface is live
+  // Tells the engine the top bar's extent once the surface is live
   // (SHELL_CONTRACT.md, "手机：滚动时收起地址栏和 dock", step 2). The engine
-  // then drives their scroll-away and reports browserControlsRatio events.
+  // then drives its scroll-away and reports browserControlsRatio events to
+  // move both bars.
+  //
+  // The dock is deliberately NOT sent as bottom controls (bottom: 0). A
+  // non-zero bottom is counted into the top controls, so the engine takes
+  // that strip out of the renderer's size: the page then ends above the dock
+  // and the strip behind it is never page paint -- the opaque block behind
+  // the floating dock. With 0 the page draws to the bottom of the window and
+  // the dock floats over it; it still hides and returns with the top bar on
+  // the same ratio, which the engine reports the same way either way.
   private configureBrowserControls(): void {
     if (this.browserControlsConfigured) {
       return;
@@ -942,18 +953,18 @@ struct AuraShell {
     // The fullscreen-immersive window draws under the status bar and the
     // navigation pill, so the page's reserved extents include their heights
     // (EntryAbility stores them in vp). minTop keeps the page below the
-    // system clock even with both bars scrolled away.
+    // system clock even with the bars scrolled away.
     const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
     const bottomSafe = Number(AppStorage.get('auraBottomSafeVp') ?? 0);
     this.executeBrowserCommand({
       command: 'setBrowserControls',
       top: TOP_BAR_EXTENT_VP + topSafe,
       minTop: 0,
-      bottom: BOTTOM_DOCK_EXTENT_VP + bottomSafe
+      bottom: 0
     });
-    // 契约"手机：滚动时收起地址栏和 dock"第 3 步：手势条高度单独用
-    // setViewportInsets 报给引擎——dock 不能算进来。两根条收起后网页画到
-    // 底，但可视区域缩小这么多：末行内容最多滚到手势条上方，不会被挡住。
+    // 手势条高度单独用 setViewportInsets 报给引擎：这一段不可收起，也不给网页
+    // 布局——末行内容最多滚到手势条上方，不会被挡住。dock 不在这里，也不在
+    // setBrowserControls 里：它悬浮在网页上，不替网页占位。
     this.executeBrowserCommand({
       command: 'setViewportInsets',
       bottom: bottomSafe
