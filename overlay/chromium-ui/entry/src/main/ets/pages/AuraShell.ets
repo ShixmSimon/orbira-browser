@@ -204,6 +204,13 @@ struct AuraShell {
   // 并立即把顶栏动画展开/交还给滚动。
   private onHideTopBarPrefChanged(): void {
     this.sendBrowserControls();
+    if (!this.hideTopBarOnScroll) {
+      // 刚切入「地址栏常驻」：dock 的触摸驱动从当前可见度续上，避免跳变。
+      const seeded: number = Math.min(Math.max(this.scrolledRatio, 0), 1);
+      this.touchDockHidden = (1 - seeded) * Math.max(1,
+        dockCoveredHeightVp(Number(AppStorage.get('auraBottomSafeVp') ?? 0)));
+      this.setTouchDockRatio(seeded);
+    }
   }
 
   // 把顶栏的 browser controls（高度 + 收起许可）发给引擎：启动、设置开关
@@ -236,6 +243,75 @@ struct AuraShell {
       command: 'setViewportInsets',
       bottom: this.hideDockOnScroll ? 0 : dockCoveredHeightVp(bottomSafe)
     });
+  }
+
+  // ---- 「地址栏常驻 + 滚动隐藏底栏」组合：触摸驱动的 dock ----
+  // 地址栏常驻时引擎把收起比例锁死（minTop = top），dock 拿不到滚动信号；
+  // dock 是纯外壳浮层，这里用页面区的触摸位移直接驱动（观察层见 build）。
+  private touchDockTracking: boolean = false;
+  private touchDockLastY: number = 0;
+  private touchDockTravel: number = 1;
+  private touchDockHidden: number = 0;
+  private touchDockRatioValue: number = 1;
+
+  private touchDockModeActive(): boolean {
+    return this.isMobilePhoneUi() && !this.hideTopBarOnScroll &&
+      this.hideDockOnScroll && !this.isNewTabPage();
+  }
+
+  private onDockObserverTouch(event: TouchEvent): void {
+    if (!this.touchDockModeActive()) {
+      return;
+    }
+    if (event.type === TouchType.Down) {
+      const touch = event.touches.length > 0 ? event.touches[0] : undefined;
+      if (touch === undefined) {
+        return;
+      }
+      this.touchDockTracking = true;
+      this.touchDockLastY = touch.y;
+      this.touchDockTravel = Math.max(1,
+        dockCoveredHeightVp(Number(AppStorage.get('auraBottomSafeVp') ?? 0)));
+      this.touchDockHidden = (1 - this.touchDockRatioValue) * this.touchDockTravel;
+      return;
+    }
+    if (!this.touchDockTracking) {
+      return;
+    }
+    if (event.type === TouchType.Move) {
+      const touch = event.touches.length > 0 ? event.touches[0] : undefined;
+      if (touch === undefined) {
+        return;
+      }
+      if (event.touches.length !== 1) {
+        // 多指（缩放等）：不驱动 dock，只把基准跟到手。
+        this.touchDockLastY = touch.y;
+        return;
+      }
+      const dy = touch.y - this.touchDockLastY;
+      this.touchDockLastY = touch.y;
+      const next = Math.min(Math.max(this.touchDockHidden - dy, 0), this.touchDockTravel);
+      if (Math.abs(next - this.touchDockHidden) >= 0.5) {
+        this.touchDockHidden = next;
+        this.setTouchDockRatio(1 - this.touchDockHidden / this.touchDockTravel);
+      }
+      return;
+    }
+    if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+      this.touchDockTracking = false;
+      const settleHidden = this.touchDockHidden >= this.touchDockTravel * 0.5 ?
+        this.touchDockTravel : 0;
+      this.touchDockHidden = settleHidden;
+      animateTo({ duration: 220, curve: Curve.FastOutSlowIn }, (): void => {
+        this.setTouchDockRatio(1 - settleHidden / this.touchDockTravel);
+      });
+      return;
+    }
+  }
+
+  private setTouchDockRatio(ratio: number): void {
+    this.touchDockRatioValue = ratio;
+    AppStorage.setOrCreate('auraTouchDockRatio', ratio);
   }
 
   // Collapsed address bar -> hide the status bar too, and let the page fill
@@ -462,6 +538,17 @@ struct AuraShell {
             // 顶部与下边同色；此前外层 padding 让条带露出垫底的引擎原生
             // 新标签页（深色下是一段灰条，用户可从截图辨认）。
         }
+        // 触摸观察层：「地址栏常驻 + 收起 dock」组合专用（onDockObserverTouch
+        // 内部有组合判断）。Transparent 全屏节点——自己收得到页面区触摸，又不
+        // 阻塞下面的网页（与 bars 包裹容器同一机制）；overlay 在其上先处理，
+        // modal / 条带命中时触摸到不了这里。只读，不消费。
+        Column()
+          .width('100%')
+          .height('100%')
+          .hitTestBehavior(HitTestMode.Transparent)
+          .onTouch((event: TouchEvent): void => {
+            this.onDockObserverTouch(event);
+          })
         if (this.isMobilePhoneUi()) {
           MobileBrowserOverlay({
             browserState: this.browserState,

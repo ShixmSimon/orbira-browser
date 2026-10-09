@@ -209,6 +209,11 @@ export struct MobileBrowserOverlay {
   @StorageLink('auraBrowserControlsRatio') controlsRatioRaw: number = 1;
   // “滚动时隐藏底部栏”（设置-外观）：默认开；关掉后 dock 常驻不随滚动收起。
   @StorageLink('auraHideDockOnScroll') hideDockOnScroll: boolean = true;
+  // “滚动时隐藏地址栏”：dockRatio() 用它判断组合（常驻地址栏时 dock 走触摸）。
+  @StorageLink('auraHideTopBarOnScroll') hideTopBarOnScroll: boolean = true;
+  // 「地址栏常驻 + 收起 dock」组合：引擎比例被锁死，dock 改由 AuraShell 的
+  // 触摸观察层驱动（1 = 全显）。见 AuraShell.onDockObserverTouch。
+  @StorageLink('auraTouchDockRatio') touchDockRatio: number = 1;
 
   private readonly holdingHandRouter: HoldingHandRouter = new HoldingHandRouter();
   private readonly currentTabCastSession: CurrentTabCastSession = new CurrentTabCastSession();
@@ -926,10 +931,15 @@ export struct MobileBrowserOverlay {
   }
 
   // dock 的显隐系数：“滚动时隐藏底部栏”关掉后恒为 1（常驻）；开着时即顶栏
-  // 收起比例（两栏默认跟手同收）。
+  // 收起比例（两栏默认跟手同收）。例外：地址栏也设为常驻时引擎比例被锁死
+  // （恒 1），dock 改用触摸观察层的位移（AuraShell 维护，1 = 全显）。
   private dockRatio(): number {
     if (!this.hideDockOnScroll) {
       return 1;
+    }
+    if (!this.hideTopBarOnScroll) {
+      const touch: number = Number.isFinite(this.touchDockRatio) ? this.touchDockRatio : 1;
+      return Math.min(Math.max(touch, 0), 1);
     }
     const raw: number = Number.isFinite(this.controlsRatioRaw) ? this.controlsRatioRaw : 1;
     return Math.min(Math.max(raw, 0), 1);
