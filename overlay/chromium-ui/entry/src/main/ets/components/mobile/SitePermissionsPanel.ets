@@ -6,7 +6,7 @@
  */
 import { BrowserCommandPayload, SiteSetting, SiteSettingType, SiteSettingValue } from 'engine';
 import { displayUrl } from './PanelBridge';
-import { GlassPage } from './GlassPage';
+import { GlassPage, GLASS_TITLE_ZONE_VP } from './GlassPage';
 
 interface SiteSettingsPayload {
   requestId?: number;
@@ -286,6 +286,8 @@ export struct SitePermissionsPanel {
               .clip(true)
             }
             .width('100%')
+            // 大标题带：滚动内容穿过大标题时逐渐虚化（见 GlassPage 文件头）。
+            .padding({ top: GLASS_TITLE_ZONE_VP })
           }
           .layoutWeight(1)
           .scrollBar(BarState.Off)
@@ -360,6 +362,8 @@ export struct SitePermissionsPanel {
               })
           }
           .width('100%')
+          // 大标题带：滚动内容穿过大标题时逐渐虚化（见 GlassPage 文件头）。
+          .padding({ top: GLASS_TITLE_ZONE_VP })
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)

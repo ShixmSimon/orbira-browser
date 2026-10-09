@@ -9,7 +9,7 @@ import { deviceInfo } from '@kit.BasicServicesKit';
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import { hdsMaterial } from '@kit.UIDesignKit';
 import { AppearanceSettings, ColorModeSetting } from '../../utils/appearance/AppearanceSettings';
-import { GlassPage } from './GlassPage';
+import { GlassPage, GLASS_TITLE_ZONE_VP } from './GlassPage';
 import { ShellUiPrefs } from '../../utils/appearance/ShellUiPrefs';
 import { HuaweiAccountInfo } from '../../utils/account/HuaweiAccountService';
 import { HuaweiAccountView } from './AccountPanel';
@@ -686,6 +686,10 @@ export struct SettingsPanel {
             .height(24)
         }
         .width('100%')
+        // 大标题带：留给内容区顶部的「设置」大标题 + 渐隐遮罩。
+        // 必须加在滚动内容的 Column 上（加在外层容器上内容就不会从标题
+        // 底下穿过，虚化效果看不见）。
+        .padding({ top: GLASS_TITLE_ZONE_VP })
       }
       .layoutWeight(1)
       .scrollBar(BarState.Off)
@@ -746,6 +750,7 @@ export struct SettingsPanel {
     }
     .width('100%')
     .height('100%')
+    .padding({ top: GLASS_TITLE_ZONE_VP })
   }
 
   @Builder
@@ -811,6 +816,8 @@ export struct SettingsPanel {
               .padding({ left: 4, right: 4, top: 10 })
           }
           .width('100%')
+          // 大标题带：见 MainView 同款注释。
+          .padding({ top: GLASS_TITLE_ZONE_VP })
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)
@@ -873,6 +880,7 @@ export struct SettingsPanel {
     }
     .width('100%')
     .height('100%')
+    .padding({ top: GLASS_TITLE_ZONE_VP })
   }
 
   // 外壳偏好（非引擎 prefs）：上滑隐藏状态栏，AppStorage + preferences 持久化。
@@ -953,6 +961,7 @@ export struct SettingsPanel {
     }
     .width('100%')
     .height('100%')
+    .padding({ top: GLASS_TITLE_ZONE_VP })
   }
 
   private setPrefNumber(key: ShellPrefKey, value: number): void {

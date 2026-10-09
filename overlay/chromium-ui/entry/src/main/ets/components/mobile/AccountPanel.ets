@@ -11,6 +11,7 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { loginComponentManager, LoginWithHuaweiIDButton } from '@kit.AccountKit';
 import { AuraSectionLabel } from './LumieKit';
+import { GLASS_TITLE_ZONE_VP } from './GlassPage';
 import {
   clearAccount,
   HuaweiAccountInfo,
@@ -212,7 +213,8 @@ export struct HuaweiAccountView {
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 16, right: 16, bottom: 16 })
+    // top：给内容区顶部的「华为账号」大标题带让位（设置二级页共用 GlassPage 头部）。
+    .padding({ left: 16, right: 16, top: GLASS_TITLE_ZONE_VP, bottom: 16 })
     .backgroundColor($r('app.color.page_background'))
   }
 }

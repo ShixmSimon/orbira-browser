@@ -1,17 +1,22 @@
 /*
- * 全屏页 + 沉浸光感标题栏的统一外壳。
+ * 全屏页 + 沉浸光感标题栏的统一外壳（v2，2026-10-10 真机反馈改版）。
  *
- * 为什么不是「自己画一个 Row 当标题栏」：
- *   HarmonyOS 7 收紧沉浸光感生效范围后，systemMaterial 只在
- *   Navigation/NavDestination 标题栏、底部 TabBar（barPosition=End）、
- *   以及弹窗类组件/接口里才会渲染（见 GlassMaterial.ets 文件头）。
- *   设置页、书签页这些是「页面内容区」，自己画的标题栏挂材质 = 静默失效，
- *   而材质又会顶掉 backgroundColor → 整颗圆钮变透明。
- *   官方给的迁移方式就是：把自定义标题栏塞进 Navigation 的 title 属性。
- *   所以这里统一用 Navigation 承载标题栏，圆钮再挂材质就落在允许区里了。
+ * 布局（从上到下）：
+ *   ① 状态栏区（系统，页面实底延伸上去）
+ *   ② Navigation 标题栏：**只有一颗圆形玻璃返回钮**，独占一行（56vp）。
+ *      —— 材质必须落在 Navigation 标题栏里才生效（HarmonyOS 7 收紧沉浸光感
+ *      范围，见 GlassMaterial.ets 文件头），所以返回钮必须留在标题栏里。
+ *   ③ 内容区顶部「大标题带」（GLASS_TITLE_ZONE_VP = 64vp）：
+ *      大标题 + 渐变虚化遮罩，由 GlassContentHeader 画在内容层之上。
+ *      各页内容在**滚动内容里**留出同样的顶部内边距，滚动时内容从大标题
+ *      底下穿过、越往上越淡（对齐系统设置页"状态栏/标题 逐渐虚化"的观感）。
  *
- * 实底原则不变：Navigation 与内容层都铺 page_background，仍是「全屏实底」
- * （UI-DESIGN-SPEC §18），玻璃只用在标题栏那颗圆钮上。
+ * 为什么标题不再和返回钮同一行：
+ *   ① 用户真机反馈「标题/内容和返回按钮重叠」——两行分开最稳；
+ *   ② 大标题要盖在可滚动内容上、随滚动虚化，只有放在内容层才做得到。
+ *
+ * 实底原则不变：Navigation 与内容层都铺 page_background，玻璃只用在
+ * 标题栏那颗圆钮（和菜单卡）上。
  */
 import { curves } from '@kit.ArkUI';
 import uiMaterial from '@ohos.arkui.uiMaterial';
@@ -24,8 +29,15 @@ import {
   GlassScope
 } from '../../utils/appearance/GlassMaterial';
 
-/** 标题栏高度（vp）：与旧的页内 Header 一致，切过去页面不跳。 */
+/** 标题栏（返回钮那一行）高度（vp）。 */
 export const GLASS_TITLE_BAR_HEIGHT_VP: number = 56;
+
+/**
+ * 内容区顶部「大标题带」高度（vp）。
+ * 各页面要把它加在**滚动内容**的顶部内边距里（不是外层容器），
+ * 这样静态时首行内容正好落在虚化带下方，滚动时内容会从标题底下穿过并淡出。
+ */
+export const GLASS_TITLE_ZONE_VP: number = 64;
 
 /**
  * 圆形玻璃返回钮（对齐系统「软件更新」标题栏那颗）。
@@ -86,10 +98,53 @@ export struct GlassBackButton {
 }
 
 /**
- * 一页「全屏实底 + 玻璃标题栏」。用法（尾随闭包，别传方法引用）：
+ * 内容区顶部的大标题带：大标题 + 底部渐变虚化遮罩。
+ *
+ * 放在页面内容层「Stack 的最上面」：
+ *   Stack(TopStart) {
+ *     Column() { ...可滚动内容，滚动内容留 GLASS_TITLE_ZONE_VP 顶部内边距... }
+ *     GlassContentHeader({ title: '书签' })
+ *   }
+ * 自身不参与触摸测试（HitTestMode.None），滚动/点击从它底下穿过去。
+ */
+@Component
+export struct GlassContentHeader {
+  @Prop title: string = '';
+
+  build() {
+    Column() {
+      Text(this.title)
+        .fontSize(30)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width('100%')
+        .padding({ left: 20, right: 20, top: 12 })
+        // 文字也不吃触摸：整条大标题带对滚动/点击完全透明。
+        .hitTestBehavior(HitTestMode.None)
+    }
+    .width('100%')
+    .height(GLASS_TITLE_ZONE_VP)
+    .alignItems(HorizontalAlign.Start)
+    // 上半段实底（标题区干净），下沿渐隐 —— 滚动上来的内容在这里"逐渐虚化"。
+    .linearGradient({
+      angle: 180,
+      colors: [
+        [$r('app.color.page_background'), 0.0],
+        [$r('app.color.page_background'), 0.55],
+        [$r('app.color.page_background_fade'), 1.0]
+      ]
+    })
+    .hitTestBehavior(HitTestMode.None)
+  }
+}
+
+/**
+ * 一页「全屏实底 + 玻璃返回钮 + 渐隐大标题」。用法（尾随闭包，别传方法引用）：
  *
  *   GlassPage({ title: '书签', onBack: (): void => { this.onBack(); } }) {
- *     Column() { ...原本的页面内容，不要再画 Header... }
+ *     Column() { ...原本的页面内容，滚动内容记得留 GLASS_TITLE_ZONE_VP 顶内边距... }
  *   }
  */
 @Component
@@ -100,19 +155,13 @@ export struct GlassPage {
 
   @Builder
   private TitleBar() {
-    Row({ space: 12 }) {
+    Row() {
       GlassBackButton({
         onAction: (): void => {
           this.onBack();
         }
       })
-      Text(this.title)
-        .fontSize(22)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .layoutWeight(1)
+      Blank()
     }
     .width('100%')
     .height(GLASS_TITLE_BAR_HEIGHT_VP)
@@ -121,13 +170,19 @@ export struct GlassPage {
 
   build() {
     Navigation() {
-      Column() {
-        this.body()
+      Stack({ alignContent: Alignment.TopStart }) {
+        Column() {
+          this.body()
+        }
+        .width('100%')
+        .height('100%')
+
+        GlassContentHeader({ title: this.title })
       }
       .width('100%')
       .height('100%')
     }
-    // 标题栏由我们自绘（圆钮 + 大字），系统返回箭头让位。
+    // 标题栏由我们自绘（只放返回钮），系统返回箭头让位。
     .hideBackButton(true)
     .titleMode(NavigationTitleMode.Mini)
     .title(this.TitleBar, { barStyle: BarStyle.STACK })

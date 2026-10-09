@@ -65,12 +65,20 @@
       "value": "#E0F7F7F8"
     },
     {
+      "name": "menu_glass",
+      "value": "#F2F7F7F8"
+    },
+    {
       "name": "dock_mask",
       "value": "#B3F3F5F7"
     },
     {
       "name": "page_background",
       "value": "#F2F3F5"
+    },
+    {
+      "name": "page_background_fade",
+      "value": "#00F2F3F5"
     },
     {
       "name": "card_background",

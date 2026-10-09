@@ -12,7 +12,7 @@ import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { userAuth } from '@kit.UserAuthenticationKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
-import { GlassBackButton } from './GlassPage';
+import { GlassBackButton, GlassContentHeader, GLASS_TITLE_ZONE_VP } from './GlassPage';
 import {
   BrowserCommandPayload,
   PasswordCommandResultEvent,
@@ -572,11 +572,8 @@ export struct PasswordsPanel {
         }
       })
 
-      Text(this.view === 'detail' ? '密码详情' : '密码')
-        .fontSize(22)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary'))
-
+      // 标题在内容区大标题带（GlassContentHeader），随 view 动态切换；
+      // 这行只留返回钮和右侧动作，与设置页同一套版式。
       Blank()
 
       if (this.view === 'list') {
@@ -733,6 +730,8 @@ export struct PasswordsPanel {
             .padding({ left: 4, right: 4, top: 10 })
         }
         .width('100%')
+        // 大标题带：滚动内容穿过「密码」大标题时逐渐虚化（见 GlassPage 文件头）。
+        .padding({ top: GLASS_TITLE_ZONE_VP })
       }
       .layoutWeight(1)
       .scrollBar(BarState.Off)
@@ -864,6 +863,8 @@ export struct PasswordsPanel {
           })
       }
       .width('100%')
+      // 大标题带：滚动内容穿过「密码详情」大标题时逐渐虚化（见 GlassPage 文件头）。
+      .padding({ top: GLASS_TITLE_ZONE_VP })
     }
     .layoutWeight(1)
     .scrollBar(BarState.Off)
@@ -875,6 +876,7 @@ export struct PasswordsPanel {
     // TabBar / 弹窗类还在沉浸光感的生效范围内）。右侧还有「更多」，故不用
     // GlassPage，自己包一层。
     Navigation() {
+    Stack({ alignContent: Alignment.TopStart }) {
     Column() {
       if (!this.verified) {
         this.GateView()
@@ -888,6 +890,12 @@ export struct PasswordsPanel {
     .height('100%')
     .padding({ left: 16, right: 16, bottom: 16 })
     .backgroundColor($r('app.color.page_background'))
+
+    // 大标题带：与设置页同一套（大标题 + 底部渐隐，滚动内容从标题底下穿过）。
+    GlassContentHeader({ title: this.view === 'detail' ? '密码详情' : '密码' })
+    }
+    .width('100%')
+    .height('100%')
     }
     .hideBackButton(true)
     .titleMode(NavigationTitleMode.Mini)

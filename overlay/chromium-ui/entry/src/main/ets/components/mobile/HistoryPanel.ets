@@ -8,7 +8,7 @@
 import { BrowserCommandPayload, HistoryItem } from 'engine';
 import { displayUrl, dayGroupLabel, formatClock } from './PanelBridge';
 import { AuraSectionLabel } from './LumieKit';
-import { GlassPage } from './GlassPage';
+import { GlassPage, GLASS_TITLE_ZONE_VP } from './GlassPage';
 
 interface HistoryGroup {
   label: string;
@@ -194,6 +194,8 @@ export struct HistoryPanel {
             }, (group: HistoryGroup): string => group.label)
           }
           .width('100%')
+          // 大标题带：滚动内容穿过「历史」大标题时逐渐虚化（见 GlassPage 文件头）。
+          .padding({ top: GLASS_TITLE_ZONE_VP })
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)

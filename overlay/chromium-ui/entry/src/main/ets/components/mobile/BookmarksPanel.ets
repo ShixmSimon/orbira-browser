@@ -10,7 +10,7 @@ import { common } from '@kit.AbilityKit';
 import { BookmarkNode, BrowserCommandPayload } from 'engine';
 import { displayUrl, pickAndStageImportFile, saveExportedFile, deleteStagedFile } from './PanelBridge';
 import { AuraSectionLabel } from './LumieKit';
-import { GlassBackButton } from './GlassPage';
+import { GlassBackButton, GlassContentHeader, GLASS_TITLE_ZONE_VP } from './GlassPage';
 
 interface BookmarkIoPayload {
   kind?: string;
@@ -307,11 +307,8 @@ export struct BookmarksPanel {
         }
       })
 
-      Text('书签')
-        .fontSize(22)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary'))
-
+      // 标题不在这行里：大标题在内容区顶部（GlassContentHeader），
+      // 跟设置页同一套（返回钮独占一行，标题另起一行并随滚动渐隐）。
       Blank()
 
       Button({ type: ButtonType.Circle }) {
@@ -513,6 +510,7 @@ export struct BookmarksPanel {
     // TabBar / 弹窗类还在沉浸光感的生效范围内，自绘 Header 挂材质会静默失效）。
     // 本页标题栏右侧还有「+」和「更多」，所以不用 GlassPage，自己包一层。
     Navigation() {
+    Stack({ alignContent: Alignment.TopStart }) {
     Column() {
       if (this.nodes.length === 0) {
         Column({ space: 6 }) {
@@ -550,6 +548,8 @@ export struct BookmarksPanel {
               .padding({ left: 4, right: 4, top: 10 })
           }
           .width('100%')
+          // 大标题带：滚动内容穿过「书签」大标题时逐渐虚化（见 GlassPage 文件头）。
+          .padding({ top: GLASS_TITLE_ZONE_VP })
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)
@@ -564,6 +564,12 @@ export struct BookmarksPanel {
     .height('100%')
     .padding({ left: 16, right: 16, bottom: 16 })
     .backgroundColor($r('app.color.page_background'))
+
+    // 大标题带：与设置页同一套（大标题 + 底部渐隐，滚动内容从标题底下穿过）。
+    GlassContentHeader({ title: '书签' })
+    }
+    .width('100%')
+    .height('100%')
     }
     .hideBackButton(true)
     .titleMode(NavigationTitleMode.Mini)

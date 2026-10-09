@@ -744,9 +744,11 @@ export struct MobileBrowserOverlay {
     }
     .width(CONTEXT_MENU_CARD_WIDTH_VP)
     .borderRadius(22)
-    // 同 ⋮ 菜单卡：贴着按压点弹在网页上，用与顶栏/dock 一致的半透明玻璃色。
-    // 契约 §8：网页上方不叠模糊（SURFACE 采不到网页内容），只用半透明纯色。
-    .backgroundColor($r('app.color.glass_tint'))
+    // 贴着按压点弹在网页上。玻璃色用 menu_glass（95% 不透明）：glass_tint(88%)
+    // 真机反馈「还是比较透明」——系统材质在网页 SURFACE 上采不到内容弹不出
+    // 毛玻璃（官方 FAQ：材质是对背后内容实时采样），所以这里只能靠更实的
+    // 纯色逼近系统菜单的观感。契约 §8：网页上方不叠模糊。
+    .backgroundColor($r('app.color.menu_glass'))
     .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
     .clip(true)
     .position(this.contextMenuPosition(model))
@@ -1757,10 +1759,11 @@ export struct MobileBrowserOverlay {
     }
     .width(MENU_CARD_WIDTH_VP)
     .borderRadius(22)
-    // 与顶栏胶囊、dock 同一套玻璃：卡片直接叠在网页上，没有遮罩，用半透明
-    // 纯色让页面隐约透出（契约 §8：网页上方不要叠模糊，SURFACE 采不到内容）。
+    // 菜单卡直接叠在网页上，没有遮罩。玻璃色用 menu_glass（95% 不透明）：
+    // glass_tint(88%) 真机反馈「还是比较透明」，系统材质又弹不出来（见
+    // ContextMenuCard 注释），所以靠更实的纯色逼近系统菜单观感。
     // ⚠️ 不要挂 systemMaterial / 改走 bindMenu，原因见 ContextMenuCard 注释。
-    .backgroundColor($r('app.color.glass_tint'))
+    .backgroundColor($r('app.color.menu_glass'))
     .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
     .margin({ right: 14, bottom: 82 + this.bottomSafeVp })
     .transition(TransitionEffect.asymmetric(

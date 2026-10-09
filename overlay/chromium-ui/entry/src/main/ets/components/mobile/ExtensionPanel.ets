@@ -8,7 +8,7 @@
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
 import { BrowserCommandPayload, ExtensionActionItem, ExtensionDetailsEvent, ExtensionSiteAccess } from 'engine';
-import { GlassBackButton } from './GlassPage';
+import { GlassBackButton, GlassContentHeader, GLASS_TITLE_ZONE_VP } from './GlassPage';
 
 // extensionInstallFailed 没有官方接口，按契约字段从事件上取。
 interface ExtensionNoticePayload {
@@ -287,7 +287,6 @@ export struct ExtensionPanel {
     }
   }
 
-  @Builder
   // 标题栏交给 Navigation（HarmonyOS 7 之后只有 Navigation 标题栏 / 底部
   // TabBar / 弹窗类还在沉浸光感的生效范围内）。标题与返回目标都随 page 变。
   @Builder
@@ -303,13 +302,8 @@ export struct ExtensionPanel {
         }
       })
 
-      Text(this.page === 'detail' ? this.detailName : '扩展程序')
-        .fontSize(22)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .layoutWeight(1)
+      // 标题在内容区大标题带（GlassContentHeader），随 page 动态切换。
+      Blank()
     }
     .width('100%')
     .height(56)
@@ -485,6 +479,8 @@ export struct ExtensionPanel {
             .margin({ top: 14 })
         }
         .width('100%')
+        // 大标题带：滚动内容穿过「扩展程序」大标题时逐渐虚化（见 GlassPage 文件头）。
+        .padding({ top: GLASS_TITLE_ZONE_VP })
       }
       .layoutWeight(1)
       .scrollBar(BarState.Off)
@@ -609,6 +605,8 @@ export struct ExtensionPanel {
           }
         }
         .width('100%')
+        // 大标题带：滚动内容穿过扩展名大标题时逐渐虚化（见 GlassPage 文件头）。
+        .padding({ top: GLASS_TITLE_ZONE_VP })
       }
       .layoutWeight(1)
       .scrollBar(BarState.Off)
@@ -623,6 +621,7 @@ export struct ExtensionPanel {
 
   build() {
     Navigation() {
+    Stack({ alignContent: Alignment.TopStart }) {
     Column() {
       if (this.page === 'detail') {
         this.DetailView()
@@ -633,6 +632,12 @@ export struct ExtensionPanel {
     .width('100%')
     .height('100%')
     .padding({ left: 16, right: 16, bottom: 16 })
+
+    // 大标题带：与设置页同一套（大标题 + 底部渐隐，滚动内容从标题底下穿过）。
+    GlassContentHeader({ title: this.page === 'detail' ? this.detailName : '扩展程序' })
+    }
+    .width('100%')
+    .height('100%')
     }
     .hideBackButton(true)
     .titleMode(NavigationTitleMode.Mini)
