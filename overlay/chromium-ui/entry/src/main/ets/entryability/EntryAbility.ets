@@ -468,6 +468,15 @@ export default class EntryAbility extends UIAbility {
       hilog.warn(DOMAIN, 'AuraShell', 'Window decor update is unavailable: %{public}s', JSON.stringify(error));
     }
 
+    // 导航过渡"闪黑"柔化：跨站导航时显示层重建有一瞬空档，系统会露出
+    // 窗口背景——默认纯黑在深色主题下十分扎眼。这里把窗口背景对齐主题
+    // 底色（深色 #1D1D1F / 浅色 #FFFFFF），空档帧变成"闪一下界面底色"。
+    try {
+      win.setWindowBackgroundColor(this.lastColorScheme === 'dark' ? '#1D1D1F' : '#FFFFFF');
+    } catch (error) {
+      hilog.warn(DOMAIN, 'AuraShell', 'Window background color update is unavailable: %{public}s', JSON.stringify(error));
+    }
+
     if (routing.windowPolicy === WindowPolicy.FULLSCREEN) {
       // Immersive layout: the shell draws BEHIND the status bar and the
       // navigation pill (their heights reach the shell as avoid-area insets),
