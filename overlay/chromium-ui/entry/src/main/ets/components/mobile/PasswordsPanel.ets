@@ -717,7 +717,7 @@ export struct PasswordsPanel {
     } else {
       Scroll() {
         Column() {
-          AuraSectionLabel({ text: `已保存的密码 · ${this.items.length}` })
+          AuraSectionLabel({ text: `已保存的密码 · ${this.items.length}`, tightTop: true })
 
           Column() {
             ForEach(this.items, (item: SavedPasswordItem, index: number) => {
@@ -758,7 +758,7 @@ export struct PasswordsPanel {
   private DetailView() {
     Scroll() {
       Column() {
-        AuraSectionLabel({ text: displayUrl(this.editOrigin) })
+        AuraSectionLabel({ text: displayUrl(this.editOrigin), tightTop: true })
 
         Column({ space: 14 }) {
           Column() {

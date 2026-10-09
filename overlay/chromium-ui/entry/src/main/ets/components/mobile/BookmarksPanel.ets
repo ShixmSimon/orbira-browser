@@ -535,7 +535,7 @@ export struct BookmarksPanel {
       } else {
         Scroll() {
           Column() {
-            AuraSectionLabel({ text: `最近添加 · ${this.nodes.length}` })
+            AuraSectionLabel({ text: `最近添加 · ${this.nodes.length}`, tightTop: true })
 
             Column() {
               ForEach(this.nodes, (node: BookmarkNode, index: number) => {

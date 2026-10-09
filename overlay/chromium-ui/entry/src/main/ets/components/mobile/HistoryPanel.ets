@@ -180,8 +180,8 @@ export struct HistoryPanel {
       } else {
         Scroll() {
           Column() {
-            ForEach(this.groups, (group: HistoryGroup) => {
-              AuraSectionLabel({ text: group.label })
+            ForEach(this.groups, (group: HistoryGroup, index: number) => {
+              AuraSectionLabel({ text: group.label, tightTop: index === 0 })
               Column() {
                 ForEach(group.items, (item: HistoryItem, index: number) => {
                   this.HistoryRow(item, index === group.items.length - 1)

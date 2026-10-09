@@ -123,7 +123,7 @@ export struct RecentPanel {
       } else {
         Scroll() {
           Column() {
-            AuraSectionLabel({ text: '最近关闭' })
+            AuraSectionLabel({ text: '最近关闭', tightTop: true })
 
             Column() {
               ForEach(this.items, (item: RecentlyClosedTab, index: number) => {

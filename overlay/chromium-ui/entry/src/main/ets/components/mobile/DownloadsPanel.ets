@@ -367,7 +367,7 @@ export struct DownloadsPanel {
       } else {
         Scroll() {
           Column() {
-            AuraSectionLabel({ text: '下载记录' })
+            AuraSectionLabel({ text: '下载记录', tightTop: true })
 
             Column() {
               ForEach(this.items, (item: DownloadItem, index: number) => {

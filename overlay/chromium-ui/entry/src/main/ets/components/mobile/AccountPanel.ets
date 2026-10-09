@@ -111,7 +111,7 @@ export struct HuaweiAccountView {
   build() {
     Column() {
       if (this.accountInfo().signedIn) {
-        AuraSectionLabel({ text: '账号' })
+        AuraSectionLabel({ text: '账号', tightTop: true })
         Column() {
           Row({ space: 12 }) {
             Image($r('app.media.aura_account'))
@@ -164,7 +164,7 @@ export struct HuaweiAccountView {
           .width('100%')
           .padding({ left: 4, right: 4, top: 10 })
       } else {
-        AuraSectionLabel({ text: '登录' })
+        AuraSectionLabel({ text: '登录', tightTop: true })
         Column() {
           Row({ space: 12 }) {
             Image($r('app.media.aura_account'))

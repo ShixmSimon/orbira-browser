@@ -422,12 +422,12 @@ export struct SettingsPanel {
   }
 
   @Builder
-  private SectionLabel(title: string) {
+  private SectionLabel(title: string, tightTop: boolean = false) {
     Text(title)
       .fontSize(13)
       .fontColor($r('app.color.text_secondary'))
       .width('100%')
-      .margin({ top: 18, bottom: 8 })
+      .margin({ top: tightTop ? 4 : 18, bottom: 8 })
   }
 
   @Builder
@@ -521,7 +521,7 @@ export struct SettingsPanel {
     Column() {
       Scroll() {
         Column() {
-          this.SectionLabel('华为账号')
+          this.SectionLabel('华为账号', true)
           Column() {
             AuraNavIconRow({
               icon: $r('app.media.aura_account'),
@@ -768,7 +768,7 @@ export struct SettingsPanel {
       } else {
         Scroll() {
           Column() {
-            AuraSectionLabel({ text: '选择默认搜索引擎' })
+            AuraSectionLabel({ text: '选择默认搜索引擎', tightTop: true })
 
             Column() {
               ForEach(this.engines, (engine: SearchEngine, index: number) => {

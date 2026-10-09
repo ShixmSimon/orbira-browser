@@ -16,13 +16,16 @@
 @Component
 export struct AuraSectionLabel {
   @Prop text: string = '';
+  // 列表第一个分组标签置 true：标题栏到内容的间距统一到「一个标题字高」
+  // （真机反馈 2026-10-10）。默认 14vp 是给页面中段的分组留的呼吸感。
+  @Prop tightTop: boolean = false;
 
   build() {
     Text(this.text)
       .fontSize(13)
       .fontColor($r('app.color.text_secondary'))
       .width('100%')
-      .padding({ left: 4, top: 14, bottom: 6 })
+      .padding({ left: 4, top: this.tightTop ? 4 : 14, bottom: 6 })
   }
 }
 
