@@ -474,7 +474,11 @@ export struct SettingsPanel {
 
   @Builder
   private DiagRow(label: string, value: string) {
-    Row() {
+    Row({ space: 12 }) {
+      Image($r('app.media.aura_info'))
+        .width(22)
+        .height(22)
+        .fillColor($r('app.color.icon_secondary'))
       Text(label)
         .fontSize(13)
         .fontColor($r('app.color.text_secondary'))
@@ -484,12 +488,17 @@ export struct SettingsPanel {
         .fontColor($r('app.color.text_primary'))
     }
     .width('100%')
-    .height(36)
+    .constraintSize({ minHeight: 44 })
+    .padding({ left: 16, right: 16 })
   }
 
   @Builder
-  private ToggleRow(label: string, key: ShellPrefKey) {
-    Row() {
+  private ToggleRow(icon: Resource, label: string, key: ShellPrefKey) {
+    Row({ space: 12 }) {
+      Image(icon)
+        .width(22)
+        .height(22)
+        .fillColor($r('app.color.icon_primary'))
       Text(label)
         .fontSize(16)
         .fontColor($r('app.color.text_primary'))
@@ -556,11 +565,11 @@ export struct SettingsPanel {
               this.onOpenPasswords();
             }, false)
             this.CardDivider()
-            this.ToggleRow('阻止第三方 Cookie', 'blockThirdPartyCookies')
+            this.ToggleRow($r('app.media.aura_cookie'), '阻止第三方 Cookie', 'blockThirdPartyCookies')
             this.CardDivider()
-            this.ToggleRow('拦截弹窗', 'popupsBlocked')
+            this.ToggleRow($r('app.media.aura_window'), '拦截弹窗', 'popupsBlocked')
             this.CardDivider()
-            this.ToggleRow('发送"请勿追踪"请求', 'doNotTrack')
+            this.ToggleRow($r('app.media.aura_block'), '发送"请勿追踪"请求', 'doNotTrack')
             this.CardDivider()
             this.NavRow($r('app.media.aura_trash'), '清除浏览数据', '', (): void => {
               this.page = 'clear';
@@ -584,7 +593,7 @@ export struct SettingsPanel {
               this.page = 'zoom';
             }, false)
             this.CardDivider()
-            this.ToggleRow('网页强制深色', 'forceDarkWebContents')
+            this.ToggleRow($r('app.media.aura_display'), '网页强制深色', 'forceDarkWebContents')
           }
           .width('100%')
           .padding({ left: 0, right: 0, top: 2, bottom: 2 })
@@ -594,7 +603,7 @@ export struct SettingsPanel {
 
           this.SectionLabel('下载')
           Column() {
-            this.ToggleRow('下载前询问', 'downloadAskWhereToSave')
+            this.ToggleRow($r('app.media.chromium_download'), '下载前询问', 'downloadAskWhereToSave')
           }
           .width('100%')
           .padding({ left: 0, right: 0, top: 2, bottom: 2 })
@@ -604,9 +613,9 @@ export struct SettingsPanel {
 
           this.SectionLabel('高级')
           Column() {
-            this.ToggleRow('启用 JavaScript', 'javascriptEnabled')
+            this.ToggleRow($r('app.media.aura_code'), '启用 JavaScript', 'javascriptEnabled')
             this.CardDivider()
-            this.ToggleRow('预加载网页', 'preloadPages')
+            this.ToggleRow($r('app.media.aura_bolt'), '预加载网页', 'preloadPages')
           }
           .width('100%')
           .padding({ left: 0, right: 0, top: 2, bottom: 2 })
@@ -849,34 +858,36 @@ export struct SettingsPanel {
   // 外壳偏好（非引擎 prefs）：上滑隐藏状态栏，AppStorage + preferences 持久化。
   @Builder
   private ShellToggleRow(label: string, subtitle: string) {
-    Column() {
-      Row() {
-        Column({ space: 2 }) {
-          Text(label)
-            .fontSize(15)
-            .fontColor($r('app.color.text_primary'))
-          if (subtitle.length > 0) {
-            Text(subtitle)
-              .fontSize(12)
-              .fontColor($r('app.color.text_secondary'))
-          }
+    Row({ space: 12 }) {
+      Image($r('app.media.aura_eye'))
+        .width(22)
+        .height(22)
+        .fillColor($r('app.color.icon_primary'))
+      Column({ space: 2 }) {
+        Text(label)
+          .fontSize(16)
+          .fontColor($r('app.color.text_primary'))
+        if (subtitle.length > 0) {
+          Text(subtitle)
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
         }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-
-        Toggle({ type: ToggleType.Switch, isOn: this.hideStatusBarOnScroll })
-          .onChange((isOn: boolean) => {
-            AppStorage.setOrCreate('auraHideStatusBarOnScroll', isOn);
-            const context = this.getUIContext().getHostContext() as common.Context | undefined;
-            if (context) {
-              ShellUiPrefs.saveHideStatusBar(context, isOn);
-            }
-          })
       }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 10, bottom: 10 })
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      Toggle({ type: ToggleType.Switch, isOn: this.hideStatusBarOnScroll })
+        .onChange((isOn: boolean) => {
+          AppStorage.setOrCreate('auraHideStatusBarOnScroll', isOn);
+          const context = this.getUIContext().getHostContext() as common.Context | undefined;
+          if (context) {
+            ShellUiPrefs.saveHideStatusBar(context, isOn);
+          }
+        })
     }
     .width('100%')
+    .constraintSize({ minHeight: 56 })
+    .padding({ left: 16, right: 16, top: 8, bottom: 8 })
   }
 
   // 网页缩放：整页默认缩放（textScale，50–200）。

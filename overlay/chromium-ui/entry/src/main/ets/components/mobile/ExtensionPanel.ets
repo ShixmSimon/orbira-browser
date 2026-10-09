@@ -429,7 +429,7 @@ export struct ExtensionPanel {
 
               Column({ space: 3 }) {
                 Text(this.installing ? '正在安装…' : '从文件安装')
-                  .fontSize(15)
+                  .fontSize(16)
                   .fontWeight(FontWeight.Medium)
                   .fontColor($r('app.color.text_primary'))
                 Text('选择已下载的 .crx 文件')
@@ -457,9 +457,13 @@ export struct ExtensionPanel {
           .clip(true)
 
           Column() {
-            Row() {
+            Row({ space: 12 }) {
+              Image($r('app.media.chromium_settings'))
+                .width(22)
+                .height(22)
+                .fillColor($r('app.color.icon_primary'))
               Text('更多设置')
-                .fontSize(15)
+                .fontSize(16)
                 .fontWeight(FontWeight.Medium)
                 .fontColor($r('app.color.text_primary'))
               Blank()
