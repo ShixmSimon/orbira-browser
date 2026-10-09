@@ -1824,10 +1824,11 @@ struct DockMaterialPlate {
     .opacity(this.slotUsable(slot) ? 1 : 0.4)
     .enabled(this.slotUsable(slot))
     .scale({ x: this.pressedSlot === slot ? 0.82 : 1, y: this.pressedSlot === slot ? 0.82 : 1 })
-    // System point-light press effect (HDS hdsEffect): a soft light spot
-    // under the finger that follows it -- the dock's 流光 while a press
-    // drags across the bar.
-    .visualEffect(this.buildSlotLightEffect())
+    // 这里刻意不挂 hdsEffect 点光源：v9 曾给每个按钮挂
+    // BORDER_CONTENT（照亮"边框+内容"）想做长按流光，真机上它把每个
+    // 按钮点亮成一圈白色描边方框、还把整条胶囊洗白（L≈100-150，正常
+    // 深色玻璃约 L≈60）。Lumie 的 dock 全程没有任何点光源——按压反馈
+    // 交给下面的弹簧动效，流光需求另找正路。
     .accessibilityText(slot)
     .onTouch((event: TouchEvent): void => {
       this.handleSlotTouch(event, slot);
@@ -1868,15 +1869,6 @@ struct DockMaterialPlate {
         this.pressedSlot = '';
       });
     }
-  }
-
-  private buildSlotLightEffect(): VisualEffect {
-    return new hdsEffect.HdsEffectBuilder()
-      .pointLight({
-        sourceType: hdsEffect.PointLightSourceType.SOFT,
-        illuminatedType: hdsEffect.PointLightIlluminatedType.BORDER_CONTENT
-      })
-      .buildEffect();
   }
 
   private resolveFloatingStyle(): HdsTabsFloatingStyle {
