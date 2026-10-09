@@ -652,7 +652,7 @@ export struct SettingsPanel {
           .clip(true)
 
           if (this.chromiumVersion.length > 0) {
-            Text(`Chromium ${this.chromiumVersion}`)
+            Text(`Orbira 星轨浏览器 · Chromium ${this.chromiumVersion}`)
               .fontSize(12)
               .fontColor($r('app.color.text_secondary'))
               .width('100%')
