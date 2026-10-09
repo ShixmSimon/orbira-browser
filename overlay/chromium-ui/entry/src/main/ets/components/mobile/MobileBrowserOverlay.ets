@@ -857,9 +857,25 @@ export struct MobileBrowserOverlay {
         this.FindBar()
       }
 
-      // ⋮ 菜单（2026-10-10）：自绘悬浮卡已撤销，改由 dock 菜单按钮上的
-      // bindMenu 承载（真实锚点 + 系统材质），见 DockButton 内注释。
-      // 菜单打开期间的全屏响应区仍由 menuCardVisible 驱动（挡住网页）。
+      // ⋮ 菜单：一块悬浮卡片贴在 dock 上方靠右。Lumie 不铺遮罩，这里也只留
+      // 一层透明点击层，点到卡片外面就收起来。（2026-10-10 两次实测 bindMenu
+      // —— 1×1 锚点与 dock 真实锚点 —— 都把整屏点击拖死，系统菜单这条路
+      // 在本应用封死，别再试。）
+      if (this.menuCardVisible) {
+        Stack({ alignContent: Alignment.BottomEnd }) {
+          Column()
+            .width('100%')
+            .height('100%')
+            .backgroundColor(Color.Transparent)
+            .onClick(() => {
+              this.closeMenuCard();
+            })
+
+          this.MenuCard()
+        }
+        .width('100%')
+        .height('100%')
+      }
 
       // 长按菜单（v13）：贴着按压点弹的自绘卡片；点卡片外 / 按返回收起来。
       // 数据来自 AuraShell 写进 AppStorage 的 ContextMenuModel。
@@ -1317,20 +1333,6 @@ export struct MobileBrowserOverlay {
       this.handleDockTouch(event, label);
     })
     .onClick(action)
-    // ⋮ 菜单（2026-10-10 实验）：改走系统菜单 bindMenu，锚点就是这颗 dock
-    // 按钮（真实可命中节点）。上一版失败是因为 1×1 不可命中锚点 + 手算落点
-    // 把菜单开到了看不见的位置，它的全屏关闭层吃掉了所有点击。这次不传自定义
-    // systemMaterial，走应用级默认 THICK（和 dock 同源的系统玻璃轨道）；落点
-    // TopEnd = 从按钮上方弹出、右对齐。若真机上菜单仍透明，回退方案 = 恢复
-    // menu_glass 自绘卡（commit 66dc643 的样子）。
-    .bindMenu(label === '菜单' ? this.menuCardVisible : false, (): void => {
-      this.MenuCard()
-    }, {
-      placement: Placement.TopRight,
-      onDisappear: (): void => {
-        this.menuCardVisible = false;
-      }
-    })
   }
 
   // Press -> quick shrink; release -> under-damped spring back, the
@@ -1758,9 +1760,21 @@ export struct MobileBrowserOverlay {
       .padding({ left: 10, right: 10, top: 10, bottom: 12 })
     }
     .width(MENU_CARD_WIDTH_VP)
-    // 2026-10-10 实验：容器样式（底色/圆角/阴影/位置/出入场动画）全部交还给
-    // 系统菜单 —— 自绘底色会盖住系统材质（官方 FAQ：背景色在材质层之上）。
-    // 若真机上菜单透明，回退 = 恢复 menu_glass 自绘卡（commit 66dc643）。
+    .borderRadius(22)
+    // 菜单卡直接叠在网页上，没有遮罩。玻璃色用 menu_glass（95% 不透明），
+    // 靠更实的纯色逼近系统菜单观感（契约 §8：网页上方不叠模糊）。
+    // ⚠️ 2026-10-10 两次真机实测（1×1 锚点 / dock 真实锚点）：bindMenu 一挂
+    // 上去整屏点击就失效 —— 系统菜单这条路在本应用彻底封死，别再试；
+    // 网页上方的浮层一律自绘（底色 menu_glass + 圆角/阴影/出入场动画）。
+    .backgroundColor($r('app.color.menu_glass'))
+    .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
+    .margin({ right: 14, bottom: 82 + this.bottomSafeVp })
+    .transition(TransitionEffect.asymmetric(
+      TransitionEffect.opacity(0)
+        .combine(TransitionEffect.translate({ y: 24 }))
+        .combine(TransitionEffect.scale({ x: 0.97, y: 0.97 })),
+      TransitionEffect.opacity(0)
+    ).animation({ duration: 200, curve: Curve.Friction }))
   }
 
   // 第一行：连接状态。锁形图标 + 域名 + " · 连接安全/不安全"，与 Lumie 一致。
