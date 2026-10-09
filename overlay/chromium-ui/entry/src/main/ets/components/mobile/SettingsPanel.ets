@@ -469,6 +469,7 @@ export struct SettingsPanel {
     }
     .width('100%')
     .constraintSize({ minHeight: 56 })
+    .padding({ left: 16, right: 14, top: 8, bottom: 8 })
     .onClick(action)
   }
 
@@ -696,9 +697,9 @@ export struct SettingsPanel {
           }
         }
         .width('100%')
-        .height(48)
-        .padding({ left: 12, right: 12 })
-        .borderRadius(8)
+        .constraintSize({ minHeight: 56 })
+        .padding({ left: 16, right: 16 })
+        .borderRadius(10)
         .backgroundColor(row.key === this.clearRange ?
           $r('app.color.surface_secondary') : Color.Transparent)
         .onClick(() => {
