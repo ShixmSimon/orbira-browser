@@ -12,7 +12,7 @@ import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { userAuth } from '@kit.UserAuthenticationKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
-import { GlassBackButton, GlassContentHeader, glassHeaderInsetVp } from './GlassPage';
+import { GlassPage, glassHeaderInsetVp } from './GlassPage';
 import {
   BrowserCommandPayload,
   PasswordCommandResultEvent,
@@ -559,61 +559,6 @@ export struct PasswordsPanel {
 
   // -- UI ---------------------------------------------------------------------
 
-  @Builder
-  private TitleBar() {
-    Row({ space: 12 }) {
-      GlassBackButton({
-        onAction: (): void => {
-          if (this.view === 'detail') {
-            this.closeDetail();
-          } else {
-            this.onBack();
-          }
-        }
-      })
-
-      // 标题与返回钮并排（22fp，v1 版式），随 view 动态切换。
-      Text(this.view === 'detail' ? '密码详情' : '密码')
-        .fontSize(22)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary'))
-
-      Blank()
-
-      if (this.view === 'list') {
-        Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.aura_more'))
-            .width(22)
-            .height(22)
-            .fillColor($r('app.color.icon_primary'))
-        }
-        .width(44)
-        .height(44)
-        .backgroundColor($r('app.color.surface_secondary'))
-        .accessibilityText('更多操作')
-        .bindMenu([
-          {
-            value: '导入密码',
-            action: (): void => {
-              this.startImport();
-            }
-          },
-          {
-            value: '导出密码',
-            action: (): void => {
-              this.startExport();
-            }
-          }
-        ])
-      }
-    }
-    .width('100%')
-    .height(56)
-    // 与 GlassPage 标题栏同款内边距：返回钮/动作钮不再贴屏幕边（真机反馈）。
-    .padding({ left: 16, right: 16 })
-    // 标题行浮在滚动内容上层（STACK），非按钮区域让滚动手势穿过。
-    .hitTestBehavior(HitTestMode.None)
-  }
 
   @Builder
   private GateView() {
@@ -717,7 +662,7 @@ export struct PasswordsPanel {
       .layoutWeight(1)
       .justifyContent(FlexAlign.Center)
     } else {
-      Scroll() {
+      Scroll(this.listScroller) {
         Column() {
           AuraSectionLabel({ text: `已保存的密码 · ${this.items.length}`, tightTop: true })
 
@@ -758,7 +703,7 @@ export struct PasswordsPanel {
 
   @Builder
   private DetailView() {
-    Scroll() {
+    Scroll(this.detailScroller) {
       Column() {
         AuraSectionLabel({ text: displayUrl(this.editOrigin), tightTop: true })
 
@@ -879,12 +824,62 @@ export struct PasswordsPanel {
     .align(Alignment.TopStart)
   }
 
+  // ⋯ 的子菜单改走系统 ActionSheet（本页是原生内容，系统弹窗可用）。
+  private showMoreSheet(): void {
+    if (this.view !== 'list') {
+      return;
+    }
+    ActionSheet.show({
+      title: '密码操作',
+      message: '',
+      sheets: [
+        {
+          title: '导入密码',
+          action: (): void => {
+            this.startImport();
+          }
+        },
+        {
+          title: '导出密码',
+          action: (): void => {
+            this.startExport();
+          }
+        }
+      ]
+    });
+  }
+
+  private listScroller: Scroller = new Scroller();
+  private detailScroller: Scroller = new Scroller();
+
   build() {
     // 标题栏放进 Navigation（HarmonyOS 7 之后只有 Navigation 标题栏 / 底部
     // TabBar / 弹窗类还在沉浸光感的生效范围内）。右侧还有「更多」，故不用
     // GlassPage，自己包一层。
-    Navigation() {
-    Stack({ alignContent: Alignment.TopStart }) {
+    GlassPage({
+      title: this.view === 'detail' ? '密码详情' : '密码',
+      scrollers: [this.listScroller, this.detailScroller],
+      menus: {
+        value: [
+          {
+            content: {
+              icon: $r('app.media.aura_more'),
+              label: '更多操作',
+              action: (): void => {
+                this.showMoreSheet();
+              }
+            }
+          }
+        ]
+      },
+      onBack: (): void => {
+        if (this.view === 'detail') {
+          this.closeDetail();
+        } else {
+          this.onBack();
+        }
+      }
+    }) {
     Column() {
       if (!this.verified) {
         this.GateView()
@@ -899,20 +894,6 @@ export struct PasswordsPanel {
     .padding({ left: 16, right: 16, bottom: 16 })
     .backgroundColor($r('app.color.page_background'))
 
-    // 大标题带已取消：内容区顶部只留渐隐带（GlassContentHeader）。
-    GlassContentHeader()
     }
-    .width('100%')
-    .height('100%')
-    // 内容视口顶到屏幕最顶端：滚动内容从状态栏/标题行底下穿过（顶部虚化包含状态栏）。
-    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP])
-    }
-    .hideBackButton(true)
-    .titleMode(NavigationTitleMode.Mini)
-    .title(this.TitleBar, { barStyle: BarStyle.STACK })
-    .mode(NavigationMode.Stack)
-    .backgroundColor($r('app.color.page_background'))
-    .width('100%')
-    .height('100%')
   }
 }

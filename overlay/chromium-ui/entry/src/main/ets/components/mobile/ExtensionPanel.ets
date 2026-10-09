@@ -8,7 +8,7 @@
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
 import { BrowserCommandPayload, ExtensionActionItem, ExtensionDetailsEvent, ExtensionSiteAccess } from 'engine';
-import { GlassBackButton, GlassContentHeader, glassHeaderInsetVp } from './GlassPage';
+import { GlassPage, glassHeaderInsetVp } from './GlassPage';
 
 // extensionInstallFailed 没有官方接口，按契约字段从事件上取。
 interface ExtensionNoticePayload {
@@ -289,40 +289,11 @@ export struct ExtensionPanel {
 
   // 标题栏交给 Navigation（HarmonyOS 7 之后只有 Navigation 标题栏 / 底部
   // TabBar / 弹窗类还在沉浸光感的生效范围内）。标题与返回目标都随 page 变。
-  @Builder
-  private TitleBar() {
-    Row({ space: 12 }) {
-      GlassBackButton({
-        onAction: (): void => {
-          if (this.page === 'detail') {
-            this.page = 'list';
-          } else {
-            this.onBack();
-          }
-        }
-      })
-
-      // 标题与返回钮并排（22fp，v1 版式），随 page 动态切换。
-      Text(this.page === 'detail' ? this.detailName : '扩展程序')
-        .fontSize(22)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .layoutWeight(1)
-    }
-    .width('100%')
-    .height(56)
-    // 与 GlassPage 标题栏同款内边距：返回钮不再贴屏幕边（真机反馈）。
-    .padding({ left: 16, right: 16 })
-    // 标题行浮在滚动内容上层（STACK），非按钮区域让滚动手势穿过。
-    .hitTestBehavior(HitTestMode.None)
-  }
 
   @Builder
   private ListView() {
     Column() {
-      Scroll() {
+      Scroll(this.listScroller) {
         Column() {
           Text(this.items.length > 0 ? `已安装 · ${this.items.length}` : '已安装')
             .fontSize(13)
@@ -530,7 +501,7 @@ export struct ExtensionPanel {
   @Builder
   private DetailView() {
     Column() {
-      Scroll() {
+      Scroll(this.detailScroller) {
         Column() {
           if (this.detailMissing) {
             Text('这个扩展已经不在了。')
@@ -629,9 +600,21 @@ export struct ExtensionPanel {
     .height('100%')
   }
 
+  private listScroller: Scroller = new Scroller();
+  private detailScroller: Scroller = new Scroller();
+
   build() {
-    Navigation() {
-    Stack({ alignContent: Alignment.TopStart }) {
+    GlassPage({
+      title: this.page === 'detail' ? this.detailName : '扩展程序',
+      scrollers: [this.listScroller, this.detailScroller],
+      onBack: (): void => {
+        if (this.page === 'detail') {
+          this.page = 'list';
+        } else {
+          this.onBack();
+        }
+      }
+    }) {
     Column() {
       if (this.page === 'detail') {
         this.DetailView()
@@ -643,20 +626,6 @@ export struct ExtensionPanel {
     .height('100%')
     .padding({ left: 16, right: 16, bottom: 16 })
 
-    // 大标题带已取消：内容区顶部只留渐隐带（GlassContentHeader）。
-    GlassContentHeader()
     }
-    .width('100%')
-    .height('100%')
-    // 内容视口顶到屏幕最顶端：滚动内容从状态栏/标题行底下穿过（顶部虚化包含状态栏）。
-    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP])
-    }
-    .hideBackButton(true)
-    .titleMode(NavigationTitleMode.Mini)
-    .title(this.TitleBar, { barStyle: BarStyle.STACK })
-    .mode(NavigationMode.Stack)
-    .backgroundColor($r('app.color.page_background'))
-    .width('100%')
-    .height('100%')
   }
 }

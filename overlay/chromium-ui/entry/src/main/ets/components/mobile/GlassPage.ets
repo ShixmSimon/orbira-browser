@@ -20,7 +20,13 @@
  */
 import { curves } from '@kit.ArkUI';
 import uiMaterial from '@ohos.arkui.uiMaterial';
-import { hdsMaterial, HdsNavigation, HdsNavigationTitleMode, ScrollEffectType } from '@kit.UIDesignKit';
+import {
+  hdsMaterial,
+  HdsNavigation,
+  HdsNavigationMenuContentOptions,
+  HdsNavigationTitleMode,
+  ScrollEffectType
+} from '@kit.UIDesignKit';
 import {
   glassFallbackColor,
   glassFallbackShadow,
@@ -148,6 +154,8 @@ export struct GlassPage {
   onBack: () => void = (): void => {};
   /** 本页滚动容器的 Scroller（渐变模糊滚动效果按官方要求绑定它们）。 */
   scrollers: Scroller[] = [];
+  /** 标题栏右侧动作（HDS menu，可选；书签/密码等带操作按钮的页面传入）。 */
+  menus?: HdsNavigationMenuContentOptions;
   @BuilderParam body: () => void;
 
   build() {
@@ -171,7 +179,8 @@ export struct GlassPage {
           action: (): void => {
             this.onBack();
           }
-        }
+        },
+        menu: this.menus
       },
       style: {
         // 官方渐变模糊滚动效果 + 沉浸光感材质（两者配套才是完整的
@@ -185,13 +194,17 @@ export struct GlassPage {
           materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
         }
       },
+      // true = 标题行避开状态栏（返回钮/标题在状态栏下方，真机反馈要求）；
+      // 材质纱幕仍会覆盖状态栏区域，内容从它后面穿过时是虚化的。
+      avoidLayoutSafeArea: true,
       enableComponentSafeArea: false
     })
     .titleMode(HdsNavigationTitleMode.MINI)
     .hideBackButton(false)
     .mode(NavigationMode.Stack)
-    // 内容视口顶到 y=0：滚动内容从状态栏后面穿过（顶部虚化包含状态栏）。
-    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP])
+    // 内容视口四边到屏幕物理边缘：顶部从状态栏后面穿过，
+    // 底部直达指示条后面（真机反馈「底部隔着导航条没到底缘」）。
+    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
     .bindToScrollable(this.scrollers)
     .backgroundColor($r('app.color.page_background'))
     .width('100%')
