@@ -396,7 +396,10 @@ struct AuraShell {
           })
             .width('100%')
             .height('100%')
-            .padding({ top: Number(AppStorage.get('auraTopSafeVp') ?? 0) })
+            // 状态栏避让进了 HomeSurface 内部（它自己读 auraTopSafeVp 做
+            // 内边距）——这样 surface_primary 背景能铺满状态栏条带，首页
+            // 顶部与下边同色；此前外层 padding 让条带露出垫底的引擎原生
+            // 新标签页（深色下是一段灰条，用户可从截图辨认）。
         }
         if (this.isMobilePhoneUi()) {
           MobileBrowserOverlay({

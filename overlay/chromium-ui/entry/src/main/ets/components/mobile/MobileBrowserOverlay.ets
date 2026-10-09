@@ -67,13 +67,12 @@ function resolveDockBarWidthVp(): number {
   return 328;
 }
 
-// Lumie 的 dock 底距算法（反编译 PhoneControlsSync.phoneDockBottom）：
-// min(系统安全区, PHONE_TOOLBAR_SAFE_MAX=16) + PHONE_TOOLBAR_GAP=4。真机实测
-// Lumie 胶囊离屏底 20vp——比直接用安全区（本机 28vp）低 8vp，紧贴手势条上方，
-// 这是并排看"协调"的一大来源。dock 位置、收起行程、响应区条带都以它为底距。
+// dock 的底距。v11 曾照搬 Lumie 的钳制算法（反编译 PhoneControlsSync
+// .phoneDockBottom：min(安全区, PHONE_TOOLBAR_SAFE_MAX=16) + GAP=4，本机
+// 算得 20vp），真机用户反馈"太贴边、调回原来的位置"，已回退为原始安全区
+// 值（本机 28vp）。dock 位置、收起行程、响应区条带三处共用这一个底距。
 function resolveDockBottomMarginVp(safeVp: number): number {
-  const safe: number = Number.isFinite(safeVp) ? Math.max(safeVp, 0) : 0;
-  return Math.min(safe, 16) + 4;
+  return Number.isFinite(safeVp) ? Math.max(safeVp, 0) : 0;
 }
 
 // The tab grid: two columns ten vp apart, each card 208 tall of which the
@@ -746,8 +745,8 @@ export struct MobileBrowserOverlay {
     }
     .width('100%')
     .height(BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(this.bottomSafeVp))
-    // 同顶栏：行程要含 dock 的底距（Lumie 钳制后的 margin），否则 ratio→0
-    // 时 dock 仍留一条缝。
+    // 同顶栏：行程要含 dock 的底距（原始安全区），否则 ratio→0 时 dock
+    // 仍留一条缝。
     .translate({ y: (1 - this.controlsRatioRaw) * (BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(this.bottomSafeVp)) })
   }
 
@@ -1807,11 +1806,19 @@ struct DockMaterialPlate {
     .clip(true)
   }
 
-  // 一个 tabBar 项 = 一个 dock 按钮（图标/徽标、按压弹簧、点光源与保底路径
-  // 一致，只是渲染在材质胶囊内）。
+  // 一个 tabBar 项 = 一个 dock 按钮。结构刻意与 Lumie 的 DockItem 同构
+  // （反编译：Column + width('100%') + height('100%') + justifyContent
+  // Center），两个真机教训是这么修的：
+  // ① "胶囊内图标不居中"：固定高 62 的 Button 在 HdsTabs 的槽位里会落在
+  //    偏下 ~4vp 处（像素实测），Lumie 同机居中——因为它填满槽位再居中。
+  // ② "点按白框"：Button 的默认按压蒙层（stateEffect）在深色下是一块
+  //    浅色矩形（按压缩小后 ≈51×50vp，与截图逐像素吻合）；Lumie 的项
+  //    是普通 Column，全程没有 Button/stateEffect。
+  // 点光源也不要：v9 的 BORDER_CONTENT 把每个按钮点亮成一圈白色描边
+  // 方框、还把整条胶囊洗白。按压反馈 = 弹簧缩放 + 材质原生触摸光感。
   @Builder
   private DockSlotBar(slot: string) {
-    Button({ type: ButtonType.Normal, stateEffect: true }) {
+    Column() {
       if (slot === '标签页') {
         Text(this.tabCount > 99 ? '99+' : this.tabCount.toString())
           .fontSize(10)
@@ -1829,18 +1836,15 @@ struct DockMaterialPlate {
           .fillColor($r('app.color.icon_primary'))
       }
     }
-    // 固有宽高：浮动条的自动测量要靠它（100% 会变成循环依赖 → 塌缩）。
+    // 固有宽度 65 是防塌缩保险（浮动条自动测量路径要靠它；barWidth 已
+    // 显式给，两条测量路径都要能立起来）。高度交给槽位（100%），内容
+    // 由 justifyContent 垂直居中——这是与 Lumie 对齐的关键。
     .width(DOCK_SLOT_WIDTH_VP)
-    .height(DOCK_BAR_HEIGHT_VP)
-    .backgroundColor(Color.Transparent)
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
     .opacity(this.slotUsable(slot) ? 1 : 0.4)
     .enabled(this.slotUsable(slot))
     .scale({ x: this.pressedSlot === slot ? 0.82 : 1, y: this.pressedSlot === slot ? 0.82 : 1 })
-    // 这里刻意不挂 hdsEffect 点光源：v9 曾给每个按钮挂
-    // BORDER_CONTENT（照亮"边框+内容"）想做长按流光，真机上它把每个
-    // 按钮点亮成一圈白色描边方框、还把整条胶囊洗白（L≈100-150，正常
-    // 深色玻璃约 L≈60）。Lumie 的 dock 全程没有任何点光源——按压反馈
-    // 交给下面的弹簧动效，流光需求另找正路。
     .accessibilityText(slot)
     .onTouch((event: TouchEvent): void => {
       this.handleSlotTouch(event, slot);
@@ -1871,7 +1875,12 @@ struct DockMaterialPlate {
   }
 
   // Press -> quick shrink; release -> under-damped spring back ("jelly").
+  // 禁用槽位（返回/前进不可用）不做按压动画——以前靠 Button.enabled 挡
+  // 触摸，换成 Column 后在这里守。
   private handleSlotTouch(event: TouchEvent, slot: string): void {
+    if (!this.slotUsable(slot)) {
+      return;
+    }
     if (event.type === TouchType.Down) {
       animateTo({ duration: 90, curve: Curve.FastOutSlowIn }, (): void => {
         this.pressedSlot = slot;

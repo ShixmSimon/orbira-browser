@@ -48,6 +48,9 @@ export struct HomeSurface {
   // 无痕会话：主页换成无痕的标题与说明，常用网站也不再列（那是普通 profile
   // 的访问习惯，跟这个会话无关）。
   @Prop incognito: boolean = false;
+  // 状态栏避让由本组件内部承担（不再靠外层 padding）：surface_primary 背景
+  // 因此能铺满状态栏条带——首页顶部与内容同色，不再露出垫底引擎页的灰条。
+  @StorageProp('auraTopSafeVp') topSafeVp: number = 0;
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
   @State private topSites: TopSite[] = [];
   @State private query: string = '';
@@ -366,7 +369,7 @@ export struct HomeSurface {
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 24, right: 24 })
+    .padding({ top: this.topSafeVp, left: 24, right: 24 })
     .backgroundColor($r('app.color.surface_primary'))
   }
 }
