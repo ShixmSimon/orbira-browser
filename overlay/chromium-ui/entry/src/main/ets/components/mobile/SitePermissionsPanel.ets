@@ -64,6 +64,9 @@ export struct SitePermissionsPanel {
   onClose: () => void = (): void => {};
 
   @State private page: string = 'list';
+  // 渐变模糊滚动效果按官方要求 bindToScrollable：列表与详情各一个。
+  private listScroller: Scroller = new Scroller();
+  private detailScroller: Scroller = new Scroller();
   @State private listItems: SiteSetting[] = [];
   @State private origins: string[] = [];
   @State private detailOrigin: string = '';
@@ -217,6 +220,7 @@ export struct SitePermissionsPanel {
   build() {
     GlassPage({
       title: this.titleText(),
+      scrollers: [this.listScroller, this.detailScroller],
       onBack: (): void => {
         this.handleTitleBack();
       }
@@ -235,7 +239,7 @@ export struct SitePermissionsPanel {
           .layoutWeight(1)
           .justifyContent(FlexAlign.Center)
         } else {
-          Scroll() {
+          Scroll(this.listScroller) {
             Column() {
               Column() {
                 ForEach(this.origins, (origin: string, index: number) => {
@@ -301,7 +305,7 @@ export struct SitePermissionsPanel {
       .visibility(this.page === 'list' ? Visibility.Visible : Visibility.None)
 
       Column() {
-        Scroll() {
+        Scroll(this.detailScroller) {
           Column() {
             if (this.detailItems.length === 0) {
               Text('这个网站还没有单独设置过权限。')

@@ -41,6 +41,8 @@ export struct HistoryPanel {
   @State private items: HistoryItem[] = [];
   @State private groups: HistoryGroup[] = [];
   @State private loading: boolean = true;
+  // 渐变模糊滚动效果按官方要求 bindToScrollable。
+  private listScroller: Scroller = new Scroller();
   private requestSeq: number = 0;
   private retryTimer: number = -1;
 
@@ -166,7 +168,7 @@ export struct HistoryPanel {
   build() {
     // 标题栏交给 GlassPage（落在 Navigation 标题栏里 —— HarmonyOS 7 之后
     // 只有这块区域 + 弹窗类还在沉浸光感的生效范围内）。
-    GlassPage({ title: '历史', onBack: (): void => { this.onBack(); } }) {
+    GlassPage({ title: '历史', scrollers: [this.listScroller], onBack: (): void => { this.onBack(); } }) {
     Column() {
       if (this.items.length === 0) {
         Column() {
@@ -178,7 +180,7 @@ export struct HistoryPanel {
         .layoutWeight(1)
         .justifyContent(FlexAlign.Center)
       } else {
-        Scroll() {
+        Scroll(this.listScroller) {
           Column() {
             ForEach(this.groups, (group: HistoryGroup, index: number) => {
               AuraSectionLabel({ text: group.label, tightTop: index === 0 })

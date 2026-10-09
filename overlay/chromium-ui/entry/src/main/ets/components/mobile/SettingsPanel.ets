@@ -74,6 +74,9 @@ export struct SettingsPanel {
   onOpenPasswords: () => void = (): void => {};
 
   @State private page: string = 'main';
+  // 渐变模糊滚动效果按官方要求 bindToScrollable：主面板与搜索引擎页各一个。
+  private mainScroller: Scroller = new Scroller();
+  private enginesScroller: Scroller = new Scroller();
   @State private toggleItems: PrefToggleItem[] = [];
   @State private engines: SearchEngine[] = [];
   @State private defaultEngineName: string = '';
@@ -519,7 +522,7 @@ export struct SettingsPanel {
   @Builder
   private MainView() {
     Column() {
-      Scroll() {
+      Scroll(this.mainScroller) {
         Column() {
           this.SectionLabel('华为账号', true)
           Column() {
@@ -766,7 +769,7 @@ export struct SettingsPanel {
         .layoutWeight(1)
         .justifyContent(FlexAlign.Center)
       } else {
-        Scroll() {
+        Scroll(this.enginesScroller) {
           Column() {
             AuraSectionLabel({ text: '选择默认搜索引擎', tightTop: true })
 
@@ -975,6 +978,7 @@ export struct SettingsPanel {
   build() {
     GlassPage({
       title: this.titleText(),
+      scrollers: [this.mainScroller, this.enginesScroller],
       onBack: (): void => {
         this.handleTitleBack();
       }
