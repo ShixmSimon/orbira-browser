@@ -34,13 +34,15 @@ import { IncognitoSwitch, SavedTab } from '../../utils/IncognitoSwitch';
 // "手机：滚动时收起地址栏和 dock"). The dock is not reported: it reserves
 // no room on the page and floats over it.
 export const TOP_BAR_EXTENT_VP: number = 52;
-// Dock height 62 + container bottom padding 12: the bar must travel far
+// Dock height 48 + container top breathing 12: the bar must travel far
 // enough to fully leave the screen when the page scrolls (controlsRatio 0).
-export const BOTTOM_DOCK_EXTENT_VP: number = 74;
+export const BOTTOM_DOCK_EXTENT_VP: number = 60;
 
 // The glass bar itself (the Row inside the dock's container): the material
 // plate and the painted fallback must agree on it exactly.
-const DOCK_BAR_HEIGHT_VP: number = 62;
+// 48vp = Lumie 的 PHONE_DOCK_HEIGHT：同一台手机截图实测，Lumie 胶囊
+// 167px ≈ 48vp，我们的 62 画出来 218px，并排就是"太粗"。
+const DOCK_BAR_HEIGHT_VP: number = 48;
 const DOCK_BAR_RADIUS_VP: number = 24;
 // 每个 dock 页签项的固有宽度：HDS 浮动页签在没收到显式 barWidth 时会按
 // 内容测量条形宽度，而内容里再套 100% 宽就成了循环依赖——v9 那版真机上
@@ -63,6 +65,15 @@ function resolveDockBarWidthVp(): number {
     // Fall through to the design-width fallback below.
   }
   return 328;
+}
+
+// Lumie 的 dock 底距算法（反编译 PhoneControlsSync.phoneDockBottom）：
+// min(系统安全区, PHONE_TOOLBAR_SAFE_MAX=16) + PHONE_TOOLBAR_GAP=4。真机实测
+// Lumie 胶囊离屏底 20vp——比直接用安全区（本机 28vp）低 8vp，紧贴手势条上方，
+// 这是并排看"协调"的一大来源。dock 位置、收起行程、响应区条带都以它为底距。
+function resolveDockBottomMarginVp(safeVp: number): number {
+  const safe: number = Number.isFinite(safeVp) ? Math.max(safeVp, 0) : 0;
+  return Math.min(safe, 16) + 4;
 }
 
 // The tab grid: two columns ten vp apart, each card 208 tall of which the
@@ -477,7 +488,7 @@ export struct MobileBrowserOverlay {
     }
     // dock 条带：底边贴视口底，高度 = 收起比例 × 全高。
     if (this.viewportHeightVp > 0) {
-      const dockShown: number = ratio * (BOTTOM_DOCK_EXTENT_VP + this.bottomSafeVp);
+      const dockShown: number = ratio * (BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(this.bottomSafeVp));
       if (dockShown > 0.5 && dockShown < this.viewportHeightVp) {
         const dock: Rectangle = {
           x: 0,
@@ -705,7 +716,7 @@ export struct MobileBrowserOverlay {
           barWidthVp: resolveDockBarWidthVp(),
           barHeightVp: DOCK_BAR_HEIGHT_VP,
           sideMarginVp: 16,
-          bottomMarginVp: this.bottomSafeVp,
+          bottomMarginVp: resolveDockBottomMarginVp(this.bottomSafeVp),
           onDockSlot: (slot: string): void => {
             this.handleDockSlot(slot);
           }
@@ -730,13 +741,14 @@ export struct MobileBrowserOverlay {
         .width('100%')
         .height('100%')
         .justifyContent(FlexAlign.End)
-        .padding({ top: 12, left: 16, right: 16, bottom: this.bottomSafeVp })
+        .padding({ top: 12, left: 16, right: 16, bottom: resolveDockBottomMarginVp(this.bottomSafeVp) })
       }
     }
     .width('100%')
-    .height(BOTTOM_DOCK_EXTENT_VP + this.bottomSafeVp)
-    // 同顶栏：行程要含底部安全区内边距，否则 ratio→0 时 dock 仍留一条缝。
-    .translate({ y: (1 - this.controlsRatioRaw) * (BOTTOM_DOCK_EXTENT_VP + this.bottomSafeVp) })
+    .height(BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(this.bottomSafeVp))
+    // 同顶栏：行程要含 dock 的底距（Lumie 钳制后的 margin），否则 ratio→0
+    // 时 dock 仍留一条缝。
+    .translate({ y: (1 - this.controlsRatioRaw) * (BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(this.bottomSafeVp)) })
   }
 
   // dock 一个按钮的语义动作——材质路径由 HdsTabs 的 onTabBarClick 分发到
@@ -800,7 +812,7 @@ export struct MobileBrowserOverlay {
           .border({ width: 1.8, color: $r('app.color.icon_primary') })
       }
       .layoutWeight(1)
-      .height(58)
+      .height(DOCK_BAR_HEIGHT_VP)
       .backgroundColor(Color.Transparent)
       .scale({ x: this.pressedDock === '标签页' ? 0.82 : 1, y: this.pressedDock === '标签页' ? 0.82 : 1 })
       .accessibilityText('标签页')
@@ -828,7 +840,7 @@ export struct MobileBrowserOverlay {
         .fillColor($r('app.color.icon_primary'))
     }
     .layoutWeight(1)
-    .height(58)
+    .height(DOCK_BAR_HEIGHT_VP)
     .backgroundColor(Color.Transparent)
     .opacity(usable ? 1 : 0.4)
     .enabled(usable)
@@ -1749,7 +1761,7 @@ struct DockMaterialPlate {
   @Prop canGoForward: boolean = false;
   @Prop tabCount: number = 0;
   @Prop barWidthVp: number = 328;
-  @Prop barHeightVp: number = 62;
+  @Prop barHeightVp: number = 48;
   @Prop sideMarginVp: number = 16;
   @Prop bottomMarginVp: number = 0;
   onDockSlot: (slot: string) => void = (_slot: string): void => {};
