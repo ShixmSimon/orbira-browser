@@ -79,6 +79,13 @@ export interface ContextMenuModel {
   // plain-text dialog and comes back through insertText. True when this menu
   // should carry that entry.
   systemPaste: boolean;
+  // Raw payload for the copy actions the shell runs itself (shellCopyTextFor):
+  // the engine's own copies show a native toast pinned to the status bar that
+  // an immersive window clips in half, so plain-text copies never reach it.
+  linkUrl: string;
+  linkText: string;
+  srcUrl: string;
+  selectionText: string;
 }
 
 export const EMPTY_CONTEXT_MENU_MODEL: ContextMenuModel = {
@@ -88,7 +95,11 @@ export const EMPTY_CONTEXT_MENU_MODEL: ContextMenuModel = {
   title: '',
   subtitle: '',
   items: [],
-  systemPaste: false
+  systemPaste: false,
+  linkUrl: '',
+  linkText: '',
+  srcUrl: '',
+  selectionText: ''
 };
 
 function labelFor(event: BrowserRuntimeEvent, action: ContextMenuAction): string {
@@ -173,7 +184,11 @@ export function buildContextMenuModel(event: BrowserRuntimeEvent): ContextMenuMo
     title: titleFor(event),
     subtitle: event.linkText ?? '',
     items: items,
-    systemPaste: systemPaste
+    systemPaste: systemPaste,
+    linkUrl: event.linkUrl ?? '',
+    linkText: event.linkText ?? '',
+    srcUrl: event.srcUrl ?? '',
+    selectionText: event.selectionText ?? ''
   };
 }
 
@@ -195,8 +210,40 @@ export function updateContextMenuModel(previous: ContextMenuModel,
     title: previous.title,
     subtitle: previous.subtitle,
     items: items,
-    systemPaste: systemPaste
+    systemPaste: systemPaste,
+    linkUrl: event.linkUrl ?? previous.linkUrl,
+    linkText: event.linkText ?? previous.linkText,
+    srcUrl: event.srcUrl ?? previous.srcUrl,
+    selectionText: event.selectionText ?? previous.selectionText
   };
+}
+
+// The copy actions the shell runs itself. The engine's copies are fine except
+// for one thing: Chromium shows its own "copied" toast pinned near the top of
+// the window (libweb_engine.so carries toastCopiedLink / kLinkCopiedTo*), and
+// in an immersive shell window that toast lands under the status bar and gets
+// clipped in half. So for plain-text copies the shell writes the pasteboard
+// and shows its own toast, and the engine only hears contextMenuDismissed --
+// its native toast never happens. Returns the text to copy, or undefined when
+// the action must still go to the engine (image data, save-as, navigation...).
+export function shellCopyTextFor(model: ContextMenuModel,
+  action: ContextMenuAction): string | undefined {
+  switch (action) {
+    case 'copyLinkAddress':
+    case 'copyLinkToHighlight':
+      // The highlight variant is a URL with a text fragment the engine builds;
+      // the plain link URL is the useful part and is what we have.
+      return model.linkUrl.length > 0 ? model.linkUrl : undefined;
+    case 'copyLinkText':
+      return model.linkText.length > 0 ? model.linkText : undefined;
+    case 'copyImageAddress':
+    case 'copyMediaAddress':
+      return model.srcUrl.length > 0 ? model.srcUrl : undefined;
+    case 'copy':
+      return model.selectionText.length > 0 ? model.selectionText : undefined;
+    default:
+      return undefined;
+  }
 }
 
 export function parseContextMenuModel(json: string): ContextMenuModel | undefined {

@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { pasteboard } from '@kit.BasicServicesKit';
 import { AVCastPicker, AVCastPickerColorMode, AVCastPickerStyle } from '@kit.AVSessionKit';
 import { hdsEffect, hdsMaterial, HdsTabs, HdsTabsFloatingStyle } from '@kit.UIDesignKit';
 import { inputMethod } from '@kit.IMEKit';
@@ -21,7 +22,8 @@ import {
   ContextMenuItem,
   ContextMenuModel,
   EMPTY_CONTEXT_MENU_MODEL,
-  parseContextMenuModel
+  parseContextMenuModel,
+  shellCopyTextFor
 } from './ContextMenuSheet';
 import { DownloadsPanel } from './DownloadsPanel';
 import { ExtensionPanel } from './ExtensionPanel';
@@ -279,6 +281,7 @@ export struct MobileBrowserOverlay {
 
   private onBrowserStateChanged(): void {
     this.currentTabCastSession.update(this.browserState);
+    this.maybeActivatePendingNewTab();
   }
 
   private parseThumbnails(): void {
@@ -374,8 +377,81 @@ export struct MobileBrowserOverlay {
   }
 
   private chooseContextMenuAction(model: ContextMenuModel, action: ContextMenuAction): void {
+    const copyText: string | undefined = shellCopyTextFor(model, action);
     this.clearContextMenu();
+    if (copyText !== undefined) {
+      // Shell-side copy: the engine's own copies flash a native "copied"
+      // toast pinned at the window top, which an immersive window clips in
+      // half (see shellCopyTextFor). Dismissed, so the engine never acts.
+      this.copyPlainText(copyText);
+      this.issueCommand({ command: 'contextMenuDismissed', requestId: model.requestId });
+      return;
+    }
+    if (action === 'openLinkInNewTab' || action === 'openImageInNewTab' ||
+      action === 'openMediaInNewTab') {
+      // Chromium opens these in a background tab and stays put. Remember the
+      // tab set; the first state snapshot carrying an unknown id is the new
+      // tab, and that is the page the reader asked to go to.
+      this.armPendingNewTabSwitch();
+    }
     this.issueCommand({ command: 'contextMenuAction', requestId: model.requestId, action: action });
+  }
+
+  private copyPlainText(text: string): void {
+    try {
+      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
+      pasteboard.getSystemPasteboard().setData(data).catch((error: Error): void => {
+        console.error('Failed to copy text:', error.message);
+      });
+    } catch (error) {
+      console.error('Failed to copy text');
+    }
+    this.getUIContext().getPromptAction().showToast({ message: '已复制', duration: 1500 });
+  }
+
+  // ---- 后台开标签后自动切过去（长按菜单 open*InNewTab）----
+
+  // Tab ids at the moment the action was sent; the new tab is whichever id
+  // shows up later that is not in here.
+  private pendingNewTabSwitch: boolean = false;
+  private pendingNewTabIds: Set<string> = new Set<string>();
+  private pendingNewTabTimer: number = -1;
+
+  private armPendingNewTabSwitch(): void {
+    this.pendingNewTabIds = new Set<string>();
+    for (const tab of this.browserState.tabs) {
+      const id: string | undefined = tab.id;
+      if (id !== undefined && id.length > 0) {
+        this.pendingNewTabIds.add(id);
+      }
+    }
+    this.pendingNewTabSwitch = true;
+    if (this.pendingNewTabTimer >= 0) {
+      clearTimeout(this.pendingNewTabTimer);
+    }
+    // Safety: if no new tab ever appears (the action failed), stop watching.
+    this.pendingNewTabTimer = setTimeout((): void => {
+      this.pendingNewTabSwitch = false;
+      this.pendingNewTabTimer = -1;
+    }, 10000);
+  }
+
+  private maybeActivatePendingNewTab(): void {
+    if (!this.pendingNewTabSwitch) {
+      return;
+    }
+    for (const tab of this.browserState.tabs) {
+      const id: string | undefined = tab.id;
+      if (id !== undefined && id.length > 0 && !this.pendingNewTabIds.has(id)) {
+        this.pendingNewTabSwitch = false;
+        if (this.pendingNewTabTimer >= 0) {
+          clearTimeout(this.pendingNewTabTimer);
+          this.pendingNewTabTimer = -1;
+        }
+        this.issueCommand({ command: 'activateTab', index: tab.index });
+        return;
+      }
+    }
   }
 
   private dismissContextMenu(): void {
