@@ -84,6 +84,12 @@ function resolveDockBottomMarginVp(safeVp: number): number {
   return Number.isFinite(safeVp) ? Math.max(safeVp, 0) : 0;
 }
 
+// 底栏常驻（“滚动时隐藏底部栏”关）时它永久盖住的高度：与收起行程同一套几何。
+// AuraShell 用它给网页报底部视口内距，页面末尾才能滚到 dock 上方。
+export function dockCoveredHeightVp(bottomSafeVp: number): number {
+  return BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(bottomSafeVp);
+}
+
 // The tab grid: two columns ten vp apart, each card 208 tall of which the
 // title row takes 36. The picture therefore fills TAB_THUMB_HEIGHT_VP of a
 // card (grid width - gap) / 2 wide -- the shape getTabThumbnails is asked to
@@ -201,6 +207,8 @@ export struct MobileBrowserOverlay {
   // 1 keeps both bars in place; 0 has scrolled both fully away. Applied
   // straight from the storage link so one engine update is one render pass.
   @StorageLink('auraBrowserControlsRatio') controlsRatioRaw: number = 1;
+  // “滚动时隐藏底部栏”（设置-外观）：默认开；关掉后 dock 常驻不随滚动收起。
+  @StorageLink('auraHideDockOnScroll') hideDockOnScroll: boolean = true;
 
   private readonly holdingHandRouter: HoldingHandRouter = new HoldingHandRouter();
   private readonly currentTabCastSession: CurrentTabCastSession = new CurrentTabCastSession();
@@ -903,7 +911,7 @@ export struct MobileBrowserOverlay {
     }
     // dock 条带：底边贴视口底，高度 = 收起比例 × 全高。
     if (this.viewportHeightVp > 0) {
-      const dockShown: number = ratio * (BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(this.bottomSafeVp));
+      const dockShown: number = this.dockRatio() * (BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(this.bottomSafeVp));
       if (dockShown > 0.5 && dockShown < this.viewportHeightVp) {
         const dock: Rectangle = {
           x: 0,
@@ -915,6 +923,16 @@ export struct MobileBrowserOverlay {
       }
     }
     return regions;
+  }
+
+  // dock 的显隐系数：“滚动时隐藏底部栏”关掉后恒为 1（常驻）；开着时即顶栏
+  // 收起比例（两栏默认跟手同收）。
+  private dockRatio(): number {
+    if (!this.hideDockOnScroll) {
+      return 1;
+    }
+    const raw: number = Number.isFinite(this.controlsRatioRaw) ? this.controlsRatioRaw : 1;
+    return Math.min(Math.max(raw, 0), 1);
   }
 
   // 根命中模式：模态层（七页面板 / ⋮ 菜单卡 / 长按菜单）在场 → Default +
@@ -932,7 +950,7 @@ export struct MobileBrowserOverlay {
   private EdgeButton(action: MobileEdgeAction) {
     Button({ type: ButtonType.Circle, stateEffect: true }) {
       Image(action === MobileEdgeAction.BACK ?
-        $r('app.media.chromium_back') : $r('app.media.chromium_more'))
+        $r('app.media.aura_arrow_back') : $r('app.media.aura_more'))
         .width(24)
         .height(24)
         .fillColor($r('app.color.icon_primary'))
@@ -972,7 +990,7 @@ export struct MobileBrowserOverlay {
       // 右上角圆形「扩展」按钮：点击进入扩展管理页（扫一扫仍保留在首页搜索框内）。
       if (!this.editingAddress) {
         Button({ type: ButtonType.Circle, stateEffect: true }) {
-          Image($r('app.media.chromium_extensions'))
+          Image($r('app.media.aura_extensions'))
             .width(22)
             .height(22)
             .fillColor($r('app.color.icon_primary'))
@@ -1024,7 +1042,7 @@ export struct MobileBrowserOverlay {
           .fontSize(14)
           .onClick((): void => this.pasteAddress())
         Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.chromium_close'))
+          Image($r('app.media.aura_close'))
             .width(20)
             .height(20)
             .fillColor($r('app.color.icon_secondary'))
@@ -1051,7 +1069,7 @@ export struct MobileBrowserOverlay {
       } else {
         // Back chevron inside the bar, dimmed when there is nowhere to go.
         Button({ type: ButtonType.Circle, stateEffect: true }) {
-          Image($r('app.media.chromium_back'))
+          Image($r('app.media.aura_arrow_back'))
             .width(20)
             .height(20)
             .fillColor($r('app.color.icon_primary'))
@@ -1107,7 +1125,7 @@ export struct MobileBrowserOverlay {
 
         Button({ type: ButtonType.Circle, stateEffect: true }) {
           Image(this.browserState.loading ?
-            $r('app.media.chromium_close') : $r('app.media.chromium_reload'))
+            $r('app.media.aura_close') : $r('app.media.aura_reload'))
             .width(20)
             .height(20)
             .fillColor($r('app.color.icon_primary'))
@@ -1176,7 +1194,7 @@ export struct MobileBrowserOverlay {
     .height(BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(this.bottomSafeVp))
     // 同顶栏：行程要含 dock 的底距（原始安全区），否则 ratio→0 时 dock
     // 仍留一条缝。
-    .translate({ y: (1 - this.controlsRatioRaw) * (BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(this.bottomSafeVp)) })
+    .translate({ y: (1 - this.dockRatio()) * (BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(this.bottomSafeVp)) })
   }
 
   // dock 一个按钮的语义动作——材质路径由 HdsTabs 的 onTabBarClick 分发到
@@ -1211,18 +1229,18 @@ export struct MobileBrowserOverlay {
 
   @Builder
   private BottomDockContent() {
-      this.DockButton($r('app.media.chromium_back'), '返回', this.browserState.canGoBack,
+      this.DockButton($r('app.media.aura_arrow_back'), '返回', this.browserState.canGoBack,
         (): void => {
           this.issueCommand({ command: 'back' });
         })
-      this.DockButton($r('app.media.chromium_forward'), '前进', this.browserState.canGoForward,
+      this.DockButton($r('app.media.aura_arrow_forward'), '前进', this.browserState.canGoForward,
         (): void => {
           this.issueCommand({ command: 'forward' });
         })
       // 'home' is the engine's own command for chrome://newtab (also what the
       // keyboard's home key maps to), so the tab lands on the shell's home
       // surface without pushing a duplicate of the current URL.
-      this.DockButton($r('app.media.chromium_home'), '主页', true,
+      this.DockButton($r('app.media.aura_home'), '主页', true,
         (): void => {
           this.issueCommand({ command: 'home' });
         })
@@ -1252,7 +1270,7 @@ export struct MobileBrowserOverlay {
         this.menuVisible = true;
       })
 
-      this.DockButton($r('app.media.chromium_more'), '菜单', true,
+      this.DockButton($r('app.media.aura_more'), '菜单', true,
         (): void => {
           this.menuCardVisible = true;
         })
@@ -2301,15 +2319,15 @@ struct DockMaterialPlate {
 
   private slotIcon(slot: string): Resource {
     if (slot === '返回') {
-      return $r('app.media.chromium_back');
+      return $r('app.media.aura_arrow_back');
     }
     if (slot === '前进') {
-      return $r('app.media.chromium_forward');
+      return $r('app.media.aura_arrow_forward');
     }
     if (slot === '主页') {
-      return $r('app.media.chromium_home');
+      return $r('app.media.aura_home');
     }
-    return $r('app.media.chromium_more');
+    return $r('app.media.aura_more');
   }
 
   // Press -> quick shrink; release -> under-damped spring back ("jelly").

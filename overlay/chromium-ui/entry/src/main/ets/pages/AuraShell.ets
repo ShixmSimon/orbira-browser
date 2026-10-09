@@ -20,7 +20,7 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { ShellUiPrefs } from '../utils/appearance/ShellUiPrefs';
 import { IncognitoSwitch, SavedTab } from '../utils/IncognitoSwitch';
 import { WebWindow, PictureInPictureSurface } from 'engine';
-import { MobileBrowserOverlay, TOP_BAR_EXTENT_VP } from '../components/mobile/MobileBrowserOverlay';
+import { MobileBrowserOverlay, TOP_BAR_EXTENT_VP, dockCoveredHeightVp } from '../components/mobile/MobileBrowserOverlay';
 import { MobileBackRouter } from '../components/mobile/MobileBackRouter';
 import { HomeSurface } from '../components/mobile/HomeSurface';
 import { CurrentTabCastSession } from '../components/mobile/CurrentTabCastSession';
@@ -127,6 +127,9 @@ struct AuraShell {
   // 滚动时隐藏地址栏（设置-外观）：默认开；关掉时 minTop 抬到顶栏全高，
   // 顶栏常显、不随滚动收起（引擎把 ratio 锁在 1）。
   @StorageLink('auraHideTopBarOnScroll') @Watch('onHideTopBarPrefChanged') hideTopBarOnScroll: boolean = true;
+  // “滚动时隐藏底部栏”（dock）：默认开（两栏跟手同收）；关掉后 dock 常驻，
+  // 页面底部为它让出高度（见 applyDockViewportInset）。
+  @StorageLink('auraHideDockOnScroll') @Watch('onHideDockPrefChanged') hideDockOnScroll: boolean = true;
   private statusBarHiddenByScroll: boolean = false;
   @StorageLink('auraThemeFontId') themeFontId: string = '';
   @StorageLink('auraThemeFontRevision') themeFontRevision: number = 0;
@@ -177,6 +180,9 @@ struct AuraShell {
       ShellUiPrefs.loadHideTopBar(context).then((value: boolean): void => {
         AppStorage.setOrCreate('auraHideTopBarOnScroll', value);
       });
+      ShellUiPrefs.loadHideDock(context).then((value: boolean): void => {
+        AppStorage.setOrCreate('auraHideDockOnScroll', value);
+      });
     }
   }
 
@@ -209,6 +215,20 @@ struct AuraShell {
       command: 'setBrowserControlsState',
       state: this.hideTopBarOnScroll ? 'both' : 'shown',
       animate: true
+    });
+  }
+
+  // “滚动时隐藏底部栏”开关变化：dock 常驻时把它永久盖住的高度报给引擎，
+  // 页面末尾才能滚到它上方；随滚动收起时还原为 0。
+  private onHideDockPrefChanged(): void {
+    this.applyDockViewportInset();
+  }
+
+  private applyDockViewportInset(): void {
+    const bottomSafe = Number(AppStorage.get('auraBottomSafeVp') ?? 0);
+    this.executeBrowserCommand({
+      command: 'setViewportInsets',
+      bottom: this.hideDockOnScroll ? 0 : dockCoveredHeightVp(bottomSafe)
     });
   }
 
@@ -1103,11 +1123,10 @@ struct AuraShell {
     // 尺寸里整段扣掉（ohos-browser-controls.patch → OhosReservedHeight →
     // GetRequestedRendererSizeDevicePx），网页于是根本不往那一条画——手势条
     // 区"空一块"就是这么来的。传 0 后网页画满整窗到底，手势条只是浮在网页
-    // 上的系统指示器；dock 同理（bottom 0 + 自绘浮层，不替网页占位）。
-    this.executeBrowserCommand({
-      command: 'setViewportInsets',
-      bottom: 0
-    });
+    // 上的系统指示器；dock 默认同理（bottom 0 + 自绘浮层，不替网页占位），
+    // 例外：dock 设为常驻（不随滚动收起）时它永久盖住一条，那一条要报进去，
+    // 否则页面最后一行永远看不到——见 applyDockViewportInset。
+    this.applyDockViewportInset();
     // Pull the search engines once, so the home surface and the address bar
     // search the same way the settings page shows before it has been opened.
     this.searchEnginesRequestSeq += 1;

@@ -83,6 +83,7 @@ export struct SettingsPanel {
   @State private textScalePercent: number = 100;
   @StorageLink('auraHideStatusBarOnScroll') hideStatusBarOnScroll: boolean = false;
   @StorageLink('auraHideTopBarOnScroll') hideTopBarOnScroll: boolean = true;
+  @StorageLink('auraHideDockOnScroll') hideDockOnScroll: boolean = true;
   @StorageLink('auraHuaweiAccount') accountJson: string = '';
   // Runtime diagnostics at the bottom of the page: device API level,
   // immersive-material support / switch / level, and both colour-mode
@@ -604,6 +605,15 @@ export struct SettingsPanel {
                 const context = this.getUIContext().getHostContext() as common.Context | undefined;
                 if (context) {
                   ShellUiPrefs.saveHideTopBar(context, isOn);
+                }
+              })
+            this.CardDivider()
+            this.ShellToggleRow($r('app.media.aura_dock'), '滚动时隐藏底部栏', '向下滚动时收起底部栏；关掉则常驻',
+              this.hideDockOnScroll, (isOn: boolean): void => {
+                AppStorage.setOrCreate('auraHideDockOnScroll', isOn);
+                const context = this.getUIContext().getHostContext() as common.Context | undefined;
+                if (context) {
+                  ShellUiPrefs.saveHideDock(context, isOn);
                 }
               })
             this.CardDivider()
