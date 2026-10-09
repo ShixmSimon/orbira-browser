@@ -268,6 +268,11 @@ export class DeviceRoutingPolicy {
       // 诊断开关（滑动延迟排查）：在页面与自身 UI 上叠加实时 FPS/掉帧计数，
       // 用于区分"渲染掉帧"还是"纯输入延迟"。排查完即删除。
       showFrameRate: true,
+      // B 方案（滑动渲染掉帧修复）：显式强制 GPU 合成 + 光栅化，排除引擎在
+      // Pura 80 上默认回退软件渲染（软件合成是网页滚动卡顿的常见真因）。
+      // 若装后出现花屏/黑屏则撤销这两项、回退 v13b。
+      gpuCompositing: true,
+      gpuRasterization: true,
       fullscreenRequested: routing.fullscreenRequested
     };
   }
