@@ -156,6 +156,9 @@ export struct MobileBrowserOverlay {
   private reboundTimer: number = 0;
   private reboundSettleTimer: number = 0;
   private reboundFromUrl: string = '';
+  // Fix F：'both' 的延迟恢复定时器——导航后先保持 'shown'（冻结浏览器
+  // 控件），等新页面首帧稳定再交还控制权，避免视口重算打断 paint holding。
+  private controlsRestoreTimer: number = 0;
   @State private addressDraft: string = '';
   @State private primaryAction: MobileEdgeAction = MobileEdgeAction.BACK;
   @State private followGrip: boolean = true;
@@ -246,6 +249,10 @@ export struct MobileBrowserOverlay {
     if (this.reboundSettleTimer !== 0) {
       clearTimeout(this.reboundSettleTimer);
       this.reboundSettleTimer = 0;
+    }
+    if (this.controlsRestoreTimer !== 0) {
+      clearTimeout(this.controlsRestoreTimer);
+      this.controlsRestoreTimer = 0;
     }
     this.holdingHandRouter.stop();
     this.currentTabCastSession.stop().catch((error: Error) => {
@@ -340,6 +347,11 @@ export struct MobileBrowserOverlay {
   }
 
   private cancelControlsRebound(): void {
+    // Fix F：延迟的 'both' 也要撤——否则用户重新编辑后被它打断 'shown'。
+    if (this.controlsRestoreTimer !== 0) {
+      clearTimeout(this.controlsRestoreTimer);
+      this.controlsRestoreTimer = 0;
+    }
     if (!this.pendingControlsRebound) {
       return;
     }
@@ -374,7 +386,24 @@ export struct MobileBrowserOverlay {
     // Fix E：此刻才退出编辑态、收起键盘——导航 commit 与首帧已经过去，
     // 键盘收起不再与页面切换竞争。
     this.editingAddress = false;
-    this.issueCommand({ command: 'setBrowserControlsState', state: 'both', animate: true });
+    // Fix F：'both' 再推迟 500ms——新页面首帧稳定前保持 'shown'（冻结浏览器
+    // 控件）。实测在 paint holding（旧画面保持）窗口内发 'both' 会触发视口
+    // 重算、打断 hold，旧画面消失（黑屏）直到新页首帧；页内搜索（从不发
+    // 控件命令）因此不跳。
+    this.restoreControlsSoon();
+  }
+
+  // Fix F：把 chrome 控制权（'both'）推迟 500ms 交还。用于任何"导航刚
+  // 提交/刚完成"的窗口——保持 'shown' 不打扰引擎的旧画面保持（paint
+  // holding）。重编辑时由 cancelControlsRebound 撤销。
+  private restoreControlsSoon(): void {
+    if (this.controlsRestoreTimer !== 0) {
+      clearTimeout(this.controlsRestoreTimer);
+    }
+    this.controlsRestoreTimer = setTimeout((): void => {
+      this.controlsRestoreTimer = 0;
+      this.issueCommand({ command: 'setBrowserControlsState', state: 'both', animate: true });
+    }, 500);
   }
 
   private parseThumbnails(): void {
@@ -1009,9 +1038,17 @@ export struct MobileBrowserOverlay {
         .accessibilityText('取消编辑')
         .onClick(() => {
           this.clearKeyboardRecoveryTimers();
+          // Fix F：若刚才提交过导航（回弹在途），'both' 也延迟交还，
+          // 避免打断引擎的旧画面保持；普通取消则立即交还。
+          const navigating: boolean = this.pendingControlsRebound ||
+            this.controlsRestoreTimer !== 0;
           this.cancelControlsRebound();
           this.editingAddress = false;
-          this.issueCommand({ command: 'setBrowserControlsState', state: 'both', animate: true });
+          if (navigating) {
+            this.restoreControlsSoon();
+          } else {
+            this.issueCommand({ command: 'setBrowserControlsState', state: 'both', animate: true });
+          }
         })
       } else {
         // Back chevron inside the bar, dimmed when there is nowhere to go.
