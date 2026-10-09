@@ -400,6 +400,8 @@ export struct SettingsPanel {
       }
       .width(44)
       .height(44)
+      // 玻璃圆底，与顶栏胶囊、dock、菜单卡同一套材质语言（glass_tint）。
+      .backgroundColor($r('app.color.glass_tint'))
       .accessibilityText('返回')
       .onClick(() => {
         if (showBackToMain) {

@@ -103,7 +103,7 @@ const EMPTY_BROWSER_STATE: BrowserStateSnapshot = {
   tabs: [],
   url: CHROMIUM_HOME_URL,
   domain: '',
-  title: 'Chromium',
+  title: 'Orbira',
   loading: false,
   canGoBack: false,
   canGoForward: false,

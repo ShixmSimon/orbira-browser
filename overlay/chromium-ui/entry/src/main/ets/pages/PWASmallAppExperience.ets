@@ -30,7 +30,7 @@ const EMPTY_PWA_STATE: BrowserStateSnapshot = {
   tabs: [],
   url: '',
   domain: '',
-  title: 'Chromium',
+  title: 'Orbira',
   loading: false,
   canGoBack: false,
   canGoForward: false,
@@ -165,7 +165,7 @@ struct PWASmallAppExperience {
           .accessibilityText('\u8fd4\u56de\u4e0a\u4e00\u7ea7')
           .onClick((): void => this.restoreRootMenu())
         }
-        Text(this.menuTitle || this.browserState.title || 'Chromium')
+        Text(this.menuTitle || this.browserState.title || 'Orbira')
           .layoutWeight(1)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })

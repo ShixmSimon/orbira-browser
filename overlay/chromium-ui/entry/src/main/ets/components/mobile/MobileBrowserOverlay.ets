@@ -735,7 +735,8 @@ export struct MobileBrowserOverlay {
     }
     .width(CONTEXT_MENU_CARD_WIDTH_VP)
     .borderRadius(22)
-    .backgroundColor($r('app.color.surface_floating'))
+    // 同 ⋮ 菜单卡：贴着按压点弹在网页上，用与顶栏/dock 一致的半透明玻璃色。
+    .backgroundColor($r('app.color.glass_tint'))
     .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
     .clip(true)
     .position(this.contextMenuPosition(model))
@@ -1517,6 +1518,8 @@ export struct MobileBrowserOverlay {
                 if (this.thumbnailFor(tab).length > 0) {
                   Image(this.thumbnailFor(tab))
                     .objectFit(ImageFit.Cover)
+                    // 已休眠的标签留着上一次的缩略图，压暗表示页面已不在内存里。
+                    .opacity(tab.discarded === true ? 0.4 : 1)
                 } else {
                   // 没抓到快照（后台标签被回收等）：别把整条 URL 糊上来，
                   // 用页面标题占位更可读。
@@ -1527,6 +1530,25 @@ export struct MobileBrowserOverlay {
                     .maxLines(3)
                     .textOverflow({ overflow: TextOverflow.Ellipsis })
                     .padding(10)
+                }
+                // 引擎为省内存丢弃了这个标签（或从上次会话恢复后还没打开过）：
+                // 标题、图标、前进后退记录都还在，点开时自动重新加载。契约
+                // 要求显示为加载中而不是空白，所以盖一层"已休眠"。
+                if (tab.discarded === true) {
+                  Column({ space: 2 }) {
+                    Text('已休眠')
+                      .fontSize(12)
+                      .fontWeight(FontWeight.Medium)
+                      .fontColor($r('app.color.text_secondary'))
+                    Text('点击重新加载')
+                      .fontSize(10)
+                      .fontColor($r('app.color.text_secondary'))
+                  }
+                  .width('100%')
+                  .height('100%')
+                  .justifyContent(FlexAlign.Center)
+                  .backgroundColor($r('app.color.surface_primary'))
+                  .opacity(0.88)
                 }
               }
               .width('100%')
@@ -1693,7 +1715,9 @@ export struct MobileBrowserOverlay {
     }
     .width(MENU_CARD_WIDTH_VP)
     .borderRadius(22)
-    .backgroundColor($r('app.color.surface_floating'))
+    // 与顶栏胶囊、dock 同一套玻璃：卡片直接叠在网页上，没有遮罩，用半透明
+    // 纯色让页面隐约透出（契约 §8：网页上方不要叠模糊，SURFACE 采不到内容）。
+    .backgroundColor($r('app.color.glass_tint'))
     .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
     .margin({ right: 14, bottom: 82 + this.bottomSafeVp })
     .transition(TransitionEffect.asymmetric(
@@ -2058,7 +2082,7 @@ export struct MobileBrowserOverlay {
       return this.browserState.domain;
     }
     return this.browserState.title && this.browserState.title.length > 0 ?
-      this.browserState.title : 'Chromium';
+      this.browserState.title : 'Orbira';
   }
 
   private shortUrl(url: string): string {

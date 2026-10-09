@@ -258,7 +258,7 @@ export struct HomeSurface {
             .height(26)
             .fillColor($r('app.color.text_primary'))
         }
-        Text(this.incognito ? '无痕浏览' : 'Aura')
+        Text(this.incognito ? '无痕浏览' : 'Orbira')
           .fontSize(34)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
