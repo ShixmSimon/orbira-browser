@@ -572,8 +572,12 @@ export struct PasswordsPanel {
         }
       })
 
-      // 标题在内容区大标题带（GlassContentHeader），随 view 动态切换；
-      // 这行只留返回钮和右侧动作，与设置页同一套版式。
+      // 标题与返回钮并排（22fp，v1 版式），随 view 动态切换。
+      Text(this.view === 'detail' ? '密码详情' : '密码')
+        .fontSize(22)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary'))
+
       Blank()
 
       if (this.view === 'list') {
@@ -891,15 +895,15 @@ export struct PasswordsPanel {
     .padding({ left: 16, right: 16, bottom: 16 })
     .backgroundColor($r('app.color.page_background'))
 
-    // 大标题带：与设置页同一套（大标题 + 底部渐隐，滚动内容从标题底下穿过）。
-    GlassContentHeader({ title: this.view === 'detail' ? '密码详情' : '密码' })
+    // 大标题带已取消：内容区顶部只留渐隐带（GlassContentHeader）。
+    GlassContentHeader()
     }
     .width('100%')
     .height('100%')
     }
     .hideBackButton(true)
     .titleMode(NavigationTitleMode.Mini)
-    .title(this.TitleBar, { barStyle: BarStyle.STACK })
+    .title(this.TitleBar)
     .mode(NavigationMode.Stack)
     .backgroundColor($r('app.color.page_background'))
     .width('100%')

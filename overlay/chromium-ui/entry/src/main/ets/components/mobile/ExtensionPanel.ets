@@ -302,8 +302,14 @@ export struct ExtensionPanel {
         }
       })
 
-      // 标题在内容区大标题带（GlassContentHeader），随 page 动态切换。
-      Blank()
+      // 标题与返回钮并排（22fp，v1 版式），随 page 动态切换。
+      Text(this.page === 'detail' ? this.detailName : '扩展程序')
+        .fontSize(22)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
     }
     .width('100%')
     .height(56)
@@ -633,15 +639,15 @@ export struct ExtensionPanel {
     .height('100%')
     .padding({ left: 16, right: 16, bottom: 16 })
 
-    // 大标题带：与设置页同一套（大标题 + 底部渐隐，滚动内容从标题底下穿过）。
-    GlassContentHeader({ title: this.page === 'detail' ? this.detailName : '扩展程序' })
+    // 大标题带已取消：内容区顶部只留渐隐带（GlassContentHeader）。
+    GlassContentHeader()
     }
     .width('100%')
     .height('100%')
     }
     .hideBackButton(true)
     .titleMode(NavigationTitleMode.Mini)
-    .title(this.TitleBar, { barStyle: BarStyle.STACK })
+    .title(this.TitleBar)
     .mode(NavigationMode.Stack)
     .backgroundColor($r('app.color.page_background'))
     .width('100%')

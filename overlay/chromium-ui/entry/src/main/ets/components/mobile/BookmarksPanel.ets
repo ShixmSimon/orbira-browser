@@ -307,8 +307,12 @@ export struct BookmarksPanel {
         }
       })
 
-      // 标题不在这行里：大标题在内容区顶部（GlassContentHeader），
-      // 跟设置页同一套（返回钮独占一行，标题另起一行并随滚动渐隐）。
+      // 标题与返回钮并排（22fp，v1 版式）；内容区顶部只留一条渐隐带。
+      Text('书签')
+        .fontSize(22)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary'))
+
       Blank()
 
       Button({ type: ButtonType.Circle }) {
@@ -565,15 +569,15 @@ export struct BookmarksPanel {
     .padding({ left: 16, right: 16, bottom: 16 })
     .backgroundColor($r('app.color.page_background'))
 
-    // 大标题带：与设置页同一套（大标题 + 底部渐隐，滚动内容从标题底下穿过）。
-    GlassContentHeader({ title: '书签' })
+    // 大标题带已取消：内容区顶部只留渐隐带（GlassContentHeader）。
+    GlassContentHeader()
     }
     .width('100%')
     .height('100%')
     }
     .hideBackButton(true)
     .titleMode(NavigationTitleMode.Mini)
-    .title(this.TitleBar, { barStyle: BarStyle.STACK })
+    .title(this.TitleBar)
     .mode(NavigationMode.Stack)
     .backgroundColor($r('app.color.page_background'))
     .width('100%')
