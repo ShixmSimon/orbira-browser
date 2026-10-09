@@ -185,10 +185,10 @@ export struct MobileBrowserOverlay {
   // True while the extensions page was opened from settings, so its back
   // button returns there instead of closing to the browser.
   private extensionsFromSettings: boolean = false;
-  // 顶栏/dock 显隐布尔（由 AuraShell 在引擎 ratio 跨过滞回阈值时翻转）。
-  // 改用布尔 + 动画替代逐帧 ratio：一次滚动方向最多 1~2 次重渲染，主线程
-  // 不再被 overlay 全树逐帧重绘占满，触摸派发给网页表面的延迟与掉帧消除。
-  @StorageLink('auraBrowserControlsHidden') chromeHidden: boolean = false;
+  // 0..1, from the engine: how much of the top bar the page is showing.
+  // 1 keeps both bars in place; 0 has scrolled both fully away. Applied
+  // straight from the storage link so one engine update is one render pass.
+  @StorageLink('auraBrowserControlsRatio') controlsRatioRaw: number = 1;
 
   private readonly holdingHandRouter: HoldingHandRouter = new HoldingHandRouter();
   private readonly currentTabCastSession: CurrentTabCastSession = new CurrentTabCastSession();
@@ -771,7 +771,8 @@ export struct MobileBrowserOverlay {
       regions.push(full);
       return regions;
     }
-    const ratio: number = this.chromeHidden ? 0 : 1;
+    const ratio: number = Number.isFinite(this.controlsRatioRaw) ?
+      Math.min(Math.max(this.controlsRatioRaw, 0), 1) : 1;
     // 顶栏条带：新标签页没有顶栏，不占（否则首页顶部会出现一条死区）。
     if (!this.isNewTabUrl(this.browserState.url)) {
       const topShown: number = ratio * (TOP_BAR_EXTENT_VP + this.topSafeVp);
@@ -867,8 +868,7 @@ export struct MobileBrowserOverlay {
     .padding({ top: this.topSafeVp + 8, left: 16, right: 16 })
     // 行程必须覆盖"顶部安全区内边距 + 条高"，否则 ratio 到 0 时条底仍卡在安全区
     // 高度处，露出一条缝（用户看到的"贴边还看得见"）。
-    .animation({ duration: 220, curve: Curve.FastOutSlowIn })
-    .translate({ y: this.chromeHidden ? -(TOP_BAR_EXTENT_VP + this.topSafeVp) : 0 })
+    .translate({ y: -(1 - this.controlsRatioRaw) * (TOP_BAR_EXTENT_VP + this.topSafeVp) })
   }
 
   @Builder
@@ -1043,8 +1043,7 @@ export struct MobileBrowserOverlay {
     .height(BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(this.bottomSafeVp))
     // 同顶栏：行程要含 dock 的底距（原始安全区），否则 ratio→0 时 dock
     // 仍留一条缝。
-    .animation({ duration: 220, curve: Curve.FastOutSlowIn })
-    .translate({ y: this.chromeHidden ? (BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(this.bottomSafeVp)) : 0 })
+    .translate({ y: (1 - this.controlsRatioRaw) * (BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(this.bottomSafeVp)) })
   }
 
   // dock 一个按钮的语义动作——材质路径由 HdsTabs 的 onTabBarClick 分发到
