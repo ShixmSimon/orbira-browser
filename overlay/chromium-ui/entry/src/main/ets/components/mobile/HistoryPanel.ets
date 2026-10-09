@@ -43,6 +43,7 @@ export struct HistoryPanel {
   @State private loading: boolean = true;
   // 渐变模糊滚动效果按官方要求 bindToScrollable。
   private listScroller: Scroller = new Scroller();
+  @State private searchText: string = '';
   private requestSeq: number = 0;
   private retryTimer: number = -1;
 
@@ -165,6 +166,27 @@ export struct HistoryPanel {
     .width('100%')
   }
 
+  // 搜索过滤：标题/网址命中即留；分组内没有命中项的整组丢弃。
+  private filteredGroups(): HistoryGroup[] {
+    const q = this.searchText.trim().toLowerCase();
+    if (q.length === 0) {
+      return this.groups;
+    }
+    const out: HistoryGroup[] = [];
+    for (const group of this.groups) {
+      const items: HistoryItem[] = [];
+      for (const item of group.items) {
+        if (item.title.toLowerCase().includes(q) || item.url.toLowerCase().includes(q)) {
+          items.push(item);
+        }
+      }
+      if (items.length > 0) {
+        out.push({ label: group.label, items: items } as HistoryGroup);
+      }
+    }
+    return out;
+  }
+
   build() {
     // 标题栏交给 GlassPage（落在 Navigation 标题栏里 —— HarmonyOS 7 之后
     // 只有这块区域 + 弹窗类还在沉浸光感的生效范围内）。
@@ -182,7 +204,38 @@ export struct HistoryPanel {
       } else {
         Scroll(this.listScroller) {
           Column() {
-            ForEach(this.groups, (group: HistoryGroup, index: number) => {
+            Row({ space: 8 }) {
+              Image($r('app.media.chromium_search'))
+                .width(16)
+                .height(16)
+                .fillColor($r('app.color.icon_secondary'))
+              TextInput({ text: this.searchText, placeholder: '搜索历史记录' })
+                .layoutWeight(1)
+                .height(38)
+                .fontSize(14)
+                .fontColor($r('app.color.text_primary'))
+                .placeholderColor($r('app.color.text_secondary'))
+                .backgroundColor(Color.Transparent)
+                .onChange((value: string) => {
+                  this.searchText = value;
+                })
+            }
+            .width('100%')
+            .height(40)
+            .borderRadius(20)
+            .backgroundColor($r('app.color.surface_secondary'))
+            .padding({ left: 12, right: 12 })
+            .margin({ bottom: 10 })
+
+            if (this.filteredGroups().length === 0) {
+              Text('没有匹配的历史记录')
+                .fontSize(14)
+                .fontColor($r('app.color.text_secondary'))
+                .width('100%')
+                .textAlign(TextAlign.Center)
+                .margin({ top: 40 })
+            }
+            ForEach(this.filteredGroups(), (group: HistoryGroup, index: number) => {
               AuraSectionLabel({ text: group.label, tightTop: index === 0 })
               Column() {
                 ForEach(group.items, (item: HistoryItem, index: number) => {

@@ -53,6 +53,7 @@ export struct DownloadsPanel {
   @State private loading: boolean = true;
   // 渐变模糊滚动效果按官方要求 bindToScrollable。
   private listScroller: Scroller = new Scroller();
+  @State private searchText: string = '';
   private requestSeq: number = 0;
   private retryTimer: number = -1;
   private lastReloadAt: number = 0;
@@ -352,6 +353,21 @@ export struct DownloadsPanel {
     .width('100%')
   }
 
+  // 搜索过滤：文件名/网址命中即留。
+  private filteredDownloads(): DownloadItem[] {
+    const q = this.searchText.trim().toLowerCase();
+    if (q.length === 0) {
+      return this.items;
+    }
+    const out: DownloadItem[] = [];
+    for (const item of this.items) {
+      if (item.fileName.toLowerCase().includes(q) || item.url.toLowerCase().includes(q)) {
+        out.push(item);
+      }
+    }
+    return out;
+  }
+
   build() {
     // 标题栏交给 GlassPage（落在 Navigation 标题栏里 —— HarmonyOS 7 之后
     // 只有这块区域 + 弹窗类还在沉浸光感的生效范围内）。
@@ -369,10 +385,39 @@ export struct DownloadsPanel {
       } else {
         Scroll(this.listScroller) {
           Column() {
-            AuraSectionLabel({ text: '下载记录', tightTop: true })
+            Row({ space: 8 }) {
+              Image($r('app.media.chromium_search'))
+                .width(16)
+                .height(16)
+                .fillColor($r('app.color.icon_secondary'))
+              TextInput({ text: this.searchText, placeholder: '搜索下载记录' })
+                .layoutWeight(1)
+                .height(38)
+                .fontSize(14)
+                .fontColor($r('app.color.text_primary'))
+                .placeholderColor($r('app.color.text_secondary'))
+                .backgroundColor(Color.Transparent)
+                .onChange((value: string) => {
+                  this.searchText = value;
+                })
+            }
+            .width('100%')
+            .height(40)
+            .borderRadius(20)
+            .backgroundColor($r('app.color.surface_secondary'))
+            .padding({ left: 12, right: 12 })
+            .margin({ bottom: 10 })
 
+            if (this.filteredDownloads().length === 0) {
+              Text('没有匹配的下载记录')
+                .fontSize(14)
+                .fontColor($r('app.color.text_secondary'))
+                .width('100%')
+                .textAlign(TextAlign.Center)
+                .margin({ top: 40 })
+            }
             Column() {
-              ForEach(this.items, (item: DownloadItem, index: number) => {
+              ForEach(this.filteredDownloads(), (item: DownloadItem, index: number) => {
                 this.DownloadRow(item, index)
               }, (item: DownloadItem): string => item.id)
             }

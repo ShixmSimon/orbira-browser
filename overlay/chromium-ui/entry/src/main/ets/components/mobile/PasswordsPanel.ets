@@ -664,10 +664,39 @@ export struct PasswordsPanel {
     } else {
       Scroll(this.listScroller) {
         Column() {
-          AuraSectionLabel({ text: `已保存的密码 · ${this.items.length}`, tightTop: true })
+          Row({ space: 8 }) {
+            Image($r('app.media.chromium_search'))
+              .width(16)
+              .height(16)
+              .fillColor($r('app.color.icon_secondary'))
+            TextInput({ text: this.searchText, placeholder: '搜索密码' })
+              .layoutWeight(1)
+              .height(38)
+              .fontSize(14)
+              .fontColor($r('app.color.text_primary'))
+              .placeholderColor($r('app.color.text_secondary'))
+              .backgroundColor(Color.Transparent)
+              .onChange((value: string) => {
+                this.searchText = value;
+              })
+          }
+          .width('100%')
+          .height(40)
+          .borderRadius(20)
+          .backgroundColor($r('app.color.surface_secondary'))
+          .padding({ left: 12, right: 12 })
+          .margin({ bottom: 10 })
 
+          if (this.filteredPasswords().length === 0) {
+            Text('没有匹配的密码')
+              .fontSize(14)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+              .textAlign(TextAlign.Center)
+              .margin({ top: 40 })
+          }
           Column() {
-            ForEach(this.items, (item: SavedPasswordItem, index: number) => {
+            ForEach(this.filteredPasswords(), (item: SavedPasswordItem, index: number) => {
               this.PasswordRow(item, index)
             }, (item: SavedPasswordItem): string => item.id)
           }
@@ -851,6 +880,22 @@ export struct PasswordsPanel {
 
   private listScroller: Scroller = new Scroller();
   private detailScroller: Scroller = new Scroller();
+  @State private searchText: string = '';
+
+  // 搜索过滤：来源/用户名命中即留。
+  private filteredPasswords(): SavedPasswordItem[] {
+    const q = this.searchText.trim().toLowerCase();
+    if (q.length === 0) {
+      return this.items;
+    }
+    const out: SavedPasswordItem[] = [];
+    for (const item of this.items) {
+      if (item.origin.toLowerCase().includes(q) || item.username.toLowerCase().includes(q)) {
+        out.push(item);
+      }
+    }
+    return out;
+  }
 
   build() {
     // 标题栏放进 Navigation（HarmonyOS 7 之后只有 Navigation 标题栏 / 底部

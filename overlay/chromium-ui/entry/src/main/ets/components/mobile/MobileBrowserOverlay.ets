@@ -67,7 +67,8 @@ function resolveDockBarWidthVp(): number {
     if (info.densityPixels > 0 && info.width > 0) {
       const vpWidth: number = info.width / info.densityPixels;
       if (Number.isFinite(vpWidth) && vpWidth > 64) {
-        return vpWidth - 32;
+        // 2026-10-10 用户反馈 dock 太长：侧边距 16→36（胶囊 = 屏宽-72）。
+        return vpWidth - 72;
       }
     }
   } catch (error) {
@@ -1066,8 +1067,18 @@ export struct MobileBrowserOverlay {
           .onSubmit(() => {
             this.submitAddress();
           })
-        Button('粘贴')
-          .fontSize(14)
+        Text('粘贴')
+          .fontSize(13)
+          .fontColor($r('app.color.text_primary'))
+          .height(32)
+          .padding({ left: 14, right: 14 })
+          .borderRadius(16)
+          .backgroundColor($r('app.color.surface_secondary'))
+          .margin({ right: 6 })
+          .scale(this.roundScale('addressPaste'))
+          .onTouch((event: TouchEvent): void => {
+            this.handleRoundTouch(event, 'addressPaste');
+          })
           .onClick((): void => this.pasteAddress())
         Button({ type: ButtonType.Circle }) {
           Image($r('app.media.aura_close'))
@@ -1197,7 +1208,7 @@ export struct MobileBrowserOverlay {
           tabCount: this.browserState.tabCount,
           barWidthVp: resolveDockBarWidthVp(),
           barHeightVp: DOCK_BAR_HEIGHT_VP,
-          sideMarginVp: 16,
+          sideMarginVp: 36,
           bottomMarginVp: resolveDockBottomMarginVp(this.bottomSafeVp),
           onDockSlot: (slot: string): void => {
             this.handleDockSlot(slot);
@@ -1509,6 +1520,11 @@ export struct MobileBrowserOverlay {
     // 会把面板整体下压一个状态栏高度、顶部露出一条、底部多出一条空区
     // （真机反馈「顶部没到顶、底部多一块区域」的根源）。
     .backgroundColor($r('app.color.page_background'))
+    // 面板开合动画：右侧滑入 + 淡入，关闭淡出（欠阻尼弹簧，鸿蒙回弹手感）。
+    .transition(TransitionEffect.asymmetric(
+      TransitionEffect.translate({ x: 140 }).combine(TransitionEffect.opacity(0)),
+      TransitionEffect.opacity(0)
+    ).animation({ duration: 360, curve: curves.springMotion(0.34, 0.86) }))
     // Motion: a shell page slides in from the right and fades back out, so
     // opening and closing a page reads as navigation.
     .transition(TransitionEffect.asymmetric(

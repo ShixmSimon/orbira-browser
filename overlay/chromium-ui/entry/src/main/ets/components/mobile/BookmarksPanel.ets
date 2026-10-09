@@ -43,6 +43,8 @@ export struct BookmarksPanel {
   private pendingImportPath: string = '';
   private pendingExportPath: string = '';
   private pendingExportRequestId: number = 0;
+  @State private searchText: string = '';
+  @State private expandedFolders: string[] = [];
 
   aboutToAppear(): void {
     // Seed from storage first: a @StorageLink does not fire @Watch for its
@@ -468,6 +470,78 @@ export struct BookmarksPanel {
 
   private listScroller: Scroller = new Scroller();
 
+  // 搜索：标题/网址命中即留（只搜书签项，文件夹本身不进结果）。
+  private matchesQuery(node: BookmarkNode, q: string): boolean {
+    return node.title.toLowerCase().includes(q) || (node.url ?? '').toLowerCase().includes(q);
+  }
+
+  private searchHits(): BookmarkNode[] {
+    const q = this.searchText.trim().toLowerCase();
+    if (q.length === 0) {
+      return [];
+    }
+    const out: BookmarkNode[] = [];
+    for (const node of this.nodes) {
+      if (node.type === 'url' && this.matchesQuery(node, q)) {
+        out.push(node);
+      }
+    }
+    return out;
+  }
+
+  // 文件夹分组：引擎载荷里有 type=folder 节点时启用文件夹视图。
+  private folderNodes(): BookmarkNode[] {
+    const out: BookmarkNode[] = [];
+    for (const node of this.nodes) {
+      if (node.type === 'folder') {
+        out.push(node);
+      }
+    }
+    return out;
+  }
+
+  private childrenOf(folderId: string): BookmarkNode[] {
+    const out: BookmarkNode[] = [];
+    for (const node of this.nodes) {
+      if (node.type === 'url' && node.parentId === folderId) {
+        out.push(node);
+      }
+    }
+    return out;
+  }
+
+  private looseUrls(): BookmarkNode[] {
+    const folderIds = new Set<string>();
+    for (const node of this.nodes) {
+      if (node.type === 'folder') {
+        folderIds.add(node.id);
+      }
+    }
+    const out: BookmarkNode[] = [];
+    for (const node of this.nodes) {
+      if (node.type === 'url' && !folderIds.has(node.parentId)) {
+        out.push(node);
+      }
+    }
+    return out;
+  }
+
+  private toggleFolder(id: string): void {
+    const next: string[] = [];
+    let removed = false;
+    for (const v of this.expandedFolders) {
+      if (v === id) {
+        removed = true;
+      } else {
+        next.push(v);
+      }
+    }
+    if (!removed) {
+      next.push(id);
+    }
+    this.expandedFolders = next;
+  }
+
   build() {
     // 标题栏放进 Navigation（HarmonyOS 7 之后只有 Navigation 标题栏 / 底部
     // TabBar / 弹窗类还在沉浸光感的生效范围内，自绘 Header 挂材质会静默失效）。
@@ -524,17 +598,134 @@ export struct BookmarksPanel {
       } else {
         Scroll(this.listScroller) {
           Column() {
-            AuraSectionLabel({ text: `最近添加 · ${this.nodes.length}`, tightTop: true })
-
-            Column() {
-              ForEach(this.nodes, (node: BookmarkNode, index: number) => {
-                this.BookmarkRow(node, index)
-              }, (node: BookmarkNode): string => node.id)
+            Row({ space: 8 }) {
+              Image($r('app.media.chromium_search'))
+                .width(16)
+                .height(16)
+                .fillColor($r('app.color.icon_secondary'))
+              TextInput({ text: this.searchText, placeholder: '搜索书签' })
+                .layoutWeight(1)
+                .height(38)
+                .fontSize(14)
+                .fontColor($r('app.color.text_primary'))
+                .placeholderColor($r('app.color.text_secondary'))
+                .backgroundColor(Color.Transparent)
+                .onChange((value: string) => {
+                  this.searchText = value;
+                })
             }
             .width('100%')
-            .borderRadius(16)
-            .backgroundColor($r('app.color.card_background'))
-            .clip(true)
+            .height(40)
+            .borderRadius(20)
+            .backgroundColor($r('app.color.surface_secondary'))
+            .padding({ left: 12, right: 12 })
+            .margin({ bottom: 10 })
+
+            if (this.searchText.trim().length > 0) {
+              // 搜索：平铺命中项（标题/网址）。
+              if (this.searchHits().length === 0) {
+                Text('没有匹配的书签')
+                  .fontSize(14)
+                  .fontColor($r('app.color.text_secondary'))
+                  .width('100%')
+                  .textAlign(TextAlign.Center)
+                  .margin({ top: 40 })
+              }
+              Column() {
+                ForEach(this.searchHits(), (node: BookmarkNode, index: number) => {
+                  this.BookmarkRow(node, index)
+                }, (node: BookmarkNode): string => node.id)
+              }
+              .width('100%')
+              .borderRadius(16)
+              .backgroundColor($r('app.color.card_background'))
+              .clip(true)
+            } else if (this.folderNodes().length > 0) {
+              // 文件夹视图：文件夹行可展开/收起，子书签缩进成卡。
+              ForEach(this.folderNodes(), (folder: BookmarkNode) => {
+                Column({ space: 8 }) {
+                  Row({ space: 12 }) {
+                    Image($r('app.media.aura_bookmark'))
+                      .width(22)
+                      .height(22)
+                      .fillColor($r('app.color.accent_primary'))
+                    Column({ space: 2 }) {
+                      Text(folder.title.length > 0 ? folder.title : '未命名文件夹')
+                        .fontSize(16)
+                        .fontWeight(FontWeight.Medium)
+                        .fontColor($r('app.color.text_primary'))
+                        .maxLines(1)
+                        .width('100%')
+                      Text(`${this.childrenOf(folder.id).length} 个书签`)
+                        .fontSize(12)
+                        .fontColor($r('app.color.text_secondary'))
+                    }
+                    .alignItems(HorizontalAlign.Start)
+                    .layoutWeight(1)
+                    Image($r('app.media.aura_chevron'))
+                      .width(16)
+                      .height(16)
+                      .fillColor($r('app.color.icon_secondary'))
+                      .rotate({ angle: this.expandedFolders.includes(folder.id) ? 90 : 0 })
+                  }
+                  .width('100%')
+                  .constraintSize({ minHeight: 56 })
+                  .padding({ left: 16, right: 16 })
+                  .borderRadius(16)
+                  .backgroundColor($r('app.color.card_background'))
+                  .onClick(() => {
+                    this.toggleFolder(folder.id);
+                  })
+
+                  if (this.expandedFolders.includes(folder.id)) {
+                    Column() {
+                      ForEach(this.childrenOf(folder.id), (node: BookmarkNode, index: number) => {
+                        this.BookmarkRow(node, index)
+                      }, (node: BookmarkNode): string => node.id)
+                      if (this.childrenOf(folder.id).length === 0) {
+                        Text('空文件夹')
+                          .fontSize(13)
+                          .fontColor($r('app.color.text_secondary'))
+                          .width('100%')
+                          .textAlign(TextAlign.Center)
+                          .padding({ top: 12, bottom: 12 })
+                      }
+                    }
+                    .width('100%')
+                    .borderRadius(16)
+                    .backgroundColor($r('app.color.card_background'))
+                    .clip(true)
+                  }
+                }
+                .width('100%')
+              }, (folder: BookmarkNode): string => folder.id)
+
+              if (this.looseUrls().length > 0) {
+                AuraSectionLabel({ text: `其他书签 · ${this.looseUrls().length}`, tightTop: false })
+                Column() {
+                  ForEach(this.looseUrls(), (node: BookmarkNode, index: number) => {
+                    this.BookmarkRow(node, index)
+                  }, (node: BookmarkNode): string => node.id)
+                }
+                .width('100%')
+                .borderRadius(16)
+                .backgroundColor($r('app.color.card_background'))
+                .clip(true)
+              }
+            } else {
+              // 引擎载荷没有文件夹节点：退回平铺「最近添加」。
+              AuraSectionLabel({ text: `最近添加 · ${this.nodes.length}`, tightTop: true })
+
+              Column() {
+                ForEach(this.nodes, (node: BookmarkNode, index: number) => {
+                  this.BookmarkRow(node, index)
+                }, (node: BookmarkNode): string => node.id)
+              }
+              .width('100%')
+              .borderRadius(16)
+              .backgroundColor($r('app.color.card_background'))
+              .clip(true)
+            }
 
             Text('右上角 ⋯ 里可以手动添加、导入或导出书签。')
               .fontSize(12)

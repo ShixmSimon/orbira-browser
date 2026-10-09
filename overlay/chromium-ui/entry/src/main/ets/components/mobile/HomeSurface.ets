@@ -10,6 +10,8 @@ import { promptAction } from '@kit.ArkUI';
 import { normalizeAddress } from './ShellUtils';
 import { ScanService } from './ScanService';
 import { TopSitesBlocklist } from '../../utils/appearance/TopSitesBlocklist';
+import { HomeShortcut, HomeShortcuts } from '../../utils/appearance/HomeShortcuts';
+import { pasteboard } from '@kit.BasicServicesKit';
 
 const TOP_SITE_RETRY_MS: number = 1500;
 const MAX_TOP_SITE_RETRIES: number = 3;
@@ -53,6 +55,11 @@ export struct HomeSurface {
   @StorageProp('auraTopSafeVp') topSafeVp: number = 0;
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
   @State private topSites: TopSite[] = [];
+  // 手动添加的快捷方式（preferences 持久化），渲染排在常用网站前面。
+  @State private shortcuts: HomeShortcut[] = [];
+  @State private showAddShortcut: boolean = false;
+  @State private newShortcutTitle: string = '';
+  @State private newShortcutUrl: string = '';
   @State private query: string = '';
   // url -> data URL, from getFavicons; sites without one keep the letter
   // avatar placeholder.
@@ -76,6 +83,10 @@ export struct HomeSurface {
     TopSitesBlocklist.load(context).then((urls: Set<string>): void => {
       this.blocklist = urls;
       this.applyBlocklist();
+    });
+    HomeShortcuts.load(context).then((items: HomeShortcut[]): void => {
+      this.shortcuts = items;
+      this.requestFavicons();
     });
   }
 
@@ -106,8 +117,73 @@ export struct HomeSurface {
     }
   }
 
-  // 长按删除：只把这一条加进引擎的黑名单（removeTopSite），下次 getTopSites
-  // 就不会再出现；顺手把本地列表也去掉，不用等回包。
+  // 长按 = 对齐 Lumie 的操作菜单：打开 / 复制链接 / 移除快捷方式。
+  private showSiteActions(site: TopSite, isManual: boolean): void {
+    ActionSheet.show({
+      title: site.title.length > 0 ? site.title : site.url,
+      message: '',
+      sheets: [
+        {
+          title: '打开',
+          action: (): void => {
+            this.openSite(site);
+          }
+        },
+        {
+          title: '复制链接',
+          action: (): void => {
+            this.copyLink(site.url);
+          }
+        },
+        {
+          title: '移除快捷方式',
+          action: (): void => {
+            if (isManual) {
+              this.removeManualShortcut(site.url);
+            } else {
+              this.confirmRemoveSite(site);
+            }
+          }
+        }
+      ]
+    });
+  }
+
+  private copyLink(url: string): void {
+    const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, url);
+    pasteboard.getSystemPasteboard().setData(data).catch((): void => {
+    });
+    this.getUIContext().getPromptAction().showToast({ message: '链接已复制', duration: 1500 });
+  }
+
+  private removeManualShortcut(url: string): void {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    HomeShortcuts.remove(context, url).then((items: HomeShortcut[]): void => {
+      this.shortcuts = items;
+      this.getUIContext().getPromptAction().showToast({ message: '已移除', duration: 1500 });
+    });
+  }
+
+  private confirmAddShortcut(): void {
+    const url = normalizeAddress(this.newShortcutUrl.trim());
+    if (url.length === 0) {
+      this.getUIContext().getPromptAction().showToast({ message: '请输入网址', duration: 1500 });
+      return;
+    }
+    const title = this.newShortcutTitle.trim();
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    HomeShortcuts.add(context, title, url).then((items: HomeShortcut[]): void => {
+      this.shortcuts = items;
+      this.showAddShortcut = false;
+      this.newShortcutTitle = '';
+      this.newShortcutUrl = '';
+      this.requestFavicons();
+      this.getUIContext().getPromptAction().showToast({ message: '已添加到主页', duration: 1500 });
+    });
+  }
+
+  // 长按移除（引擎常用网站）：只把这一条加进引擎的黑名单（removeTopSite），
+  // 下次 getTopSites 就不会再出现；顺手把本地列表也去掉，不用等回包。
   private confirmRemoveSite(site: TopSite): void {
     this.getUIContext().getPromptAction().showDialog({
       title: '移除快捷方式',
@@ -186,6 +262,11 @@ export struct HomeSurface {
         urls.push(site.url);
       }
     }
+    for (const item of this.shortcuts) {
+      if (item.url.length > 0) {
+        urls.push(item.url);
+      }
+    }
     if (urls.length === 0) {
       return;
     }
@@ -244,6 +325,71 @@ export struct HomeSurface {
     if (value.length > 0) {
       this.onCommand({ command: 'navigate', url: normalizeAddress(value) });
     }
+  }
+
+  // 常用网站里滤掉手动添加过的（避免双份）。
+  private visibleTopSites(): TopSite[] {
+    if (this.shortcuts.length === 0) {
+      return this.topSites;
+    }
+    const manual = new Set<string>();
+    for (const item of this.shortcuts) {
+      manual.add(normUrl(item.url));
+    }
+    const out: TopSite[] = [];
+    for (const site of this.topSites) {
+      if (!manual.has(normUrl(site.url))) {
+        out.push(site);
+      }
+    }
+    return out;
+  }
+
+  // 一个快捷方式磁贴：favicon（缺失时首字母占位）+ 标题。
+  // 单击 = 打开；长按 = 操作菜单（打开/复制链接/移除）。
+  @Builder
+  private ShortcutTile(site: TopSite, isManual: boolean) {
+    Column({ space: 7 }) {
+      if (this.faviconFor(site).length > 0) {
+        Image(this.faviconFor(site))
+          .width(54)
+          .height(54)
+          .borderRadius(15)
+          .objectFit(ImageFit.Cover)
+          .backgroundColor($r('app.color.surface_secondary'))
+      } else {
+        Text(initialOf(site))
+          .fontSize(22)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .textAlign(TextAlign.Center)
+          .width(54)
+          .height(54)
+          .borderRadius(15)
+          .backgroundColor($r('app.color.surface_secondary'))
+      }
+      Text(site.title.length > 0 ? site.title : site.url)
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.Center)
+        .width('100%')
+    }
+    .width('25%')
+    .padding({ top: 14 })
+    // 用 GestureGroup 显式声明"单击=打开 / 长按=操作菜单"，避免隐式 onClick 的
+    // tap 手势抢占长按导致长按无反应。Exclusive：两者互斥，先识别到的生效。
+    .gesture(GestureGroup(GestureMode.Exclusive,
+      LongPressGesture({ repeat: false })
+        .onAction((): void => {
+          this.showSiteActions(site, isManual);
+        }),
+      TapGesture({ count: 1 })
+        .onAction((): void => {
+          this.openSite(site);
+        })
+    ))
   }
 
   build() {
@@ -315,54 +461,127 @@ export struct HomeSurface {
           .margin({ top: 16 })
       }
 
-      if (this.topSites.length > 0 && !this.incognito) {
+      if (!this.incognito) {
         Flex({ wrap: FlexWrap.Wrap }) {
-          ForEach(this.topSites, (site: TopSite) => {
-            Column({ space: 7 }) {
-              if (this.faviconFor(site).length > 0) {
-                Image(this.faviconFor(site))
-                  .width(54)
-                  .height(54)
-                  .borderRadius(15)
-                  .objectFit(ImageFit.Cover)
-                  .backgroundColor($r('app.color.surface_secondary'))
-              } else {
-                Text(initialOf(site))
-                  .fontSize(22)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor($r('app.color.text_primary'))
-                  .textAlign(TextAlign.Center)
-                  .width(54)
-                  .height(54)
-                  .borderRadius(15)
-                  .backgroundColor($r('app.color.surface_secondary'))
-              }
-              Text(site.title.length > 0 ? site.title : site.url)
-                .fontSize(12)
-                .fontColor($r('app.color.text_secondary'))
-                .maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis })
-                .textAlign(TextAlign.Center)
-                .width('100%')
-            }
-            .width('25%')
-            .padding({ top: 14 })
-            // 用 GestureGroup 显式声明"单击=打开 / 长按=移除"，避免隐式 onClick 的
-            // tap 手势抢占长按导致长按无反应。Exclusive：两者互斥，先识别到的生效。
-            .gesture(GestureGroup(GestureMode.Exclusive,
-              LongPressGesture({ repeat: false })
-                .onAction((): void => {
-                  this.confirmRemoveSite(site);
-                }),
-              TapGesture({ count: 1 })
-                .onAction((): void => {
-                  this.openSite(site);
-                })
-            ))
+          // 手动添加的快捷方式排最前（用户固定的优先于访问习惯生成）。
+          ForEach(this.shortcuts, (item: HomeShortcut) => {
+            this.ShortcutTile({ url: item.url, title: item.title } as TopSite, true)
+          }, (item: HomeShortcut): string => `m|${item.url}`)
+          ForEach(this.visibleTopSites(), (site: TopSite) => {
+            this.ShortcutTile(site, false)
           }, (site: TopSite): string => site.url)
+
+          // 「添加快捷方式」磁贴
+          Column({ space: 7 }) {
+            Column() {
+              Image($r('app.media.aura_plus'))
+                .width(26)
+                .height(26)
+                .fillColor($r('app.color.icon_secondary'))
+            }
+            .width(54)
+            .height(54)
+            .borderRadius(15)
+            .backgroundColor($r('app.color.surface_secondary'))
+            .justifyContent(FlexAlign.Center)
+            .alignItems(HorizontalAlign.Center)
+            Text('添加')
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .textAlign(TextAlign.Center)
+              .width('100%')
+          }
+          .width('25%')
+          .padding({ top: 14 })
+          .onClick(() => {
+            this.showAddShortcut = true;
+          })
         }
         .width('100%')
         .margin({ top: 18 })
+      }
+
+      // 添加快捷方式弹层（页内自绘，双输入 + 取消/添加）。
+      if (this.showAddShortcut) {
+        Stack() {
+          Column()
+            .width('100%')
+            .height('100%')
+            .backgroundColor($r('app.color.modal_scrim'))
+            .onClick(() => {
+              this.showAddShortcut = false;
+            })
+
+          Column({ space: 14 }) {
+            Text('添加快捷方式')
+              .fontSize(17)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_primary'))
+              .width('100%')
+
+            Column({ space: 6 }) {
+              Text('名称')
+                .fontSize(13)
+                .fontColor($r('app.color.text_secondary'))
+                .width('100%')
+              TextInput({ text: this.newShortcutTitle, placeholder: '网站名称（可留空）' })
+                .height(46)
+                .fontSize(15)
+                .backgroundColor($r('app.color.surface_secondary'))
+                .borderRadius(10)
+                .onChange((value: string): void => {
+                  this.newShortcutTitle = value;
+                })
+            }
+            .width('100%')
+
+            Column({ space: 6 }) {
+              Text('网址')
+                .fontSize(13)
+                .fontColor($r('app.color.text_secondary'))
+                .width('100%')
+              TextInput({ text: this.newShortcutUrl, placeholder: 'https://…' })
+                .height(46)
+                .fontSize(15)
+                .backgroundColor($r('app.color.surface_secondary'))
+                .borderRadius(10)
+                .onChange((value: string): void => {
+                  this.newShortcutUrl = value;
+                })
+            }
+            .width('100%')
+
+            Row({ space: 12 }) {
+              Button('取消')
+                .layoutWeight(1)
+                .height(42)
+                .fontSize(15)
+                .fontColor($r('app.color.text_primary'))
+                .backgroundColor($r('app.color.surface_secondary'))
+                .borderRadius(10)
+                .onClick(() => {
+                  this.showAddShortcut = false;
+                })
+              Button('添加')
+                .layoutWeight(1)
+                .height(42)
+                .fontSize(15)
+                .fontColor($r('app.color.on_accent'))
+                .backgroundColor($r('app.color.accent_primary'))
+                .borderRadius(10)
+                .onClick(() => {
+                  this.confirmAddShortcut();
+                })
+            }
+            .width('100%')
+          }
+          .padding(20)
+          .borderRadius(20)
+          .backgroundColor($r('app.color.card_background'))
+          .margin({ left: 32, right: 32 })
+        }
+        .width('100%')
+        .height('100%')
       }
 
       Blank()
