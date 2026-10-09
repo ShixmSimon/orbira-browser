@@ -797,11 +797,15 @@ export struct MobileBrowserOverlay {
     return regions;
   }
 
-  // 与响应区配套的根模式：有条带（或模态）→ Default（条带内阻断）；
-  // 全部收起 → Transparent + 空区域（引擎回退整屏，行为同旧实现）。
+  // 根命中模式：模态层（七页面板 / ⋮ 菜单卡 / 长按菜单）在场 → Default +
+  // 全屏响应区，整屏阻断、交给模态层自身处理点击；正常浏览 → Transparent，
+  // 页面区直达 XComponent（消除 dock/顶栏全宽条带矩形对滑动起始段的拦截——
+  // 修复"手指滑出一段页面才滚"），dock/顶栏的按钮、地址栏等控件自身是
+  // Default 子节点，仍正常拦截点击。
   private resolveChromeHitTestMode(): HitTestMode {
-    return this.buildChromeTouchRegions().length > 0 ?
-      HitTestMode.Default : HitTestMode.Transparent;
+    const modal: boolean = this.panelPage !== 'none' ||
+      this.menuCardVisible || this.contextMenuJson.length > 0;
+    return modal ? HitTestMode.Default : HitTestMode.Transparent;
   }
 
   @Builder
