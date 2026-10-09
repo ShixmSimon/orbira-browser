@@ -274,7 +274,7 @@ export struct DownloadsPanel {
     Column() {
       Column({ space: 4 }) {
         Row({ space: 12 }) {
-          Image($r('app.media.chromium_download'))
+          Image($r('app.media.aura_download'))
             .width(22)
             .height(22)
             .fillColor($r('app.color.icon_primary'))
@@ -353,7 +353,7 @@ export struct DownloadsPanel {
     Column() {
       Row() {
         Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.chromium_back'))
+          Image($r('app.media.aura_back'))
             .width(22)
             .height(22)
             .fillColor($r('app.color.icon_primary'))

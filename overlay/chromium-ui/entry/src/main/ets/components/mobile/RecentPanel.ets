@@ -67,7 +67,7 @@ export struct RecentPanel {
   private RecentRow(item: RecentlyClosedTab, index: number) {
     Column() {
       Row({ space: 12 }) {
-        Image($r('app.media.chromium_history'))
+        Image($r('app.media.aura_clock'))
           .width(22)
           .height(22)
           .fillColor($r('app.color.icon_primary'))
@@ -109,7 +109,7 @@ export struct RecentPanel {
     Column() {
       Row() {
         Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.chromium_back'))
+          Image($r('app.media.aura_back'))
             .width(22)
             .height(22)
             .fillColor($r('app.color.icon_primary'))

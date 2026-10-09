@@ -297,7 +297,7 @@ export struct BookmarksPanel {
   private Header() {
     Row() {
       Button({ type: ButtonType.Circle }) {
-        Image($r('app.media.chromium_back'))
+        Image($r('app.media.aura_back'))
           .width(22)
           .height(22)
           .fillColor($r('app.color.icon_primary'))
@@ -323,7 +323,7 @@ export struct BookmarksPanel {
       Blank()
 
       Button({ type: ButtonType.Circle }) {
-        Image($r('app.media.chromium_add'))
+        Image($r('app.media.aura_plus'))
           .width(22)
           .height(22)
           .fillColor($r('app.color.icon_primary'))
@@ -339,7 +339,7 @@ export struct BookmarksPanel {
       })
 
       Button({ type: ButtonType.Circle }) {
-        Image($r('app.media.chromium_more'))
+        Image($r('app.media.aura_more'))
           .width(22)
           .height(22)
           .fillColor($r('app.color.icon_primary'))
@@ -378,7 +378,7 @@ export struct BookmarksPanel {
   private BookmarkRow(node: BookmarkNode, index: number) {
     Column() {
       Row({ space: 12 }) {
-        Image($r('app.media.chromium_bookmark'))
+        Image($r('app.media.aura_bookmark'))
           .width(22)
           .height(22)
           .fillColor($r('app.color.icon_primary'))
@@ -401,7 +401,7 @@ export struct BookmarksPanel {
         .layoutWeight(1)
 
         Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.chromium_close'))
+          Image($r('app.media.aura_close'))
             .width(18)
             .height(18)
             .fillColor($r('app.color.icon_secondary'))

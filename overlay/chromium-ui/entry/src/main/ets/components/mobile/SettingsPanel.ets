@@ -82,6 +82,7 @@ export struct SettingsPanel {
   @State private colorModeSetting: ColorModeSetting = 'system';
   @State private textScalePercent: number = 100;
   @StorageLink('auraHideStatusBarOnScroll') hideStatusBarOnScroll: boolean = false;
+  @StorageLink('auraHideTopBarOnScroll') hideTopBarOnScroll: boolean = true;
   @StorageLink('auraHuaweiAccount') accountJson: string = '';
   // Runtime diagnostics at the bottom of the page: device API level,
   // immersive-material support / switch / level, and both colour-mode
@@ -391,7 +392,7 @@ export struct SettingsPanel {
   private Header(title: string, showBackToMain: boolean) {
     Row() {
       Button({ type: ButtonType.Circle }) {
-        Image($r('app.media.chromium_back'))
+        Image($r('app.media.aura_back'))
           .width(22)
           .height(22)
           .fillColor($r('app.color.icon_primary'))
@@ -541,12 +542,12 @@ export struct SettingsPanel {
 
           this.SectionLabel('常规')
           Column() {
-            this.NavRow($r('app.media.chromium_search'), '搜索引擎',
+            this.NavRow($r('app.media.aura_search'), '搜索引擎',
               this.defaultEngineName.length > 0 ? this.defaultEngineName : '—', (): void => {
                 this.page = 'engines';
               }, false)
             this.CardDivider()
-            this.NavRow($r('app.media.chromium_extensions'), '扩展程序', '', (): void => {
+            this.NavRow($r('app.media.aura_extensions'), '扩展程序', '', (): void => {
               this.onOpenExtensions();
             }, false)
           }
@@ -588,7 +589,23 @@ export struct SettingsPanel {
               this.page = 'appearance';
             }, false)
             this.CardDivider()
-            this.ShellToggleRow('上滑时隐藏状态栏', '地址栏收起时一起隐藏，网页铺满全屏')
+            this.ShellToggleRow($r('app.media.aura_eye'), '上滑时隐藏状态栏', '地址栏收起时一起隐藏，网页铺满全屏',
+              this.hideStatusBarOnScroll, (isOn: boolean): void => {
+                AppStorage.setOrCreate('auraHideStatusBarOnScroll', isOn);
+                const context = this.getUIContext().getHostContext() as common.Context | undefined;
+                if (context) {
+                  ShellUiPrefs.saveHideStatusBar(context, isOn);
+                }
+              })
+            this.CardDivider()
+            this.ShellToggleRow($r('app.media.aura_scroll'), '滚动时隐藏地址栏', '向下滚动时收起顶部地址栏；关掉则地址栏常驻',
+              this.hideTopBarOnScroll, (isOn: boolean): void => {
+                AppStorage.setOrCreate('auraHideTopBarOnScroll', isOn);
+                const context = this.getUIContext().getHostContext() as common.Context | undefined;
+                if (context) {
+                  ShellUiPrefs.saveHideTopBar(context, isOn);
+                }
+              })
             this.CardDivider()
             this.NavRow($r('app.media.aura_zoom'), '网页缩放', `${this.textScalePercent}%`, (): void => {
               this.page = 'zoom';
@@ -604,7 +621,7 @@ export struct SettingsPanel {
 
           this.SectionLabel('下载')
           Column() {
-            this.ToggleRow($r('app.media.chromium_download'), '下载前询问', 'downloadAskWhereToSave')
+            this.ToggleRow($r('app.media.aura_download'), '下载前询问', 'downloadAskWhereToSave')
           }
           .width('100%')
           .padding({ left: 0, right: 0, top: 2, bottom: 2 })
@@ -748,7 +765,7 @@ export struct SettingsPanel {
               ForEach(this.engines, (engine: SearchEngine, index: number) => {
                 Column() {
                   Row({ space: 12 }) {
-                    Image($r('app.media.chromium_search'))
+                    Image($r('app.media.aura_search'))
                       .width(22)
                       .height(22)
                       .fillColor($r('app.color.icon_primary'))
@@ -858,9 +875,10 @@ export struct SettingsPanel {
 
   // 外壳偏好（非引擎 prefs）：上滑隐藏状态栏，AppStorage + preferences 持久化。
   @Builder
-  private ShellToggleRow(label: string, subtitle: string) {
+  private ShellToggleRow(icon: Resource, label: string, subtitle: string, checked: boolean,
+    onToggle: (on: boolean) => void) {
     Row({ space: 12 }) {
-      Image($r('app.media.aura_eye'))
+      Image(icon)
         .width(22)
         .height(22)
         .fillColor($r('app.color.icon_primary'))
@@ -877,13 +895,9 @@ export struct SettingsPanel {
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
 
-      Toggle({ type: ToggleType.Switch, isOn: this.hideStatusBarOnScroll })
+      Toggle({ type: ToggleType.Switch, isOn: checked })
         .onChange((isOn: boolean) => {
-          AppStorage.setOrCreate('auraHideStatusBarOnScroll', isOn);
-          const context = this.getUIContext().getHostContext() as common.Context | undefined;
-          if (context) {
-            ShellUiPrefs.saveHideStatusBar(context, isOn);
-          }
+          onToggle(isOn);
         })
     }
     .width('100%')

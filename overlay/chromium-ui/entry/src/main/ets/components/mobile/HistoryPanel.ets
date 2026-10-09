@@ -110,7 +110,7 @@ export struct HistoryPanel {
   private HistoryRow(item: HistoryItem, isLast: boolean) {
     Column() {
       Row({ space: 12 }) {
-        Image($r('app.media.chromium_history'))
+        Image($r('app.media.aura_clock'))
           .width(22)
           .height(22)
           .fillColor($r('app.color.icon_primary'))
@@ -133,7 +133,7 @@ export struct HistoryPanel {
         .layoutWeight(1)
 
         Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.chromium_close'))
+          Image($r('app.media.aura_close'))
             .width(18)
             .height(18)
             .fillColor($r('app.color.icon_secondary'))
@@ -166,7 +166,7 @@ export struct HistoryPanel {
     Column() {
       Row() {
         Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.chromium_back'))
+          Image($r('app.media.aura_back'))
             .width(22)
             .height(22)
             .fillColor($r('app.color.icon_primary'))

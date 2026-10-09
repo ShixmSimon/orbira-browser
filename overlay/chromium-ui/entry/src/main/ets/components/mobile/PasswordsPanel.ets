@@ -562,7 +562,7 @@ export struct PasswordsPanel {
   private Header() {
     Row() {
       Button({ type: ButtonType.Circle }) {
-        Image($r('app.media.chromium_back'))
+        Image($r('app.media.aura_back'))
           .width(22)
           .height(22)
           .fillColor($r('app.color.icon_primary'))
@@ -589,7 +589,7 @@ export struct PasswordsPanel {
 
       if (this.view === 'list') {
         Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.chromium_more'))
+          Image($r('app.media.aura_more'))
             .width(22)
             .height(22)
             .fillColor($r('app.color.icon_primary'))

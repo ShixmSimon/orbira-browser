@@ -7,6 +7,7 @@ import { preferences } from '@kit.ArkData';
 
 const STORE_NAME = 'shell_ui_prefs';
 const KEY_HIDE_STATUS_BAR = 'hideStatusBarOnScroll';
+const KEY_HIDE_TOP_BAR = 'hideTopBarOnScroll';
 
 export class ShellUiPrefs {
   static async loadHideStatusBar(context: common.Context): Promise<boolean> {
@@ -22,6 +23,24 @@ export class ShellUiPrefs {
     try {
       const store = await preferences.getPreferences(context, STORE_NAME);
       await store.put(KEY_HIDE_STATUS_BAR, value);
+      await store.flush();
+    } catch (error) {
+    }
+  }
+
+  static async loadHideTopBar(context: common.Context): Promise<boolean> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      return Boolean(await store.get(KEY_HIDE_TOP_BAR, true));
+    } catch (error) {
+      return true;
+    }
+  }
+
+  static async saveHideTopBar(context: common.Context, value: boolean): Promise<void> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      await store.put(KEY_HIDE_TOP_BAR, value);
       await store.flush();
     } catch (error) {
     }

@@ -290,7 +290,7 @@ export struct ExtensionPanel {
   private Header(title: string, showBack: boolean) {
     Row() {
       Button({ type: ButtonType.Circle }) {
-        Image($r('app.media.chromium_back'))
+        Image($r('app.media.aura_back'))
           .width(22)
           .height(22)
           .fillColor($r('app.color.icon_primary'))

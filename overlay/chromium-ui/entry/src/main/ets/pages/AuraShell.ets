@@ -124,6 +124,9 @@ struct AuraShell {
   // the system bar from flapping at the collapse boundary.
   @StorageLink('auraBrowserControlsRatio') @Watch('onControlsRatioMoved') scrolledRatio: number = 1;
   @StorageLink('auraHideStatusBarOnScroll') @Watch('onHideStatusBarPrefChanged') hideStatusBarOnScroll: boolean = false;
+  // 滚动时隐藏地址栏（设置-外观）：默认开；关掉时 minTop 抬到顶栏全高，
+  // 顶栏常显、不随滚动收起（引擎把 ratio 锁在 1）。
+  @StorageLink('auraHideTopBarOnScroll') @Watch('onHideTopBarPrefChanged') hideTopBarOnScroll: boolean = true;
   private statusBarHiddenByScroll: boolean = false;
   @StorageLink('auraThemeFontId') themeFontId: string = '';
   @StorageLink('auraThemeFontRevision') themeFontRevision: number = 0;
@@ -171,6 +174,9 @@ struct AuraShell {
       ShellUiPrefs.loadHideStatusBar(context).then((value: boolean): void => {
         AppStorage.setOrCreate('auraHideStatusBarOnScroll', value);
       });
+      ShellUiPrefs.loadHideTopBar(context).then((value: boolean): void => {
+        AppStorage.setOrCreate('auraHideTopBarOnScroll', value);
+      });
     }
   }
 
@@ -186,6 +192,24 @@ struct AuraShell {
     } else {
       this.updateStatusBarForScroll(this.scrolledRatio);
     }
+  }
+
+  // “滚动时隐藏地址栏”开关变化：重发浏览器控件高度（minTop = 全高即常显），
+  // 并立即把顶栏动画展开/交还给滚动。
+  private onHideTopBarPrefChanged(): void {
+    const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
+    const top = TOP_BAR_EXTENT_VP + (this.statusBarHiddenByScroll ? 0 : topSafe);
+    this.executeBrowserCommand({
+      command: 'setBrowserControls',
+      top: top,
+      minTop: this.hideTopBarOnScroll ? 0 : top,
+      bottom: 0
+    });
+    this.executeBrowserCommand({
+      command: 'setBrowserControlsState',
+      state: this.hideTopBarOnScroll ? 'both' : 'shown',
+      animate: true
+    });
   }
 
   // Collapsed address bar -> hide the status bar too, and let the page fill
@@ -223,10 +247,11 @@ struct AuraShell {
   // and it hides with the top bar on the same ratio.
   private sendScrollTopExtent(statusHidden: boolean): void {
     const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
+    const top = TOP_BAR_EXTENT_VP + (statusHidden ? 0 : topSafe);
     this.executeBrowserCommand({
       command: 'setBrowserControls',
-      top: TOP_BAR_EXTENT_VP + (statusHidden ? 0 : topSafe),
-      minTop: 0,
+      top: top,
+      minTop: this.hideTopBarOnScroll ? 0 : top,
       bottom: 0
     });
   }
@@ -1063,12 +1088,15 @@ struct AuraShell {
     this.browserControlsConfigured = true;
     // The fullscreen-immersive window draws under the status bar, so the
     // page's reserved extent includes it (EntryAbility stores it in vp).
-    // minTop 0 keeps the page free to start at the very top.
+    // minTop 0 keeps the page free to start at the very top, unless the
+    // "hide the address bar on scroll" toggle is off: then minTop holds
+    // the full height and the bar never collapses (engine ratio locked 1).
     const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
+    const top = TOP_BAR_EXTENT_VP + topSafe;
     this.executeBrowserCommand({
       command: 'setBrowserControls',
-      top: TOP_BAR_EXTENT_VP + topSafe,
-      minTop: 0,
+      top: top,
+      minTop: this.hideTopBarOnScroll ? 0 : top,
       bottom: 0
     });
     // 底部不再报任何高度（连手势条也不报）。内核会把这里的 bottom 从**布局**
