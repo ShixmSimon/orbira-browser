@@ -1,13 +1,16 @@
 /*
- * 手机密码页（参考外壳扩展）。
+ * 手机密码页（对齐 Lumie v2）。
  * 流程：进入先做本机身份验证（系统锁屏密码/指纹/人脸），通过后向引擎发
  * passwordAuthGranted {validMs:60000}，再拉 getSavedPasswords 列表；
- * 显示/删除走 revealPassword / deletePassword；引擎回 authRequired 时
- * 回到验证门。应用退后台时由 AuraShell 发 passwordAuthReset 作废窗口。
+ * 列表 -> 详情（编辑用户名/密码/备注，updatePassword；显示走 revealPassword；
+ * 删除走 deletePassword）；顶部 ⋯ 菜单：导入密码（CSV）/ 导出密码（CSV）。
+ * 导入导出对齐 Lumie v2：系统文件选择器 <-> 沙箱暂存 -> 引擎读写 -> 外壳清理。
+ * 引擎回 authRequired 时回到验证门。应用退后台时由 AuraShell 发
+ * passwordAuthReset 作废窗口。
  */
+import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { userAuth } from '@kit.UserAuthenticationKit';
-import { util } from '@kit.ArkTS';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import {
   BrowserCommandPayload,
@@ -16,7 +19,8 @@ import {
   SavedPasswordItem,
   SavedPasswordsEvent
 } from 'engine';
-import { displayUrl } from './PanelBridge';
+import { displayUrl, pickAndStageImportFile, saveExportedFile, deleteStagedFile } from './PanelBridge';
+import { AuraChevron, AuraSectionLabel } from './LumieKit';
 
 interface PanelEventPayload {
   kind?: string;
@@ -34,11 +38,23 @@ interface ResultPayload {
   reason?: string;
 }
 
+interface IoPayload {
+  kind?: string;
+  requestId?: number;
+  ok?: boolean;
+  imported?: number;
+  skipped?: number;
+  failed?: number;
+  count?: number;
+  reason?: string;
+}
+
 @Component
 export struct PasswordsPanel {
   @StorageLink('auraPanelPasswords') @Watch('onPasswordsPayload') passwordsJson: string = '';
   @StorageLink('auraPanelPasswordSecret') @Watch('onSecretPayload') secretJson: string = '';
   @StorageLink('auraPanelPasswordResult') @Watch('onResultPayload') resultJson: string = '';
+  @StorageLink('auraPanelPasswordIo') @Watch('onIoPayload') ioJson: string = '';
   @StorageLink('auraPanelEvent') @Watch('onPanelEvent') panelEventJson: string = '';
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
   onBack: () => void = (): void => {};
@@ -49,8 +65,22 @@ export struct PasswordsPanel {
   @State private verifying: boolean = false;
   @State private verifyError: string = '';
   @State private loading: boolean = true;
+  @State private view: string = 'list';
+  @State private editId: string = '';
+  @State private editOrigin: string = '';
+  @State private editUsername: string = '';
+  @State private editPassword: string = '';
+  @State private editNote: string = '';
+  @State private revealed: boolean = false;
+  @State private busy: boolean = false;
   private requestSeq: number = 0;
+  private usernameTouched: boolean = false;
+  private passwordTouched: boolean = false;
+  private noteTouched: boolean = false;
   private pendingAuthInstance: userAuth.UserAuthInstance | null = null;
+  private pendingImportPath: string = '';
+  private pendingExportPath: string = '';
+  private pendingExportRequestId: number = 0;
 
   aboutToDisappear(): void {
     if (this.pendingAuthInstance !== null) {
@@ -59,6 +89,14 @@ export struct PasswordsPanel {
       } catch (error) {
       }
       this.pendingAuthInstance = null;
+    }
+    this.cleanupPendingImport();
+  }
+
+  private cleanupPendingImport(): void {
+    if (this.pendingImportPath.length > 0) {
+      deleteStagedFile(this.pendingImportPath);
+      this.pendingImportPath = '';
     }
   }
 
@@ -87,7 +125,15 @@ export struct PasswordsPanel {
     try {
       const payload = JSON.parse(this.secretJson) as SecretPayload;
       const secret = String(payload.password ?? '');
-      if (secret.length > 0) {
+      if (secret.length === 0) {
+        return;
+      }
+      if (this.view === 'detail' && String(payload.id ?? '') === this.editId) {
+        // Fill the editor; the reader asked to see or change this credential.
+        this.editPassword = secret;
+        this.editNote = String(payload.note ?? '');
+        this.revealed = true;
+      } else {
         this.showSecret(secret);
       }
     } catch (error) {
@@ -103,6 +149,10 @@ export struct PasswordsPanel {
       const command = String(payload.command ?? '');
       if (payload.ok === true) {
         if (command === 'deletePassword') {
+          this.view = 'list';
+          this.reload();
+        } else if (command === 'updatePassword') {
+          this.view = 'list';
           this.reload();
         }
         return;
@@ -111,6 +161,18 @@ export struct PasswordsPanel {
         // The 60-second window expired; ask again.
         this.verified = false;
         this.verifyError = '';
+        return;
+      }
+      if (command === 'updatePassword' && String(payload.reason ?? '') === 'duplicate') {
+        AlertDialog.show({
+          title: '保存不了',
+          message: '这个网站下已经有一条同样的用户名了。改个用户名再试。',
+          confirm: {
+            value: '好的',
+            action: (): void => {
+            }
+          }
+        });
         return;
       }
       AlertDialog.show({
@@ -123,6 +185,117 @@ export struct PasswordsPanel {
         }
       });
     } catch (error) {
+    }
+  }
+
+  private onIoPayload(): void {
+    if (this.ioJson.length === 0) {
+      return;
+    }
+    try {
+      const payload = JSON.parse(this.ioJson) as IoPayload;
+      const kind = String(payload.kind ?? '');
+      if (kind === 'import') {
+        this.busy = false;
+        // 引擎只把文件读进内存，读完即删缓存。
+        this.cleanupPendingImport();
+        if (payload.ok === true) {
+          const imported = Number(payload.imported ?? 0);
+          const skipped = Number(payload.skipped ?? 0);
+          const failed = Number(payload.failed ?? 0);
+          let message = `已导入 ${imported} 条密码`;
+          if (skipped > 0 || failed > 0) {
+            message = `导入 ${imported} 条，跳过 ${skipped} 条已有的，${failed} 条格式不对`;
+          }
+          AlertDialog.show({
+            title: '导入完成',
+            message: message,
+            confirm: {
+              value: '好的',
+              action: (): void => {
+              }
+            }
+          });
+          this.reload();
+        } else if (String(payload.reason ?? '') === 'authRequired') {
+          this.verified = false;
+          this.verifyError = '';
+        } else {
+          AlertDialog.show({
+            title: '导入没有成功',
+            message: this.importFailureText(String(payload.reason ?? '')),
+            confirm: {
+              value: '好的',
+              action: (): void => {
+              }
+            }
+          });
+        }
+        return;
+      }
+      if (kind === 'export') {
+        if ((payload.requestId ?? 0) !== this.pendingExportRequestId ||
+          this.pendingExportPath.length === 0) {
+          return;
+        }
+        const stagedPath = this.pendingExportPath;
+        this.pendingExportPath = '';
+        if (payload.ok === true) {
+          const count = Number(payload.count ?? 0);
+          this.handExportToSaveDialog(stagedPath, count);
+        } else if (String(payload.reason ?? '') === 'authRequired') {
+          deleteStagedFile(stagedPath);
+          this.verified = false;
+          this.verifyError = '';
+        } else {
+          deleteStagedFile(stagedPath);
+          AlertDialog.show({
+            title: '导出没有成功',
+            message: '没能写出密码文件，请再试一次。',
+            confirm: {
+              value: '好的',
+              action: (): void => {
+              }
+            }
+          });
+        }
+        return;
+      }
+    } catch (error) {
+      this.busy = false;
+    }
+  }
+
+  private importFailureText(reason: string): string {
+    if (reason === 'tooLarge') {
+      return '文件太大（超过 20 MB），没有导入。';
+    }
+    if (reason === 'badFormat') {
+      return '这个文件里没有找到密码数据，没有导入。';
+    }
+    if (reason === 'ioError') {
+      return '读不了这个文件，请再试一次。';
+    }
+    return '没能导入这个文件，请再试一次。';
+  }
+
+  private async handExportToSaveDialog(stagedPath: string, count: number): Promise<void> {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (!context) {
+      deleteStagedFile(stagedPath);
+      return;
+    }
+    const saved = await saveExportedFile(context, stagedPath, 'Aura 密码.csv');
+    if (saved) {
+      AlertDialog.show({
+        title: '导出完成',
+        message: `已导出 ${count} 条密码`,
+        confirm: {
+          value: '好的',
+          action: (): void => {
+          }
+        }
+      });
     }
   }
 
@@ -215,11 +388,7 @@ export struct PasswordsPanel {
       primaryButton: {
         value: '复制',
         action: (): void => {
-          try {
-            const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, secret);
-            pasteboard.getSystemPasteboard().setData(data);
-          } catch (error) {
-          }
+          this.copyText(secret);
         }
       },
       secondaryButton: {
@@ -230,9 +399,73 @@ export struct PasswordsPanel {
     });
   }
 
-  private reveal(item: SavedPasswordItem): void {
+  private copyText(text: string): void {
+    try {
+      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
+      pasteboard.getSystemPasteboard().setData(data);
+    } catch (error) {
+    }
+  }
+
+  // -- 详情 / 编辑 ------------------------------------------------------------
+
+  private openDetail(item: SavedPasswordItem): void {
+    this.view = 'detail';
+    this.editId = item.id;
+    this.editOrigin = item.origin;
+    this.editUsername = item.username;
+    this.editPassword = '';
+    this.editNote = '';
+    this.revealed = false;
+    this.usernameTouched = false;
+    this.passwordTouched = false;
+    this.noteTouched = false;
+  }
+
+  private closeDetail(): void {
+    this.view = 'list';
+    this.editId = '';
+    this.editPassword = '';
+    this.editNote = '';
+    this.revealed = false;
+  }
+
+  private revealForEdit(): void {
+    if (this.revealed || this.editId.length === 0) {
+      return;
+    }
     this.requestSeq += 1;
-    this.onCommand({ command: 'revealPassword', requestId: this.requestSeq, id: item.id });
+    this.onCommand({ command: 'revealPassword', requestId: this.requestSeq, id: this.editId });
+  }
+
+  private saveEdit(): void {
+    if (this.busy || this.editId.length === 0) {
+      return;
+    }
+    const username = this.editUsername.trim();
+    const nothingChanged = !this.usernameTouched && !this.passwordTouched && !this.noteTouched;
+    if (nothingChanged) {
+      this.closeDetail();
+      return;
+    }
+    const command: BrowserCommandPayload = {
+      command: 'updatePassword',
+      requestId: ++this.requestSeq,
+      id: this.editId
+    };
+    command.username = username;
+    if (this.passwordTouched) {
+      command.password = this.editPassword;
+    }
+    if (this.noteTouched) {
+      command.note = this.editNote;
+    }
+    this.busy = true;
+    this.onCommand(command);
+    // busy 由回包清掉；失败时 onResultPayload 弹提示。
+    setTimeout((): void => {
+      this.busy = false;
+    }, 3000);
   }
 
   private confirmRemove(item: SavedPasswordItem): void {
@@ -256,26 +489,133 @@ export struct PasswordsPanel {
     });
   }
 
-  @Builder
-  private ActionChip(label: string, action: () => void) {
-    Text(label)
-      .fontSize(13)
-      .fontColor($r('app.color.accent_primary'))
-      .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-      .borderRadius(8)
-      .backgroundColor($r('app.color.surface_primary'))
-      .onClick(action)
+  // -- 导入 / 导出（对齐 Lumie v2） -------------------------------------------
+
+  private async startImport(): Promise<void> {
+    if (this.busy || !this.verified) {
+      return;
+    }
+    this.cleanupPendingImport();
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (!context) {
+      return;
+    }
+    const path = await pickAndStageImportFile(context, ['密码文件|.csv']);
+    if (path.length === 0) {
+      return;
+    }
+    this.pendingImportPath = path;
+    AlertDialog.show({
+      title: '导入密码',
+      message: '从 Chrome、Edge、Firefox 导出的 CSV 文件导入。遇到已保存过的同名账号怎么处理？',
+      autoCancel: true,
+      primaryButton: {
+        value: '保留原有',
+        action: (): void => {
+          this.runImport(false);
+        }
+      },
+      secondaryButton: {
+        value: '用导入的覆盖',
+        action: (): void => {
+          this.runImport(true);
+        }
+      }
+    });
   }
 
+  private runImport(overwrite: boolean): void {
+    if (this.pendingImportPath.length === 0) {
+      return;
+    }
+    this.busy = true;
+    this.requestSeq += 1;
+    this.onCommand({
+      command: 'importPasswords',
+      requestId: this.requestSeq,
+      path: this.pendingImportPath,
+      overwrite: overwrite
+    });
+  }
+
+  private startExport(): void {
+    if (this.busy || !this.verified) {
+      return;
+    }
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (!context) {
+      return;
+    }
+    this.requestSeq += 1;
+    this.pendingExportRequestId = this.requestSeq;
+    this.pendingExportPath = `${context.filesDir}/aura-export-passwords.csv`;
+    this.onCommand({
+      command: 'exportPasswords',
+      requestId: this.pendingExportRequestId,
+      path: this.pendingExportPath
+    });
+  }
+
+  // -- UI ---------------------------------------------------------------------
+
   @Builder
-  private DangerChip(label: string, action: () => void) {
-    Text(label)
-      .fontSize(13)
-      .fontColor('#E24B4A')
-      .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-      .borderRadius(8)
-      .backgroundColor($r('app.color.surface_primary'))
-      .onClick(action)
+  private Header() {
+    Row() {
+      Button({ type: ButtonType.Circle }) {
+        Image($r('app.media.chromium_back'))
+          .width(22)
+          .height(22)
+          .fillColor($r('app.color.icon_primary'))
+      }
+      .width(44)
+      .height(44)
+      .backgroundColor($r('app.color.surface_secondary'))
+      .accessibilityText('返回')
+      .onClick(() => {
+        if (this.view === 'detail') {
+          this.closeDetail();
+        } else {
+          this.onBack();
+        }
+      })
+
+      Text(this.view === 'detail' ? '密码详情' : '密码')
+        .fontSize(22)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary'))
+        .margin({ left: 12 })
+
+      Blank()
+
+      if (this.view === 'list') {
+        Button({ type: ButtonType.Circle }) {
+          Image($r('app.media.chromium_more'))
+            .width(22)
+            .height(22)
+            .fillColor($r('app.color.icon_primary'))
+        }
+        .width(44)
+        .height(44)
+        .backgroundColor($r('app.color.surface_secondary'))
+        .accessibilityText('更多操作')
+        .bindMenu([
+          {
+            value: '导入密码',
+            action: (): void => {
+              this.startImport();
+            }
+          },
+          {
+            value: '导出密码',
+            action: (): void => {
+              this.startExport();
+            }
+          }
+        ])
+      }
+    }
+    .width('100%')
+    .height(56)
   }
 
   @Builder
@@ -285,14 +625,14 @@ export struct PasswordsPanel {
         .fontSize(17)
         .fontWeight(FontWeight.Medium)
         .fontColor($r('app.color.text_primary'))
-      Text('查看已保存的密码前，先证明这是你的手机。')
+      Text('查看、复制、编辑和导出密码前，先证明这是你的手机。')
         .fontSize(13)
         .fontColor($r('app.color.text_secondary'))
         .textAlign(TextAlign.Center)
       if (this.verifyError.length > 0) {
         Text(this.verifyError)
           .fontSize(13)
-          .fontColor('#E24B4A')
+          .fontColor($r('app.color.danger'))
           .textAlign(TextAlign.Center)
       }
       if (this.verifying) {
@@ -322,11 +662,15 @@ export struct PasswordsPanel {
   @Builder
   private PasswordRow(item: SavedPasswordItem, index: number) {
     Column() {
-      Row({ space: 10 }) {
-        Column({ space: 3 }) {
+      Row({ space: 12 }) {
+        Image($r('app.media.aura_lock'))
+          .width(22)
+          .height(22)
+          .fillColor($r('app.color.icon_primary'))
+
+        Column({ space: 2 }) {
           Text(displayUrl(item.origin))
-            .fontSize(15)
-            .fontWeight(FontWeight.Medium)
+            .fontSize(16)
             .fontColor($r('app.color.text_primary'))
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -341,83 +685,214 @@ export struct PasswordsPanel {
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
 
-        Row({ space: 6 }) {
-          this.ActionChip('显示', (): void => this.reveal(item))
-          this.DangerChip('删除', (): void => this.confirmRemove(item))
-        }
+        AuraChevron()
       }
       .width('100%')
-      .padding({ top: 10, bottom: 10 })
+      .constraintSize({ minHeight: 60 })
+      .padding({ left: 16, right: 14, top: 8, bottom: 8 })
+      .onClick(() => {
+        this.openDetail(item);
+      })
 
       if (index < this.items.length - 1) {
         Divider()
           .color($r('app.color.divider'))
+          .margin({ left: 50 })
       }
     }
     .width('100%')
   }
 
-  build() {
-    Column() {
-      Row() {
-        Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.chromium_back'))
-            .width(22)
-            .height(22)
-            .fillColor($r('app.color.icon_primary'))
-        }
-        .width(44)
-        .height(44)
-        .backgroundColor($r('app.color.surface_secondary'))
-        .accessibilityText('返回')
-        .onClick(() => {
-          this.onBack();
-        })
-
-        Text('密码')
-          .fontSize(20)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
-          .margin({ left: 12 })
-
-        Blank()
-      }
-      .width('100%')
-      .height(52)
-
-      if (!this.verified) {
-        this.GateView()
-      } else if (this.items.length === 0) {
-        Column() {
-          Text(this.loading ? '加载中…' : '还没有保存过密码')
-            .fontSize(15)
+  @Builder
+  private ListView() {
+    if (this.items.length === 0) {
+      Column({ space: 6 }) {
+        Text(this.loading ? '加载中…' : '还没有保存的密码')
+          .fontSize(15)
+          .fontColor($r('app.color.text_secondary'))
+        if (!this.loading) {
+          Text('在网页上登录时，浏览器会询问是否保存密码。')
+            .fontSize(13)
             .fontColor($r('app.color.text_secondary'))
         }
-        .width('100%')
-        .layoutWeight(1)
-        .justifyContent(FlexAlign.Center)
-      } else {
-        Text(`已保存 · ${this.items.length}`)
-          .fontSize(13)
-          .fontColor($r('app.color.text_secondary'))
-          .width('100%')
-          .margin({ top: 6, bottom: 8 })
-        Scroll() {
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .justifyContent(FlexAlign.Center)
+    } else {
+      Scroll() {
+        Column() {
+          AuraSectionLabel({ text: `已保存的密码 · ${this.items.length}` })
+
           Column() {
             ForEach(this.items, (item: SavedPasswordItem, index: number) => {
               this.PasswordRow(item, index)
             }, (item: SavedPasswordItem): string => item.id)
           }
           .width('100%')
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
+
+          Text('在网页上登录时，浏览器会询问是否保存密码；右上角可以导入、导出。')
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+            .padding({ left: 4, right: 4, top: 10 })
         }
-        .layoutWeight(1)
-        .scrollBar(BarState.Off)
-        .align(Alignment.TopStart)
+        .width('100%')
+      }
+      .layoutWeight(1)
+      .scrollBar(BarState.Off)
+      .align(Alignment.TopStart)
+    }
+  }
+
+  @Builder
+  private EditFieldLabel(text: string) {
+    Text(text)
+      .fontSize(13)
+      .fontColor($r('app.color.text_secondary'))
+      .width('100%')
+      .margin({ bottom: 6 })
+  }
+
+  @Builder
+  private DetailView() {
+    Scroll() {
+      Column() {
+        AuraSectionLabel({ text: displayUrl(this.editOrigin) })
+
+        Column({ space: 14 }) {
+          Column() {
+            this.EditFieldLabel('用户名')
+            TextInput({ text: this.editUsername, placeholder: '没有用户名' })
+              .height(46)
+              .fontSize(15)
+              .backgroundColor($r('app.color.surface_secondary'))
+              .borderRadius(10)
+              .onChange((value: string): void => {
+                this.editUsername = value;
+                this.usernameTouched = true;
+              })
+          }
+          .width('100%')
+
+          Column() {
+            Row() {
+              this.EditFieldLabel('密码')
+              Blank()
+              if (!this.revealed) {
+                Text('显示')
+                  .fontSize(13)
+                  .fontColor($r('app.color.accent_primary'))
+                  .onClick(() => {
+                    this.revealForEdit();
+                  })
+              } else {
+                Text('隐藏')
+                  .fontSize(13)
+                  .fontColor($r('app.color.accent_primary'))
+                  .onClick(() => {
+                    this.revealed = false;
+                  })
+              }
+            }
+            .width('100%')
+
+            TextInput({
+              text: this.editPassword,
+              placeholder: this.revealed ? '不修改请留空' : '点"显示"载入已保存的密码'
+            })
+              .height(46)
+              .fontSize(15)
+              .type(this.revealed ? InputType.Normal : InputType.Password)
+              .backgroundColor($r('app.color.surface_secondary'))
+              .borderRadius(10)
+              .onChange((value: string): void => {
+                this.editPassword = value;
+                this.passwordTouched = true;
+              })
+          }
+          .width('100%')
+
+          Column() {
+            this.EditFieldLabel('备注')
+            TextInput({ text: this.editNote, placeholder: '没有备注' })
+              .height(46)
+              .fontSize(15)
+              .backgroundColor($r('app.color.surface_secondary'))
+              .borderRadius(10)
+              .onChange((value: string): void => {
+                this.editNote = value;
+                this.noteTouched = true;
+              })
+          }
+          .width('100%')
+        }
+        .width('100%')
+        .padding(16)
+        .borderRadius(16)
+        .backgroundColor($r('app.color.card_background'))
+        .alignItems(HorizontalAlign.Start)
+
+        Text('改了哪个字段就保存哪个；什么都不改直接返回即可。')
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+          .width('100%')
+          .padding({ left: 4, top: 10 })
+
+        Button(this.busy ? '保存中…' : '保存')
+          .width('100%')
+          .height(46)
+          .fontSize(16)
+          .fontColor($r('app.color.on_accent'))
+          .backgroundColor($r('app.color.accent_primary'))
+          .borderRadius(12)
+          .margin({ top: 16 })
+          .enabled(!this.busy)
+          .onClick(() => {
+            this.saveEdit();
+          })
+
+        Button('删除这条密码')
+          .width('100%')
+          .height(46)
+          .fontSize(16)
+          .fontColor($r('app.color.danger'))
+          .backgroundColor($r('app.color.card_background'))
+          .borderRadius(12)
+          .margin({ top: 10 })
+          .onClick(() => {
+            const item = this.items.find((candidate: SavedPasswordItem): boolean =>
+              candidate.id === this.editId);
+            if (item !== undefined) {
+              this.confirmRemove(item);
+            }
+          })
+      }
+      .width('100%')
+    }
+    .layoutWeight(1)
+    .scrollBar(BarState.Off)
+    .align(Alignment.TopStart)
+  }
+
+  build() {
+    Column() {
+      this.Header()
+
+      if (!this.verified) {
+        this.GateView()
+      } else if (this.view === 'detail') {
+        this.DetailView()
+      } else {
+        this.ListView()
       }
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 20, right: 20, bottom: 16 })
-    .backgroundColor($r('app.color.surface_primary'))
+    .padding({ left: 16, right: 16, bottom: 16 })
+    .backgroundColor($r('app.color.page_background'))
   }
 }

@@ -44,6 +44,8 @@ import { HarmonyFilePickerAdapter, HarmonyFilePickerResult } from 'engine';
 import { PermissionRequestAdapter, PermissionRequestResultPayload } from 'engine';
 import {
   AboutInfoEvent,
+  BookmarkExportDoneEvent,
+  BookmarkImportDoneEvent,
   BrowserCommandChannel,
   DownloadListEvent,
   DownloadNotifier,
@@ -54,6 +56,8 @@ import {
   HistoryResultsEvent,
   PasswordCommandResultEvent,
   PasswordRevealedEvent,
+  PasswordsExportedEvent,
+  PasswordsImportedEvent,
   PrefsEvent,
   RecentBookmarksEvent,
   RecentlyClosedEvent,
@@ -746,6 +750,62 @@ struct AuraShell {
       const result = shellEvent<PasswordCommandResultEvent>(event);
       AppStorage.setOrCreate('auraPanelPasswordResult',
         JSON.stringify({ command: result.command, ok: result.ok, reason: result.reason ?? '' }));
+      return;
+    }
+    // 密码导入 / 导出回包（Lumie v2 对齐）。面板用它决定保存框、结果提示
+    // 与沙箱缓存清理。
+    if (event.event === 'passwordsImported') {
+      const imported = shellEvent<PasswordsImportedEvent>(event);
+      AppStorage.setOrCreate('auraPanelPasswordIo', JSON.stringify({
+        kind: 'import',
+        requestId: imported.requestId,
+        ok: imported.ok,
+        imported: imported.imported ?? 0,
+        skipped: imported.skipped ?? 0,
+        failed: imported.failed ?? 0,
+        reason: imported.reason ?? ''
+      }));
+      return;
+    }
+    if (event.event === 'passwordsExported') {
+      const exported = shellEvent<PasswordsExportedEvent>(event);
+      AppStorage.setOrCreate('auraPanelPasswordIo', JSON.stringify({
+        kind: 'export',
+        requestId: exported.requestId,
+        ok: exported.ok,
+        imported: 0,
+        skipped: 0,
+        failed: 0,
+        count: exported.count ?? 0,
+        reason: exported.reason ?? ''
+      }));
+      return;
+    }
+    // 书签导入 / 导出回包（Lumie v2 对齐）。
+    if (event.event === 'bookmarkImportDone') {
+      const done = shellEvent<BookmarkImportDoneEvent>(event);
+      AppStorage.setOrCreate('auraPanelBookmarkIo', JSON.stringify({
+        kind: 'import',
+        requestId: done.requestId,
+        ok: done.ok,
+        bookmarkCount: done.bookmarkCount ?? 0,
+        folderCount: done.folderCount ?? 0,
+        skippedCount: done.skippedCount ?? 0,
+        error: done.error ?? ''
+      }));
+      return;
+    }
+    if (event.event === 'bookmarkExportDone') {
+      const done = shellEvent<BookmarkExportDoneEvent>(event);
+      AppStorage.setOrCreate('auraPanelBookmarkIo', JSON.stringify({
+        kind: 'export',
+        requestId: done.requestId,
+        ok: done.ok,
+        bookmarkCount: done.bookmarkCount ?? 0,
+        folderCount: done.folderCount ?? 0,
+        skippedCount: 0,
+        error: done.error ?? ''
+      }));
       return;
     }
     if (event.event === 'siteSettings') {

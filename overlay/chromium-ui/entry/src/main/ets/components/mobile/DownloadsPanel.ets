@@ -1,13 +1,17 @@
 /*
- * 手机下载页（参考外壳扩展）。
+ * 手机下载页（对齐 Lumie v2：卡片式列表）。
  * 数据流：listDownloads -> downloadList 事件（AuraShell 转存到
  * 'auraPanelDownloads'）；进度由 downloadUpdated 事件驱动（AuraShell 转存到
  * 'auraPanelDownloadsTick'），本页做节流重拉，避免每秒多次刷新。
+ * 动作：行内动作芯片（暂停/继续/取消/重试/危险确认/复制链接/安装 crx），
+ * 点已完成的行交给系统打开文件。
  */
 import { common } from '@kit.AbilityKit';
+import { pasteboard } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
-import { BrowserCommandPayload, DownloadAction, DownloadItem } from 'engine';
+import { BrowserCommandPayload, DownloadAction, DownloadItem, openDownloadedFile } from 'engine';
 import { formatVisitTime } from './PanelBridge';
+import { AuraSectionLabel } from './LumieKit';
 
 interface PanelEventPayload {
   kind?: string;
@@ -151,6 +155,32 @@ export struct DownloadsPanel {
     });
   }
 
+  private copyLink(item: DownloadItem): void {
+    if (item.url.length === 0) {
+      return;
+    }
+    try {
+      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, item.url);
+      pasteboard.getSystemPasteboard().setData(data);
+      this.getUIContext().getPromptAction().showToast({
+        message: '已复制链接',
+        duration: 1500
+      });
+    } catch (error) {
+    }
+  }
+
+  private openItem(item: DownloadItem): void {
+    if (item.state !== 'completed' || item.fileMissing === true || item.filePath.length === 0) {
+      return;
+    }
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (!context) {
+      return;
+    }
+    openDownloadedFile(context, item.filePath, item.mimeType);
+  }
+
   private installCrx(item: DownloadItem): void {
     if (item.filePath.length === 0) {
       return;
@@ -224,7 +254,7 @@ export struct DownloadsPanel {
       .fontColor($r('app.color.accent_primary'))
       .padding({ left: 12, right: 12, top: 6, bottom: 6 })
       .borderRadius(8)
-      .backgroundColor($r('app.color.surface_primary'))
+      .backgroundColor($r('app.color.surface_secondary'))
       .onClick(action)
   }
 
@@ -232,66 +262,91 @@ export struct DownloadsPanel {
   private DangerChip(label: string, action: () => void) {
     Text(label)
       .fontSize(13)
-      .fontColor('#E24B4A')
+      .fontColor($r('app.color.danger'))
       .padding({ left: 12, right: 12, top: 6, bottom: 6 })
       .borderRadius(8)
-      .backgroundColor($r('app.color.surface_primary'))
+      .backgroundColor($r('app.color.surface_secondary'))
       .onClick(action)
   }
 
   @Builder
-  private DownloadRow(item: DownloadItem) {
-    Row({ space: 10 }) {
+  private DownloadRow(item: DownloadItem, index: number) {
+    Column() {
       Column({ space: 4 }) {
-        Text(item.fileName.length > 0 ? item.fileName : item.url)
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
-        Text(this.subtitle(item))
-          .fontSize(12)
-          .fontColor($r('app.color.text_secondary'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
+        Row({ space: 12 }) {
+          Image($r('app.media.chromium_download'))
+            .width(22)
+            .height(22)
+            .fillColor($r('app.color.icon_primary'))
+
+          Column({ space: 2 }) {
+            Text(item.fileName.length > 0 ? item.fileName : item.url)
+              .fontSize(15)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_primary'))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .width('100%')
+            Text(this.subtitle(item))
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .width('100%')
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+        }
+        .width('100%')
+        .onClick(() => {
+          this.openItem(item);
+        })
+
         if (this.showProgress(item)) {
           Progress({ value: this.progressValue(item), total: 100, type: ProgressType.Linear })
             .width('100%')
             .height(6)
         }
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
 
-      Row({ space: 6 }) {
-        if (item.dangerous) {
-          this.ActionChip('保留', (): void => this.act(item, 'keepDangerous'))
-          this.DangerChip('丢弃', (): void => this.act(item, 'discardDangerous'))
-        } else if (item.state === 'inProgress') {
-          this.ActionChip('暂停', (): void => this.act(item, 'pause'))
-          this.DangerChip('取消', (): void => this.act(item, 'cancel'))
-        } else if (item.state === 'paused') {
-          this.ActionChip('继续', (): void => this.act(item, 'resume'))
-          this.DangerChip('取消', (): void => this.act(item, 'cancel'))
-        } else if (item.state === 'completed') {
-          // A complete row whose file is gone: retry fetches the URL again and
-          // the old record goes away on its own (SHELL_CONTRACT.md, 下载).
-          if (item.fileMissing === true) {
-            this.ActionChip('重新下载', (): void => this.act(item, 'retry'))
-          } else if (isCrxFile(item)) {
-            this.ActionChip('安装', (): void => this.installCrx(item))
+        Row({ space: 6 }) {
+          Blank()
+          if (item.dangerous) {
+            this.ActionChip('保留', (): void => this.act(item, 'keepDangerous'))
+            this.DangerChip('丢弃', (): void => this.act(item, 'discardDangerous'))
+          } else if (item.state === 'inProgress') {
+            this.ActionChip('暂停', (): void => this.act(item, 'pause'))
+            this.DangerChip('取消', (): void => this.act(item, 'cancel'))
+          } else if (item.state === 'paused') {
+            this.ActionChip('继续', (): void => this.act(item, 'resume'))
+            this.DangerChip('取消', (): void => this.act(item, 'cancel'))
+          } else if (item.state === 'completed') {
+            // A complete row whose file is gone: retry fetches the URL again and
+            // the old record goes away on its own (SHELL_CONTRACT.md, 下载).
+            if (item.fileMissing === true) {
+              this.ActionChip('重新下载', (): void => this.act(item, 'retry'))
+            } else if (isCrxFile(item)) {
+              this.ActionChip('安装', (): void => this.installCrx(item))
+            }
+            this.ActionChip('复制链接', (): void => this.copyLink(item))
+            this.DangerChip('删除', (): void => this.confirmRemove(item))
+          } else {
+            this.ActionChip('重试', (): void => this.act(item, 'retry'))
+            this.ActionChip('复制链接', (): void => this.copyLink(item))
+            this.DangerChip('删除', (): void => this.confirmRemove(item))
           }
-          this.DangerChip('删除', (): void => this.confirmRemove(item))
-        } else {
-          this.ActionChip('重试', (): void => this.act(item, 'retry'))
-          this.DangerChip('删除', (): void => this.confirmRemove(item))
         }
+        .width('100%')
+      }
+      .width('100%')
+      .padding({ left: 16, right: 12, top: 12, bottom: 12 })
+
+      if (index < this.items.length - 1) {
+        Divider()
+          .color($r('app.color.divider'))
+          .margin({ left: 50 })
       }
     }
     .width('100%')
-    .padding({ top: 10, bottom: 10 })
   }
 
   build() {
@@ -312,7 +367,7 @@ export struct DownloadsPanel {
         })
 
         Text('下载')
-          .fontSize(20)
+          .fontSize(22)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
           .margin({ left: 12 })
@@ -320,7 +375,7 @@ export struct DownloadsPanel {
         Blank()
       }
       .width('100%')
-      .height(52)
+      .height(56)
 
       if (this.items.length === 0) {
         Column() {
@@ -334,16 +389,23 @@ export struct DownloadsPanel {
       } else {
         Scroll() {
           Column() {
-            ForEach(this.items, (item: DownloadItem, index: number) => {
-              Column() {
-                this.DownloadRow(item)
-                if (index < this.items.length - 1) {
-                  Divider()
-                    .color($r('app.color.divider'))
-                }
-              }
+            AuraSectionLabel({ text: '下载记录' })
+
+            Column() {
+              ForEach(this.items, (item: DownloadItem, index: number) => {
+                this.DownloadRow(item, index)
+              }, (item: DownloadItem): string => item.id)
+            }
+            .width('100%')
+            .borderRadius(16)
+            .backgroundColor($r('app.color.card_background'))
+            .clip(true)
+
+            Text('已完成的行点一下可以交给其它应用打开。')
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
               .width('100%')
-            }, (item: DownloadItem): string => item.id)
+              .padding({ left: 4, right: 4, top: 10 })
           }
           .width('100%')
         }
@@ -357,7 +419,7 @@ export struct DownloadsPanel {
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 20, right: 20, bottom: 16 })
-    .backgroundColor($r('app.color.surface_primary'))
+    .padding({ left: 16, right: 16, bottom: 16 })
+    .backgroundColor($r('app.color.page_background'))
   }
 }

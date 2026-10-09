@@ -210,7 +210,6 @@ export struct SitePermissionsPanel {
         }
         .width(44)
         .height(44)
-        .backgroundColor($r('app.color.surface_secondary'))
         .accessibilityText('返回')
         .onClick(() => {
           if (this.page === 'detail') {
@@ -221,7 +220,7 @@ export struct SitePermissionsPanel {
         })
 
         Text(this.page === 'detail' ? originHost(this.detailOrigin) : '网站权限')
-          .fontSize(20)
+          .fontSize(22)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
           .margin({ left: 12 })
@@ -232,7 +231,7 @@ export struct SitePermissionsPanel {
         Blank()
       }
       .width('100%')
-      .height(52)
+      .height(56)
 
       if (this.page === 'list') {
         if (this.origins.length === 0) {
@@ -247,41 +246,55 @@ export struct SitePermissionsPanel {
         } else {
           Scroll() {
             Column() {
-              ForEach(this.origins, (origin: string, index: number) => {
-                Column() {
-                  Row() {
-                    Column({ space: 2 }) {
-                      Text(originHost(origin))
-                        .fontSize(15)
-                        .fontWeight(FontWeight.Medium)
-                        .fontColor($r('app.color.text_primary'))
-                        .maxLines(1)
-                        .textOverflow({ overflow: TextOverflow.Ellipsis })
-                        .width('100%')
-                      Text(`${this.countFor(origin)} 项自定义设置`)
-                        .fontSize(12)
-                        .fontColor($r('app.color.text_secondary'))
-                    }
-                    .alignItems(HorizontalAlign.Start)
-                    .layoutWeight(1)
+              Column() {
+                ForEach(this.origins, (origin: string, index: number) => {
+                  Column() {
+                    Row({ space: 12 }) {
+                      Image($r('app.media.aura_globe'))
+                        .width(22)
+                        .height(22)
+                        .fillColor($r('app.color.icon_primary'))
+                      Column({ space: 2 }) {
+                        Text(originHost(origin))
+                          .fontSize(16)
+                          .fontWeight(FontWeight.Medium)
+                          .fontColor($r('app.color.text_primary'))
+                          .maxLines(1)
+                          .textOverflow({ overflow: TextOverflow.Ellipsis })
+                          .width('100%')
+                        Text(`${this.countFor(origin)} 项自定义设置`)
+                          .fontSize(12)
+                          .fontColor($r('app.color.text_secondary'))
+                      }
+                      .alignItems(HorizontalAlign.Start)
+                      .layoutWeight(1)
 
-                    Text('›')
-                      .fontSize(18)
-                      .fontColor($r('app.color.text_secondary'))
+                      Image($r('app.media.aura_chevron'))
+                        .width(16)
+                        .height(16)
+                        .fillColor($r('app.color.icon_secondary'))
+                        .opacity(0.65)
+                    }
+                    .width('100%')
+                    .constraintSize({ minHeight: 60 })
+                    .padding({ left: 16, right: 14, top: 8, bottom: 8 })
+                    .onClick(() => {
+                      this.openDetail(origin);
+                    })
+
+                    if (index < this.origins.length - 1) {
+                      Divider()
+                        .color($r('app.color.divider'))
+                        .margin({ left: 50 })
+                    }
                   }
                   .width('100%')
-                  .height(58)
-                  .onClick(() => {
-                    this.openDetail(origin);
-                  })
-
-                  if (index < this.origins.length - 1) {
-                    Divider()
-                      .color($r('app.color.divider'))
-                  }
-                }
-                .width('100%')
-              }, (origin: string): string => origin)
+                }, (origin: string): string => origin)
+              }
+              .width('100%')
+              .borderRadius(16)
+              .backgroundColor($r('app.color.card_background'))
+              .clip(true)
             }
             .width('100%')
           }
@@ -304,19 +317,22 @@ export struct SitePermissionsPanel {
                   Column() {
                     Row() {
                       Text(typeLabel(item.type))
-                        .fontSize(15)
+                        .fontSize(16)
                         .fontColor($r('app.color.text_primary'))
                       Blank()
                       Text(valueLabel(item.setting))
                         .fontSize(14)
-                        .fontColor(item.setting === 'block' ? '#E24B4A' : $r('app.color.accent_primary'))
-                      Text('›')
-                        .fontSize(18)
-                        .fontColor($r('app.color.text_secondary'))
+                        .fontColor(item.setting === 'block' ? $r('app.color.danger') : $r('app.color.accent_primary'))
+                      Image($r('app.media.aura_chevron'))
+                        .width(16)
+                        .height(16)
+                        .fillColor($r('app.color.icon_secondary'))
+                        .opacity(0.65)
                         .margin({ left: 6 })
                     }
                     .width('100%')
-                    .height(48)
+                    .constraintSize({ minHeight: 56 })
+                    .padding({ left: 16, right: 14 })
                     .onClick(() => {
                       this.cycle(item);
                     })
@@ -324,30 +340,31 @@ export struct SitePermissionsPanel {
                     if (index < this.detailItems.length - 1) {
                       Divider()
                         .color($r('app.color.divider'))
+                        .margin({ left: 16 })
                     }
                   }
                   .width('100%')
                 }, (item: SiteSetting): string => `${item.type}:${item.setting}`)
               }
               .width('100%')
-              .padding({ left: 14, right: 14 })
-              .borderRadius(12)
-              .backgroundColor($r('app.color.surface_secondary'))
+              .borderRadius(16)
+              .backgroundColor($r('app.color.card_background'))
+              .clip(true)
 
               Text('点按一项在 允许 → 询问 → 禁止 → 默认 之间切换；"默认"会删除这条单独设置。')
                 .fontSize(12)
                 .fontColor($r('app.color.text_secondary'))
                 .width('100%')
-                .margin({ top: 12 })
+                .margin({ top: 12, left: 4 })
             }
 
             Button('清除这个网站的权限和数据')
               .width('100%')
               .height(46)
-              .fontSize(15)
-              .fontColor('#E24B4A')
-              .backgroundColor($r('app.color.surface_secondary'))
-              .borderRadius(12)
+              .fontSize(16)
+              .fontColor($r('app.color.danger'))
+              .backgroundColor($r('app.color.card_background'))
+              .borderRadius(16)
               .margin({ top: 20 })
               .onClick(() => {
                 this.confirmReset();
@@ -362,7 +379,7 @@ export struct SitePermissionsPanel {
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 20, right: 20, bottom: 16 })
-    .backgroundColor($r('app.color.surface_primary'))
+    .padding({ left: 16, right: 16, bottom: 16 })
+    .backgroundColor($r('app.color.page_background'))
   }
 }

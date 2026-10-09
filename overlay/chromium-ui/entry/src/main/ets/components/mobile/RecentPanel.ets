@@ -1,10 +1,11 @@
 /*
- * 手机"最近关闭的标签页"（参考外壳扩展）。
+ * 手机"最近关闭的标签页"（对齐 Lumie v2：卡片式列表）。
  * 数据流：getRecentlyClosed -> recentlyClosed 事件（AuraShell 转存到
  * 'auraPanelRecent'）；点按一条即 restoreRecentlyClosed 并回到网页。
  */
 import { BrowserCommandPayload, RecentlyClosedTab } from 'engine';
 import { displayUrl, formatVisitTime } from './PanelBridge';
+import { AuraSectionLabel } from './LumieKit';
 
 @Component
 export struct RecentPanel {
@@ -62,6 +63,48 @@ export struct RecentPanel {
     this.onClose();
   }
 
+  @Builder
+  private RecentRow(item: RecentlyClosedTab, index: number) {
+    Column() {
+      Row({ space: 12 }) {
+        Image($r('app.media.chromium_history'))
+          .width(22)
+          .height(22)
+          .fillColor($r('app.color.icon_primary'))
+
+        Column({ space: 2 }) {
+          Text(item.title.length > 0 ? item.title : displayUrl(item.url))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontSize(16)
+            .fontColor($r('app.color.text_primary'))
+            .width('100%')
+          Text(`${displayUrl(item.url)} · ${formatVisitTime(item.closedTime)}`)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+      }
+      .width('100%')
+      .constraintSize({ minHeight: 60 })
+      .padding({ left: 16, right: 14, top: 8, bottom: 8 })
+      .onClick(() => {
+        this.restore(item);
+      })
+
+      if (index < this.items.length - 1) {
+        Divider()
+          .color($r('app.color.divider'))
+          .margin({ left: 50 })
+      }
+    }
+    .width('100%')
+  }
+
   build() {
     Column() {
       Row() {
@@ -73,14 +116,13 @@ export struct RecentPanel {
         }
         .width(44)
         .height(44)
-        .backgroundColor($r('app.color.surface_secondary'))
         .accessibilityText('返回')
         .onClick(() => {
           this.onBack();
         })
 
         Text('最近关闭')
-          .fontSize(20)
+          .fontSize(22)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
           .margin({ left: 12 })
@@ -88,7 +130,7 @@ export struct RecentPanel {
         Blank()
       }
       .width('100%')
-      .height(52)
+      .height(56)
 
       if (this.items.length === 0) {
         Column() {
@@ -102,38 +144,23 @@ export struct RecentPanel {
       } else {
         Scroll() {
           Column() {
-            ForEach(this.items, (item: RecentlyClosedTab, index: number) => {
-              Column() {
-                Row({ space: 10 }) {
-                  Column({ space: 2 }) {
-                    Text(item.title.length > 0 ? item.title : displayUrl(item.url))
-                      .maxLines(1)
-                      .textOverflow({ overflow: TextOverflow.Ellipsis })
-                      .fontSize(16)
-                      .fontColor($r('app.color.text_primary'))
-                    Text(`${displayUrl(item.url)} · ${formatVisitTime(item.closedTime)}`)
-                      .maxLines(1)
-                      .textOverflow({ overflow: TextOverflow.Ellipsis })
-                      .fontSize(12)
-                      .fontColor($r('app.color.text_secondary'))
-                  }
-                  .alignItems(HorizontalAlign.Start)
-                  .layoutWeight(1)
-                }
-                .width('100%')
-                .height(58)
-                .padding({ left: 4, right: 2 })
-                .onClick(() => {
-                  this.restore(item);
-                })
+            AuraSectionLabel({ text: '最近关闭' })
 
-                if (index < this.items.length - 1) {
-                  Divider()
-                    .color($r('app.color.divider'))
-                }
-              }
+            Column() {
+              ForEach(this.items, (item: RecentlyClosedTab, index: number) => {
+                this.RecentRow(item, index)
+              }, (item: RecentlyClosedTab): string => item.id)
+            }
+            .width('100%')
+            .borderRadius(16)
+            .backgroundColor($r('app.color.card_background'))
+            .clip(true)
+
+            Text('点一条就可以把它重新打开。')
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
               .width('100%')
-            }, (item: RecentlyClosedTab): string => item.id)
+              .padding({ left: 4, right: 4, top: 10 })
           }
           .width('100%')
         }
@@ -147,7 +174,7 @@ export struct RecentPanel {
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 20, right: 20, bottom: 16 })
-    .backgroundColor($r('app.color.surface_primary'))
+    .padding({ left: 16, right: 16, bottom: 16 })
+    .backgroundColor($r('app.color.page_background'))
   }
 }

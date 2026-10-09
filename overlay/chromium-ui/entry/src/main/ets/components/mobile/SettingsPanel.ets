@@ -10,6 +10,9 @@ import uiMaterial from '@ohos.arkui.uiMaterial';
 import { hdsMaterial } from '@kit.UIDesignKit';
 import { AppearanceSettings, ColorModeSetting } from '../../utils/appearance/AppearanceSettings';
 import { ShellUiPrefs } from '../../utils/appearance/ShellUiPrefs';
+import { HuaweiAccountInfo } from '../../utils/account/HuaweiAccountService';
+import { HuaweiAccountView } from './AccountPanel';
+import { AuraNavIconRow, AuraSectionLabel } from './LumieKit';
 import {
   BrowsingDataType,
   BrowsingDataTimeRange,
@@ -79,6 +82,7 @@ export struct SettingsPanel {
   @State private colorModeSetting: ColorModeSetting = 'system';
   @State private textScalePercent: number = 100;
   @StorageLink('auraHideStatusBarOnScroll') hideStatusBarOnScroll: boolean = false;
+  @StorageLink('auraHuaweiAccount') accountJson: string = '';
   // Runtime diagnostics at the bottom of the page: device API level,
   // immersive-material support / switch / level, and both colour-mode
   // values (shell view vs. system configuration).
@@ -143,6 +147,30 @@ export struct SettingsPanel {
   private reloadAbout(): void {
     this.requestSeq += 1;
     this.onCommand({ command: 'getAboutInfo', requestId: this.requestSeq });
+  }
+
+  private accountInfo(): HuaweiAccountInfo {
+    if (this.accountJson.length === 0) {
+      return { signedIn: false, openID: '', unionID: '' };
+    }
+    try {
+      const value = JSON.parse(this.accountJson) as HuaweiAccountInfo;
+      return {
+        signedIn: value.signedIn === true,
+        openID: String(value.openID ?? ''),
+        unionID: String(value.unionID ?? '')
+      };
+    } catch (error) {
+      return { signedIn: false, openID: '', unionID: '' };
+    }
+  }
+
+  private accountTitle(): string {
+    return this.accountInfo().signedIn ? '已登录华为账号' : '华为账号';
+  }
+
+  private accountSubtitle(): string {
+    return this.accountInfo().signedIn ? '已登录' : '登录后同步书签和密码';
   }
 
   private onPrefsPayload(): void {
@@ -370,7 +398,6 @@ export struct SettingsPanel {
       }
       .width(44)
       .height(44)
-      .backgroundColor($r('app.color.surface_secondary'))
       .accessibilityText('返回')
       .onClick(() => {
         if (showBackToMain) {
@@ -381,7 +408,7 @@ export struct SettingsPanel {
       })
 
       Text(title)
-        .fontSize(20)
+        .fontSize(22)
         .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.text_primary'))
         .margin({ left: 12 })
@@ -389,7 +416,7 @@ export struct SettingsPanel {
       Blank()
     }
     .width('100%')
-    .height(52)
+    .height(56)
   }
 
   @Builder
@@ -405,6 +432,7 @@ export struct SettingsPanel {
   private CardDivider() {
     Divider()
       .color($r('app.color.divider'))
+      .margin({ left: 50 })
   }
 
   private prefValue(key: ShellPrefKey): boolean {
@@ -418,24 +446,29 @@ export struct SettingsPanel {
   }
 
   @Builder
-  private NavRow(label: string, value: string, action: () => void) {
-    Row() {
+  private NavRow(icon: Resource, label: string, value: string, action: () => void, danger: boolean) {
+    Row({ space: 12 }) {
+      Image(icon)
+        .width(22)
+        .height(22)
+        .fillColor(danger ? $r('app.color.danger') : $r('app.color.icon_primary'))
       Text(label)
-        .fontSize(15)
-        .fontColor($r('app.color.text_primary'))
+        .fontSize(16)
+        .fontColor(danger ? $r('app.color.danger') : $r('app.color.text_primary'))
       Blank()
       if (value.length > 0) {
         Text(value)
           .fontSize(14)
           .fontColor($r('app.color.text_secondary'))
       }
-      Text('›')
-        .fontSize(18)
-        .fontColor($r('app.color.text_secondary'))
-        .margin({ left: 6 })
+      Image($r('app.media.aura_chevron'))
+        .width(16)
+        .height(16)
+        .fillColor($r('app.color.icon_secondary'))
+        .opacity(0.65)
     }
     .width('100%')
-    .height(50)
+    .constraintSize({ minHeight: 56 })
     .onClick(action)
   }
 
@@ -458,7 +491,7 @@ export struct SettingsPanel {
   private ToggleRow(label: string, key: ShellPrefKey) {
     Row() {
       Text(label)
-        .fontSize(15)
+        .fontSize(16)
         .fontColor($r('app.color.text_primary'))
       Blank()
       Toggle({ type: ToggleType.Switch, isOn: this.prefValue(key) })
@@ -467,7 +500,8 @@ export struct SettingsPanel {
         })
     }
     .width('100%')
-    .height(50)
+    .constraintSize({ minHeight: 56 })
+    .padding({ left: 16, right: 16 })
   }
 
   @Builder
@@ -477,30 +511,50 @@ export struct SettingsPanel {
 
       Scroll() {
         Column() {
-          this.SectionLabel('常规')
+          this.SectionLabel('华为账号')
           Column() {
-            this.NavRow('搜索引擎', this.defaultEngineName.length > 0 ? this.defaultEngineName : '—', (): void => {
-              this.page = 'engines';
-            })
-            this.CardDivider()
-            this.NavRow('扩展程序', '', (): void => {
-              this.onOpenExtensions();
+            AuraNavIconRow({
+              icon: $r('app.media.aura_account'),
+              title: this.accountTitle(),
+              subtitle: this.accountSubtitle(),
+              showDivider: false,
+              onTap: (): void => {
+                this.page = 'account';
+              }
             })
           }
           .width('100%')
-          .padding({ left: 16, right: 16, top: 2, bottom: 2 })
-          .borderRadius(12)
-          .backgroundColor($r('app.color.surface_secondary'))
+          .padding({ left: 0, right: 0, top: 2, bottom: 2 })
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
+
+          this.SectionLabel('常规')
+          Column() {
+            this.NavRow($r('app.media.chromium_search'), '搜索引擎',
+              this.defaultEngineName.length > 0 ? this.defaultEngineName : '—', (): void => {
+                this.page = 'engines';
+              }, false)
+            this.CardDivider()
+            this.NavRow($r('app.media.chromium_extensions'), '扩展程序', '', (): void => {
+              this.onOpenExtensions();
+            }, false)
+          }
+          .width('100%')
+          .padding({ left: 0, right: 0, top: 2, bottom: 2 })
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
 
           this.SectionLabel('隐私与安全')
           Column() {
-            this.NavRow('网站权限', '', (): void => {
+            this.NavRow($r('app.media.aura_globe'), '网站权限', '', (): void => {
               this.onOpenSitePermissions();
-            })
+            }, false)
             this.CardDivider()
-            this.NavRow('密码', '', (): void => {
+            this.NavRow($r('app.media.aura_lock'), '密码', '', (): void => {
               this.onOpenPasswords();
-            })
+            }, false)
             this.CardDivider()
             this.ToggleRow('阻止第三方 Cookie', 'blockThirdPartyCookies')
             this.CardDivider()
@@ -508,42 +562,45 @@ export struct SettingsPanel {
             this.CardDivider()
             this.ToggleRow('发送"请勿追踪"请求', 'doNotTrack')
             this.CardDivider()
-            this.NavRow('清除浏览数据', '', (): void => {
+            this.NavRow($r('app.media.aura_trash'), '清除浏览数据', '', (): void => {
               this.page = 'clear';
-            })
+            }, true)
           }
           .width('100%')
-          .padding({ left: 16, right: 16, top: 2, bottom: 2 })
-          .borderRadius(12)
-          .backgroundColor($r('app.color.surface_secondary'))
+          .padding({ left: 0, right: 0, top: 2, bottom: 2 })
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
 
           this.SectionLabel('外观')
           Column() {
-            this.NavRow('深色模式', this.colorModeLabel(), (): void => {
+            this.NavRow($r('app.media.aura_moon'), '深色模式', this.colorModeLabel(), (): void => {
               this.page = 'appearance';
-            })
+            }, false)
             this.CardDivider()
             this.ShellToggleRow('上滑时隐藏状态栏', '地址栏收起时一起隐藏，网页铺满全屏')
             this.CardDivider()
-            this.NavRow('网页缩放', `${this.textScalePercent}%`, (): void => {
+            this.NavRow($r('app.media.aura_zoom'), '网页缩放', `${this.textScalePercent}%`, (): void => {
               this.page = 'zoom';
-            })
+            }, false)
             this.CardDivider()
             this.ToggleRow('网页强制深色', 'forceDarkWebContents')
           }
           .width('100%')
-          .padding({ left: 16, right: 16, top: 2, bottom: 2 })
-          .borderRadius(12)
-          .backgroundColor($r('app.color.surface_secondary'))
+          .padding({ left: 0, right: 0, top: 2, bottom: 2 })
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
 
           this.SectionLabel('下载')
           Column() {
             this.ToggleRow('下载前询问', 'downloadAskWhereToSave')
           }
           .width('100%')
-          .padding({ left: 16, right: 16, top: 2, bottom: 2 })
-          .borderRadius(12)
-          .backgroundColor($r('app.color.surface_secondary'))
+          .padding({ left: 0, right: 0, top: 2, bottom: 2 })
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
 
           this.SectionLabel('高级')
           Column() {
@@ -552,9 +609,10 @@ export struct SettingsPanel {
             this.ToggleRow('预加载网页', 'preloadPages')
           }
           .width('100%')
-          .padding({ left: 16, right: 16, top: 2, bottom: 2 })
-          .borderRadius(12)
-          .backgroundColor($r('app.color.surface_secondary'))
+          .padding({ left: 0, right: 0, top: 2, bottom: 2 })
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
 
           if (this.chromiumVersion.length > 0) {
             Text(`Chromium ${this.chromiumVersion}`)
@@ -585,8 +643,9 @@ export struct SettingsPanel {
           }
           .width('100%')
           .padding({ left: 16, right: 16, top: 2, bottom: 2 })
-          .borderRadius(12)
-          .backgroundColor($r('app.color.surface_secondary'))
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
 
           Blank()
             .height(24)
@@ -671,30 +730,60 @@ export struct SettingsPanel {
         .layoutWeight(1)
         .justifyContent(FlexAlign.Center)
       } else {
-        List({ space: 2 }) {
-          ForEach(this.engines, (engine: SearchEngine) => {
-            ListItem() {
-              Row() {
-                Text(engine.name)
-                  .fontSize(15)
-                  .fontColor($r('app.color.text_primary'))
-                Blank()
-                if (engine.isDefault) {
-                  Text('默认')
-                    .fontSize(13)
-                    .fontColor($r('app.color.accent_primary'))
+        Scroll() {
+          Column() {
+            AuraSectionLabel({ text: '选择默认搜索引擎' })
+
+            Column() {
+              ForEach(this.engines, (engine: SearchEngine, index: number) => {
+                Column() {
+                  Row({ space: 12 }) {
+                    Image($r('app.media.chromium_search'))
+                      .width(22)
+                      .height(22)
+                      .fillColor($r('app.color.icon_primary'))
+                    Text(engine.name)
+                      .fontSize(16)
+                      .fontColor($r('app.color.text_primary'))
+                    Blank()
+                    if (engine.isDefault) {
+                      Text('✓')
+                        .fontSize(16)
+                        .fontColor($r('app.color.accent_primary'))
+                    }
+                  }
+                  .width('100%')
+                  .constraintSize({ minHeight: 56 })
+                  .padding({ left: 16, right: 16 })
+                  .onClick(() => {
+                    this.chooseEngine(engine);
+                  })
+
+                  if (index < this.engines.length - 1) {
+                    Divider()
+                      .color($r('app.color.divider'))
+                      .margin({ left: 50 })
+                  }
                 }
-              }
-              .width('100%')
-              .height(52)
-              .onClick(() => {
-                this.chooseEngine(engine);
-              })
+                .width('100%')
+              }, (engine: SearchEngine): string => engine.id)
             }
-          }, (engine: SearchEngine): string => engine.id)
+            .width('100%')
+            .borderRadius(16)
+            .backgroundColor($r('app.color.card_background'))
+            .clip(true)
+
+            Text('默认搜索引擎用于地址栏和主页的搜索。')
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+              .padding({ left: 4, right: 4, top: 10 })
+          }
+          .width('100%')
         }
-        .width('100%')
         .layoutWeight(1)
+        .scrollBar(BarState.Off)
+        .align(Alignment.TopStart)
       }
     }
     .width('100%')
@@ -705,21 +794,20 @@ export struct SettingsPanel {
   private ColorModeRow(mode: ColorModeSetting, label: string) {
     Row() {
       Text(label)
-        .fontSize(15)
-        .fontColor($r('app.color.text_primary'))
+        .fontSize(16)
+        .fontColor(this.colorModeSetting === mode ?
+          $r('app.color.accent_primary') : $r('app.color.text_primary'))
       Blank()
       if (this.colorModeSetting === mode) {
-        Text('已选')
-          .fontSize(13)
+        Text('✓')
+          .fontSize(16)
           .fontColor($r('app.color.accent_primary'))
       }
     }
     .width('100%')
-    .height(48)
-    .padding({ left: 12, right: 12 })
-    .borderRadius(8)
-    .backgroundColor(this.colorModeSetting === mode ?
-      $r('app.color.surface_primary') : Color.Transparent)
+    .constraintSize({ minHeight: 56 })
+    .padding({ left: 16, right: 16 })
+    .backgroundColor(Color.Transparent)
     .onClick(() => {
       this.chooseColorMode(mode);
     })
@@ -740,17 +828,19 @@ export struct SettingsPanel {
         this.ColorModeRow('system', '跟随系统')
         Divider()
           .color($r('app.color.divider'))
-          .margin({ left: 12, right: 12 })
+          .margin({ left: 16, right: 16 })
         this.ColorModeRow('light', '浅色')
         Divider()
           .color($r('app.color.divider'))
-          .margin({ left: 12, right: 12 })
+          .margin({ left: 16, right: 16 })
         this.ColorModeRow('dark', '深色')
       }
       .width('100%')
       .padding({ top: 4, bottom: 4 })
-      .borderRadius(12)
-      .backgroundColor($r('app.color.surface_secondary'))
+      .borderRadius(16)
+      .backgroundColor($r('app.color.card_background'))
+      .clip(true)
+      .margin({ top: 4 })
     }
     .width('100%')
     .height('100%')
@@ -784,7 +874,7 @@ export struct SettingsPanel {
           })
       }
       .width('100%')
-      .padding({ top: 10, bottom: 10 })
+      .padding({ left: 16, right: 16, top: 10, bottom: 10 })
     }
     .width('100%')
   }
@@ -805,7 +895,7 @@ export struct SettingsPanel {
         ForEach([50, 75, 100, 125, 150, 175, 200], (scale: number) => {
           Row() {
             Text(`${scale}%`)
-              .fontSize(15)
+              .fontSize(16)
               .fontColor(scale === this.textScalePercent ?
                 $r('app.color.accent_primary') : $r('app.color.text_primary'))
               .fontWeight(scale === this.textScalePercent ? FontWeight.Medium : FontWeight.Regular)
@@ -817,24 +907,26 @@ export struct SettingsPanel {
             }
           }
           .width('100%')
-          .height(50)
+          .constraintSize({ minHeight: 56 })
+          .padding({ left: 16, right: 16 })
           .onClick(() => {
             this.setPrefNumber('textScale', scale);
           })
           if (scale !== 200) {
             Divider()
               .color($r('app.color.divider'))
+              .margin({ left: 16 })
           }
         }, (scale: number): string => scale.toString())
       }
       .width('100%')
-      .padding({ left: 16, right: 16, top: 2, bottom: 2 })
-      .borderRadius(12)
-      .backgroundColor($r('app.color.surface_secondary'))
+      .padding({ top: 2, bottom: 2 })
+      .borderRadius(16)
+      .backgroundColor($r('app.color.card_background'))
+      .clip(true)
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 20, right: 20, bottom: 16 })
   }
 
   private setPrefNumber(key: ShellPrefKey, value: number): void {
@@ -855,13 +947,19 @@ export struct SettingsPanel {
         this.AppearanceView()
       } else if (this.page === 'zoom') {
         this.ZoomView()
+      } else if (this.page === 'account') {
+        HuaweiAccountView({
+          onBack: (): void => {
+            this.page = 'main';
+          }
+        })
       } else {
         this.MainView()
       }
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 20, right: 20, bottom: 16 })
-    .backgroundColor($r('app.color.surface_primary'))
+    .padding({ left: 16, right: 16, bottom: 16 })
+    .backgroundColor($r('app.color.page_background'))
   }
 }

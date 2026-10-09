@@ -1,11 +1,33 @@
 /*
- * 手机自绘历史页（参考外壳扩展）。
+ * 手机自绘历史页（对齐 Lumie v2）：卡片式列表，按天分组（今天 / 昨天 /
+ * 月日 / 年月日，对齐 Lumie 的 DayGrouping）。
  * 数据流：queryHistory -> historyResults 事件（AuraShell 转存到
  * 'auraPanelHistory'）；删除或别处变化后引擎推 historyChanged
  * （转存到 'auraPanelEvent'），本页据此重拉。
  */
 import { BrowserCommandPayload, HistoryItem } from 'engine';
-import { displayUrl, formatVisitTime } from './PanelBridge';
+import { displayUrl, dayGroupLabel, formatClock } from './PanelBridge';
+import { AuraSectionLabel } from './LumieKit';
+
+interface HistoryGroup {
+  label: string;
+  items: HistoryItem[];
+}
+
+// 按天分组；queryHistory 结果已按时间倒序。
+function groupHistory(items: HistoryItem[]): HistoryGroup[] {
+  const groups: HistoryGroup[] = [];
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    const label = dayGroupLabel(item.visitTime);
+    const last = groups.length > 0 ? groups[groups.length - 1] : undefined;
+    if (last === undefined || last.label !== label) {
+      groups.push({ label: label, items: [] });
+    }
+    groups[groups.length - 1].items.push(item);
+  }
+  return groups;
+}
 
 @Component
 export struct HistoryPanel {
@@ -16,6 +38,7 @@ export struct HistoryPanel {
   onClose: () => void = (): void => {};
 
   @State private items: HistoryItem[] = [];
+  @State private groups: HistoryGroup[] = [];
   @State private loading: boolean = true;
   private requestSeq: number = 0;
   private retryTimer: number = -1;
@@ -53,6 +76,7 @@ export struct HistoryPanel {
     }
     try {
       this.items = JSON.parse(this.historyJson) as HistoryItem[];
+      this.groups = groupHistory(this.items);
       this.loading = false;
     } catch (error) {
       this.loading = false;
@@ -82,6 +106,62 @@ export struct HistoryPanel {
     });
   }
 
+  @Builder
+  private HistoryRow(item: HistoryItem, isLast: boolean) {
+    Column() {
+      Row({ space: 12 }) {
+        Image($r('app.media.chromium_history'))
+          .width(22)
+          .height(22)
+          .fillColor($r('app.color.icon_primary'))
+
+        Column({ space: 2 }) {
+          Text(item.title.length > 0 ? item.title : displayUrl(item.url))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontSize(16)
+            .fontColor($r('app.color.text_primary'))
+            .width('100%')
+          Text(`${displayUrl(item.url)} · ${formatClock(item.visitTime)}`)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+
+        Button({ type: ButtonType.Circle }) {
+          Image($r('app.media.chromium_close'))
+            .width(18)
+            .height(18)
+            .fillColor($r('app.color.icon_secondary'))
+        }
+        .width(40)
+        .height(40)
+        .backgroundColor(Color.Transparent)
+        .accessibilityText('删除这条记录')
+        .onClick(() => {
+          this.removeItem(item);
+        })
+      }
+      .width('100%')
+      .constraintSize({ minHeight: 60 })
+      .padding({ left: 16, right: 6, top: 8, bottom: 8 })
+      .onClick(() => {
+        this.openItem(item);
+      })
+
+      if (!isLast) {
+        Divider()
+          .color($r('app.color.divider'))
+          .margin({ left: 50 })
+      }
+    }
+    .width('100%')
+  }
+
   build() {
     Column() {
       Row() {
@@ -100,7 +180,7 @@ export struct HistoryPanel {
         })
 
         Text('历史')
-          .fontSize(20)
+          .fontSize(22)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
           .margin({ left: 12 })
@@ -108,7 +188,7 @@ export struct HistoryPanel {
         Blank()
       }
       .width('100%')
-      .height(52)
+      .height(56)
 
       if (this.items.length === 0) {
         Column() {
@@ -120,55 +200,31 @@ export struct HistoryPanel {
         .layoutWeight(1)
         .justifyContent(FlexAlign.Center)
       } else {
-        List({ space: 2 }) {
-          ForEach(this.items, (item: HistoryItem) => {
-            ListItem() {
-              Row({ space: 10 }) {
-                Column({ space: 2 }) {
-                  Text(item.title.length > 0 ? item.title : displayUrl(item.url))
-                    .maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .fontSize(16)
-                    .fontColor($r('app.color.text_primary'))
-                  Text(`${displayUrl(item.url)} · ${formatVisitTime(item.visitTime)}`)
-                    .maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .fontSize(12)
-                    .fontColor($r('app.color.text_secondary'))
-                }
-                .alignItems(HorizontalAlign.Start)
-                .layoutWeight(1)
-
-                Button({ type: ButtonType.Circle }) {
-                  Image($r('app.media.chromium_close'))
-                    .width(18)
-                    .height(18)
-                    .fillColor($r('app.color.icon_secondary'))
-                }
-                .width(40)
-                .height(40)
-                .backgroundColor(Color.Transparent)
-                .accessibilityText('删除这条记录')
-                .onClick(() => {
-                  this.removeItem(item);
-                })
+        Scroll() {
+          Column() {
+            ForEach(this.groups, (group: HistoryGroup) => {
+              AuraSectionLabel({ text: group.label })
+              Column() {
+                ForEach(group.items, (item: HistoryItem, index: number) => {
+                  this.HistoryRow(item, index === group.items.length - 1)
+                }, (item: HistoryItem): string => `${item.url}|${item.visitTime}`)
               }
               .width('100%')
-              .height(58)
-              .padding({ left: 4, right: 2 })
-              .onClick(() => {
-                this.openItem(item);
-              })
-            }
-          }, (item: HistoryItem): string => `${item.url}|${item.visitTime}`)
+              .borderRadius(16)
+              .backgroundColor($r('app.color.card_background'))
+              .clip(true)
+            }, (group: HistoryGroup): string => group.label)
+          }
+          .width('100%')
         }
-        .width('100%')
         .layoutWeight(1)
+        .scrollBar(BarState.Off)
+        .align(Alignment.TopStart)
       }
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 20, right: 20, bottom: 16 })
-    .backgroundColor($r('app.color.surface_primary'))
+    .padding({ left: 16, right: 16, bottom: 16 })
+    .backgroundColor($r('app.color.page_background'))
   }
 }

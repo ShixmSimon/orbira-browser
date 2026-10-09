@@ -1,17 +1,32 @@
 /*
- * 手机自绘书签页（参考外壳扩展）。
+ * 手机自绘书签页（对齐 Lumie v2）。
  * 数据流：getRecentBookmarks -> recentBookmarks 事件（AuraShell 转存到
  * 'auraPanelBookmarks'）；添加/删除后引擎推 bookmarkCreated /
  * bookmarkOpResult / bookmarksChanged（转存到 'auraPanelEvent'），本页据此重拉。
+ * 功能：收藏当前页（+）、手动添加、删除、打开；⋯ 菜单：导入书签（HTML）/
+ * 导出书签，文件选择与沙箱复制由外壳负责（见 PanelBridge）。
  */
+import { common } from '@kit.AbilityKit';
 import { BookmarkNode, BrowserCommandPayload } from 'engine';
-import { displayUrl } from './PanelBridge';
+import { displayUrl, pickAndStageImportFile, saveExportedFile, deleteStagedFile } from './PanelBridge';
+import { AuraSectionLabel } from './LumieKit';
+
+interface BookmarkIoPayload {
+  kind?: string;
+  requestId?: number;
+  ok?: boolean;
+  bookmarkCount?: number;
+  folderCount?: number;
+  skippedCount?: number;
+  error?: string;
+}
 
 @Component
 export struct BookmarksPanel {
   @Prop currentUrl: string = '';
   @Prop currentTitle: string = '';
   @StorageLink('auraPanelBookmarks') @Watch('onBookmarksChanged') bookmarksJson: string = '';
+  @StorageLink('auraPanelBookmarkIo') @Watch('onIoPayload') bookmarkIoJson: string = '';
   @StorageLink('auraPanelEvent') @Watch('onPanelEvent') panelEventJson: string = '';
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
   onBack: () => void = (): void => {};
@@ -19,8 +34,14 @@ export struct BookmarksPanel {
 
   @State private nodes: BookmarkNode[] = [];
   @State private loading: boolean = true;
+  @State private adding: boolean = false;
+  @State private addTitle: string = '';
+  @State private addUrl: string = '';
   private requestSeq: number = 0;
   private retryTimer: number = -1;
+  private pendingImportPath: string = '';
+  private pendingExportPath: string = '';
+  private pendingExportRequestId: number = 0;
 
   aboutToAppear(): void {
     // Seed from storage first: a @StorageLink does not fire @Watch for its
@@ -40,6 +61,14 @@ export struct BookmarksPanel {
     if (this.retryTimer !== -1) {
       clearTimeout(this.retryTimer);
       this.retryTimer = -1;
+    }
+    this.cleanupPendingImport();
+  }
+
+  private cleanupPendingImport(): void {
+    if (this.pendingImportPath.length > 0) {
+      deleteStagedFile(this.pendingImportPath);
+      this.pendingImportPath = '';
     }
   }
 
@@ -64,6 +93,105 @@ export struct BookmarksPanel {
   private onPanelEvent(): void {
     // bookmarkCreated / bookmarkOpResult / bookmarksChanged: reload.
     this.reload();
+  }
+
+  private onIoPayload(): void {
+    if (this.bookmarkIoJson.length === 0) {
+      return;
+    }
+    try {
+      const payload = JSON.parse(this.bookmarkIoJson) as BookmarkIoPayload;
+      const kind = String(payload.kind ?? '');
+      if (kind === 'import') {
+        this.cleanupPendingImport();
+        if (payload.ok === true) {
+          const count = Number(payload.bookmarkCount ?? 0);
+          const skipped = Number(payload.skippedCount ?? 0);
+          let message = `已导入 ${count} 个书签`;
+          if (skipped > 0) {
+            message = `${message}（跳过 ${skipped} 条）`;
+          }
+          AlertDialog.show({
+            title: '导入完成',
+            message: message,
+            confirm: {
+              value: '好的',
+              action: (): void => {
+              }
+            }
+          });
+          this.reload();
+        } else {
+          AlertDialog.show({
+            title: '导入没有成功',
+            message: this.importFailureText(String(payload.error ?? '')),
+            confirm: {
+              value: '好的',
+              action: (): void => {
+              }
+            }
+          });
+        }
+        return;
+      }
+      if (kind === 'export') {
+        if ((payload.requestId ?? 0) !== this.pendingExportRequestId ||
+          this.pendingExportPath.length === 0) {
+          return;
+        }
+        const stagedPath = this.pendingExportPath;
+        this.pendingExportPath = '';
+        if (payload.ok === true) {
+          this.handExportToSaveDialog(stagedPath, Number(payload.bookmarkCount ?? 0));
+        } else {
+          deleteStagedFile(stagedPath);
+          AlertDialog.show({
+            title: '导出没有成功',
+            message: '没能写出书签文件，请再试一次。',
+            confirm: {
+              value: '好的',
+              action: (): void => {
+              }
+            }
+          });
+        }
+        return;
+      }
+    } catch (error) {
+    }
+  }
+
+  private importFailureText(error: string): string {
+    if (error === 'tooLarge') {
+      return '文件太大（超过 20 MB），没有导入。';
+    }
+    if (error === 'notBookmarkFile') {
+      return '这个文件里没有找到书签数据，没有导入。';
+    }
+    if (error === 'fileNotFound') {
+      return '读不了这个文件，请再试一次。';
+    }
+    return '没能导入书签，请再试一次。';
+  }
+
+  private async handExportToSaveDialog(stagedPath: string, count: number): Promise<void> {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (!context) {
+      deleteStagedFile(stagedPath);
+      return;
+    }
+    const saved = await saveExportedFile(context, stagedPath, 'Aura 书签.html');
+    if (saved) {
+      AlertDialog.show({
+        title: '导出完成',
+        message: `已导出 ${count} 个书签`,
+        confirm: {
+          value: '好的',
+          action: (): void => {
+          }
+        }
+      });
+    }
   }
 
   private openNode(node: BookmarkNode): void {
@@ -97,49 +225,300 @@ export struct BookmarksPanel {
     });
   }
 
-  build() {
-    Column() {
-      Row() {
-        Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.chromium_back'))
-            .width(22)
-            .height(22)
-            .fillColor($r('app.color.icon_primary'))
-        }
-        .width(44)
-        .height(44)
-        .backgroundColor($r('app.color.surface_secondary'))
-        .accessibilityText('返回')
-        .onClick(() => {
+  // -- 手动添加 ---------------------------------------------------------------
+
+  private openAddDialog(): void {
+    this.addUrl = this.currentUrl;
+    this.addTitle = this.currentTitle;
+    this.adding = true;
+  }
+
+  private cancelAdd(): void {
+    this.adding = false;
+    this.addTitle = '';
+    this.addUrl = '';
+  }
+
+  private confirmAdd(): void {
+    const url = this.addUrl.trim();
+    if (url.length === 0) {
+      return;
+    }
+    this.requestSeq += 1;
+    this.onCommand({
+      command: 'addBookmark',
+      url: url,
+      title: this.addTitle.trim().length > 0 ? this.addTitle.trim() : url,
+      requestId: this.requestSeq
+    });
+    this.cancelAdd();
+  }
+
+  // -- 导入 / 导出（对齐 Lumie v2） -------------------------------------------
+
+  private async startImport(): Promise<void> {
+    this.cleanupPendingImport();
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (!context) {
+      return;
+    }
+    const path = await pickAndStageImportFile(context, ['书签文件|.html']);
+    if (path.length === 0) {
+      return;
+    }
+    this.pendingImportPath = path;
+    this.requestSeq += 1;
+    this.onCommand({
+      command: 'importBookmarks',
+      requestId: this.requestSeq,
+      path: path,
+      title: '导入的书签'
+    });
+  }
+
+  private startExport(): void {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (!context) {
+      return;
+    }
+    this.requestSeq += 1;
+    this.pendingExportRequestId = this.requestSeq;
+    this.pendingExportPath = `${context.filesDir}/aura-export-bookmarks.html`;
+    this.onCommand({
+      command: 'exportBookmarks',
+      requestId: this.pendingExportRequestId,
+      path: this.pendingExportPath
+    });
+  }
+
+  // -- UI ---------------------------------------------------------------------
+
+  @Builder
+  private Header() {
+    Row() {
+      Button({ type: ButtonType.Circle }) {
+        Image($r('app.media.chromium_back'))
+          .width(22)
+          .height(22)
+          .fillColor($r('app.color.icon_primary'))
+      }
+      .width(44)
+      .height(44)
+      .backgroundColor($r('app.color.surface_secondary'))
+      .accessibilityText('返回')
+      .onClick(() => {
+        if (this.adding) {
+          this.cancelAdd();
+        } else {
           this.onBack();
-        })
+        }
+      })
 
-        Text('书签')
-          .fontSize(20)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
-          .margin({ left: 12 })
+      Text('书签')
+        .fontSize(22)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary'))
+        .margin({ left: 12 })
 
-        Blank()
+      Blank()
+
+      Button({ type: ButtonType.Circle }) {
+        Image($r('app.media.chromium_add'))
+          .width(22)
+          .height(22)
+          .fillColor($r('app.color.icon_primary'))
+      }
+      .width(44)
+      .height(44)
+      .backgroundColor($r('app.color.surface_secondary'))
+      .accessibilityText('收藏当前网页')
+      .enabled(this.currentUrl.length > 0)
+      .opacity(this.currentUrl.length > 0 ? 1 : 0.5)
+      .onClick(() => {
+        this.addCurrentPage();
+      })
+
+      Button({ type: ButtonType.Circle }) {
+        Image($r('app.media.chromium_more'))
+          .width(22)
+          .height(22)
+          .fillColor($r('app.color.icon_primary'))
+      }
+      .width(44)
+      .height(44)
+      .margin({ left: 8 })
+      .backgroundColor($r('app.color.surface_secondary'))
+      .accessibilityText('更多操作')
+      .bindMenu([
+        {
+          value: '手动添加书签',
+          action: (): void => {
+            this.openAddDialog();
+          }
+        },
+        {
+          value: '导入书签',
+          action: (): void => {
+            this.startImport();
+          }
+        },
+        {
+          value: '导出书签',
+          action: (): void => {
+            this.startExport();
+          }
+        }
+      ])
+    }
+    .width('100%')
+    .height(56)
+  }
+
+  @Builder
+  private BookmarkRow(node: BookmarkNode, index: number) {
+    Column() {
+      Row({ space: 12 }) {
+        Image($r('app.media.chromium_bookmark'))
+          .width(22)
+          .height(22)
+          .fillColor($r('app.color.icon_primary'))
+
+        Column({ space: 2 }) {
+          Text(node.title.length > 0 ? node.title : displayUrl(node.url ?? ''))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontSize(16)
+            .fontColor($r('app.color.text_primary'))
+            .width('100%')
+          Text(displayUrl(node.url ?? ''))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
 
         Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.chromium_add'))
-            .width(22)
-            .height(22)
-            .fillColor($r('app.color.icon_primary'))
+          Image($r('app.media.chromium_close'))
+            .width(18)
+            .height(18)
+            .fillColor($r('app.color.icon_secondary'))
         }
-        .width(44)
-        .height(44)
-        .backgroundColor($r('app.color.surface_secondary'))
-        .accessibilityText('收藏当前网页')
-        .enabled(this.currentUrl.length > 0)
-        .opacity(this.currentUrl.length > 0 ? 1 : 0.5)
+        .width(40)
+        .height(40)
+        .backgroundColor(Color.Transparent)
+        .accessibilityText('删除书签')
         .onClick(() => {
-          this.addCurrentPage();
+          this.removeNode(node);
         })
       }
       .width('100%')
-      .height(52)
+      .constraintSize({ minHeight: 60 })
+      .padding({ left: 16, right: 6, top: 8, bottom: 8 })
+      .onClick(() => {
+        this.openNode(node);
+      })
+
+      if (index < this.nodes.length - 1) {
+        Divider()
+          .color($r('app.color.divider'))
+          .margin({ left: 50 })
+      }
+    }
+    .width('100%')
+  }
+
+  @Builder
+  private AddDialog() {
+    Stack() {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor($r('app.color.modal_scrim'))
+        .onClick(() => {
+          this.cancelAdd();
+        })
+
+      Column({ space: 14 }) {
+        Text('添加书签')
+          .fontSize(17)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .width('100%')
+
+        Column({ space: 6 }) {
+          Text('名称')
+            .fontSize(13)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+          TextInput({ text: this.addTitle, placeholder: '书签名称' })
+            .height(46)
+            .fontSize(15)
+            .backgroundColor($r('app.color.surface_secondary'))
+            .borderRadius(10)
+            .onChange((value: string): void => {
+              this.addTitle = value;
+            })
+        }
+        .width('100%')
+
+        Column({ space: 6 }) {
+          Text('网址')
+            .fontSize(13)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+          TextInput({ text: this.addUrl, placeholder: 'https://…' })
+            .height(46)
+            .fontSize(15)
+            .type(InputType.Normal)
+            .backgroundColor($r('app.color.surface_secondary'))
+            .borderRadius(10)
+            .onChange((value: string): void => {
+              this.addUrl = value;
+            })
+        }
+        .width('100%')
+
+        Row({ space: 12 }) {
+          Button('取消')
+            .layoutWeight(1)
+            .height(44)
+            .fontSize(16)
+            .fontColor($r('app.color.text_primary'))
+            .backgroundColor($r('app.color.surface_secondary'))
+            .borderRadius(10)
+            .onClick(() => {
+              this.cancelAdd();
+            })
+          Button('保存')
+            .layoutWeight(1)
+            .height(44)
+            .fontSize(16)
+            .fontColor($r('app.color.on_accent'))
+            .backgroundColor($r('app.color.accent_primary'))
+            .borderRadius(10)
+            .enabled(this.addUrl.trim().length > 0)
+            .opacity(this.addUrl.trim().length > 0 ? 1 : 0.5)
+            .onClick(() => {
+              this.confirmAdd();
+            })
+        }
+        .width('100%')
+      }
+      .width('86%')
+      .padding(20)
+      .borderRadius(16)
+      .backgroundColor($r('app.color.card_background'))
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  build() {
+    Column() {
+      this.Header()
 
       if (this.nodes.length === 0) {
         Column({ space: 6 }) {
@@ -147,7 +526,7 @@ export struct BookmarksPanel {
             .fontSize(15)
             .fontColor($r('app.color.text_secondary'))
           if (!this.loading) {
-            Text('点右上角"+"把当前网页加入书签')
+            Text('点右上角"+"收藏当前网页，或打开 ⋯ 导入书签')
               .fontSize(13)
               .fontColor($r('app.color.text_secondary'))
           }
@@ -156,55 +535,40 @@ export struct BookmarksPanel {
         .layoutWeight(1)
         .justifyContent(FlexAlign.Center)
       } else {
-        List({ space: 2 }) {
-          ForEach(this.nodes, (node: BookmarkNode) => {
-            ListItem() {
-              Row({ space: 10 }) {
-                Column({ space: 2 }) {
-                  Text(node.title.length > 0 ? node.title : displayUrl(node.url ?? ''))
-                    .maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .fontSize(16)
-                    .fontColor($r('app.color.text_primary'))
-                  Text(displayUrl(node.url ?? ''))
-                    .maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .fontSize(12)
-                    .fontColor($r('app.color.text_secondary'))
-                }
-                .alignItems(HorizontalAlign.Start)
-                .layoutWeight(1)
+        Scroll() {
+          Column() {
+            AuraSectionLabel({ text: `最近添加 · ${this.nodes.length}` })
 
-                Button({ type: ButtonType.Circle }) {
-                  Image($r('app.media.chromium_close'))
-                    .width(18)
-                    .height(18)
-                    .fillColor($r('app.color.icon_secondary'))
-                }
-                .width(40)
-                .height(40)
-                .backgroundColor(Color.Transparent)
-                .accessibilityText('删除书签')
-                .onClick(() => {
-                  this.removeNode(node);
-                })
-              }
-              .width('100%')
-              .height(58)
-              .padding({ left: 4, right: 2 })
-              .onClick(() => {
-                this.openNode(node);
-              })
+            Column() {
+              ForEach(this.nodes, (node: BookmarkNode, index: number) => {
+                this.BookmarkRow(node, index)
+              }, (node: BookmarkNode): string => node.id)
             }
-          }, (node: BookmarkNode): string => node.id)
+            .width('100%')
+            .borderRadius(16)
+            .backgroundColor($r('app.color.card_background'))
+            .clip(true)
+
+            Text('右上角 ⋯ 里可以手动添加、导入或导出书签。')
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+              .padding({ left: 4, right: 4, top: 10 })
+          }
+          .width('100%')
         }
-        .width('100%')
         .layoutWeight(1)
+        .scrollBar(BarState.Off)
+        .align(Alignment.TopStart)
+      }
+
+      if (this.adding) {
+        this.AddDialog()
       }
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 20, right: 20, bottom: 16 })
-    .backgroundColor($r('app.color.surface_primary'))
+    .padding({ left: 16, right: 16, bottom: 16 })
+    .backgroundColor($r('app.color.page_background'))
   }
 }

@@ -1431,7 +1431,7 @@ export struct MobileBrowserOverlay {
     .width('100%')
     .height('100%')
     .padding({ top: 8 + this.topSafeVp, bottom: this.bottomSafeVp })
-    .backgroundColor($r('app.color.surface_primary'))
+    .backgroundColor($r('app.color.page_background'))
     // Motion: a shell page slides in from the right and fades back out, so
     // opening and closing a page reads as navigation.
     .transition(TransitionEffect.asymmetric(

@@ -297,7 +297,6 @@ export struct ExtensionPanel {
       }
       .width(44)
       .height(44)
-      .backgroundColor($r('app.color.surface_secondary'))
       .accessibilityText('返回')
       .onClick(() => {
         if (showBack) {
@@ -308,7 +307,7 @@ export struct ExtensionPanel {
       })
 
       Text(title)
-        .fontSize(20)
+        .fontSize(22)
         .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.text_primary'))
         .margin({ left: 12 })
@@ -319,7 +318,7 @@ export struct ExtensionPanel {
       Blank()
     }
     .width('100%')
-    .height(52)
+    .height(56)
   }
 
   @Builder
@@ -389,7 +388,7 @@ export struct ExtensionPanel {
                     })
                   }
                   .width('100%')
-                  .padding({ top: 10, bottom: 10 })
+                  .padding({ left: 16, right: 16, top: 10, bottom: 10 })
                   .onClick(() => {
                     this.runExtension(item);
                   })
@@ -404,9 +403,9 @@ export struct ExtensionPanel {
               }, (item: ExtensionActionItem): string => item.id)
             }
             .width('100%')
-            .padding({ left: 14, right: 14 })
-            .borderRadius(12)
-            .backgroundColor($r('app.color.surface_secondary'))
+            .borderRadius(16)
+            .backgroundColor($r('app.color.card_background'))
+            .clip(true)
           }
 
           Text('添加')
@@ -425,7 +424,7 @@ export struct ExtensionPanel {
                 .width(40)
                 .height(40)
                 .borderRadius(10)
-                .backgroundColor($r('app.color.surface_primary'))
+                .backgroundColor($r('app.color.surface_secondary'))
                 .border({ width: 1, color: $r('app.color.icon_secondary') })
 
               Column({ space: 3 }) {
@@ -440,20 +439,22 @@ export struct ExtensionPanel {
               .alignItems(HorizontalAlign.Start)
               .layoutWeight(1)
 
-              Text('›')
-                .fontSize(20)
-                .fontColor($r('app.color.text_secondary'))
+              Image($r('app.media.aura_chevron'))
+                .width(16)
+                .height(16)
+                .fillColor($r('app.color.icon_secondary'))
+                .opacity(0.65)
             }
             .width('100%')
-            .padding({ top: 10, bottom: 10 })
+            .padding({ left: 16, right: 14, top: 10, bottom: 10 })
             .onClick(() => {
               this.installFromFile();
             })
           }
           .width('100%')
-          .padding({ left: 14, right: 14 })
-          .borderRadius(12)
-          .backgroundColor($r('app.color.surface_secondary'))
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
 
           Column() {
             Row() {
@@ -462,20 +463,23 @@ export struct ExtensionPanel {
                 .fontWeight(FontWeight.Medium)
                 .fontColor($r('app.color.text_primary'))
               Blank()
-              Text('›')
-                .fontSize(20)
-                .fontColor($r('app.color.text_secondary'))
+              Image($r('app.media.aura_chevron'))
+                .width(16)
+                .height(16)
+                .fillColor($r('app.color.icon_secondary'))
+                .opacity(0.65)
             }
             .width('100%')
-            .height(48)
+            .height(56)
+            .padding({ left: 16, right: 14 })
             .onClick(() => {
               this.openMoreSettings();
             })
           }
           .width('100%')
-          .padding({ left: 14, right: 14 })
-          .borderRadius(12)
-          .backgroundColor($r('app.color.surface_secondary'))
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
           .margin({ top: 12 })
 
           Text('点按扩展打开它的面板或设置；点"i"管理网站访问和移除。扩展能读取和更改你访问的网页，只安装你信任的扩展。')
@@ -505,17 +509,17 @@ export struct ExtensionPanel {
         .fontColor($r('app.color.text_primary'))
       Blank()
       if (this.detailSiteAccess === mode) {
-        Text('已选')
-          .fontSize(13)
+        Text('✓')
+          .fontSize(16)
           .fontColor($r('app.color.accent_primary'))
       }
     }
     .width('100%')
-    .height(46)
-    .padding({ left: 12, right: 12 })
-    .borderRadius(8)
+    .constraintSize({ minHeight: 56 })
+    .padding({ left: 16, right: 16 })
+    .borderRadius(10)
     .backgroundColor(this.detailSiteAccess === mode ?
-      $r('app.color.surface_primary') : Color.Transparent)
+      $r('app.color.surface_secondary') : Color.Transparent)
     .onClick(() => {
       this.setSiteAccess(mode);
     })
@@ -558,17 +562,18 @@ export struct ExtensionPanel {
                 }, (line: string, index: number): string => `${index}-${line}`)
               }
               .width('100%')
-              .padding(14)
-              .borderRadius(12)
-              .backgroundColor($r('app.color.surface_secondary'))
+              .padding(16)
+              .borderRadius(16)
+              .backgroundColor($r('app.color.card_background'))
+              .clip(true)
             } else {
               Text('加载中…')
                 .fontSize(13)
                 .fontColor($r('app.color.text_secondary'))
                 .width('100%')
-                .padding(14)
-                .borderRadius(12)
-                .backgroundColor($r('app.color.surface_secondary'))
+                .padding(16)
+                .borderRadius(16)
+                .backgroundColor($r('app.color.card_background'))
             }
 
             if (this.detailSiteAccessChangeable) {
@@ -585,8 +590,9 @@ export struct ExtensionPanel {
               }
               .width('100%')
               .padding(6)
-              .borderRadius(12)
-              .backgroundColor($r('app.color.surface_secondary'))
+              .borderRadius(16)
+              .backgroundColor($r('app.color.card_background'))
+              .clip(true)
 
               Text('"所有网站"让扩展读取和更改你在任何网站上的数据。')
                 .fontSize(12)
@@ -598,10 +604,10 @@ export struct ExtensionPanel {
             Button('卸载扩展')
               .width('100%')
               .height(46)
-              .fontSize(15)
-              .fontColor('#E24B4A')
-              .backgroundColor($r('app.color.surface_secondary'))
-              .borderRadius(10)
+              .fontSize(16)
+              .fontColor($r('app.color.danger'))
+              .backgroundColor($r('app.color.card_background'))
+              .borderRadius(16)
               .margin({ top: 26 })
               .onClick(() => {
                 this.confirmUninstall();
@@ -631,7 +637,7 @@ export struct ExtensionPanel {
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 20, right: 20, bottom: 16 })
-    .backgroundColor($r('app.color.surface_primary'))
+    .padding({ left: 16, right: 16, bottom: 16 })
+    .backgroundColor($r('app.color.page_background'))
   }
 }
