@@ -302,6 +302,18 @@ export struct MobileBrowserOverlay {
     this.maybeActivatePendingNewTab();
   }
 
+  private cancelControlsRebound(): void {
+    if (!this.pendingControlsRebound) {
+      return;
+    }
+    this.pendingControlsRebound = false;
+    this.controlsReboundSawLoading = false;
+    if (this.reboundTimer !== 0) {
+      clearTimeout(this.reboundTimer);
+      this.reboundTimer = 0;
+    }
+  }
+
   // Fix B：提交导航后延迟顶栏回弹。理想路径由 onBrowserStateChanged 在
   // loading true→false 时回弹；兜底 1.5s 强制回弹（同 URL 未触发加载等）。
   private reboundControlsAfterPaint(): void {
@@ -326,6 +338,8 @@ export struct MobileBrowserOverlay {
       clearTimeout(this.reboundTimer);
       this.reboundTimer = 0;
     }
+    // 与顶栏回弹同步切回浏览态，避免编辑态→非编辑态的 layout 突变。
+    this.editingAddress = false;
     this.issueCommand({ command: 'setBrowserControlsState', state: 'both', animate: true });
   }
 
@@ -961,6 +975,7 @@ export struct MobileBrowserOverlay {
         .accessibilityText('取消编辑')
         .onClick(() => {
           this.clearKeyboardRecoveryTimers();
+          this.cancelControlsRebound();
           this.editingAddress = false;
           this.issueCommand({ command: 'setBrowserControlsState', state: 'both', animate: true });
         })
@@ -1963,6 +1978,9 @@ export struct MobileBrowserOverlay {
   }
 
   private beginAddressEdit(): void {
+    // 如果有待定的导航后回弹，重新编辑时应取消它，避免旧定时器/loading
+    // 监听把地址栏切回浏览态。
+    this.cancelControlsRebound();
     this.addressEditEpoch += 1;
     this.addressDraft = this.browserState.url.startsWith('chrome://') ? '' : this.browserState.url;
     this.addressSelectionStart = 0;
@@ -2021,8 +2039,13 @@ export struct MobileBrowserOverlay {
     const target = normalizeAddress(this.addressDraft);
     if (target.length > 0) {
       this.issueCommand({ command: 'navigate', url: target });
-      this.editingAddress = false;
-      // Fix B：延迟顶栏回弹到首帧绘制后，消除视口 resize 与首帧 swap 叠加跳动。
+      // Fix D：提交后保持编辑态 UI 到首帧绘制，避免编辑态→非编辑态的
+      // 顶栏 layout 突变破坏 Chromium paint holding。焦点切回网页以收起键盘，
+      // 但地址栏仍显示编辑态（同 Lumie），等 loading=false 再切回浏览态。
+      try {
+        this.getUIContext().getFocusController().clearFocus();
+      } catch (error) {
+      }
       this.reboundControlsAfterPaint();
     } else {
       this.editingAddress = false;
