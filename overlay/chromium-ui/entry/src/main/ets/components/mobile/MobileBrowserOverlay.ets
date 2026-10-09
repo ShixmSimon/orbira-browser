@@ -1504,7 +1504,10 @@ export struct MobileBrowserOverlay {
     }
     .width('100%')
     .height('100%')
-    .padding({ top: 8 + this.topSafeVp, bottom: this.bottomSafeVp })
+    // 2026-10-10：面板已升级为全屏页（HdsNavigation 自管状态栏/底部指示条
+    // 安全区），宿主不再让位 —— 旧的 { top: 8+topSafeVp, bottom: bottomSafeVp }
+    // 会把面板整体下压一个状态栏高度、顶部露出一条、底部多出一条空区
+    // （真机反馈「顶部没到顶、底部多一块区域」的根源）。
     .backgroundColor($r('app.color.page_background'))
     // Motion: a shell page slides in from the right and fades back out, so
     // opening and closing a page reads as navigation.
