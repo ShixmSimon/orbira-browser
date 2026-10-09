@@ -744,10 +744,9 @@ export struct MobileBrowserOverlay {
     }
     .width(CONTEXT_MENU_CARD_WIDTH_VP)
     .borderRadius(22)
-    // 贴着按压点弹在网页上。玻璃色用 menu_glass（95% 不透明）：glass_tint(88%)
-    // 真机反馈「还是比较透明」——系统材质在网页 SURFACE 上采不到内容弹不出
-    // 毛玻璃（官方 FAQ：材质是对背后内容实时采样），所以这里只能靠更实的
-    // 纯色逼近系统菜单的观感。契约 §8：网页上方不叠模糊。
+    // 贴着按压点弹在网页上。底色 menu_glass **全不透明**（用户定案 2026-10-10：
+    // 真玻璃四条路全堵，那就不要透）——浅 #F7F7F8 / 深 #29292C，观感对齐
+    // 系统菜单的实底卡片。契约 §8：网页上方不叠模糊。
     .backgroundColor($r('app.color.menu_glass'))
     .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
     .clip(true)
@@ -1761,8 +1760,8 @@ export struct MobileBrowserOverlay {
     }
     .width(MENU_CARD_WIDTH_VP)
     .borderRadius(22)
-    // 菜单卡直接叠在网页上，没有遮罩。玻璃色用 menu_glass（95% 不透明），
-    // 靠更实的纯色逼近系统菜单观感（契约 §8：网页上方不叠模糊）。
+    // 菜单卡直接叠在网页上，没有遮罩。底色 menu_glass **全不透明**（用户定案
+    // 2026-10-10：真玻璃四条路全堵，那就不要透）——浅 #F7F7F8 / 深 #29292C。
     // ⚠️ 2026-10-10 两次真机实测（1×1 锚点 / dock 真实锚点）：bindMenu 一挂
     // 上去整屏点击就失效 —— 系统菜单这条路在本应用彻底封死，别再试；
     // 网页上方的浮层一律自绘（底色 menu_glass + 圆角/阴影/出入场动画）。
