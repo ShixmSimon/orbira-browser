@@ -8,6 +8,7 @@
 import { BrowserCommandPayload, HistoryItem } from 'engine';
 import { displayUrl, dayGroupLabel, formatClock } from './PanelBridge';
 import { AuraSectionLabel } from './LumieKit';
+import { GlassPage } from './GlassPage';
 
 interface HistoryGroup {
   label: string;
@@ -163,33 +164,10 @@ export struct HistoryPanel {
   }
 
   build() {
+    // 标题栏交给 GlassPage（落在 Navigation 标题栏里 —— HarmonyOS 7 之后
+    // 只有这块区域 + 弹窗类还在沉浸光感的生效范围内）。
+    GlassPage({ title: '历史', onBack: (): void => { this.onBack(); } }) {
     Column() {
-      Row() {
-        Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.aura_back'))
-            .width(22)
-            .height(22)
-            .fillColor($r('app.color.icon_primary'))
-        }
-        .width(44)
-        .height(44)
-        .backgroundColor($r('app.color.surface_secondary'))
-        .accessibilityText('返回')
-        .onClick(() => {
-          this.onBack();
-        })
-
-        Text('历史')
-          .fontSize(22)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
-          .margin({ left: 12 })
-
-        Blank()
-      }
-      .width('100%')
-      .height(56)
-
       if (this.items.length === 0) {
         Column() {
           Text(this.loading ? '加载中…' : '暂无历史记录')
@@ -226,5 +204,6 @@ export struct HistoryPanel {
     .height('100%')
     .padding({ left: 16, right: 16, bottom: 16 })
     .backgroundColor($r('app.color.page_background'))
+    }
   }
 }

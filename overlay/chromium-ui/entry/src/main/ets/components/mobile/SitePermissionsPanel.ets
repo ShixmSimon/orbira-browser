@@ -6,6 +6,7 @@
  */
 import { BrowserCommandPayload, SiteSetting, SiteSettingType, SiteSettingValue } from 'engine';
 import { displayUrl } from './PanelBridge';
+import { GlassPage } from './GlassPage';
 
 interface SiteSettingsPayload {
   requestId?: number;
@@ -199,40 +200,28 @@ export struct SitePermissionsPanel {
     return count;
   }
 
+  // 标题栏（含圆形玻璃返回钮）交给 GlassPage：标题栏要落在 Navigation 标题栏
+  // 区域，HarmonyOS 7 之后沉浸光感才在自绘圆钮上生效。
+  private titleText(): string {
+    return this.page === 'detail' ? originHost(this.detailOrigin) : '网站权限';
+  }
+
+  private handleTitleBack(): void {
+    if (this.page === 'detail') {
+      this.backToList();
+    } else {
+      this.onBack();
+    }
+  }
+
   build() {
-    Column() {
-      Row() {
-        Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.aura_back'))
-            .width(22)
-            .height(22)
-            .fillColor($r('app.color.icon_primary'))
-        }
-        .width(44)
-        .height(44)
-        .accessibilityText('返回')
-        .onClick(() => {
-          if (this.page === 'detail') {
-            this.backToList();
-          } else {
-            this.onBack();
-          }
-        })
-
-        Text(this.page === 'detail' ? originHost(this.detailOrigin) : '网站权限')
-          .fontSize(22)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
-          .margin({ left: 12 })
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
-
-        Blank()
+    GlassPage({
+      title: this.titleText(),
+      onBack: (): void => {
+        this.handleTitleBack();
       }
-      .width('100%')
-      .height(56)
-
+    }) {
+    Column() {
       if (this.page === 'list') {
         if (this.origins.length === 0) {
           Column() {
@@ -381,5 +370,6 @@ export struct SitePermissionsPanel {
     .height('100%')
     .padding({ left: 16, right: 16, bottom: 16 })
     .backgroundColor($r('app.color.page_background'))
+    }
   }
 }

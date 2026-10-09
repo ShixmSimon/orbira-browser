@@ -10,6 +10,7 @@ import { common } from '@kit.AbilityKit';
 import { BookmarkNode, BrowserCommandPayload } from 'engine';
 import { displayUrl, pickAndStageImportFile, saveExportedFile, deleteStagedFile } from './PanelBridge';
 import { AuraSectionLabel } from './LumieKit';
+import { GlassBackButton } from './GlassPage';
 
 interface BookmarkIoPayload {
   kind?: string;
@@ -294,23 +295,15 @@ export struct BookmarksPanel {
   // -- UI ---------------------------------------------------------------------
 
   @Builder
-  private Header() {
-    Row() {
-      Button({ type: ButtonType.Circle }) {
-        Image($r('app.media.aura_back'))
-          .width(22)
-          .height(22)
-          .fillColor($r('app.color.icon_primary'))
-      }
-      .width(44)
-      .height(44)
-      .backgroundColor($r('app.color.surface_secondary'))
-      .accessibilityText('返回')
-      .onClick(() => {
-        if (this.adding) {
-          this.cancelAdd();
-        } else {
-          this.onBack();
+  private TitleBar() {
+    Row({ space: 12 }) {
+      GlassBackButton({
+        onAction: (): void => {
+          if (this.adding) {
+            this.cancelAdd();
+          } else {
+            this.onBack();
+          }
         }
       })
 
@@ -318,7 +311,6 @@ export struct BookmarksPanel {
         .fontSize(22)
         .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.text_primary'))
-        .margin({ left: 12 })
 
       Blank()
 
@@ -517,9 +509,11 @@ export struct BookmarksPanel {
   }
 
   build() {
+    // 标题栏放进 Navigation（HarmonyOS 7 之后只有 Navigation 标题栏 / 底部
+    // TabBar / 弹窗类还在沉浸光感的生效范围内，自绘 Header 挂材质会静默失效）。
+    // 本页标题栏右侧还有「+」和「更多」，所以不用 GlassPage，自己包一层。
+    Navigation() {
     Column() {
-      this.Header()
-
       if (this.nodes.length === 0) {
         Column({ space: 6 }) {
           Text(this.loading ? '加载中…' : '暂无书签')
@@ -570,5 +564,13 @@ export struct BookmarksPanel {
     .height('100%')
     .padding({ left: 16, right: 16, bottom: 16 })
     .backgroundColor($r('app.color.page_background'))
+    }
+    .hideBackButton(true)
+    .titleMode(NavigationTitleMode.Mini)
+    .title(this.TitleBar, { barStyle: BarStyle.STACK })
+    .mode(NavigationMode.Stack)
+    .backgroundColor($r('app.color.page_background'))
+    .width('100%')
+    .height('100%')
   }
 }

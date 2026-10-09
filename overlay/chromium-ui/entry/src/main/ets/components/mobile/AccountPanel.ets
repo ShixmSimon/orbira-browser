@@ -104,38 +104,11 @@ export struct HuaweiAccountView {
     });
   }
 
-  @Builder
-  private Header() {
-    Row() {
-      Button({ type: ButtonType.Circle }) {
-        Image($r('app.media.aura_back'))
-          .width(22)
-          .height(22)
-          .fillColor($r('app.color.icon_primary'))
-      }
-      .width(44)
-      .height(44)
-      .accessibilityText('返回')
-      .onClick(() => {
-        this.onBack();
-      })
-
-      Text('华为账号')
-        .fontSize(22)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary'))
-        .margin({ left: 12 })
-
-      Blank()
-    }
-    .width('100%')
-    .height(56)
-  }
-
+  // 标题栏（含圆形玻璃返回钮）由 SettingsPanel 的 GlassPage 统一提供 ——
+  // 本页是设置的二级页，共用同一条 Navigation 标题栏，自己再画一条会双标题，
+  // 而且自绘标题栏落在内容区，挂材质也没用（HarmonyOS 7 生效范围）。
   build() {
     Column() {
-      this.Header()
-
       if (this.accountInfo().signedIn) {
         AuraSectionLabel({ text: '账号' })
         Column() {

@@ -8,6 +8,7 @@
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
 import { BrowserCommandPayload, ExtensionActionItem, ExtensionDetailsEvent, ExtensionSiteAccess } from 'engine';
+import { GlassBackButton } from './GlassPage';
 
 // extensionInstallFailed 没有官方接口，按契约字段从事件上取。
 interface ExtensionNoticePayload {
@@ -287,35 +288,28 @@ export struct ExtensionPanel {
   }
 
   @Builder
-  private Header(title: string, showBack: boolean) {
-    Row() {
-      Button({ type: ButtonType.Circle }) {
-        Image($r('app.media.aura_back'))
-          .width(22)
-          .height(22)
-          .fillColor($r('app.color.icon_primary'))
-      }
-      .width(44)
-      .height(44)
-      .accessibilityText('返回')
-      .onClick(() => {
-        if (showBack) {
-          this.page = 'list';
-        } else {
-          this.onBack();
+  // 标题栏交给 Navigation（HarmonyOS 7 之后只有 Navigation 标题栏 / 底部
+  // TabBar / 弹窗类还在沉浸光感的生效范围内）。标题与返回目标都随 page 变。
+  @Builder
+  private TitleBar() {
+    Row({ space: 12 }) {
+      GlassBackButton({
+        onAction: (): void => {
+          if (this.page === 'detail') {
+            this.page = 'list';
+          } else {
+            this.onBack();
+          }
         }
       })
 
-      Text(title)
+      Text(this.page === 'detail' ? this.detailName : '扩展程序')
         .fontSize(22)
         .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.text_primary'))
-        .margin({ left: 12 })
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
-
-      Blank()
     }
     .width('100%')
     .height(56)
@@ -324,8 +318,6 @@ export struct ExtensionPanel {
   @Builder
   private ListView() {
     Column() {
-      this.Header('扩展程序', false)
-
       Scroll() {
         Column() {
           Text(this.items.length > 0 ? `已安装 · ${this.items.length}` : '已安装')
@@ -532,8 +524,6 @@ export struct ExtensionPanel {
   @Builder
   private DetailView() {
     Column() {
-      this.Header(this.detailName, true)
-
       Scroll() {
         Column() {
           if (this.detailMissing) {
@@ -632,6 +622,7 @@ export struct ExtensionPanel {
   }
 
   build() {
+    Navigation() {
     Column() {
       if (this.page === 'detail') {
         this.DetailView()
@@ -642,6 +633,13 @@ export struct ExtensionPanel {
     .width('100%')
     .height('100%')
     .padding({ left: 16, right: 16, bottom: 16 })
+    }
+    .hideBackButton(true)
+    .titleMode(NavigationTitleMode.Mini)
+    .title(this.TitleBar, { barStyle: BarStyle.STACK })
+    .mode(NavigationMode.Stack)
     .backgroundColor($r('app.color.page_background'))
+    .width('100%')
+    .height('100%')
   }
 }

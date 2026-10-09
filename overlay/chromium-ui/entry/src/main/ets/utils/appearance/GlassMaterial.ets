@@ -1,22 +1,34 @@
 /*
  * 沉浸光感「真材质」统一入口（ArkUI 标准轨道 uiMaterial）。
  *
- * 与 dock 走的 HDS 轨道（HdsTabs + systemMaterialEffect）并列，是第二条系统材质路径：
- *   uiMaterial.ImmersiveMaterial 通过 CommonMethod.systemMaterial() 挂到**任意组件**
- *   上 —— 这是 API 26.0.0 才开放到通用组件的写法（本工程 targetSdkVersion = 26.0.0）。
+ * ⚠️ 生效范围（关键，2026-09-03 官方变更 · 仅当 targetSdkVersion ≥ 26.0.0 生效）：
+ *   HarmonyOS 7 Release 出于性能/功耗考虑，收紧了第三方应用调用沉浸光感的范围。
+ *   收窄后仍会真正渲染材质的只有这几类 ——
  *
- * 拿到的是系统级真效果，不是自绘半透明纯色能比的：
- *   - 毛玻璃（风格档位 ImmersiveStyle 决定模糊强度 + 底色厚度）
- *   - applyShadow 系统自带宽阴影（比自绘 shadow 更贴材质边缘）
- *   - interactive 按压形变（果冻手感，系统托管，无需自写动画曲线）
- *   - lightEffect 触摸流光 —— 就是「高光偏在一侧、跟着手指流动」的那个光效，
- *     与 dock 栏按压流光同一套系统能力
+ *     · 弹窗类组件：AlertDialog / ActionSheet / CustomDialog / 各类 Picker /
+ *       SelectionMenu / 文本选择菜单
+ *     · 弹窗类接口：PromptAction / Popup / Tips / **菜单控制(bindMenu /
+ *       bindContextMenu)** / 半模态转场(bindSheet)
+ *     · Slider / Toggle / Select
+ *     · Navigation / NavDestination 标题栏
+ *     · 横向 Tabs 且 barPosition = BarPosition.End 的底部 TabBar（dock 走的就是这条）
  *
- * 调用约定（重要）：
- *   1) 材质会接管 backgroundColor / borderColor / borderWidth / shadow，
- *      挂了材质的节点**不要再自绘这四项**，否则会把材质压住。
- *   2) 设备不支持（低算力机 / 用户在系统里关掉沉浸光感）时本函数返回 undefined，
- *      调用方此时退回 glass_tint 自绘兜底，外观不退化。
+ *   **页面内容区里的普通 Column / Row / Stack / Button 一律不再生效**，而且是
+ *   「静默失效」：hilog 里只有一行
+ *       Material inactive: out of scope. Use component in navigation title bar or Tabbar.
+ *   但肉眼看到的是「卡片整个变透明」——因为材质依然接管了 backgroundColor，而
+ *   我们按官方约定又把底色让给了材质，两头落空就只剩全透明。
+ *
+ *   所以本模块把「位置」提升为显式参数（GlassScope）：
+ *     HOST —— 上面那些允许区（弹窗/菜单内部、Navigation 标题栏内），返回真材质；
+ *     FREE —— 自由区（内容区里的自绘卡片、工具栏、圆钮），**故意返回 undefined**，
+ *             让调用方走自绘半透明玻璃，绝不出现「看不见」的回归。
+ *
+ * 材质本身给到的东西（真机验证过才相信）：
+ *   - 毛玻璃（ImmersiveStyle 决定模糊强度 + 底色厚度）
+ *   - applyShadow 系统自带宽阴影
+ *   - interactive 按压形变（果冻手感，系统托管）
+ *   - lightEffect 触摸流光（「高光偏在一侧、跟着手指流动」就是它）
  */
 import uiMaterial from '@ohos.arkui.uiMaterial';
 
@@ -26,6 +38,17 @@ export enum GlassRole {
   CARD = 0,
   /** 小圆钮 / 胶囊控件：更透，保留底层网页的色彩。 */
   CONTROL = 1
+}
+
+/**
+ * 组件所在位置 —— 决定 systemMaterial 会不会真的渲染。
+ * 传错只会「没材质」，但 FREE 传成 HOST 会直接「整块透明」，所以默认值是 FREE。
+ */
+export enum GlassScope {
+  /** 允许区：弹窗/菜单/半模态内部，或 Navigation / NavDestination 标题栏内。 */
+  HOST = 0,
+  /** 自由区：页面内容区的普通容器。系统不会渲染材质（见文件头）。 */
+  FREE = 1
 }
 
 let cachedSupported: boolean | undefined = undefined;
@@ -44,10 +67,15 @@ export function immersiveGlassSupported(): boolean {
 }
 
 /**
- * 造一个可挂到 systemMaterial() 上的材质对象。
- * 设备不支持时返回 undefined —— 调用方据此回退自绘兜底色。
+ * 造一个可挂到 systemMaterial() / Options.systemMaterial 上的材质对象。
+ * scope = FREE 或设备不支持时返回 undefined —— 调用方据此回退自绘兜底色。
  */
-export function glassMaterial(role: GlassRole): uiMaterial.Material | undefined {
+export function glassMaterial(role: GlassRole, scope: GlassScope): uiMaterial.Material | undefined {
+  if (scope !== GlassScope.HOST) {
+    // 自由区的 systemMaterial 不会渲染，却会把 backgroundColor 顶掉 →
+    // 宁可返回 undefined 走自绘玻璃，也不要一张看不见的卡片。
+    return undefined;
+  }
   if (!immersiveGlassSupported()) {
     return undefined;
   }

@@ -8,10 +8,8 @@ import display from '@ohos.display';
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import {
   GlassRole,
-  glassFallbackColor,
-  glassFallbackShadow,
-  glassMaterial,
-  glassNoneShadow
+  GlassScope,
+  glassMaterial
 } from '../../utils/appearance/GlassMaterial';
 import { showSystemPasteDialog } from './SystemPasteDialog';
 import { ScanService } from './ScanService';
@@ -112,6 +110,10 @@ export const TAB_THUMB_HEIGHT_VP: number = TAB_CARD_HEIGHT_VP - TAB_CARD_TITLE_V
 const MENU_CARD_WIDTH_VP: number = 258;
 // 长按菜单卡片（v13）：与 ⋮ 卡片同宽同款，锚在按压点旁边。
 const CONTEXT_MENU_CARD_WIDTH_VP: number = 258;
+// ⋮ 菜单卡片的落点（bindMenu 锚点用）：右边距 14vp，底边在 dock 上方 82vp
+// （+底部安全区）。与旧版自绘时的 .margin({right:14, bottom:82+bottomSafe}) 一致。
+const MENU_CARD_SIDE_MARGIN_VP: number = 14;
+const MENU_CARD_BOTTOM_MARGIN_VP: number = 82;
 
 enum MobileEdgeAction {
   BACK = 'back',
@@ -181,6 +183,10 @@ export struct MobileBrowserOverlay {
   // feedback. Hand-rolled "jelly": unlike the system interactive material,
   // the under-damped spring works on any device and target API level.
   @State private pressedDock: string = '';
+  // 顶栏圆形按钮的按压态。这些钮在「页面内容区」，HarmonyOS 7 收紧沉浸光感
+  // 生效范围后拿不到系统 interactive 的材质形变，所以自己写一个弹性缩放补上
+  // （dock 走 HdsTabs 有系统手感，这里是给悬浮顶栏用的）。
+  @State private pressedRound: string = '';
   // Which page the sheet shows: the tabs menu only now; kept as the reset
   // value while the sheet opens or closes.
   @State private sheetPage: string = 'tabs';
@@ -232,9 +238,13 @@ export struct MobileBrowserOverlay {
   // (bottom TabBar inside a horizontal Tabs only); on device it rendered
   // nothing. HDS renders anywhere. The top bar stays painted.
   private readonly dockMaterialActive: boolean = isDockMaterialAvailable();
-  // 沉浸光感真材质（ArkUI 标准轨道 uiMaterial）：挂在 ⋮ 菜单卡与长按菜单卡上，
-  // 拿到系统毛玻璃 + 自带阴影 + 按压流光。undefined = 设备不支持 → 退回自绘 glass_tint。
-  private readonly menuGlass: uiMaterial.Material | undefined = glassMaterial(GlassRole.CARD);
+  // 沉浸光感真材质（ArkUI 标准轨道 uiMaterial），传给 MenuOptions.systemMaterial。
+  // ⚠️ 必须走「菜单/弹窗」这条道：HarmonyOS 7 收紧后，内容区自绘卡片上的
+  // systemMaterial 不再渲染（静默失效），而材质会顶掉自绘底色 → 卡片全透明
+  // （2026-10-09 真机现象）。菜单属弹窗类接口，仍在生效范围内。
+  // undefined = 设备不支持 → 菜单回落到系统主题底，不退化。
+  private readonly menuGlass: uiMaterial.Material | undefined =
+    glassMaterial(GlassRole.CARD, GlassScope.HOST);
   // 视口高度（vp），首次布局即上报；dock 条带的响应区以它为底边基准。
   @State private viewportHeightVp: number = 0;
 
@@ -676,24 +686,8 @@ export struct MobileBrowserOverlay {
     return { x: left, y: top };
   }
 
-  @Builder
-  private ContextMenuLayer() {
-    Stack({ alignContent: Alignment.TopStart }) {
-      // 一张透明点击层：点到卡片外面就收起来（⋮ 菜单卡同款做法）。
-      Column()
-        .width('100%')
-        .height('100%')
-        .backgroundColor(Color.Transparent)
-        .onClick((): void => {
-          this.dismissContextMenu();
-        })
-
-      this.ContextMenuCard(this.contextMenuModelOrDefault())
-    }
-    .width('100%')
-    .height('100%')
-  }
-
+  // 卡片本体。容器（圆角/玻璃/阴影/展开动画）由系统菜单提供，
+  // 这里只画内容：自绘底色会把菜单材质压住（官方 FAQ「背景色遮挡材质效果」）。
   @Builder
   private ContextMenuCard(model: ContextMenuModel) {
     Column() {
@@ -745,18 +739,8 @@ export struct MobileBrowserOverlay {
       .scrollBar(BarState.Off)
     }
     .width(CONTEXT_MENU_CARD_WIDTH_VP)
-    .borderRadius(22)
-    // 同 ⋮ 菜单卡：贴上沉浸光感真材质（系统毛玻璃 + 按压流光），设备不支持才退回兜底色。
-    .systemMaterial(this.menuGlass)
-    .backgroundColor(this.menuGlass === undefined ? glassFallbackColor() : Color.Transparent)
-    .shadow(this.menuGlass === undefined ? glassFallbackShadow() : glassNoneShadow())
-    .clip(true)
-    .position(this.contextMenuPosition(model))
-    .transition(TransitionEffect.asymmetric(
-      TransitionEffect.opacity(0)
-        .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 })),
-      TransitionEffect.opacity(0)
-    ).animation({ duration: 180, curve: Curve.Friction }))
+    // 容器样式（圆角、真材质、阴影、展开动画）全部由系统菜单提供 —— 自绘这几项
+    // 会把菜单材质压住（官方 FAQ：背景色/模糊会遮挡材质），所以这里一项都不设。
   }
 
   @Builder
@@ -857,29 +841,59 @@ export struct MobileBrowserOverlay {
         this.FindBar()
       }
 
-      // ⋮ 菜单：一块悬浮卡片贴在 dock 上方靠右。Lumie 不铺遮罩，这里也只留
-      // 一层透明点击层，点到卡片外面就收起来。
-      if (this.menuCardVisible) {
-        Stack({ alignContent: Alignment.BottomEnd }) {
-          Column()
-            .width('100%')
-            .height('100%')
-            .backgroundColor(Color.Transparent)
-            .onClick(() => {
-              this.closeMenuCard();
-            })
-
+      // ⋮ 菜单：交给系统菜单（bindMenu）承载。
+      // 为什么不再自绘：HarmonyOS 7 收紧沉浸光感生效范围后，页面内容区的
+      // Column/Stack 挂 systemMaterial 会「静默失效」，而材质又接管了
+      // backgroundColor → 卡片整个变透明（2026-10-09 真机现象）。菜单属
+      // 「弹窗类接口」，仍在生效范围内，改由它承载就能拿到真材质。
+      // 锚点是个 1×1 透明节点，贴在 dock 右上角外侧；菜单以 Placement.TopRight
+      // 从它上方弹出，落点与旧版手工定位一致（右边距 14vp、底边在 dock 上方）。
+      Column()
+        .width(1)
+        .height(1)
+        .position({
+          x: this.deviceWidthVp() - MENU_CARD_SIDE_MARGIN_VP,
+          y: this.deviceHeightVp() - (MENU_CARD_BOTTOM_MARGIN_VP + this.bottomSafeVp)
+        })
+        .hitTestBehavior(HitTestMode.None)
+        .bindMenu(this.menuCardVisible, (): void => {
           this.MenuCard()
-        }
-        .width('100%')
-        .height('100%')
-      }
+        }, {
+          placement: Placement.TopRight,
+          systemMaterial: this.menuGlass,
+          // 系统菜单自己处理「点外面收起」，收起后要把我们的状态同步掉，
+          // 否则根节点的全屏响应区会一直挂着，把网页挡住点不动。
+          onDisappear: (): void => {
+            this.menuCardVisible = false;
+          }
+        })
 
-      // 长按菜单（v13）：贴着按压点弹的自绘卡片；点卡片外 / 按返回收起来。
-      // 数据来自 AuraShell 写进 AppStorage 的 ContextMenuModel。
-      if (this.contextMenuJson.length > 0) {
-        this.ContextMenuLayer()
-      }
+      // 长按菜单（v13）：同样改由系统菜单承载。锚点贴在按压点，Placement.BottomLeft
+      // + offset(14,14) 复刻旧版「优先弹在按压点右下方、放不下由系统翻上去」的
+      // 行为（夹取交给系统，不再自己算）。数据来自 AuraShell 写进 AppStorage 的
+      // ContextMenuModel。
+      Column()
+        .width(1)
+        .height(1)
+        .position({
+          x: this.contextMenuModelOrDefault().x,
+          y: this.contextMenuModelOrDefault().y
+        })
+        .hitTestBehavior(HitTestMode.None)
+        .bindMenu(this.contextMenuJson.length > 0, (): void => {
+          this.ContextMenuCard(this.contextMenuModelOrDefault())
+        }, {
+          placement: Placement.BottomLeft,
+          offset: { x: 14, y: 14 },
+          systemMaterial: this.menuGlass,
+          onDisappear: (): void => {
+            // 选了某一项时 storage 已被清空，这里不能再补一条 dismissed ——
+            // 契约要求同一次 contextMenuRequested 只回一条。
+            if (this.contextMenuJson.length > 0) {
+              this.dismissContextMenu();
+            }
+          }
+        })
     }
     .width('100%')
     .height('100%')
@@ -1023,6 +1037,10 @@ export struct MobileBrowserOverlay {
         .backgroundColor($r('app.color.glass_tint'))
         .border({ width: 0.5, color: $r('app.color.divider') })
         .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+        .scale(this.roundScale('topExtensions'))
+        .onTouch((event: TouchEvent): void => {
+          this.handleRoundTouch(event, 'topExtensions');
+        })
         .accessibilityText('扩展')
         .onClick(() => {
           this.openPanel('extensions');
@@ -1103,6 +1121,10 @@ export struct MobileBrowserOverlay {
         .backgroundColor(Color.Transparent)
         .opacity(this.browserState.canGoBack ? 1 : 0.4)
         .enabled(this.browserState.canGoBack)
+        .scale(this.roundScale('barBack'))
+        .onTouch((event: TouchEvent): void => {
+          this.handleRoundTouch(event, 'barBack');
+        })
         .accessibilityText('返回')
         .onClick(() => {
           this.issueCommand({ command: 'back' });
@@ -1157,6 +1179,10 @@ export struct MobileBrowserOverlay {
         .height(38)
         .margin({ right: 3 })
         .backgroundColor(Color.Transparent)
+        .scale(this.roundScale('barReload'))
+        .onTouch((event: TouchEvent): void => {
+          this.handleRoundTouch(event, 'barReload');
+        })
         .accessibilityText(this.browserState.loading ? '停止' : '刷新')
         .onClick(() => {
           this.issueCommand({ command: this.browserState.loading ? 'stop' : 'reload' });
@@ -1334,6 +1360,26 @@ export struct MobileBrowserOverlay {
         this.pressedDock = '';
       });
     }
+  }
+
+  // 顶栏圆钮的按压弹性：按下快收、松手用欠阻尼弹簧回弹（就是 dock 那套「果冻」
+  // 的手感）。之所以手写：顶栏在页面内容区，systemMaterial 的 interactive
+  // 形变在这里不生效（HarmonyOS 7 生效范围，见 GlassMaterial.ets）。
+  private handleRoundTouch(event: TouchEvent, id: string): void {
+    if (event.type === TouchType.Down) {
+      animateTo({ duration: 90, curve: Curve.FastOutSlowIn }, (): void => {
+        this.pressedRound = id;
+      });
+    } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+      animateTo({ curve: curves.springMotion(0.3, 0.7) }, (): void => {
+        this.pressedRound = '';
+      });
+    }
+  }
+
+  private roundScale(id: string): ScaleOptions {
+    const s: number = this.pressedRound === id ? 0.86 : 1;
+    return { x: s, y: s };
   }
 
   @Builder
@@ -1726,20 +1772,8 @@ export struct MobileBrowserOverlay {
       .padding({ left: 10, right: 10, top: 10, bottom: 12 })
     }
     .width(MENU_CARD_WIDTH_VP)
-    .borderRadius(22)
-    // 沉浸光感真材质：系统毛玻璃 + 智能反色 + 自带阴影 + 按压流光（lightEffect）。
-    // 材质会接管底色/阴影，所以生效时自绘底色必须让位（否则把材质压住不透）；
-    // 设备不支持时才退回 glass_tint 半透明纯色。
-    .systemMaterial(this.menuGlass)
-    .backgroundColor(this.menuGlass === undefined ? glassFallbackColor() : Color.Transparent)
-    .shadow(this.menuGlass === undefined ? glassFallbackShadow() : glassNoneShadow())
-    .margin({ right: 14, bottom: 82 + this.bottomSafeVp })
-    .transition(TransitionEffect.asymmetric(
-      TransitionEffect.opacity(0)
-        .combine(TransitionEffect.translate({ y: 24 }))
-        .combine(TransitionEffect.scale({ x: 0.97, y: 0.97 })),
-      TransitionEffect.opacity(0)
-    ).animation({ duration: 200, curve: Curve.Friction }))
+    // 容器样式（圆角、真材质、阴影、弹出动画）全部由系统菜单提供 —— 自绘这几项
+    // 会把菜单材质压住（官方 FAQ：背景色/模糊会遮挡材质效果），所以一项都不设。
   }
 
   // 第一行：连接状态。锁形图标 + 域名 + " · 连接安全/不安全"，与 Lumie 一致。

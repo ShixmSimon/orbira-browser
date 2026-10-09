@@ -9,7 +9,7 @@ import { deviceInfo } from '@kit.BasicServicesKit';
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import { hdsMaterial } from '@kit.UIDesignKit';
 import { AppearanceSettings, ColorModeSetting } from '../../utils/appearance/AppearanceSettings';
-import { GlassRole, glassFallbackColor, glassMaterial } from '../../utils/appearance/GlassMaterial';
+import { GlassPage } from './GlassPage';
 import { ShellUiPrefs } from '../../utils/appearance/ShellUiPrefs';
 import { HuaweiAccountInfo } from '../../utils/account/HuaweiAccountService';
 import { HuaweiAccountView } from './AccountPanel';
@@ -100,8 +100,6 @@ export struct SettingsPanel {
   @State private diagSystemColorMode: string = '…';
   private requestSeq: number = 0;
   private retryTimer: number = -1;
-  // 返回钮的沉浸光感真材质。undefined = 设备不支持 → 退回 glass_tint 兜底。
-  private readonly backGlass: uiMaterial.Material | undefined = glassMaterial(GlassRole.CONTROL);
 
   aboutToAppear(): void {
     // A @Watch callback does not run for the value a @StorageLink is created
@@ -392,54 +390,35 @@ export struct SettingsPanel {
     });
   }
 
-  @Builder
-  private Header(title: string, showBackToMain: boolean) {
-    Row() {
-      // 圆形玻璃返回钮，对齐系统「沉浸光感」标题栏的那颗：半透明圆底 + 细亮描边，
-      // 按压时有一道跟着手指流动的高光。
-      // 走 ArkUI 标准轨道的真材质（uiMaterial.ImmersiveMaterial）：
-      //   - 材质自带底色/阴影/描边语义，所以生效时不要再自绘 backgroundColor；
-      //   - interactive 给系统按压形变（果冻），lightEffect 给触摸流光；
-      //   - 设备不支持（低算力/系统关了沉浸光感）时 glassMaterial 返回 undefined，
-      //     这里退回 glass_tint 自绘兜底，外观不退化。
-      // 用裸 Column 而不是 Button({stateEffect:true})：后者在深色下按压会画出一块
-      // 浅色矩形蒙层（血泪 #9），裸 Column + 材质自身的光效才是对的按压反馈。
-      Column() {
-        Image($r('app.media.aura_back'))
-          .width(22)
-          .height(22)
-          .fillColor($r('app.color.icon_primary'))
-      }
-      .width(44)
-      .height(44)
-      .borderRadius(22)
-      .justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.Center)
-      .systemMaterial(this.backGlass)
-      // 官方约定：材质自己管 backgroundColor / borderColor / borderWidth / shadow，
-      // 生效时不要和这四项叠着用（会把材质的边和阴影盖掉）。所以只在退档时自绘。
-      .backgroundColor(this.backGlass === undefined ? glassFallbackColor() : Color.Transparent)
-      .borderWidth(this.backGlass === undefined ? 0.5 : 0)
-      .borderColor($r('app.color.divider'))
-      .accessibilityText('返回')
-      .onClick(() => {
-        if (showBackToMain) {
-          this.page = 'main';
-        } else {
-          this.onBack();
-        }
-      })
-
-      Text(title)
-        .fontSize(22)
-        .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary'))
-        .margin({ left: 12 })
-
-      Blank()
+  // 标题栏（含圆形玻璃返回钮）交给 GlassPage —— 它把标题栏放进 Navigation，
+  // 落进 HarmonyOS 7 之后沉浸光感仍然生效的「Navigation 标题栏」区域；
+  // 自己画一条 Row 挂材质是拿不到的（还会把圆钮变成全透明）。
+  private titleText(): string {
+    if (this.page === 'clear') {
+      return '清除浏览数据';
     }
-    .width('100%')
-    .height(56)
+    if (this.page === 'engines') {
+      return '搜索引擎';
+    }
+    if (this.page === 'appearance') {
+      return '深色模式';
+    }
+    if (this.page === 'zoom') {
+      return '网页缩放';
+    }
+    if (this.page === 'account') {
+      return '华为账号';
+    }
+    return '设置';
+  }
+
+  // 返回：二级页回主面板，主面板才真的退出设置。
+  private handleTitleBack(): void {
+    if (this.page === 'main') {
+      this.onBack();
+    } else {
+      this.page = 'main';
+    }
   }
 
   @Builder
@@ -540,8 +519,6 @@ export struct SettingsPanel {
   @Builder
   private MainView() {
     Column() {
-      this.Header('设置', false)
-
       Scroll() {
         Column() {
           this.SectionLabel('华为账号')
@@ -724,8 +701,6 @@ export struct SettingsPanel {
   @Builder
   private ClearView() {
     Column() {
-      this.Header('清除浏览数据', true)
-
       Text('将清除所选时间范围内的历史记录、Cookie、缓存、站点数据与下载记录。书签和密码不受影响。')
         .fontSize(13)
         .fontColor($r('app.color.text_secondary'))
@@ -776,8 +751,6 @@ export struct SettingsPanel {
   @Builder
   private EnginesView() {
     Column() {
-      this.Header('搜索引擎', true)
-
       if (this.engines.length === 0) {
         Column() {
           Text('加载中…')
@@ -874,8 +847,6 @@ export struct SettingsPanel {
   @Builder
   private AppearanceView() {
     Column() {
-      this.Header('深色模式', true)
-
       Text('深色模式下，浏览器界面和网页一起变暗。')
         .fontSize(13)
         .fontColor($r('app.color.text_secondary'))
@@ -940,8 +911,6 @@ export struct SettingsPanel {
   @Builder
   private ZoomView() {
     Column() {
-      this.Header('网页缩放', true)
-
       Text('整页一起放大或缩小，对所有网页生效。')
         .fontSize(13)
         .fontColor($r('app.color.text_secondary'))
@@ -995,28 +964,32 @@ export struct SettingsPanel {
   }
 
   build() {
-    Column() {
-      if (this.page === 'clear') {
-        this.ClearView()
-      } else if (this.page === 'engines') {
-        this.EnginesView()
-      } else if (this.page === 'appearance') {
-        this.AppearanceView()
-      } else if (this.page === 'zoom') {
-        this.ZoomView()
-      } else if (this.page === 'account') {
-        HuaweiAccountView({
-          onBack: (): void => {
-            this.page = 'main';
-          }
-        })
-      } else {
-        this.MainView()
+    GlassPage({
+      title: this.titleText(),
+      onBack: (): void => {
+        this.handleTitleBack();
       }
+    }) {
+      Column() {
+        if (this.page === 'clear') {
+          this.ClearView()
+        } else if (this.page === 'engines') {
+          this.EnginesView()
+        } else if (this.page === 'appearance') {
+          this.AppearanceView()
+        } else if (this.page === 'zoom') {
+          this.ZoomView()
+        } else if (this.page === 'account') {
+          // 标题栏由本页统一提供（设置的所有二级页共用一条 Navigation 标题栏），
+          // 所以 AccountPanel 自己不再画 Header。
+          HuaweiAccountView()
+        } else {
+          this.MainView()
+        }
+      }
+      .width('100%')
+      .height('100%')
+      .padding({ left: 16, right: 16, bottom: 16 })
     }
-    .width('100%')
-    .height('100%')
-    .padding({ left: 16, right: 16, bottom: 16 })
-    .backgroundColor($r('app.color.page_background'))
   }
 }

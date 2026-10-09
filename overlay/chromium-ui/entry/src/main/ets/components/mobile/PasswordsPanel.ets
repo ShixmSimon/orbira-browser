@@ -12,6 +12,7 @@ import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { userAuth } from '@kit.UserAuthenticationKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
+import { GlassBackButton } from './GlassPage';
 import {
   BrowserCommandPayload,
   PasswordCommandResultEvent,
@@ -559,23 +560,15 @@ export struct PasswordsPanel {
   // -- UI ---------------------------------------------------------------------
 
   @Builder
-  private Header() {
-    Row() {
-      Button({ type: ButtonType.Circle }) {
-        Image($r('app.media.aura_back'))
-          .width(22)
-          .height(22)
-          .fillColor($r('app.color.icon_primary'))
-      }
-      .width(44)
-      .height(44)
-      .backgroundColor($r('app.color.surface_secondary'))
-      .accessibilityText('返回')
-      .onClick(() => {
-        if (this.view === 'detail') {
-          this.closeDetail();
-        } else {
-          this.onBack();
+  private TitleBar() {
+    Row({ space: 12 }) {
+      GlassBackButton({
+        onAction: (): void => {
+          if (this.view === 'detail') {
+            this.closeDetail();
+          } else {
+            this.onBack();
+          }
         }
       })
 
@@ -583,7 +576,6 @@ export struct PasswordsPanel {
         .fontSize(22)
         .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.text_primary'))
-        .margin({ left: 12 })
 
       Blank()
 
@@ -879,9 +871,11 @@ export struct PasswordsPanel {
   }
 
   build() {
+    // 标题栏放进 Navigation（HarmonyOS 7 之后只有 Navigation 标题栏 / 底部
+    // TabBar / 弹窗类还在沉浸光感的生效范围内）。右侧还有「更多」，故不用
+    // GlassPage，自己包一层。
+    Navigation() {
     Column() {
-      this.Header()
-
       if (!this.verified) {
         this.GateView()
       } else if (this.view === 'detail') {
@@ -894,5 +888,13 @@ export struct PasswordsPanel {
     .height('100%')
     .padding({ left: 16, right: 16, bottom: 16 })
     .backgroundColor($r('app.color.page_background'))
+    }
+    .hideBackButton(true)
+    .titleMode(NavigationTitleMode.Mini)
+    .title(this.TitleBar, { barStyle: BarStyle.STACK })
+    .mode(NavigationMode.Stack)
+    .backgroundColor($r('app.color.page_background'))
+    .width('100%')
+    .height('100%')
   }
 }
