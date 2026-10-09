@@ -33,11 +33,14 @@ import {
 export const GLASS_TITLE_BAR_HEIGHT_VP: number = 56;
 
 /**
- * 内容区顶部「大标题带」高度（vp）。
+ * 内容区顶部「返回钮行 + 大标题带」的总高度（vp）。
  * 各页面要把它加在**滚动内容**的顶部内边距里（不是外层容器），
- * 这样静态时首行内容正好落在虚化带下方，滚动时内容会从标题底下穿过并淡出。
+ * 这样静态时首行内容正好落在渐隐带下缘，滚动时内容会从返回钮行/大标题
+ * 底下穿过并淡出。BarStyle.STACK 下内容区从状态栏下方就开始（见
+ * GlassContentHeader 文件头），所以这个值必须覆盖返回钮行(56)+大标题(约54)
+ * +渐隐带(约30)，与 iOS 大标题页的首屏留白手感一致。
  */
-export const GLASS_TITLE_ZONE_VP: number = 64;
+export const GLASS_TITLE_ZONE_VP: number = 140;
 
 /**
  * 圆形玻璃返回钮（对齐系统「软件更新」标题栏那颗）。
@@ -98,14 +101,18 @@ export struct GlassBackButton {
 }
 
 /**
- * 内容区顶部的大标题带：大标题 + 底部渐变虚化遮罩。
+ * 内容区顶部「返回钮行 + 大标题带」的渐隐盖片。
  *
- * 放在页面内容层「Stack 的最上面」：
- *   Stack(TopStart) {
- *     Column() { ...可滚动内容，滚动内容留 GLASS_TITLE_ZONE_VP 顶部内边距... }
- *     GlassContentHeader({ title: '书签' })
- *   }
- * 自身不参与触摸测试（HitTestMode.None），滚动/点击从它底下穿过去。
+ * ⚠️ 几何关键（真机实测 2026-10-10）：Navigation 的 title 用
+ * `barStyle: BarStyle.STACK` 时，**内容区从状态栏下方就开始**，标题栏只是
+ * 悬浮在内容上层（旧版「标题/内容和返回钮重叠」的根源：内容首行顶到了
+ * 返回钮那一行）。所以这片盖片必须从内容区顶部一直铺到大标题带底部：
+ *   - 高度 = GLASS_TITLE_ZONE_VP(140) = 返回钮行(56) + 大标题(约54) + 渐隐带(约30)
+ *   - 上 78% 实底 page_background：把滚上来的内容挡在返回钮行/大标题后面
+ *   - 下沿渐隐：内容在这里「逐渐虚化」（对齐系统设置页的观感）
+ *   - 大标题从 56+12 处起画，和返回钮行物理错开
+ * 各页滚动内容顶部内边距 = GLASS_TITLE_ZONE_VP(120)，静态时首行正好落在
+ * 渐隐带下缘。整片 hitTestBehavior(None)，触摸全部穿到底下的滚动区。
  */
 @Component
 export struct GlassContentHeader {
@@ -120,19 +127,19 @@ export struct GlassContentHeader {
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width('100%')
-        .padding({ left: 20, right: 20, top: 12 })
+        .padding({ left: 20, right: 20, top: GLASS_TITLE_BAR_HEIGHT_VP + 12 })
         // 文字也不吃触摸：整条大标题带对滚动/点击完全透明。
         .hitTestBehavior(HitTestMode.None)
     }
     .width('100%')
     .height(GLASS_TITLE_ZONE_VP)
     .alignItems(HorizontalAlign.Start)
-    // 上半段实底（标题区干净），下沿渐隐 —— 滚动上来的内容在这里"逐渐虚化"。
+    // 上段实底（返回钮行 + 大标题区干净），下沿渐隐 —— 滚动上来的内容在这里淡出。
     .linearGradient({
       angle: 180,
       colors: [
         [$r('app.color.page_background'), 0.0],
-        [$r('app.color.page_background'), 0.55],
+        [$r('app.color.page_background'), 0.78],
         [$r('app.color.page_background_fade'), 1.0]
       ]
     })
