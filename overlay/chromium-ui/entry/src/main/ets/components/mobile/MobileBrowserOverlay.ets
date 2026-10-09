@@ -5,6 +5,14 @@ import { hdsEffect, hdsMaterial, HdsTabs, HdsTabsFloatingStyle } from '@kit.UIDe
 import { inputMethod } from '@kit.IMEKit';
 import { curves } from '@kit.ArkUI';
 import display from '@ohos.display';
+import uiMaterial from '@ohos.arkui.uiMaterial';
+import {
+  GlassRole,
+  glassFallbackColor,
+  glassFallbackShadow,
+  glassMaterial,
+  glassNoneShadow
+} from '../../utils/appearance/GlassMaterial';
 import { showSystemPasteDialog } from './SystemPasteDialog';
 import { ScanService } from './ScanService';
 import {
@@ -224,6 +232,9 @@ export struct MobileBrowserOverlay {
   // (bottom TabBar inside a horizontal Tabs only); on device it rendered
   // nothing. HDS renders anywhere. The top bar stays painted.
   private readonly dockMaterialActive: boolean = isDockMaterialAvailable();
+  // 沉浸光感真材质（ArkUI 标准轨道 uiMaterial）：挂在 ⋮ 菜单卡与长按菜单卡上，
+  // 拿到系统毛玻璃 + 自带阴影 + 按压流光。undefined = 设备不支持 → 退回自绘 glass_tint。
+  private readonly menuGlass: uiMaterial.Material | undefined = glassMaterial(GlassRole.CARD);
   // 视口高度（vp），首次布局即上报；dock 条带的响应区以它为底边基准。
   @State private viewportHeightVp: number = 0;
 
@@ -735,9 +746,10 @@ export struct MobileBrowserOverlay {
     }
     .width(CONTEXT_MENU_CARD_WIDTH_VP)
     .borderRadius(22)
-    // 同 ⋮ 菜单卡：贴着按压点弹在网页上，用与顶栏/dock 一致的半透明玻璃色。
-    .backgroundColor($r('app.color.glass_tint'))
-    .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
+    // 同 ⋮ 菜单卡：贴上沉浸光感真材质（系统毛玻璃 + 按压流光），设备不支持才退回兜底色。
+    .systemMaterial(this.menuGlass)
+    .backgroundColor(this.menuGlass === undefined ? glassFallbackColor() : Color.Transparent)
+    .shadow(this.menuGlass === undefined ? glassFallbackShadow() : glassNoneShadow())
     .clip(true)
     .position(this.contextMenuPosition(model))
     .transition(TransitionEffect.asymmetric(
@@ -1715,10 +1727,12 @@ export struct MobileBrowserOverlay {
     }
     .width(MENU_CARD_WIDTH_VP)
     .borderRadius(22)
-    // 与顶栏胶囊、dock 同一套玻璃：卡片直接叠在网页上，没有遮罩，用半透明
-    // 纯色让页面隐约透出（契约 §8：网页上方不要叠模糊，SURFACE 采不到内容）。
-    .backgroundColor($r('app.color.glass_tint'))
-    .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
+    // 沉浸光感真材质：系统毛玻璃 + 智能反色 + 自带阴影 + 按压流光（lightEffect）。
+    // 材质会接管底色/阴影，所以生效时自绘底色必须让位（否则把材质压住不透）；
+    // 设备不支持时才退回 glass_tint 半透明纯色。
+    .systemMaterial(this.menuGlass)
+    .backgroundColor(this.menuGlass === undefined ? glassFallbackColor() : Color.Transparent)
+    .shadow(this.menuGlass === undefined ? glassFallbackShadow() : glassNoneShadow())
     .margin({ right: 14, bottom: 82 + this.bottomSafeVp })
     .transition(TransitionEffect.asymmetric(
       TransitionEffect.opacity(0)

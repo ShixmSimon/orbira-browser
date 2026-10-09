@@ -9,6 +9,7 @@ import { deviceInfo } from '@kit.BasicServicesKit';
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import { hdsMaterial } from '@kit.UIDesignKit';
 import { AppearanceSettings, ColorModeSetting } from '../../utils/appearance/AppearanceSettings';
+import { GlassRole, glassFallbackColor, glassMaterial } from '../../utils/appearance/GlassMaterial';
 import { ShellUiPrefs } from '../../utils/appearance/ShellUiPrefs';
 import { HuaweiAccountInfo } from '../../utils/account/HuaweiAccountService';
 import { HuaweiAccountView } from './AccountPanel';
@@ -99,6 +100,8 @@ export struct SettingsPanel {
   @State private diagSystemColorMode: string = '…';
   private requestSeq: number = 0;
   private retryTimer: number = -1;
+  // 返回钮的沉浸光感真材质。undefined = 设备不支持 → 退回 glass_tint 兜底。
+  private readonly backGlass: uiMaterial.Material | undefined = glassMaterial(GlassRole.CONTROL);
 
   aboutToAppear(): void {
     // A @Watch callback does not run for the value a @StorageLink is created
@@ -392,7 +395,16 @@ export struct SettingsPanel {
   @Builder
   private Header(title: string, showBackToMain: boolean) {
     Row() {
-      Button({ type: ButtonType.Circle }) {
+      // 圆形玻璃返回钮，对齐系统「沉浸光感」标题栏的那颗：半透明圆底 + 细亮描边，
+      // 按压时有一道跟着手指流动的高光。
+      // 走 ArkUI 标准轨道的真材质（uiMaterial.ImmersiveMaterial）：
+      //   - 材质自带底色/阴影/描边语义，所以生效时不要再自绘 backgroundColor；
+      //   - interactive 给系统按压形变（果冻），lightEffect 给触摸流光；
+      //   - 设备不支持（低算力/系统关了沉浸光感）时 glassMaterial 返回 undefined，
+      //     这里退回 glass_tint 自绘兜底，外观不退化。
+      // 用裸 Column 而不是 Button({stateEffect:true})：后者在深色下按压会画出一块
+      // 浅色矩形蒙层（血泪 #9），裸 Column + 材质自身的光效才是对的按压反馈。
+      Column() {
         Image($r('app.media.aura_back'))
           .width(22)
           .height(22)
@@ -400,8 +412,15 @@ export struct SettingsPanel {
       }
       .width(44)
       .height(44)
-      // 玻璃圆底，与顶栏胶囊、dock、菜单卡同一套材质语言（glass_tint）。
-      .backgroundColor($r('app.color.glass_tint'))
+      .borderRadius(22)
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
+      .systemMaterial(this.backGlass)
+      // 官方约定：材质自己管 backgroundColor / borderColor / borderWidth / shadow，
+      // 生效时不要和这四项叠着用（会把材质的边和阴影盖掉）。所以只在退档时自绘。
+      .backgroundColor(this.backGlass === undefined ? glassFallbackColor() : Color.Transparent)
+      .borderWidth(this.backGlass === undefined ? 0.5 : 0)
+      .borderColor($r('app.color.divider'))
       .accessibilityText('返回')
       .onClick(() => {
         if (showBackToMain) {
