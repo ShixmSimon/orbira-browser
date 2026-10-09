@@ -24,7 +24,13 @@ import { MobileBrowserOverlay, TOP_BAR_EXTENT_VP } from '../components/mobile/Mo
 import { MobileBackRouter } from '../components/mobile/MobileBackRouter';
 import { HomeSurface } from '../components/mobile/HomeSurface';
 import { CurrentTabCastSession } from '../components/mobile/CurrentTabCastSession';
-import { showContextMenuSheet } from '../components/mobile/ContextMenuSheet';
+import {
+  buildContextMenuModel,
+  ContextMenuModel,
+  parseContextMenuModel,
+  showContextMenuSheet,
+  updateContextMenuModel
+} from '../components/mobile/ContextMenuSheet';
 import { BrowserOnboarding } from '../components/onboarding/BrowserOnboarding';
 import {
   AuxiliaryWindowState,
@@ -857,9 +863,51 @@ struct AuraShell {
     }
 
     if (event.event === 'contextMenuRequested') {
-      showContextMenuSheet(this.getUIContext(), event, (command: BrowserCommandPayload): void => {
-        this.executeBrowserCommand(command);
-      });
+      // 手机：启动配置里 contextMenu 是 'shell'，引擎不弹自己的菜单，由外壳
+      // 画。v13 起手机画自绘卡片——model 序列化进 AppStorage，
+      // MobileBrowserOverlay 渲染；平板 / 2in1 还没有那块 UI，维持系统动作
+      // 面板。没有可显示项时立刻回一条 dismissed，引擎在等这一条。
+      if (this.isMobilePhoneUi()) {
+        const model: ContextMenuModel | undefined = buildContextMenuModel(event);
+        if (model === undefined) {
+          this.executeBrowserCommand({ command: 'contextMenuDismissed', requestId: event.requestId ?? 0 });
+        } else {
+          AppStorage.setOrCreate('auraContextMenu', JSON.stringify(model));
+        }
+      } else {
+        showContextMenuSheet(this.getUIContext(), event, (command: BrowserCommandPayload): void => {
+          this.executeBrowserCommand(command);
+        });
+      }
+      return;
+    }
+
+    if (event.event === 'contextMenuActionsChanged') {
+      // 菜单还开着时补点亮某项（例如"复制指向所选文字的链接"要等渲染器
+      // 生成文字片段）。只更新同一 requestId 的那张卡；没有卡就忽略。
+      const current: ContextMenuModel | undefined =
+        parseContextMenuModel(AppStorage.get<string>('auraContextMenu') ?? '');
+      if (current !== undefined && current.requestId === (event.requestId ?? 0)) {
+        const updated: ContextMenuModel | undefined = updateContextMenuModel(current, event);
+        if (updated === undefined) {
+          AppStorage.setOrCreate('auraContextMenu', '');
+          this.executeBrowserCommand({ command: 'contextMenuDismissed', requestId: current.requestId });
+        } else {
+          AppStorage.setOrCreate('auraContextMenu', JSON.stringify(updated));
+        }
+      }
+      return;
+    }
+
+    if (event.event === 'pageDragStarted') {
+      // 手指开始拖动（长按后移开，或在页面里拖东西）：把还开着的长按菜单
+      // 收掉。引擎在等一条回复。
+      const dragged: ContextMenuModel | undefined =
+        parseContextMenuModel(AppStorage.get<string>('auraContextMenu') ?? '');
+      if (dragged !== undefined) {
+        AppStorage.setOrCreate('auraContextMenu', '');
+        this.executeBrowserCommand({ command: 'contextMenuDismissed', requestId: dragged.requestId });
+      }
       return;
     }
 

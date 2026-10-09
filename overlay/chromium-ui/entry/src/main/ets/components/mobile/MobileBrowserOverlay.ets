@@ -10,12 +10,19 @@ import {
   BrowserCommandPayload,
   BrowserStateSnapshot,
   BrowserTabState,
+  ContextMenuAction,
   TabThumbnail
 } from 'engine';
 import { HuaweiShareAdapter } from 'engine';
 import { GripSide, HoldingHandRouter } from './HoldingHandRouter';
 import { CurrentTabCastSession } from './CurrentTabCastSession';
 import { BookmarksPanel } from './BookmarksPanel';
+import {
+  ContextMenuItem,
+  ContextMenuModel,
+  EMPTY_CONTEXT_MENU_MODEL,
+  parseContextMenuModel
+} from './ContextMenuSheet';
 import { DownloadsPanel } from './DownloadsPanel';
 import { ExtensionPanel } from './ExtensionPanel';
 import { HistoryPanel } from './HistoryPanel';
@@ -87,6 +94,8 @@ const TAB_CARD_TITLE_VP: number = 36;
 export const TAB_THUMB_HEIGHT_VP: number = TAB_CARD_HEIGHT_VP - TAB_CARD_TITLE_VP;
 // ⋮ 菜单卡片：Lumie 那块是 258 上下、贴着屏幕右侧，左边留出底下网页的宽度。
 const MENU_CARD_WIDTH_VP: number = 258;
+// 长按菜单卡片（v13）：与 ⋮ 卡片同宽同款，锚在按压点旁边。
+const CONTEXT_MENU_CARD_WIDTH_VP: number = 258;
 
 enum MobileEdgeAction {
   BACK = 'back',
@@ -150,6 +159,11 @@ export struct MobileBrowserOverlay {
   // The ⋮ menu is a floating card above the dock (Lumie-style), not a
   // sheet; the sheet hosts the tab switcher only.
   @State private menuCardVisible: boolean = false;
+  // 长按网页元素（链接 / 图片 / 选区）：AuraShell 把 buildContextMenuModel
+  // 的结果序列化写进 AppStorage，这里画卡片（v13，取代系统动作面板）。
+  // 空串 = 没有菜单；用户选一项或关掉时回 contextMenuAction /
+  // contextMenuDismissed 并清空。
+  @StorageLink('auraContextMenu') contextMenuJson: string = '';
   // 页内查找 (findInPage): a small bar under the top area.
   @State private findVisible: boolean = false;
   @State private findQuery: string = '';
@@ -224,6 +238,11 @@ export struct MobileBrowserOverlay {
   // (address editing, the tab menu, a full-screen shell page), then page
   // history, and only leave the app when there is nothing of ours to unwind.
   private handleSystemBack(): boolean {
+    // 长按菜单是最上面的一层：先它。
+    if (this.contextMenuJson.length > 0) {
+      this.dismissContextMenu();
+      return true;
+    }
     if (this.editingAddress) {
       this.clearKeyboardRecoveryTimers();
       this.editingAddress = false;
@@ -339,6 +358,201 @@ export struct MobileBrowserOverlay {
     this.menuCardVisible = false;
   }
 
+  // ---- 长按菜单（自绘卡片，2026-10-09 v13）----
+  //
+  // 协议见 docs/SHELL_CONTRACT.md「长按菜单」：每次 contextMenuRequested 都
+  // 要回一条 contextMenuAction（选了某项）或 contextMenuDismissed（没选就
+  // 关），requestId 一一对应；新的一次长按直接替换旧的。卡片锚在按压点
+  // 旁边，位置夹取，绝不出屏。
+
+  private contextMenuModelOrDefault(): ContextMenuModel {
+    return parseContextMenuModel(this.contextMenuJson) ?? EMPTY_CONTEXT_MENU_MODEL;
+  }
+
+  private clearContextMenu(): void {
+    AppStorage.setOrCreate('auraContextMenu', '');
+  }
+
+  private chooseContextMenuAction(model: ContextMenuModel, action: ContextMenuAction): void {
+    this.clearContextMenu();
+    this.issueCommand({ command: 'contextMenuAction', requestId: model.requestId, action: action });
+  }
+
+  private dismissContextMenu(): void {
+    const model: ContextMenuModel | undefined = parseContextMenuModel(this.contextMenuJson);
+    this.clearContextMenu();
+    if (model !== undefined) {
+      this.issueCommand({ command: 'contextMenuDismissed', requestId: model.requestId });
+    }
+  }
+
+  // 系统安全粘贴：浏览器进程拿不到明文剪贴板，走系统对话框取一次文本再
+  // 插回（insertText）。先收菜单再弹对话框，避免两层浮层同时在场。
+  private pasteFromContextMenu(model: ContextMenuModel): void {
+    const ui: UIContext = this.getUIContext();
+    this.clearContextMenu();
+    setTimeout((): void => {
+      showSystemPasteDialog(ui,
+        (text: string): void => {
+          this.issueCommand({ command: 'insertText', requestId: model.requestId, text: text });
+        },
+        (): void => {
+          this.issueCommand({ command: 'contextMenuDismissed', requestId: model.requestId });
+        });
+    }, 0);
+  }
+
+  private deviceWidthVp(): number {
+    try {
+      const info: display.Display = display.getDefaultDisplaySync();
+      if (info.densityPixels > 0 && info.width > 0) {
+        return info.width / info.densityPixels;
+      }
+    } catch (error) {
+    }
+    return 360;
+  }
+
+  private deviceHeightVp(): number {
+    try {
+      const info: display.Display = display.getDefaultDisplaySync();
+      if (info.densityPixels > 0 && info.height > 0) {
+        return info.height / info.densityPixels;
+      }
+    } catch (error) {
+    }
+    return this.viewportHeightVp > 0 ? this.viewportHeightVp : 780;
+  }
+
+  // 卡片高度估算（定位用）：头部（有链接文字时多一行）+ 分隔线 + 每项
+  // 48 + 底部留 6。与渲染保持一致即可，误差几 vp 无碍——定位有夹取。
+  private contextMenuCardHeightVp(model: ContextMenuModel): number {
+    const header: number = model.subtitle.length > 0 ? 61 : 42;
+    const rows: number = model.items.length + (model.systemPaste ? 1 : 0);
+    return header + 1 + rows * 48 + 6;
+  }
+
+  private contextMenuListMaxHeightVp(model: ContextMenuModel): number {
+    const header: number = model.subtitle.length > 0 ? 61 : 42;
+    return Math.max(96, this.deviceHeightVp() * 0.56 - header - 7);
+  }
+
+  private contextMenuPosition(model: ContextMenuModel): Position {
+    const screenW: number = this.deviceWidthVp();
+    const screenH: number = this.deviceHeightVp();
+    const cardW: number = CONTEXT_MENU_CARD_WIDTH_VP;
+    const maxCardH: number = Math.max(160, screenH * 0.56);
+    const cardH: number = Math.min(this.contextMenuCardHeightVp(model), maxCardH);
+    const margin: number = 12;
+    let left: number = model.x - 14;
+    left = Math.min(Math.max(left, margin), Math.max(margin, screenW - cardW - margin));
+    // 优先弹在按压点下方；下方放不下翻到上方；再夹进安全区。
+    let top: number = model.y + 14;
+    if (top + cardH > screenH - margin) {
+      top = model.y - 14 - cardH;
+    }
+    const minTop: number = Math.max(this.topSafeVp + 8, margin);
+    top = Math.min(Math.max(top, minTop), Math.max(minTop, screenH - cardH - margin));
+    return { x: left, y: top };
+  }
+
+  @Builder
+  private ContextMenuLayer() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      // 一张透明点击层：点到卡片外面就收起来（⋮ 菜单卡同款做法）。
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(Color.Transparent)
+        .onClick((): void => {
+          this.dismissContextMenu();
+        })
+
+      this.ContextMenuCard(this.contextMenuModelOrDefault())
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  @Builder
+  private ContextMenuCard(model: ContextMenuModel) {
+    Column() {
+      Column({ space: 2 }) {
+        Text(model.title)
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+        if (model.subtitle.length > 0) {
+          Text(model.subtitle)
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+        }
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+      .padding({ left: 18, right: 16, top: 12, bottom: 10 })
+
+      Divider()
+        .color($r('app.color.divider'))
+        .margin({ left: 18, right: 0 })
+
+      Scroll() {
+        Column() {
+          ForEach(model.items, (item: ContextMenuItem): void => {
+            this.ContextMenuRow(item.label, (): void => {
+              this.chooseContextMenuAction(model, item.action);
+            })
+          }, (item: ContextMenuItem): string => item.action)
+          if (model.systemPaste) {
+            this.ContextMenuRow('粘贴', (): void => {
+              this.pasteFromContextMenu(model);
+            })
+          }
+        }
+        .width('100%')
+        .padding({ bottom: 6 })
+      }
+      .width('100%')
+      .constraintSize({ maxHeight: this.contextMenuListMaxHeightVp(model) })
+      // 血泪：Scroll 默认垂直居中，内容不满时必须显式 TopStart。
+      .align(Alignment.TopStart)
+      .scrollBar(BarState.Off)
+    }
+    .width(CONTEXT_MENU_CARD_WIDTH_VP)
+    .borderRadius(22)
+    .backgroundColor($r('app.color.surface_floating'))
+    .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
+    .clip(true)
+    .position(this.contextMenuPosition(model))
+    .transition(TransitionEffect.asymmetric(
+      TransitionEffect.opacity(0)
+        .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 })),
+      TransitionEffect.opacity(0)
+    ).animation({ duration: 180, curve: Curve.Friction }))
+  }
+
+  @Builder
+  private ContextMenuRow(label: string, action: () => void) {
+    Row() {
+      Text(label)
+        .fontSize(15)
+        .fontColor($r('app.color.text_primary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+    }
+    .width('100%')
+    .height(48)
+    .padding({ left: 18, right: 16 })
+    .onClick(action)
+  }
+
   private closeFindBar(): void {
     this.findVisible = false;
     this.findQuery = '';
@@ -438,6 +652,12 @@ export struct MobileBrowserOverlay {
         .width('100%')
         .height('100%')
       }
+
+      // 长按菜单（v13）：贴着按压点弹的自绘卡片；点卡片外 / 按返回收起来。
+      // 数据来自 AuraShell 写进 AppStorage 的 ContextMenuModel。
+      if (this.contextMenuJson.length > 0) {
+        this.ContextMenuLayer()
+      }
     }
     .width('100%')
     .height('100%')
@@ -468,9 +688,9 @@ export struct MobileBrowserOverlay {
   // 矩形"，因此只会与 Transparent 组合出现（行为与旧实现一致）。
   private buildChromeTouchRegions(): Array<Rectangle> {
     const regions: Array<Rectangle> = [];
-    // 模态层（七页面板 / ⋮ 悬浮菜单卡）在场：整屏归它，直接全屏响应区，
-    // 顺带把网页挡在后面（菜单卡点外收起时不再误点页面）。
-    if (this.panelPage !== 'none' || this.menuCardVisible) {
+    // 模态层（七页面板 / ⋮ 悬浮菜单卡 / 长按菜单）在场：整屏归它，直接
+    // 全屏响应区，顺带把网页挡在后面（菜单卡点外收起时不再误点页面）。
+    if (this.panelPage !== 'none' || this.menuCardVisible || this.contextMenuJson.length > 0) {
       const full: Rectangle = { x: 0, y: 0, width: '100%', height: '100%' };
       regions.push(full);
       return regions;
