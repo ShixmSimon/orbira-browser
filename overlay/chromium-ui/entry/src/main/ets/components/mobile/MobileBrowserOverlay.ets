@@ -326,7 +326,7 @@ export struct MobileBrowserOverlay {
       clearTimeout(this.reboundTimer);
       this.reboundTimer = 0;
     }
-    this.issueCommand({ command: 'setBrowserControlsState', state: 'both' });
+    this.issueCommand({ command: 'setBrowserControlsState', state: 'both', animate: true });
   }
 
   private parseThumbnails(): void {
@@ -962,7 +962,7 @@ export struct MobileBrowserOverlay {
         .onClick(() => {
           this.clearKeyboardRecoveryTimers();
           this.editingAddress = false;
-          this.issueCommand({ command: 'setBrowserControlsState', state: 'both' });
+          this.issueCommand({ command: 'setBrowserControlsState', state: 'both', animate: true });
         })
       } else {
         // Back chevron inside the bar, dimmed when there is nowhere to go.
@@ -1971,7 +1971,7 @@ export struct MobileBrowserOverlay {
     this.clearKeyboardRecoveryTimers();
     // Pin both bars while the keyboard is up (SHELL_CONTRACT.md, "手机：滚动
     // 时收起地址栏和 dock", step 5).
-    this.issueCommand({ command: 'setBrowserControlsState', state: 'shown' });
+    this.issueCommand({ command: 'setBrowserControlsState', state: 'shown', animate: true });
     [0, 80, 220, 450].forEach((delay: number): void => {
       this.keyboardRecoveryTimers.push(setTimeout((): void => {
         if (!this.editingAddress) {
@@ -2026,7 +2026,7 @@ export struct MobileBrowserOverlay {
       this.reboundControlsAfterPaint();
     } else {
       this.editingAddress = false;
-      this.issueCommand({ command: 'setBrowserControlsState', state: 'both' });
+      this.issueCommand({ command: 'setBrowserControlsState', state: 'both', animate: true });
     }
   }
 
