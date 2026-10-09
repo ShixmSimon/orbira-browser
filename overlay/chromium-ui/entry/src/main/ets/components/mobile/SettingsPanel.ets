@@ -7,6 +7,7 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import uiMaterial from '@ohos.arkui.uiMaterial';
+import { hdsMaterial } from '@kit.UIDesignKit';
 import { AppearanceSettings, ColorModeSetting } from '../../utils/appearance/AppearanceSettings';
 import { ShellUiPrefs } from '../../utils/appearance/ShellUiPrefs';
 import {
@@ -85,6 +86,9 @@ export struct SettingsPanel {
   @State private diagMaterialSupport: string = '…';
   @State private diagMaterialState: string = '…';
   @State private diagMaterialLevel: string = '…';
+  // HDS 侧探测：getSystemMaterialTypes() 报告本机可渲染的材质类型
+  // （Lumie 同款入口；全 NONE = 系统材质被关掉）。
+  @State private diagHdsMaterial: string = '…';
   @State private diagColorScheme: string = '…';
   @State private diagSystemColorMode: string = '…';
   private requestSeq: number = 0;
@@ -285,6 +289,20 @@ export struct SettingsPanel {
       }
     } catch (error) {
       this.diagMaterialLevel = 'API 不可用';
+    }
+    try {
+      const materialTypes: Array<hdsMaterial.MaterialType> = hdsMaterial.getSystemMaterialTypes();
+      const supported: boolean = materialTypes.some((type: hdsMaterial.MaterialType): boolean =>
+        type !== hdsMaterial.MaterialType.NONE);
+      if (!supported) {
+        this.diagHdsMaterial = '不可用';
+      } else {
+        const immersive: boolean = materialTypes.some((type: hdsMaterial.MaterialType): boolean =>
+          type === hdsMaterial.MaterialType.IMMERSIVE);
+        this.diagHdsMaterial = immersive ? '可用 · IMMERSIVE' : '可用 · ADAPTIVE';
+      }
+    } catch (error) {
+      this.diagHdsMaterial = 'API 不可用';
     }
     this.diagColorScheme = String(AppStorage.get('auraColorScheme') ?? '?');
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
@@ -549,7 +567,7 @@ export struct SettingsPanel {
 
           this.SectionLabel('诊断信息')
           Column() {
-            this.DiagRow('UI 构建', 'v7 · 系统点光源')
+            this.DiagRow('UI 构建', 'v8 · HDS 背板 + 渐变遮罩')
             this.CardDivider()
             this.DiagRow('设备 API', this.diagApi)
             this.CardDivider()
@@ -558,6 +576,8 @@ export struct SettingsPanel {
             this.DiagRow('材质开关', this.diagMaterialState)
             this.CardDivider()
             this.DiagRow('算力档', this.diagMaterialLevel)
+            this.CardDivider()
+            this.DiagRow('HDS 材质', this.diagHdsMaterial)
             this.CardDivider()
             this.DiagRow('应用色彩', this.diagColorScheme)
             this.CardDivider()

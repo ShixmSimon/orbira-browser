@@ -1,7 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { AVCastPicker, AVCastPickerColorMode, AVCastPickerStyle } from '@kit.AVSessionKit';
-import { hdsEffect } from '@kit.UIDesignKit';
-import uiMaterial from '@ohos.arkui.uiMaterial';
+import { hdsEffect, hdsMaterial, HdsTabs, HdsTabsController, HdsTabsFloatingStyle } from '@kit.UIDesignKit';
 import { inputMethod } from '@kit.IMEKit';
 import { curves } from '@kit.ArkUI';
 import { showSystemPasteDialog } from './SystemPasteDialog';
@@ -72,17 +71,23 @@ interface FindResultSummary {
   revision?: number;
 }
 
-// HarmonyOS 7 沉浸光感：设备能不能渲染系统沉浸材质（API 26 的 uiMaterial）。
-// 一次探测、进程内固定；系统太旧没有这个命名空间时整体兜底 false（不会抛）。
+// HarmonyOS 7 沉浸光感：设备能不能渲染系统沉浸材质。走 HDS 探测
+// （getSystemMaterialTypes）——与 Lumie 同一个入口：全 NONE（材质被系统
+// 关掉）或旧 SDK 抛错都算不可用，dock 回退纯色玻璃。一次探测、进程内缓存。
+let cachedDockMaterialAvailable: boolean | undefined = undefined;
+
 function isDockMaterialAvailable(): boolean {
-  try {
-    if (!uiMaterial.isImmersiveMaterialSupported()) {
-      return false;
-    }
-    return uiMaterial.getMaterialInfo().state !== uiMaterial.MaterialState.DISABLE;
-  } catch (error) {
-    return false;
+  if (cachedDockMaterialAvailable !== undefined) {
+    return cachedDockMaterialAvailable;
   }
+  try {
+    const types: Array<hdsMaterial.MaterialType> = hdsMaterial.getSystemMaterialTypes();
+    cachedDockMaterialAvailable = types.some((type: hdsMaterial.MaterialType): boolean =>
+      type !== hdsMaterial.MaterialType.NONE);
+  } catch (error) {
+    cachedDockMaterialAvailable = false;
+  }
+  return cachedDockMaterialAvailable;
 }
 
 @Component
@@ -138,13 +143,12 @@ export struct MobileBrowserOverlay {
 
   private readonly holdingHandRouter: HoldingHandRouter = new HoldingHandRouter();
   private readonly currentTabCastSession: CurrentTabCastSession = new CurrentTabCastSession();
-  // Floating-chrome styling note: HarmonyOS 7 honors the system immersive
-  // material (沉浸光感) for a third-party bar in only two scopes -- the
-  // dialog class, and one of two containers: a Navigation title bar or the
-  // bottom TabBar of a horizontal Tabs. The dock takes that second door
-  // (DockMaterialPlate below); the top bar stays painted. A free-floating
-  // Row with systemMaterial() is dropped silently ("Material inactive: out
-  // of scope"), which is why the dock needs the Tabs backplate at all.
+  // Floating-chrome styling note: the dock's system immersive material (沉浸
+  // 光感) is drawn through HDS, the same door Lumie's dock uses -- a bare
+  // HdsTabs backplate carries the material on its floating bar
+  // (DockMaterialPlate below). uiMaterial was the first attempt and is scoped
+  // far tighter (bottom TabBar inside a horizontal Tabs only); on device it
+  // rendered nothing. HDS renders anywhere. The top bar stays painted.
   private readonly dockMaterialActive: boolean = isDockMaterialAvailable();
   // Measured once the dock lays out; the material plate needs the concrete
   // width in vp (its floating bar sizes itself from it).
@@ -661,28 +665,29 @@ export struct MobileBrowserOverlay {
   }
 
   // 底部 dock：一块悬浮玻璃横条——左右各留 16vp、完整圆角，网页从它后面
-  // 穿过，跟手收起。玻璃走系统沉浸光感的合法通道（横向 Tabs 的底部
-  // TabBar，见 DockMaterialPlate）；拿不到材质时回退半透明纯色玻璃
-  // （契约 §8：网页上方不用模糊）。引擎不给 dock 保留网页空间
-  // （setBrowserControls bottom = 0），网页一直画到窗口底。
+  // 穿过，跟手收起。玻璃走 HDS 背板（HDS 没有 uiMaterial 的
+  // Navigation/TabBar 作用域限制，与 Lumie 的 dock 同一条路，详见
+  // DockMaterialPlate）；拿不到材质时回退半透明纯色玻璃（契约 §8：网页
+  // 上方不用模糊）。引擎不给 dock 保留网页空间（setBrowserControls
+  // bottom = 0），网页一直画到窗口底。
+  //
+  // 布局：材质板铺满整层（含顶部 12vp 呼吸位与底部安全区），由 HDS 浮动页签
+  // 按 margin 自定位到胶囊位；内容行用同样的内边距夹到同一位置，两者必须
+  // 逐像素对齐。这样材质板的底边就是屏幕底边，gradientMask 才能把材质区
+  // 收窄为「胶囊 + 屏底」。
   @Builder
   private BottomDock() {
-    Column() {
-      Stack() {
-        // 材质板：垫在内容下面的背板，裁到胶囊圆角，不参与命中。
-        if (this.usesDockMaterial()) {
-          Stack() {
-            DockMaterialPlate({
-              plateWidth: this.dockGlassWidthVp,
-              plateHeight: DOCK_BAR_HEIGHT_VP
-            })
-          }
-          .width('100%')
-          .height(DOCK_BAR_HEIGHT_VP)
-          .borderRadius(DOCK_BAR_RADIUS_VP)
-          .clip(true)
-          .hitTestBehavior(HitTestMode.None)
-        }
+    Stack() {
+      if (this.usesDockMaterial()) {
+        DockMaterialPlate({
+          barWidthVp: this.dockGlassWidthVp,
+          barHeightVp: DOCK_BAR_HEIGHT_VP,
+          sideMarginVp: 16,
+          bottomMarginVp: this.bottomSafeVp
+        })
+      }
+      // 内容层：与 HDS 胶囊完全同位——底部对齐、左右 16、底距 = 安全区。
+      Column() {
         Row() {
           this.BottomDockContent()
         }
@@ -709,12 +714,12 @@ export struct MobileBrowserOverlay {
         })
       }
       .width('100%')
-      .height(DOCK_BAR_HEIGHT_VP)
+      .height('100%')
+      .justifyContent(FlexAlign.End)
+      .padding({ top: 12, left: 16, right: 16, bottom: this.bottomSafeVp })
     }
     .width('100%')
     .height(BOTTOM_DOCK_EXTENT_VP + this.bottomSafeVp)
-    // 左右留边让 dock 悬浮；底部留出安全区，手势条不压到胶囊上。
-    .padding({ top: 12, left: 16, right: 16, bottom: this.bottomSafeVp })
     // 同顶栏：行程要含底部安全区内边距，否则 ratio→0 时 dock 仍留一条缝。
     .translate({ y: (1 - this.controlsRatioRaw) * (BOTTOM_DOCK_EXTENT_VP + this.bottomSafeVp) })
   }
@@ -1678,31 +1683,35 @@ export struct MobileBrowserOverlay {
   }
 }
 
-// The dock's system immersive material (沉浸光感), drawn as a bare backplate.
+// The dock's system immersive material (沉浸光感), drawn the way Lumie draws
+// it: a bare HdsTabs whose floating bar carries the material. HDS is not
+// scoped to Navigation/TabBar containers the way uiMaterial is, so the
+// backplate works anywhere in the tree (6.1.0(23)+) -- and unlike the
+// uiMaterial attempt it renders on device. The host sizes this to the whole
+// dock layer; the floating bar insets itself to the capsule via the margins.
 //
-// HarmonyOS 7 renders the material for a third-party app only in the dialog
-// class, or -- for everything else -- inside a Navigation title bar or the
-// bottom TabBar of a horizontal Tabs (barPosition End). A free-floating Row
-// with systemMaterial() is outside both and is dropped silently ("Material
-// inactive: out of scope"); the immersive-light FAQ names this TabBar as the
-// surface to use instead. So the plate reduces Tabs to that one surface: a
-// single empty TabContent, a transparent tabBar, no bar background or blur
-// (either would cover the material), floating style on -- barOverlap true +
-// vertical false + barPosition End, all three required -- and the material
-// handed to FloatingTabBarStyle.systemMaterial.
+// The three flags that make the floating material appear (official guide:
+// all three at once, or the material silently does not render):
+// barOverlap true + vertical false + barPosition End.
 //
-// applyShadow stays false on purpose: the material's own shadow is a
-// rectangle drawn outside any clip, and it is exactly what the earlier HDS
-// backplate showed around every plate as the dirty halo. This field takes a
-// full ImmersiveMaterial (rather than HDS's type/level pair), which is what
-// lets it be switched off.
+// gradientMask pins the material's fade region to exactly "bar + the strip
+// below it" -- the same shape as Lumie's dock mask (dock height + bottom
+// margin; their maskColor is a 70%-canvas veil). Left unset, the mask falls
+// back to "component height + tabBar + 32vp", a tall rectangle bleeding
+// above the capsule -- that rectangle is the dirty halo the earlier HDS
+// backplate showed. barBackgroundColor / barBackgroundBlurStyle are
+// deliberately never set: the official guide says they cover the material
+// ("避免遮挡材质效果").
 @Component
 struct DockMaterialPlate {
-  @Prop plateWidth: number = 0;
-  @Prop plateHeight: number = 0;
+  @Prop barWidthVp: number = 0;
+  @Prop barHeightVp: number = 0;
+  @Prop sideMarginVp: number = 16;
+  @Prop bottomMarginVp: number = 0;
+  private controller: HdsTabsController = new HdsTabsController();
 
   build() {
-    Tabs({ barPosition: BarPosition.End, index: 0 }) {
+    HdsTabs({ controller: this.controller, barPosition: BarPosition.End, index: 0 }) {
       TabContent() {
         Column()
           .width('100%')
@@ -1714,12 +1723,11 @@ struct DockMaterialPlate {
     .scrollable(false)
     .barMode(BarMode.Fixed)
     .barOverlap(true)
-    .barWidth(this.plateWidth)
-    .barHeight(this.plateHeight)
+    .animationDuration(0)
+    .barHeight(this.barHeightVp)
     .barFloatingStyle(this.resolveFloatingStyle())
     .width('100%')
     .height('100%')
-    .clip(true)
     .hitTestBehavior(HitTestMode.None)
   }
 
@@ -1732,30 +1740,32 @@ struct DockMaterialPlate {
       .backgroundColor(Color.Transparent)
   }
 
-  private resolveFloatingStyle(): FloatingTabBarStyle {
-    const width: number = Math.max(1, this.plateWidth);
-    const style: FloatingTabBarStyle = {
-      barSideMargin: 0,
-      barBottomMargin: 0,
+  private resolveFloatingStyle(): HdsTabsFloatingStyle {
+    const width: number = Math.max(1, this.barWidthVp);
+    const style: HdsTabsFloatingStyle = {
+      barSideMargin: this.sideMarginVp,
+      barBottomMargin: this.bottomMarginVp,
       // A floating bar sizes itself from its tab count, so the concrete vp
       // width must be carried on all three breakpoints or the single-item
       // bar collapses into a centered sliver.
       barWidth: {
-        smallBarWidth: width,
-        mediumBarWidth: width,
-        largeBarWidth: width
+        smallWidth: width,
+        mediumWidth: width,
+        largeWidth: width
       },
-      systemMaterial: new uiMaterial.ImmersiveMaterial({
-        // 导航类材质取薄档：官方《组件适配沉浸光感》建议导航类用
-        // ULTRA_THIN/THIN，底部页签默认档位就是 THIN（THICK/ULTRA_THICK
-        // 是弹窗类的推荐档）。
-        style: uiMaterial.ImmersiveStyle.THIN,
-        // 材质自带的矩形投影就是 HDS 背板那圈脏影的来源——关掉；投影交给
-        // dock 自己的 shadow。
-        applyShadow: false,
-        // 沉浸光感的触点流光。
-        lightEffect: { color: Color.White }
-      })
+      // ADAPTIVE lets the system pick the material strength for the device
+      // (Lumie's DOCK_MATERIAL is exactly this type/level pair).
+      systemMaterialEffect: {
+        materialType: hdsMaterial.MaterialType.ADAPTIVE,
+        materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+      },
+      // The fade region: from the bar down past the home-indicator strip to
+      // the layer's bottom edge (= the screen edge). maskHeight = bar +
+      // bottom margin, mirroring Lumie's dockMaskHeight.
+      gradientMask: {
+        maskColor: $r('app.color.dock_mask'),
+        maskHeight: this.barHeightVp + this.bottomMarginVp
+      }
     };
     return style;
   }

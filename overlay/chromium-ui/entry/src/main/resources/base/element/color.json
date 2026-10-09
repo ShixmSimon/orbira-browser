@@ -63,6 +63,10 @@
     {
       "name": "glass_tint",
       "value": "#E0F7F7F8"
+    },
+    {
+      "name": "dock_mask",
+      "value": "#B3F7F7F8"
     }
   ]
 }
