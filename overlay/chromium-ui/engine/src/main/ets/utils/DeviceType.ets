@@ -265,6 +265,9 @@ export class DeviceRoutingPolicy {
       // 同样强制外壳画长按/右键菜单，不要引擎的原生菜单（功能不全）。
       contextMenu: 'shell',
       jitless: false,
+      // 诊断开关（滑动延迟排查）：在页面与自身 UI 上叠加实时 FPS/掉帧计数，
+      // 用于区分"渲染掉帧"还是"纯输入延迟"。排查完即删除。
+      showFrameRate: true,
       fullscreenRequested: routing.fullscreenRequested
     };
   }
