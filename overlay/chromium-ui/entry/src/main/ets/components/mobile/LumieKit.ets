@@ -90,7 +90,7 @@ export struct AuraNavIconRow {
       }
       .width('100%')
       .constraintSize({ minHeight: 56 })
-      .padding({ left: 16, right: 14, top: 8, bottom: 8 })
+      .padding({ left: 16, right: 16, top: 8, bottom: 8 })
       .onClick(() => {
         this.onTap();
       })
@@ -150,7 +150,7 @@ export struct AuraNavRow {
       }
       .width('100%')
       .constraintSize({ minHeight: 56 })
-      .padding({ left: 16, right: 14, top: 8, bottom: 8 })
+      .padding({ left: 16, right: 16, top: 8, bottom: 8 })
       .onClick(() => {
         this.onTap();
       })

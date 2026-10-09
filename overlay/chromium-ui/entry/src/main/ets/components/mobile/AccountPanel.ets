@@ -157,7 +157,7 @@ export struct HuaweiAccountView {
             .layoutWeight(1)
           }
           .width('100%')
-          .padding({ left: 16, right: 14, top: 12, bottom: 12 })
+          .padding({ left: 16, right: 16, top: 12, bottom: 12 })
         }
         .width('100%')
         .borderRadius(16)
@@ -209,7 +209,7 @@ export struct HuaweiAccountView {
             .layoutWeight(1)
           }
           .width('100%')
-          .padding({ left: 16, right: 14, top: 12, bottom: 12 })
+          .padding({ left: 16, right: 16, top: 12, bottom: 12 })
         }
         .width('100%')
         .borderRadius(16)

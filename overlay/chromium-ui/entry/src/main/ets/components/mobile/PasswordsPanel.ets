@@ -689,7 +689,7 @@ export struct PasswordsPanel {
       }
       .width('100%')
       .constraintSize({ minHeight: 60 })
-      .padding({ left: 16, right: 14, top: 8, bottom: 8 })
+      .padding({ left: 16, right: 16, top: 8, bottom: 8 })
       .onClick(() => {
         this.openDetail(item);
       })

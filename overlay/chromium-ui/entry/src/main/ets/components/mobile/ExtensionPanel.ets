@@ -446,7 +446,7 @@ export struct ExtensionPanel {
                 .opacity(0.65)
             }
             .width('100%')
-            .padding({ left: 16, right: 14, top: 10, bottom: 10 })
+            .padding({ left: 16, right: 16, top: 10, bottom: 10 })
             .onClick(() => {
               this.installFromFile();
             })
@@ -475,7 +475,7 @@ export struct ExtensionPanel {
             }
             .width('100%')
             .height(56)
-            .padding({ left: 16, right: 14 })
+            .padding({ left: 16, right: 16 })
             .onClick(() => {
               this.openMoreSettings();
             })
