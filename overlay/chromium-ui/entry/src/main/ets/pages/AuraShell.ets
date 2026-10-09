@@ -203,6 +203,12 @@ struct AuraShell {
   // “滚动时隐藏地址栏”开关变化：重发浏览器控件高度（minTop = 全高即常显），
   // 并立即把顶栏动画展开/交还给滚动。
   private onHideTopBarPrefChanged(): void {
+    this.sendBrowserControls();
+  }
+
+  // 把顶栏的 browser controls（高度 + 收起许可）发给引擎：启动、设置开关
+  // 切换、启动后的兜底重发共用这一份。
+  private sendBrowserControls(): void {
     const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
     const top = TOP_BAR_EXTENT_VP + (this.statusBarHiddenByScroll ? 0 : topSafe);
     this.executeBrowserCommand({
@@ -868,6 +874,7 @@ struct AuraShell {
     }
 
     if (event.event === 'browserControlsRatio') {
+      this.sawControlsRatio = true;
       const ratio = event.ratio ?? 1;
       if (ratio !== this.lastControlsRatio) {
         this.lastControlsRatio = ratio;
@@ -1111,14 +1118,7 @@ struct AuraShell {
     // minTop 0 keeps the page free to start at the very top, unless the
     // "hide the address bar on scroll" toggle is off: then minTop holds
     // the full height and the bar never collapses (engine ratio locked 1).
-    const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
-    const top = TOP_BAR_EXTENT_VP + topSafe;
-    this.executeBrowserCommand({
-      command: 'setBrowserControls',
-      top: top,
-      minTop: this.hideTopBarOnScroll ? 0 : top,
-      bottom: 0
-    });
+    this.sendBrowserControls();
     // 底部不再报任何高度（连手势条也不报）。内核会把这里的 bottom 从**布局**
     // 尺寸里整段扣掉（ohos-browser-controls.patch → OhosReservedHeight →
     // GetRequestedRendererSizeDevicePx），网页于是根本不往那一条画——手势条
@@ -1129,11 +1129,37 @@ struct AuraShell {
     this.applyDockViewportInset();
     // Pull the search engines once, so the home surface and the address bar
     // search the same way the settings page shows before it has been opened.
+    this.requestSearchEngines();
+    // 真机实测（2026-10-09）：state.ready 那一瞬发出的这组命令会被引擎吞掉
+    // （命令通道尚未接上），并且不会自愈——表现为"滚动时两栏永远不收起"，
+    // 直到用户动一次设置开关（相当于重发）才恢复。这里启动一个带证据判据的
+    // 兜底重发：一旦收到 browserControlsRatio（说明配置已生效）就停。
+    this.scheduleBrowserControlsRetry(1);
+  }
+
+  private requestSearchEngines(): void {
     this.searchEnginesRequestSeq += 1;
     this.executeBrowserCommand({
       command: 'getSearchEngines',
       requestId: this.searchEnginesRequestSeq
     });
+  }
+
+  // 启动兜底重发：每 1.5s 检查一次、最多 8 次（约 12s）。重发全部幂等，
+  // 且只会在"配置未生效"时发生（此状态下本就没有收起动作，不会打断用户）。
+  private scheduleBrowserControlsRetry(attempt: number): void {
+    if (attempt > 8) {
+      return;
+    }
+    setTimeout((): void => {
+      if (this.sawControlsRatio) {
+        return;
+      }
+      this.sendBrowserControls();
+      this.applyDockViewportInset();
+      this.requestSearchEngines();
+      this.scheduleBrowserControlsRetry(attempt + 1);
+    }, 1500);
   }
 
   // Chromium resolves a site's geolocation request against the app's own
@@ -1158,6 +1184,9 @@ struct AuraShell {
 
   private systemPermissionReported: boolean = false;
   private browserControlsConfigured: boolean = false;
+  // 引擎开始上报收起比例 = 启动时的 browser controls 配置确实生效了。
+  // 见 scheduleBrowserControlsRetry：收不到就兜底重发。
+  private sawControlsRatio: boolean = false;
   private lastControlsRatio: number = -1;
   private searchEnginesRequestSeq: number = 0;
 
