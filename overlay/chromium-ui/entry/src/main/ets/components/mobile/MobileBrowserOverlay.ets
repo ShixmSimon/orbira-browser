@@ -1,6 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { AVCastPicker, AVCastPickerColorMode, AVCastPickerStyle } from '@kit.AVSessionKit';
-import { hdsEffect, hdsMaterial, HdsTabs, HdsTabsController, HdsTabsFloatingStyle } from '@kit.UIDesignKit';
+import { hdsEffect, hdsMaterial, HdsTabs, HdsTabsFloatingStyle } from '@kit.UIDesignKit';
 import { inputMethod } from '@kit.IMEKit';
 import { curves } from '@kit.ArkUI';
 import { showSystemPasteDialog } from './SystemPasteDialog';
@@ -144,15 +144,12 @@ export struct MobileBrowserOverlay {
   private readonly holdingHandRouter: HoldingHandRouter = new HoldingHandRouter();
   private readonly currentTabCastSession: CurrentTabCastSession = new CurrentTabCastSession();
   // Floating-chrome styling note: the dock's system immersive material (沉浸
-  // 光感) is drawn through HDS, the same door Lumie's dock uses -- a bare
-  // HdsTabs backplate carries the material on its floating bar
-  // (DockMaterialPlate below). uiMaterial was the first attempt and is scoped
-  // far tighter (bottom TabBar inside a horizontal Tabs only); on device it
-  // rendered nothing. HDS renders anywhere. The top bar stays painted.
+  // 光感) is drawn through HDS, the same door Lumie's dock uses -- a real
+  // HdsTabs whose tabBar entries ARE the dock buttons (DockMaterialPlate
+  // below). uiMaterial was the first attempt and is scoped far tighter
+  // (bottom TabBar inside a horizontal Tabs only); on device it rendered
+  // nothing. HDS renders anywhere. The top bar stays painted.
   private readonly dockMaterialActive: boolean = isDockMaterialAvailable();
-  // Measured once the dock lays out; the material plate needs the concrete
-  // width in vp (its floating bar sizes itself from it).
-  @State private dockGlassWidthVp: number = 0;
   // 视口高度（vp），首次布局即上报；dock 条带的响应区以它为底边基准。
   @State private viewportHeightVp: number = 0;
 
@@ -665,58 +662,52 @@ export struct MobileBrowserOverlay {
   }
 
   // 底部 dock：一块悬浮玻璃横条——左右各留 16vp、完整圆角，网页从它后面
-  // 穿过，跟手收起。玻璃走 HDS 背板（HDS 没有 uiMaterial 的
-  // Navigation/TabBar 作用域限制，与 Lumie 的 dock 同一条路，详见
-  // DockMaterialPlate）；拿不到材质时回退半透明纯色玻璃（契约 §8：网页
-  // 上方不用模糊）。引擎不给 dock 保留网页空间（setBrowserControls
-  // bottom = 0），网页一直画到窗口底。
+  // 穿过，跟手收起。玻璃走 HDS（HDS 没有 uiMaterial 的 Navigation/TabBar
+  // 作用域限制，与 Lumie 的 dock 同一条路，详见 DockMaterialPlate）；
+  // 拿不到材质时回退半透明纯色玻璃（契约 §8：网页上方不用模糊）。引擎不给
+  // dock 保留网页空间（setBrowserControls bottom = 0），网页一直画到窗口底。
   //
-  // 布局：材质板铺满整层（含顶部 12vp 呼吸位与底部安全区），由 HDS 浮动页签
-  // 按 margin 自定位到胶囊位；内容行用同样的内边距夹到同一位置，两者必须
-  // 逐像素对齐。这样材质板的底边就是屏幕底边，gradientMask 才能把材质区
-  // 收窄为「胶囊 + 屏底」。
+  // 布局（v9，结构对齐 Lumie）：材质板铺满整层（含顶部 12vp 呼吸位与底部
+  // 安全区），五个按钮作为 HdsTabs 的真实 tabBar 项渲染在浮动胶囊里——
+  // 材质、按钮、触摸同在一棵子树内，材质几何随内容收敛、触摸也能被材质
+  // 感知（Lumie 同构）。无材质设备走同一胶囊几何的自绘玻璃。
   @Builder
   private BottomDock() {
     Stack() {
-      if (this.usesDockMaterial()) {
+      if (this.dockMaterialActive) {
         DockMaterialPlate({
-          barWidthVp: this.dockGlassWidthVp,
+          canGoBack: this.browserState.canGoBack,
+          canGoForward: this.browserState.canGoForward,
+          tabCount: this.browserState.tabCount,
           barHeightVp: DOCK_BAR_HEIGHT_VP,
           sideMarginVp: 16,
-          bottomMarginVp: this.bottomSafeVp
-        })
-      }
-      // 内容层：与 HDS 胶囊完全同位——底部对齐、左右 16、底距 = 安全区。
-      Column() {
-        Row() {
-          this.BottomDockContent()
-        }
-        .width('100%')
-        .height(DOCK_BAR_HEIGHT_VP)
-        .borderRadius(DOCK_BAR_RADIUS_VP)
-        // 互斥分层：材质生效时让位（官方建议勿与 bg/border/shadow 同链；
-        // 填充叠在材质上还会多一层"白纱"），否则就是这块半透明纯色玻璃。
-        .backgroundColor(this.usesDockMaterial() ? Color.Transparent : $r('app.color.glass_tint'))
-        .border({ width: this.usesDockMaterial() ? 0 : 0.5, color: $r('app.color.divider') })
-        .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
-        // System point-light press effect (HDS hdsEffect, API 20+, every
-        // device): a soft white light spot under the finger that follows it
-        // across the bar. On the material path the fill is gone, so the spot
-        // has nothing to land on -- the material's own lightEffect carries
-        // the touch feedback there.
-        .visualEffect(this.buildDockLightEffect())
-        .onAreaChange((_old: Area, next: Area): void => {
-          const measured: number = Number(next.width);
-          if (Number.isFinite(measured) && measured > 0 &&
-              Math.abs(measured - this.dockGlassWidthVp) > 0.5) {
-            this.dockGlassWidthVp = measured;
+          bottomMarginVp: this.bottomSafeVp,
+          onDockSlot: (slot: string): void => {
+            this.handleDockSlot(slot);
           }
         })
+      } else {
+        // 保底路径（无材质设备）：同一胶囊几何，半透明纯色玻璃 + 按钮行。
+        Column() {
+          Row() {
+            this.BottomDockContent()
+          }
+          .width('100%')
+          .height(DOCK_BAR_HEIGHT_VP)
+          .borderRadius(DOCK_BAR_RADIUS_VP)
+          .backgroundColor($r('app.color.glass_tint'))
+          .border({ width: 0.5, color: $r('app.color.divider') })
+          .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+          // System point-light press effect (HDS hdsEffect, API 20+, every
+          // device): a soft light spot under the finger that follows it
+          // across the bar.
+          .visualEffect(this.buildDockLightEffect())
+        }
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.End)
+        .padding({ top: 12, left: 16, right: 16, bottom: this.bottomSafeVp })
       }
-      .width('100%')
-      .height('100%')
-      .justifyContent(FlexAlign.End)
-      .padding({ top: 12, left: 16, right: 16, bottom: this.bottomSafeVp })
     }
     .width('100%')
     .height(BOTTOM_DOCK_EXTENT_VP + this.bottomSafeVp)
@@ -724,9 +715,25 @@ export struct MobileBrowserOverlay {
     .translate({ y: (1 - this.controlsRatioRaw) * (BOTTOM_DOCK_EXTENT_VP + this.bottomSafeVp) })
   }
 
-  // 材质板要具体 vp 宽度，量到之前首帧仍走保底玻璃（不会空一帧）。
-  private usesDockMaterial(): boolean {
-    return this.dockMaterialActive && this.dockGlassWidthVp > 0;
+  // dock 一个按钮的语义动作——材质路径由 HdsTabs 的 onTabBarClick 分发到
+  // 这里；保底路径的按钮仍直连各自的 onClick。禁用态在两边都做守卫。
+  private handleDockSlot(slot: string): void {
+    if (slot === '返回') {
+      if (this.browserState.canGoBack) {
+        this.issueCommand({ command: 'back' });
+      }
+    } else if (slot === '前进') {
+      if (this.browserState.canGoForward) {
+        this.issueCommand({ command: 'forward' });
+      }
+    } else if (slot === '主页') {
+      this.issueCommand({ command: 'home' });
+    } else if (slot === '标签页') {
+      this.requestTabThumbnails();
+      this.menuVisible = true;
+    } else if (slot === '菜单') {
+      this.menuCardVisible = true;
+    }
   }
 
   private buildDockLightEffect(): VisualEffect {
@@ -1683,76 +1690,163 @@ export struct MobileBrowserOverlay {
   }
 }
 
-// The dock's system immersive material (沉浸光感), drawn the way Lumie draws
-// it: a bare HdsTabs whose floating bar carries the material. HDS is not
-// scoped to Navigation/TabBar containers the way uiMaterial is, so the
-// backplate works anywhere in the tree (6.1.0(23)+) -- and unlike the
-// uiMaterial attempt it renders on device. The host sizes this to the whole
-// dock layer; the floating bar insets itself to the capsule via the margins.
+// The dock's system immersive material (沉浸光感), driven exactly the way
+// Lumie drives it: a real HdsTabs whose five tabBar entries ARE the five
+// dock buttons. The earlier revision used a bare single-tab backplate with
+// the buttons stacked on top of it; on device the material's geometry
+// followed that empty bar, so the capsule looked too tall and a haze ring
+// bled around both rounded ends -- and with hitTest None touches never
+// reached the material either, so the press light never fired. Lumie shows
+// none of that on the same phone, and its decompiled shell explains why:
+// five TabContents, each with a tabBar builder rendering a real button,
+// clicks distributed centrally from onTabBarClick.
 //
 // The three flags that make the floating material appear (official guide:
 // all three at once, or the material silently does not render):
 // barOverlap true + vertical false + barPosition End.
 //
 // gradientMask pins the material's fade region to exactly "bar + the strip
-// below it" -- the same shape as Lumie's dock mask (dock height + bottom
-// margin; their maskColor is a 70%-canvas veil). Left unset, the mask falls
-// back to "component height + tabBar + 32vp", a tall rectangle bleeding
-// above the capsule -- that rectangle is the dirty halo the earlier HDS
-// backplate showed. barBackgroundColor / barBackgroundBlurStyle are
-// deliberately never set: the official guide says they cover the material
-// ("避免遮挡材质效果").
+// below it" -- the same shape as Lumie's dock mask. Left unset, the mask
+// falls back to "component height + tabBar + 32vp", a tall rectangle
+// bleeding above the capsule. barBackgroundColor / barBackgroundBlurStyle
+// are deliberately never set: the official guide says they cover the
+// material ("避免遮挡材质效果"). Like Lumie, no barWidth / barMode: the five
+// real tabs size the floating bar themselves.
 @Component
 struct DockMaterialPlate {
-  @Prop barWidthVp: number = 0;
-  @Prop barHeightVp: number = 0;
+  @Prop canGoBack: boolean = false;
+  @Prop canGoForward: boolean = false;
+  @Prop tabCount: number = 0;
+  @Prop barHeightVp: number = 62;
   @Prop sideMarginVp: number = 16;
   @Prop bottomMarginVp: number = 0;
-  private controller: HdsTabsController = new HdsTabsController();
+  onDockSlot: (slot: string) => void = (_slot: string): void => {};
+  // 按压中的按钮（弹簧缩放用）；只在本子树内使用，无需跨组件共享。
+  @State private pressedSlot: string = '';
+
+  private readonly slots: string[] = ['返回', '前进', '主页', '标签页', '菜单'];
 
   build() {
-    HdsTabs({ controller: this.controller, barPosition: BarPosition.End, index: 0 }) {
-      TabContent() {
-        Column()
-          .width('100%')
-          .height('100%')
-      }
-      .tabBar(this.transparentBar)
+    HdsTabs({ barPosition: BarPosition.End, index: 0 }) {
+      ForEach(this.slots, (slot: string): void => {
+        TabContent() {
+          // 页面本体在 WebWindow 里；TabContent 只是 tab 的存在凭据。
+          Column()
+            .width('100%')
+            .height('100%')
+        }
+        .tabBar((): void => { this.DockSlotBar(slot) })
+      }, (slot: string): string => slot)
     }
     .vertical(false)
     .scrollable(false)
-    .barMode(BarMode.Fixed)
-    .barOverlap(true)
     .animationDuration(0)
     .barHeight(this.barHeightVp)
     .barFloatingStyle(this.resolveFloatingStyle())
+    .onTabBarClick((index: number): void => {
+      if (index < 0 || index >= this.slots.length) {
+        return;
+      }
+      const slot: string = this.slots[index];
+      if (slot === '返回' && !this.canGoBack) {
+        return;
+      }
+      if (slot === '前进' && !this.canGoForward) {
+        return;
+      }
+      this.onDockSlot(slot);
+    })
     .width('100%')
     .height('100%')
-    .hitTestBehavior(HitTestMode.None)
   }
 
+  // 一个 tabBar 项 = 一个 dock 按钮（图标/徽标、按压弹簧、点光源与保底路径
+  // 一致，只是渲染在材质胶囊内）。
   @Builder
-  private transparentBar() {
-    // The bar has to physically exist for the material to land on it.
-    Column()
-      .width('100%')
-      .height('100%')
-      .backgroundColor(Color.Transparent)
+  private DockSlotBar(slot: string) {
+    Button({ type: ButtonType.Normal, stateEffect: true }) {
+      if (slot === '标签页') {
+        Text(this.tabCount > 99 ? '99+' : this.tabCount.toString())
+          .fontSize(10)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.icon_primary'))
+          .textAlign(TextAlign.Center)
+          .width(22)
+          .height(20)
+          .borderRadius(6)
+          .border({ width: 1.8, color: $r('app.color.icon_primary') })
+      } else {
+        Image(this.slotIcon(slot))
+          .width(22)
+          .height(22)
+          .fillColor($r('app.color.icon_primary'))
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(Color.Transparent)
+    .opacity(this.slotUsable(slot) ? 1 : 0.4)
+    .enabled(this.slotUsable(slot))
+    .scale({ x: this.pressedSlot === slot ? 0.82 : 1, y: this.pressedSlot === slot ? 0.82 : 1 })
+    // System point-light press effect (HDS hdsEffect): a soft light spot
+    // under the finger that follows it -- the dock's 流光 while a press
+    // drags across the bar.
+    .visualEffect(this.buildSlotLightEffect())
+    .accessibilityText(slot)
+    .onTouch((event: TouchEvent): void => {
+      this.handleSlotTouch(event, slot);
+    })
+  }
+
+  private slotUsable(slot: string): boolean {
+    if (slot === '返回') {
+      return this.canGoBack;
+    }
+    if (slot === '前进') {
+      return this.canGoForward;
+    }
+    return true;
+  }
+
+  private slotIcon(slot: string): Resource {
+    if (slot === '返回') {
+      return $r('app.media.chromium_back');
+    }
+    if (slot === '前进') {
+      return $r('app.media.chromium_forward');
+    }
+    if (slot === '主页') {
+      return $r('app.media.chromium_home');
+    }
+    return $r('app.media.chromium_more');
+  }
+
+  // Press -> quick shrink; release -> under-damped spring back ("jelly").
+  private handleSlotTouch(event: TouchEvent, slot: string): void {
+    if (event.type === TouchType.Down) {
+      animateTo({ duration: 90, curve: Curve.FastOutSlowIn }, (): void => {
+        this.pressedSlot = slot;
+      });
+    } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+      animateTo({ curve: curves.springMotion(0.3, 0.7) }, (): void => {
+        this.pressedSlot = '';
+      });
+    }
+  }
+
+  private buildSlotLightEffect(): VisualEffect {
+    return new hdsEffect.HdsEffectBuilder()
+      .pointLight({
+        sourceType: hdsEffect.PointLightSourceType.SOFT,
+        illuminatedType: hdsEffect.PointLightIlluminatedType.BORDER_CONTENT
+      })
+      .buildEffect();
   }
 
   private resolveFloatingStyle(): HdsTabsFloatingStyle {
-    const width: number = Math.max(1, this.barWidthVp);
     const style: HdsTabsFloatingStyle = {
       barSideMargin: this.sideMarginVp,
       barBottomMargin: this.bottomMarginVp,
-      // A floating bar sizes itself from its tab count, so the concrete vp
-      // width must be carried on all three breakpoints or the single-item
-      // bar collapses into a centered sliver.
-      barWidth: {
-        smallWidth: width,
-        mediumWidth: width,
-        largeWidth: width
-      },
       // ADAPTIVE lets the system pick the material strength for the device
       // (Lumie's DOCK_MATERIAL is exactly this type/level pair).
       systemMaterialEffect: {
