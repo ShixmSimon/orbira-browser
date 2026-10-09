@@ -147,6 +147,11 @@ export struct MobileBrowserOverlay {
 
   @State private menuVisible: boolean = false;
   @State private editingAddress: boolean = false;
+  // Fix B（点搜索跳一下）：提交地址栏导航后延迟顶栏回弹到首帧绘制完成，
+  // 避免 setBrowserControlsState 视口 resize 与 Chromium 首帧 swap 叠加造成跳动。
+  private pendingControlsRebound: boolean = false;
+  private controlsReboundSawLoading: boolean = false;
+  private reboundTimer: number = 0;
   @State private addressDraft: string = '';
   @State private primaryAction: MobileEdgeAction = MobileEdgeAction.BACK;
   @State private followGrip: boolean = true;
@@ -230,6 +235,10 @@ export struct MobileBrowserOverlay {
   aboutToDisappear(): void {
     MobileBackRouter.handler = undefined;
     this.clearKeyboardRecoveryTimers();
+    if (this.reboundTimer !== 0) {
+      clearTimeout(this.reboundTimer);
+      this.reboundTimer = 0;
+    }
     this.holdingHandRouter.stop();
     this.currentTabCastSession.stop().catch((error: Error) => {
       console.error('Failed to stop current-tab cast session:', error);
@@ -280,8 +289,44 @@ export struct MobileBrowserOverlay {
   }
 
   private onBrowserStateChanged(): void {
+    // Fix B：导航提交后，等首帧绘制（loading true→false）再回弹顶栏，
+    // 消除与首帧 swap 叠加的跳动。
+    if (this.pendingControlsRebound) {
+      if (this.browserState.loading) {
+        this.controlsReboundSawLoading = true;
+      } else if (this.controlsReboundSawLoading) {
+        this.flushControlsRebound();
+      }
+    }
     this.currentTabCastSession.update(this.browserState);
     this.maybeActivatePendingNewTab();
+  }
+
+  // Fix B：提交导航后延迟顶栏回弹。理想路径由 onBrowserStateChanged 在
+  // loading true→false 时回弹；兜底 1.5s 强制回弹（同 URL 未触发加载等）。
+  private reboundControlsAfterPaint(): void {
+    this.pendingControlsRebound = true;
+    this.controlsReboundSawLoading = false;
+    if (this.reboundTimer !== 0) {
+      clearTimeout(this.reboundTimer);
+    }
+    this.reboundTimer = setTimeout((): void => {
+      this.reboundTimer = 0;
+      this.flushControlsRebound();
+    }, 1500);
+  }
+
+  private flushControlsRebound(): void {
+    if (!this.pendingControlsRebound) {
+      return;
+    }
+    this.pendingControlsRebound = false;
+    this.controlsReboundSawLoading = false;
+    if (this.reboundTimer !== 0) {
+      clearTimeout(this.reboundTimer);
+      this.reboundTimer = 0;
+    }
+    this.issueCommand({ command: 'setBrowserControlsState', state: 'both' });
   }
 
   private parseThumbnails(): void {
@@ -1976,10 +2021,13 @@ export struct MobileBrowserOverlay {
     const target = normalizeAddress(this.addressDraft);
     if (target.length > 0) {
       this.issueCommand({ command: 'navigate', url: target });
+      this.editingAddress = false;
+      // Fix B：延迟顶栏回弹到首帧绘制后，消除视口 resize 与首帧 swap 叠加跳动。
+      this.reboundControlsAfterPaint();
+    } else {
+      this.editingAddress = false;
+      this.issueCommand({ command: 'setBrowserControlsState', state: 'both' });
     }
-    this.editingAddress = false;
-    // Hand the bars back to scroll control.
-    this.issueCommand({ command: 'setBrowserControlsState', state: 'both' });
   }
 
   private clearKeyboardRecoveryTimers(): void {
