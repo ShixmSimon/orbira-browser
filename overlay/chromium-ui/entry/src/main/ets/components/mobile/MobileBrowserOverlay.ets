@@ -3,6 +3,7 @@ import { AVCastPicker, AVCastPickerColorMode, AVCastPickerStyle } from '@kit.AVS
 import { hdsEffect, hdsMaterial, HdsTabs, HdsTabsFloatingStyle } from '@kit.UIDesignKit';
 import { inputMethod } from '@kit.IMEKit';
 import { curves } from '@kit.ArkUI';
+import display from '@ohos.display';
 import { showSystemPasteDialog } from './SystemPasteDialog';
 import { ScanService } from './ScanService';
 import {
@@ -41,6 +42,28 @@ export const BOTTOM_DOCK_EXTENT_VP: number = 74;
 // plate and the painted fallback must agree on it exactly.
 const DOCK_BAR_HEIGHT_VP: number = 62;
 const DOCK_BAR_RADIUS_VP: number = 24;
+// 每个 dock 页签项的固有宽度：HDS 浮动页签在没收到显式 barWidth 时会按
+// 内容测量条形宽度，而内容里再套 100% 宽就成了循环依赖——v9 那版真机上
+// 整个条塌成一个点就是这个原因。给每项一个具体宽度，两条路都能立起来：
+// 显式 barWidth 生效时 Fixed 均分（约 65.4），不生效时 5 × 65 = 325 兜底。
+const DOCK_SLOT_WIDTH_VP: number = 65;
+
+// 浮动条宽度 = 屏幕宽 - 左右各 16 的边距。用 display 同步算（而不是等
+// 布局量完），首帧就有正确宽度，材质不会闪一下。
+function resolveDockBarWidthVp(): number {
+  try {
+    const info: display.Display = display.getDefaultDisplaySync();
+    if (info.densityPixels > 0 && info.width > 0) {
+      const vpWidth: number = info.width / info.densityPixels;
+      if (Number.isFinite(vpWidth) && vpWidth > 64) {
+        return vpWidth - 32;
+      }
+    }
+  } catch (error) {
+    // Fall through to the design-width fallback below.
+  }
+  return 328;
+}
 
 // The tab grid: two columns ten vp apart, each card 208 tall of which the
 // title row takes 36. The picture therefore fills TAB_THUMB_HEIGHT_VP of a
@@ -679,6 +702,7 @@ export struct MobileBrowserOverlay {
           canGoBack: this.browserState.canGoBack,
           canGoForward: this.browserState.canGoForward,
           tabCount: this.browserState.tabCount,
+          barWidthVp: resolveDockBarWidthVp(),
           barHeightVp: DOCK_BAR_HEIGHT_VP,
           sideMarginVp: 16,
           bottomMarginVp: this.bottomSafeVp,
@@ -1710,13 +1734,21 @@ export struct MobileBrowserOverlay {
 // falls back to "component height + tabBar + 32vp", a tall rectangle
 // bleeding above the capsule. barBackgroundColor / barBackgroundBlurStyle
 // are deliberately never set: the official guide says they cover the
-// material ("避免遮挡材质效果"). Like Lumie, no barWidth / barMode: the five
-// real tabs size the floating bar themselves.
+// material ("避免遮挡材质效果").
+//
+// barWidth is set explicitly. A first revision passed no barWidth (Lumie
+// sets none either) and the floating bar measured itself from its tab
+// items -- but our items are percent-sized, so the measurement collapsed
+// to nothing and the whole plate (material AND buttons) vanished. Now the
+// bar gets the concrete width on all three breakpoints AND every tab item
+// carries an intrinsic DOCK_SLOT_WIDTH_VP, so either measurement path
+// lands on the intended capsule.
 @Component
 struct DockMaterialPlate {
   @Prop canGoBack: boolean = false;
   @Prop canGoForward: boolean = false;
   @Prop tabCount: number = 0;
+  @Prop barWidthVp: number = 328;
   @Prop barHeightVp: number = 62;
   @Prop sideMarginVp: number = 16;
   @Prop bottomMarginVp: number = 0;
@@ -1735,11 +1767,13 @@ struct DockMaterialPlate {
             .width('100%')
             .height('100%')
         }
-        .tabBar((): void => { this.DockSlotBar(slot) })
+        .tabBar(this.DockSlotBar(slot))
       }, (slot: string): string => slot)
     }
     .vertical(false)
     .scrollable(false)
+    .barMode(BarMode.Fixed)
+    .barOverlap(true)
     .animationDuration(0)
     .barHeight(this.barHeightVp)
     .barFloatingStyle(this.resolveFloatingStyle())
@@ -1758,6 +1792,7 @@ struct DockMaterialPlate {
     })
     .width('100%')
     .height('100%')
+    .clip(true)
   }
 
   // 一个 tabBar 项 = 一个 dock 按钮（图标/徽标、按压弹簧、点光源与保底路径
@@ -1782,8 +1817,9 @@ struct DockMaterialPlate {
           .fillColor($r('app.color.icon_primary'))
       }
     }
-    .width('100%')
-    .height('100%')
+    // 固有宽高：浮动条的自动测量要靠它（100% 会变成循环依赖 → 塌缩）。
+    .width(DOCK_SLOT_WIDTH_VP)
+    .height(DOCK_BAR_HEIGHT_VP)
     .backgroundColor(Color.Transparent)
     .opacity(this.slotUsable(slot) ? 1 : 0.4)
     .enabled(this.slotUsable(slot))
@@ -1844,9 +1880,17 @@ struct DockMaterialPlate {
   }
 
   private resolveFloatingStyle(): HdsTabsFloatingStyle {
+    const width: number = Math.max(1, this.barWidthVp);
     const style: HdsTabsFloatingStyle = {
       barSideMargin: this.sideMarginVp,
       barBottomMargin: this.bottomMarginVp,
+      // The concrete capsule width. Without it the floating bar falls back
+      // to measuring its items, and percent-sized items measure to zero.
+      barWidth: {
+        smallWidth: width,
+        mediumWidth: width,
+        largeWidth: width
+      },
       // ADAPTIVE lets the system pick the material strength for the device
       // (Lumie's DOCK_MATERIAL is exactly this type/level pair).
       systemMaterialEffect: {
