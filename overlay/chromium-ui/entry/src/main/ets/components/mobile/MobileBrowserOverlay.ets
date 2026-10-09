@@ -149,6 +149,8 @@ export struct MobileBrowserOverlay {
   // Measured once the dock lays out; the material plate needs the concrete
   // width in vp (its floating bar sizes itself from it).
   @State private dockGlassWidthVp: number = 0;
+  // 视口高度（vp），首次布局即上报；dock 条带的响应区以它为底边基准。
+  @State private viewportHeightVp: number = 0;
 
   private keyboardRecoveryTimers: number[] = [];
   private readonly addressController: TextInputController = new TextInputController();
@@ -405,10 +407,71 @@ export struct MobileBrowserOverlay {
     }
     .width('100%')
     .height('100%')
-    // While only the floating bars are up, touches fall through to the page;
-    // a full-screen panel covers everything, so it takes the events instead.
-    .hitTestBehavior(this.panelPage === 'none' ?
-      HitTestMode.Transparent : HitTestMode.Default)
+    // 视口高度（vp）：dock 条带的响应区以它为底边基准。首次布局即上报，
+    // 转屏 / 窗口变化时更新。
+    .onAreaChange((_old: Area, next: Area): void => {
+      const measured: number = Number(next.height);
+      if (Number.isFinite(measured) && measured > 0 &&
+          Math.abs(measured - this.viewportHeightVp) > 0.5) {
+        this.viewportHeightVp = measured;
+      }
+    })
+    // 命中契约（2026-10-09，修复「点 dock / 顶栏按钮穿透到网页」）：
+    // 引擎按"命中子节点自身的 hitTestMode"决定是否继续测试下层兄弟
+    // （frame_node.cpp → CheckChildHitTestResult / BUBBLING 分支）。本节点若为
+    // Transparent，命中任何子节点的触摸都会继续下发到 WebWindow（点穿）；
+    // 恒 Default 又会整屏阻断网页。正解 = Default + responseRegion 把根节点
+    // 的响应区收缩为两条 bars 条带（随收起比例收缩）：条带内命中即阻断，
+    // 条带外整棵 overlay 判 OUT_OF_REGION（子树里只有 Transparent 的全屏
+    // 布局容器，消费不会传导上来），触摸正常落到网页。
+    .responseRegion(this.buildChromeTouchRegions())
+    .hitTestBehavior(this.resolveChromeHitTestMode())
+  }
+
+  // 悬浮 chrome 的「可交互条带」（响应区）：只有顶栏 / dock 真正占据的条区
+  // 参与阻断。条带高度随收起比例收缩（与各自 translate 行程一致），完全
+  // 收起时不占区域——收起后那一带照常可点。空数组被引擎回退为"整节点
+  // 矩形"，因此只会与 Transparent 组合出现（行为与旧实现一致）。
+  private buildChromeTouchRegions(): Array<Rectangle> {
+    const regions: Array<Rectangle> = [];
+    // 模态层（七页面板 / ⋮ 悬浮菜单卡）在场：整屏归它，直接全屏响应区，
+    // 顺带把网页挡在后面（菜单卡点外收起时不再误点页面）。
+    if (this.panelPage !== 'none' || this.menuCardVisible) {
+      const full: Rectangle = { x: 0, y: 0, width: '100%', height: '100%' };
+      regions.push(full);
+      return regions;
+    }
+    const ratio: number = Number.isFinite(this.controlsRatioRaw) ?
+      Math.min(Math.max(this.controlsRatioRaw, 0), 1) : 1;
+    // 顶栏条带：新标签页没有顶栏，不占（否则首页顶部会出现一条死区）。
+    if (!this.isNewTabUrl(this.browserState.url)) {
+      const topShown: number = ratio * (TOP_BAR_EXTENT_VP + this.topSafeVp);
+      if (topShown > 0.5) {
+        const top: Rectangle = { x: 0, y: 0, width: '100%', height: topShown };
+        regions.push(top);
+      }
+    }
+    // dock 条带：底边贴视口底，高度 = 收起比例 × 全高。
+    if (this.viewportHeightVp > 0) {
+      const dockShown: number = ratio * (BOTTOM_DOCK_EXTENT_VP + this.bottomSafeVp);
+      if (dockShown > 0.5 && dockShown < this.viewportHeightVp) {
+        const dock: Rectangle = {
+          x: 0,
+          y: this.viewportHeightVp - dockShown,
+          width: '100%',
+          height: dockShown
+        };
+        regions.push(dock);
+      }
+    }
+    return regions;
+  }
+
+  // 与响应区配套的根模式：有条带（或模态）→ Default（条带内阻断）；
+  // 全部收起 → Transparent + 空区域（引擎回退整屏，行为同旧实现）。
+  private resolveChromeHitTestMode(): HitTestMode {
+    return this.buildChromeTouchRegions().length > 0 ?
+      HitTestMode.Default : HitTestMode.Transparent;
   }
 
   @Builder
@@ -1683,8 +1746,10 @@ struct DockMaterialPlate {
         largeBarWidth: width
       },
       systemMaterial: new uiMaterial.ImmersiveMaterial({
-        // 底部导航栏档位取 THICK（官方指南给底栏的建议），比默认 THIN 更实。
-        style: uiMaterial.ImmersiveStyle.THICK,
+        // 导航类材质取薄档：官方《组件适配沉浸光感》建议导航类用
+        // ULTRA_THIN/THIN，底部页签默认档位就是 THIN（THICK/ULTRA_THICK
+        // 是弹窗类的推荐档）。
+        style: uiMaterial.ImmersiveStyle.THIN,
         // 材质自带的矩形投影就是 HDS 背板那圈脏影的来源——关掉；投影交给
         // dock 自己的 shadow。
         applyShadow: false,
