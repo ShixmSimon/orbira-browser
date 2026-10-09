@@ -383,9 +383,7 @@ export struct MobileBrowserOverlay {
       clearTimeout(this.reboundSettleTimer);
       this.reboundSettleTimer = 0;
     }
-    // Fix E：此刻才退出编辑态、收起键盘——导航 commit 与首帧已经过去，
-    // 键盘收起不再与页面切换竞争。
-    this.editingAddress = false;
+    // Fix H：地址栏已在提交瞬间归位（第 1 拍），此处不再动编辑态。
     // Fix F：'both' 再推迟 500ms——新页面首帧稳定前保持 'shown'（冻结浏览器
     // 控件）。实测在 paint holding（旧画面保持）窗口内发 'both' 会触发视口
     // 重算、打断 hold，旧画面消失（黑屏）直到新页首帧；页内搜索（从不发
@@ -2110,8 +2108,11 @@ export struct MobileBrowserOverlay {
     const target = normalizeAddress(this.addressDraft);
     if (target.length > 0) {
       this.issueCommand({ command: 'navigate', url: target });
-      // Fix E：保持编辑态与键盘，等导航 commit + 首帧后再收起（flush 里做）。
-      // 地址栏提交时"键盘收起动画与导航 commit 竞争"是跳的主因。
+      // Fix H（对齐参考浏览器节奏）：提交瞬间地址栏立即切回浏览态（显示新
+      // URL），键盘随之收起——这是"第 1 拍"的即时反馈；旧画面与页面切换
+      // 留给引擎（'both' 由 Fix F 延迟交还，不打扰旧画面保持）。参考浏览
+      // 器正是这样分两拍：先地址栏归位，稍后页面才切换，变化不挤在一帧。
+      this.editingAddress = false;
       this.reboundControlsAfterPaint();
     } else {
       this.editingAddress = false;
