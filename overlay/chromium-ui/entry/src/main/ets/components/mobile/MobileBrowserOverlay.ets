@@ -147,11 +147,15 @@ export struct MobileBrowserOverlay {
 
   @State private menuVisible: boolean = false;
   @State private editingAddress: boolean = false;
-  // Fix B（点搜索跳一下）：提交地址栏导航后延迟顶栏回弹到首帧绘制完成，
-  // 避免 setBrowserControlsState 视口 resize 与 Chromium 首帧 swap 叠加造成跳动。
+  // Fix B/E（点搜索跳一下）：提交地址栏导航后保持编辑态与键盘，等导航 commit
+  // 并出首帧后再收起（最后统一回弹顶栏）。实测地址栏提交时"键盘收起动画"
+  // （~550ms）与"导航 commit"（提交后 260~420ms）重叠竞争，破坏 Chromium
+  // paint holding；而页内搜索（键盘保持到导航后）不跳。
   private pendingControlsRebound: boolean = false;
   private controlsReboundSawLoading: boolean = false;
   private reboundTimer: number = 0;
+  private reboundSettleTimer: number = 0;
+  private reboundFromUrl: string = '';
   @State private addressDraft: string = '';
   @State private primaryAction: MobileEdgeAction = MobileEdgeAction.BACK;
   @State private followGrip: boolean = true;
@@ -239,6 +243,10 @@ export struct MobileBrowserOverlay {
       clearTimeout(this.reboundTimer);
       this.reboundTimer = 0;
     }
+    if (this.reboundSettleTimer !== 0) {
+      clearTimeout(this.reboundSettleTimer);
+      this.reboundSettleTimer = 0;
+    }
     this.holdingHandRouter.stop();
     this.currentTabCastSession.stop().catch((error: Error) => {
       console.error('Failed to stop current-tab cast session:', error);
@@ -289,12 +297,21 @@ export struct MobileBrowserOverlay {
   }
 
   private onBrowserStateChanged(): void {
-    // Fix B：导航提交后，等首帧绘制（loading true→false）再回弹顶栏，
-    // 消除与首帧 swap 叠加的跳动。
+    // Fix B/E：提交导航后保持编辑态与键盘，等导航 commit（url 变化）并留出
+    // 首帧余量（250ms）再收起；loading true→false 与 1.5s 兜底为保险。
     if (this.pendingControlsRebound) {
       if (this.browserState.loading) {
         this.controlsReboundSawLoading = true;
-      } else if (this.controlsReboundSawLoading) {
+      }
+      if (this.reboundSettleTimer === 0 && this.reboundFromUrl.length > 0 &&
+        this.browserState.url !== this.reboundFromUrl) {
+        // 导航已 commit：给新页面首帧留 ~250ms，再收键盘/回弹。
+        this.reboundSettleTimer = setTimeout((): void => {
+          this.reboundSettleTimer = 0;
+          this.flushControlsRebound();
+        }, 250);
+      }
+      if (!this.browserState.loading && this.controlsReboundSawLoading) {
         this.flushControlsRebound();
       }
     }
@@ -302,18 +319,41 @@ export struct MobileBrowserOverlay {
     this.maybeActivatePendingNewTab();
   }
 
-  // Fix B：提交导航后延迟顶栏回弹。理想路径由 onBrowserStateChanged 在
-  // loading true→false 时回弹；兜底 1.5s 强制回弹（同 URL 未触发加载等）。
+  // Fix B/E：提交导航后延迟收起编辑态/键盘并回弹顶栏。理想路径由
+  // onBrowserStateChanged 在导航 commit + 首帧余量后执行；1.5s 兜底
+  // 强制回弹（同 URL 未触发加载等）。
   private reboundControlsAfterPaint(): void {
     this.pendingControlsRebound = true;
     this.controlsReboundSawLoading = false;
+    this.reboundFromUrl = this.browserState.url;
     if (this.reboundTimer !== 0) {
       clearTimeout(this.reboundTimer);
+    }
+    if (this.reboundSettleTimer !== 0) {
+      clearTimeout(this.reboundSettleTimer);
+      this.reboundSettleTimer = 0;
     }
     this.reboundTimer = setTimeout((): void => {
       this.reboundTimer = 0;
       this.flushControlsRebound();
     }, 1500);
+  }
+
+  private cancelControlsRebound(): void {
+    if (!this.pendingControlsRebound) {
+      return;
+    }
+    this.pendingControlsRebound = false;
+    this.controlsReboundSawLoading = false;
+    this.reboundFromUrl = '';
+    if (this.reboundTimer !== 0) {
+      clearTimeout(this.reboundTimer);
+      this.reboundTimer = 0;
+    }
+    if (this.reboundSettleTimer !== 0) {
+      clearTimeout(this.reboundSettleTimer);
+      this.reboundSettleTimer = 0;
+    }
   }
 
   private flushControlsRebound(): void {
@@ -322,10 +362,18 @@ export struct MobileBrowserOverlay {
     }
     this.pendingControlsRebound = false;
     this.controlsReboundSawLoading = false;
+    this.reboundFromUrl = '';
     if (this.reboundTimer !== 0) {
       clearTimeout(this.reboundTimer);
       this.reboundTimer = 0;
     }
+    if (this.reboundSettleTimer !== 0) {
+      clearTimeout(this.reboundSettleTimer);
+      this.reboundSettleTimer = 0;
+    }
+    // Fix E：此刻才退出编辑态、收起键盘——导航 commit 与首帧已经过去，
+    // 键盘收起不再与页面切换竞争。
+    this.editingAddress = false;
     this.issueCommand({ command: 'setBrowserControlsState', state: 'both', animate: true });
   }
 
@@ -961,6 +1009,7 @@ export struct MobileBrowserOverlay {
         .accessibilityText('取消编辑')
         .onClick(() => {
           this.clearKeyboardRecoveryTimers();
+          this.cancelControlsRebound();
           this.editingAddress = false;
           this.issueCommand({ command: 'setBrowserControlsState', state: 'both', animate: true });
         })
@@ -1963,6 +2012,9 @@ export struct MobileBrowserOverlay {
   }
 
   private beginAddressEdit(): void {
+    // 如果有待定的导航后回弹，重新编辑时取消它，避免旧定时器把正在
+    // 编辑的地址栏切回浏览态。
+    this.cancelControlsRebound();
     this.addressEditEpoch += 1;
     this.addressDraft = this.browserState.url.startsWith('chrome://') ? '' : this.browserState.url;
     this.addressSelectionStart = 0;
@@ -2021,8 +2073,8 @@ export struct MobileBrowserOverlay {
     const target = normalizeAddress(this.addressDraft);
     if (target.length > 0) {
       this.issueCommand({ command: 'navigate', url: target });
-      this.editingAddress = false;
-      // Fix B：延迟顶栏回弹到首帧绘制后，消除视口 resize 与首帧 swap 叠加跳动。
+      // Fix E：保持编辑态与键盘，等导航 commit + 首帧后再收起（flush 里做）。
+      // 地址栏提交时"键盘收起动画与导航 commit 竞争"是跳的主因。
       this.reboundControlsAfterPaint();
     } else {
       this.editingAddress = false;
