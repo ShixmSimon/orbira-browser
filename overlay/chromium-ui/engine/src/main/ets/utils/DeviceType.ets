@@ -135,17 +135,6 @@ export interface AuraStartupConfig {
   icuDataOffset?: number;
   icuDataLength?: number;
   jitless: boolean;
-  // Off the GPU when the GPU's fences do not work. Unset lets the engine
-  // decide, which is what a device should do; set only to run the
-  // comparison the other way without a rebuild.
-  gpuRasterization?: boolean;
-  // The last resort: draw the page without the GPU at all. Unset lets the
-  // engine decide, which is what a device should do.
-  gpuCompositing?: boolean;
-  // Chromium's frame-rate counter, drawn over the page and over its own
-  // UI. For checking a 120Hz panel is driven at 120 and that a still page
-  // stops asking for frames.
-  showFrameRate?: boolean;
   // Which of ANGLE's backends draws. Unset or 'gles' is ANGLE on
   // HarmonyOS's own EGL/GLES, which is what a device should use; 'vulkan'
   // is for measuring Vulkan against it. Read once, at startup.
@@ -265,14 +254,6 @@ export class DeviceRoutingPolicy {
       // 同样强制外壳画长按/右键菜单，不要引擎的原生菜单（功能不全）。
       contextMenu: 'shell',
       jitless: false,
-      // 诊断开关（滑动延迟排查）：在页面与自身 UI 上叠加实时 FPS/掉帧计数，
-      // 用于区分"渲染掉帧"还是"纯输入延迟"。排查完即删除。
-      showFrameRate: true,
-      // B 方案（滑动渲染掉帧修复）：显式强制 GPU 合成 + 光栅化，排除引擎在
-      // Pura 80 上默认回退软件渲染（软件合成是网页滚动卡顿的常见真因）。
-      // 若装后出现花屏/黑屏则撤销这两项、回退 v13b。
-      gpuCompositing: true,
-      gpuRasterization: true,
       fullscreenRequested: routing.fullscreenRequested
     };
   }
