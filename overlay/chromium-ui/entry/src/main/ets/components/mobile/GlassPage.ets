@@ -35,8 +35,9 @@ export const GLASS_TITLE_BAR_HEIGHT_VP: number = 56;
  * 内容区顶部渐隐带高度（vp）。
  * 各页面要把它加在**滚动内容**的顶部内边距里（不是外层容器），
  * 静态时首行内容正好落在渐隐带下缘，滚动时内容会在贴近标题栏处逐渐淡出。
+ * 真机反馈 28 偏大（「内容和标题间隙过大」），收到 12。
  */
-export const GLASS_TITLE_ZONE_VP: number = 28;
+export const GLASS_TITLE_ZONE_VP: number = 12;
 
 /**
  * 圆形玻璃返回钮（对齐系统「软件更新」标题栏那颗）。

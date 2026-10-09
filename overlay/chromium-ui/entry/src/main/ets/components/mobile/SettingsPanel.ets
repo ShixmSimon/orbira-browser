@@ -979,22 +979,53 @@ export struct SettingsPanel {
         this.handleTitleBack();
       }
     }) {
-      Column() {
-        if (this.page === 'clear') {
+      // 主面板和所有二级页**常驻挂载**，用可见性切换 —— 原来的 if/else 换分支
+      // 会销毁重建，从二级页返回时主面板 Scroll 归零（真机反馈：返回后回到设置
+      // 最顶端）。Visibility.None 保留组件实例，各页滚动位置原样留住。
+      Stack() {
+        Column() {
+          this.MainView()
+        }
+        .width('100%')
+        .height('100%')
+        .visibility(this.page === 'main' ? Visibility.Visible : Visibility.None)
+
+        Column() {
           this.ClearView()
-        } else if (this.page === 'engines') {
+        }
+        .width('100%')
+        .height('100%')
+        .visibility(this.page === 'clear' ? Visibility.Visible : Visibility.None)
+
+        Column() {
           this.EnginesView()
-        } else if (this.page === 'appearance') {
+        }
+        .width('100%')
+        .height('100%')
+        .visibility(this.page === 'engines' ? Visibility.Visible : Visibility.None)
+
+        Column() {
           this.AppearanceView()
-        } else if (this.page === 'zoom') {
+        }
+        .width('100%')
+        .height('100%')
+        .visibility(this.page === 'appearance' ? Visibility.Visible : Visibility.None)
+
+        Column() {
           this.ZoomView()
-        } else if (this.page === 'account') {
+        }
+        .width('100%')
+        .height('100%')
+        .visibility(this.page === 'zoom' ? Visibility.Visible : Visibility.None)
+
+        Column() {
           // 标题栏由本页统一提供（设置的所有二级页共用一条 Navigation 标题栏），
           // 所以 AccountPanel 自己不再画 Header。
           HuaweiAccountView()
-        } else {
-          this.MainView()
         }
+        .width('100%')
+        .height('100%')
+        .visibility(this.page === 'account' ? Visibility.Visible : Visibility.None)
       }
       .width('100%')
       .height('100%')

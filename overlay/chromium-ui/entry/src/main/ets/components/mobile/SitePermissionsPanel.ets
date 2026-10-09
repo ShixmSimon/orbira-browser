@@ -222,8 +222,10 @@ export struct SitePermissionsPanel {
       }
     }) {
     Column() {
-      if (this.page === 'list') {
-        if (this.origins.length === 0) {
+      // 列表/详情两个视图**常驻挂载**、用可见性切换：if/else 换分支会销毁重建，
+      // 从详情返回列表时滚动位置归零。Visibility.None 保留实例，滚动位置留住。
+      Column() {
+      if (this.origins.length === 0) {
           Column() {
             Text(this.loading ? '加载中…' : '还没有单独设置过权限的网站')
               .fontSize(15)
@@ -293,7 +295,12 @@ export struct SitePermissionsPanel {
           .scrollBar(BarState.Off)
           .align(Alignment.TopStart)
         }
-      } else {
+      }
+      .width('100%')
+      .height('100%')
+      .visibility(this.page === 'list' ? Visibility.Visible : Visibility.None)
+
+      Column() {
         Scroll() {
           Column() {
             if (this.detailItems.length === 0) {
@@ -369,6 +376,9 @@ export struct SitePermissionsPanel {
         .scrollBar(BarState.Off)
         .align(Alignment.TopStart)
       }
+      .width('100%')
+      .height('100%')
+      .visibility(this.page === 'detail' ? Visibility.Visible : Visibility.None)
     }
     .width('100%')
     .height('100%')

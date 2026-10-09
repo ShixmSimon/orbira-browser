@@ -609,6 +609,8 @@ export struct PasswordsPanel {
     }
     .width('100%')
     .height(56)
+    // 与 GlassPage 标题栏同款内边距：返回钮/动作钮不再贴屏幕边（真机反馈）。
+    .padding({ left: 16, right: 16 })
   }
 
   @Builder
