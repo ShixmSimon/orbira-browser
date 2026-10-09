@@ -81,6 +81,10 @@
       "value": "#00F2F3F5"
     },
     {
+      "name": "page_background_veil",
+      "value": "#D9F2F3F5"
+    },
+    {
       "name": "card_background",
       "value": "#FFFFFF"
     },

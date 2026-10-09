@@ -12,7 +12,7 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { BrowserCommandPayload, DownloadAction, DownloadItem, openDownloadedFile } from 'engine';
 import { formatVisitTime } from './PanelBridge';
 import { AuraSectionLabel } from './LumieKit';
-import { GlassPage, GLASS_TITLE_ZONE_VP } from './GlassPage';
+import { GlassPage, glassHeaderInsetVp } from './GlassPage';
 
 interface PanelEventPayload {
   kind?: string;
@@ -387,7 +387,7 @@ export struct DownloadsPanel {
           }
           .width('100%')
           // 大标题带：滚动内容穿过「下载」大标题时逐渐虚化（见 GlassPage 文件头）。
-          .padding({ top: GLASS_TITLE_ZONE_VP })
+          .padding({ top: glassHeaderInsetVp() })
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)

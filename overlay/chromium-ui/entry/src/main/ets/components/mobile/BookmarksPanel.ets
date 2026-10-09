@@ -10,7 +10,7 @@ import { common } from '@kit.AbilityKit';
 import { BookmarkNode, BrowserCommandPayload } from 'engine';
 import { displayUrl, pickAndStageImportFile, saveExportedFile, deleteStagedFile } from './PanelBridge';
 import { AuraSectionLabel } from './LumieKit';
-import { GlassBackButton, GlassContentHeader, GLASS_TITLE_ZONE_VP } from './GlassPage';
+import { GlassBackButton, GlassContentHeader, glassHeaderInsetVp } from './GlassPage';
 
 interface BookmarkIoPayload {
   kind?: string;
@@ -367,6 +367,8 @@ export struct BookmarksPanel {
     .height(56)
     // 与 GlassPage 标题栏同款内边距：返回钮/动作钮不再贴屏幕边（真机反馈）。
     .padding({ left: 16, right: 16 })
+    // 标题行浮在滚动内容上层（STACK），非按钮区域让滚动手势穿过。
+    .hitTestBehavior(HitTestMode.None)
   }
 
   @Builder
@@ -555,7 +557,7 @@ export struct BookmarksPanel {
           }
           .width('100%')
           // 大标题带：滚动内容穿过「书签」大标题时逐渐虚化（见 GlassPage 文件头）。
-          .padding({ top: GLASS_TITLE_ZONE_VP })
+          .padding({ top: glassHeaderInsetVp() })
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)
@@ -576,10 +578,12 @@ export struct BookmarksPanel {
     }
     .width('100%')
     .height('100%')
+    // 内容视口顶到屏幕最顶端：滚动内容从状态栏/标题行底下穿过（顶部虚化包含状态栏）。
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP])
     }
     .hideBackButton(true)
     .titleMode(NavigationTitleMode.Mini)
-    .title(this.TitleBar)
+    .title(this.TitleBar, { barStyle: BarStyle.STACK })
     .mode(NavigationMode.Stack)
     .backgroundColor($r('app.color.page_background'))
     .width('100%')
