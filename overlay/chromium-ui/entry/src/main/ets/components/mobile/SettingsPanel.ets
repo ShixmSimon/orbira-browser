@@ -9,7 +9,7 @@ import { deviceInfo } from '@kit.BasicServicesKit';
 import uiMaterial from '@ohos.arkui.uiMaterial';
 import { hdsMaterial } from '@kit.UIDesignKit';
 import { AppearanceSettings, ColorModeSetting } from '../../utils/appearance/AppearanceSettings';
-import { GlassPage, glassHeaderInsetVp } from './GlassPage';
+import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp } from './GlassPage';
 import { ShellUiPrefs } from '../../utils/appearance/ShellUiPrefs';
 import { HuaweiAccountInfo } from '../../utils/account/HuaweiAccountService';
 import { HuaweiAccountView } from './AccountPanel';
@@ -685,8 +685,6 @@ export struct SettingsPanel {
           .backgroundColor($r('app.color.card_background'))
           .clip(true)
 
-          Blank()
-            .height(24)
         }
         .width('100%')
         // 大标题带：留给内容区顶部的「设置」大标题 + 渐隐遮罩。
@@ -740,6 +738,7 @@ export struct SettingsPanel {
       Blank()
 
       Button(this.clearing ? '清除中…' : '清除数据')
+        .margin({ bottom: glassBottomInsetVp() })
         .width('100%')
         .height(46)
         .fontSize(16)
@@ -1033,7 +1032,7 @@ export struct SettingsPanel {
       }
       .width('100%')
       .height('100%')
-      .padding({ left: 16, right: 16, bottom: 16 })
+      .padding({ left: 16, right: 16 })
     }
   }
 }

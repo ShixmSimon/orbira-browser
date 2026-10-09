@@ -557,7 +557,7 @@ export struct BookmarksPanel {
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 16, right: 16, bottom: 16 })
+    .padding({ left: 16, right: 16 })
     .backgroundColor($r('app.color.page_background'))
 
     }

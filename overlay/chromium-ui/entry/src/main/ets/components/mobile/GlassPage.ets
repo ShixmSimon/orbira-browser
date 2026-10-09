@@ -58,6 +58,15 @@ export function glassHeaderInsetVp(): number {
 }
 
 /**
+ * 底部避让（vp）= 底部指示条高度 + 12。仅供**不滚动、底部有实体按钮**的
+ * 页面使用（如清除浏览数据的「清除数据」钮）——滚动列表不需要：
+ * 列表内容要能穿透小白条直达屏幕底缘。
+ */
+export function glassBottomInsetVp(): number {
+  return Number(AppStorage.get('auraBottomSafeVp') ?? 0) + 12;
+}
+
+/**
  * 圆形玻璃返回钮 —— 仅供尚未迁移 HdsNavigation 的自包面板使用
  * （书签/密码/扩展）。GlassPage 本体已改用 HDS 标题栏自带的返回钮。
  *
