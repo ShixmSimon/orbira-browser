@@ -115,10 +115,10 @@ struct AuraShell {
   @StorageLink('auraStartupConfig') startupConfigText: string = '';
   @StorageLink('auraStartUrl') startUrl: string = CHROMIUM_HOME_URL;
   @StorageLink('auraAppVisible') @Watch('onAppVisibleChanged') appVisible: boolean = true;
-  // 上滑时隐藏状态栏: address bar collapses -> the status bar hides with it
-  // and the page fills the screen (Lumie's 外观 toggle). Hysteresis keeps
-  // the system bar from flapping at the collapse boundary.
-  @StorageLink('auraBrowserControlsRatio') @Watch('onControlsRatioMoved') scrolledRatio: number = 1;
+  // 当前 controlsRatio 缓存：仅供状态栏避让逻辑读取。引擎的 ratio 不再逐帧
+  // 写 AppStorage（那样会让 overlay 全树逐帧重渲染、挤占主线程导致触摸延迟），
+  // 顶栏/dock 的显隐改由 auraBrowserControlsHidden 布尔阈值驱动（见 handler）。
+  private currentControlsRatio: number = 1;
   @StorageLink('auraHideStatusBarOnScroll') @Watch('onHideStatusBarPrefChanged') hideStatusBarOnScroll: boolean = false;
   private statusBarHiddenByScroll: boolean = false;
   @StorageLink('auraThemeFontId') themeFontId: string = '';
@@ -170,17 +170,13 @@ struct AuraShell {
     }
   }
 
-  private onControlsRatioMoved(): void {
-    this.updateStatusBarForScroll(this.scrolledRatio);
-  }
-
   private onHideStatusBarPrefChanged(): void {
     if (!this.hideStatusBarOnScroll) {
       this.applyStatusBarHidden(false);
       this.statusBarHiddenByScroll = false;
       this.sendScrollTopExtent(false);
     } else {
-      this.updateStatusBarForScroll(this.scrolledRatio);
+      this.updateStatusBarForScroll(this.currentControlsRatio);
     }
   }
 
@@ -764,9 +760,15 @@ struct AuraShell {
 
     if (event.event === 'browserControlsRatio') {
       const ratio = event.ratio ?? 1;
-      if (ratio !== this.lastControlsRatio) {
-        this.lastControlsRatio = ratio;
-        AppStorage.setOrCreate('auraBrowserControlsRatio', ratio);
+      this.currentControlsRatio = ratio;
+      // 状态栏跟随滚动收起（阈值 + 布尔守卫，仅在跨阈值时调一次系统 API）。
+      this.updateStatusBarForScroll(ratio);
+      // 顶栏/dock 显隐：滞回阈值，跨过才翻转一次布尔，避免逐帧重渲染 overlay。
+      const hidden: boolean = (AppStorage.get('auraBrowserControlsHidden') as boolean) ?? false;
+      if (!hidden && ratio < 0.4) {
+        AppStorage.setOrCreate('auraBrowserControlsHidden', true);
+      } else if (hidden && ratio > 0.6) {
+        AppStorage.setOrCreate('auraBrowserControlsHidden', false);
       }
       return;
     }
@@ -1051,7 +1053,6 @@ struct AuraShell {
 
   private systemPermissionReported: boolean = false;
   private browserControlsConfigured: boolean = false;
-  private lastControlsRatio: number = -1;
   private searchEnginesRequestSeq: number = 0;
 
   private completePermissionRequest(result: PermissionRequestResultPayload): void {
