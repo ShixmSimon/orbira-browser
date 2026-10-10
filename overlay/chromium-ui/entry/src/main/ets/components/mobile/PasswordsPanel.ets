@@ -494,7 +494,17 @@ export struct PasswordsPanel {
 
   // -- 导入 / 导出（对齐 Lumie v2） -------------------------------------------
 
-  private async startImport(): Promise<void> {
+  // ⋯「导入密码」入口：先弹自绘弹窗（格式说明 + 增量/覆盖），选完模式
+  // 再进系统文件选择器 —— 比旧版（先选文件再弹系统 AlertDialog）顺序更直觉。
+  private openImportDialog(): void {
+    if (this.busy || !this.verified) {
+      return;
+    }
+    this.importOverwrite = false;
+    this.importDialogVisible = true;
+  }
+
+  private async pickAndRunImport(overwrite: boolean): Promise<void> {
     if (this.busy || !this.verified) {
       return;
     }
@@ -508,23 +518,7 @@ export struct PasswordsPanel {
       return;
     }
     this.pendingImportPath = path;
-    AlertDialog.show({
-      title: '导入密码',
-      message: '从 Chrome、Edge、Firefox 导出的 CSV 文件导入。遇到已保存过的同名账号怎么处理？',
-      autoCancel: true,
-      primaryButton: {
-        value: '保留原有',
-        action: (): void => {
-          this.runImport(false);
-        }
-      },
-      secondaryButton: {
-        value: '用导入的覆盖',
-        action: (): void => {
-          this.runImport(true);
-        }
-      }
-    });
+    this.runImport(overwrite);
   }
 
   private runImport(overwrite: boolean): void {
@@ -818,28 +812,39 @@ export struct PasswordsPanel {
           .width('100%')
           .padding({ left: 4, top: 10 })
 
-        Button(this.busy ? '保存中…' : '保存')
-          .width('100%')
-          .height(46)
-          .fontSize(16)
-          .fontColor($r('app.color.on_accent'))
-          .backgroundColor($r('app.color.accent_primary'))
-          .borderRadius(12)
-          .margin({ top: 16 })
-          .enabled(!this.busy)
-          .onClick(() => {
+        // 自绘按钮（对齐全应用风格；系统 Button 的状态蒙层与自绘体系不统一）。
+        Row() {
+          Text(this.busy ? '保存中…' : '保存')
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.on_accent'))
+        }
+        .justifyContent(FlexAlign.Center)
+        .width('100%')
+        .height(46)
+        .borderRadius(12)
+        .backgroundColor($r('app.color.accent_primary'))
+        .opacity(this.busy ? 0.5 : 1)
+        .margin({ top: 16 })
+        .onClick(() => {
+          if (!this.busy) {
             this.saveEdit();
-          })
+          }
+        })
 
-        Button('删除这条密码')
-          .width('100%')
-          .height(46)
-          .fontSize(16)
-          .fontColor($r('app.color.danger'))
-          .backgroundColor($r('app.color.card_background'))
-          .borderRadius(12)
-          .margin({ top: 10 })
-          .onClick(() => {
+        Row() {
+          Text('删除这条密码')
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.danger'))
+        }
+        .justifyContent(FlexAlign.Center)
+        .width('100%')
+        .height(46)
+        .borderRadius(12)
+        .backgroundColor($r('app.color.card_background'))
+        .margin({ top: 10 })
+        .onClick(() => {
             const item = this.items.find((candidate: SavedPasswordItem): boolean =>
               candidate.id === this.editId);
             if (item !== undefined) {
@@ -873,7 +878,7 @@ export struct PasswordsPanel {
           icon: $r('app.media.aura_import'),
           label: '导入密码',
           action: (): void => {
-            this.startImport();
+            this.openImportDialog();
           }
         },
         {
@@ -895,6 +900,9 @@ export struct PasswordsPanel {
   private listScroller: Scroller = new Scroller();
   private detailScroller: Scroller = new Scroller();
   @State private searchText: string = '';
+  // 导入模式弹窗（自绘）：先选增量/覆盖，再进文件选择器。
+  @State private importDialogVisible: boolean = false;
+  @State private importOverwrite: boolean = false;
   // 过滤结果落 @State（同 HistoryPanel：方法间接读 @State 不建立更新依赖）。
   @State private filteredPasswords: SavedPasswordItem[] = [];
 
@@ -914,7 +922,96 @@ export struct PasswordsPanel {
     this.filteredPasswords = out;
   }
 
-    build() {
+    // 导入模式弹窗（自绘）：格式说明 + 增量/覆盖选择。
+  @Builder
+  private ImportDialog() {
+    if (this.importDialogVisible) {
+      Stack({ alignContent: Alignment.Center }) {
+        Column()
+          .width('100%')
+          .height('100%')
+          .backgroundColor($r('app.color.modal_scrim'))
+          .onClick(() => {
+            this.importDialogVisible = false;
+          })
+
+        Column({ space: 14 }) {
+          Text('导入密码')
+            .fontSize(17)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .width('100%')
+
+          Text('支持 Chrome、Edge、Firefox 导出的 CSV 密码文件（含网址、用户名、密码列）。')
+            .fontSize(13)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+
+          Column({ space: 6 }) {
+            Text('增量导入')
+              .fontSize(15)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_primary'))
+              .width('100%')
+            Text('已保存的同名账号保持不变，只导入新的账号。')
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+          }
+          .width('100%')
+          .padding(14)
+          .borderRadius(12)
+          .backgroundColor($r('app.color.surface_secondary'))
+          .onClick(() => {
+            this.importDialogVisible = false;
+            this.pickAndRunImport(false);
+          })
+
+          Column({ space: 6 }) {
+            Text('覆盖导入')
+              .fontSize(15)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.danger'))
+              .width('100%')
+            Text('已保存的同名账号会被文件里的密码替换，请确认 CSV 来自可信来源。')
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+          }
+          .width('100%')
+          .padding(14)
+          .borderRadius(12)
+          .backgroundColor($r('app.color.surface_secondary'))
+          .onClick(() => {
+            this.importDialogVisible = false;
+            this.pickAndRunImport(true);
+          })
+
+          Row() {
+            Text('取消')
+              .fontSize(15)
+              .fontColor($r('app.color.text_secondary'))
+          }
+          .justifyContent(FlexAlign.Center)
+          .width('100%')
+          .height(40)
+          .onClick(() => {
+            this.importDialogVisible = false;
+          })
+        }
+        .width('100%')
+        .padding(20)
+        .borderRadius(22)
+        .backgroundColor($r('app.color.menu_glass'))
+        .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
+        .margin({ left: 28, right: 28 })
+      }
+      .width('100%')
+      .height('100%')
+    }
+  }
+
+  build() {
     // 标题栏放进 Navigation（HarmonyOS 7 之后只有 Navigation 标题栏 / 底部
     // TabBar / 弹窗类还在沉浸光感的生效范围内）。右侧还有「更多」，故不用
     // GlassPage，自己包一层。
@@ -942,6 +1039,8 @@ export struct PasswordsPanel {
         }
       }
     }) {
+    // body 包 Stack：导入模式弹窗等悬浮层挂这里（viewport 固定，遮罩盖满全屏）。
+    Stack({ alignContent: Alignment.TopStart }) {
     Column() {
       if (!this.verified) {
         this.GateView()
@@ -955,6 +1054,11 @@ export struct PasswordsPanel {
     .height('100%')
     .padding({ left: 16, right: 16 })
     .backgroundColor($r('app.color.page_background'))
+
+    this.ImportDialog()
+    }
+    .width('100%')
+    .height('100%')
     }
   }
 }
