@@ -13,10 +13,11 @@
  * limitations under the License.
  */
 
-import { common } from '@kit.AbilityKit';
+import { common, Want } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
+import bundleManager from '@ohos.bundle.bundleManager';
 import { ShellUiPrefs } from '../utils/appearance/ShellUiPrefs';
 import { IncognitoSwitch, SavedTab } from '../utils/IncognitoSwitch';
 import { WebWindow, PictureInPictureSurface } from 'engine';
@@ -131,6 +132,9 @@ struct AuraShell {
   // “滚动时隐藏底部栏”（dock）：默认开（两栏跟手同收）；关掉后 dock 常驻，
   // 页面底部为它让出高度（见 applyDockViewportInset）。
   @StorageLink('auraHideDockOnScroll') @Watch('onHideDockPrefChanged') hideDockOnScroll: boolean = true;
+  // 网页外链是否交给本机应用打开（知乎/B站等 scheme）。默认开；关掉后
+  // externalUrlRequested 一律走 fallbackUrl，留在浏览器里。
+  @StorageLink('auraExternalAppLinks') externalAppLinks: boolean = true;
   private statusBarHiddenByScroll: boolean = false;
   @StorageLink('auraThemeFontId') themeFontId: string = '';
   @StorageLink('auraThemeFontRevision') themeFontRevision: number = 0;
@@ -183,6 +187,9 @@ struct AuraShell {
       });
       ShellUiPrefs.loadHideDock(context).then((value: boolean): void => {
         AppStorage.setOrCreate('auraHideDockOnScroll', value);
+      });
+      ShellUiPrefs.loadExternalAppLinks(context).then((value: boolean): void => {
+        AppStorage.setOrCreate('auraExternalAppLinks', value);
       });
     }
   }
@@ -1183,9 +1190,69 @@ struct AuraShell {
         .catch((error: Error): void => {
           console.error(`HarmonyOS system action failed: ${error.message}`);
         });
+    } else if (event.event === 'externalUrlRequested') {
+      this.handleExternalUrl(context, event);
     } else if (event.event === 'systemPrintFailed') {
       console.error(`Chromium PDF generation failed: ${event.reason ?? 'unknown'}`);
     }
+  }
+
+  /**
+   * 网页里的外链（引擎已把 Android intent 转成对应 scheme，如 zhihu://、
+   * bilibili://）。先确认本机真有应用接得住，再问用户要不要跳；没有应用或
+   * 用户拒绝，就退回浏览器打开 fallbackUrl。
+   */
+  private handleExternalUrl(context: common.UIAbilityContext, event: BrowserRuntimeEvent): void {
+    const fallbackUrl: string = event.fallbackUrl ?? '';
+    const target: string = event.url ?? '';
+
+    // 开关关掉：一律留在浏览器里，不打扰用户。
+    if (!this.externalAppLinks || target.length === 0) {
+      this.openInBrowser(fallbackUrl);
+      return;
+    }
+
+    // 没有应用接这个 scheme —— 不要弹一个点了也没用的框。
+    let canOpen = false;
+    try {
+      canOpen = bundleManager.canOpenLink(target);
+    } catch (error) {
+      canOpen = false;
+    }
+    if (!canOpen) {
+      this.openInBrowser(fallbackUrl);
+      return;
+    }
+
+    AlertDialog.show({
+      title: '用应用打开',
+      message: `要离开浏览器，用本机应用打开这个链接吗？\n${target}`,
+      primaryButton: {
+        value: '取消',
+        action: (): void => {
+          // 用户不想跳：有 fallback 就留在浏览器里打开它。
+          this.openInBrowser(fallbackUrl);
+        }
+      },
+      secondaryButton: {
+        value: '打开',
+        action: (): void => {
+          const want: Want = { uri: target };
+          context.startAbility(want).catch((error: Error): void => {
+            console.error(`Failed to open external app: ${error.message}`);
+            // 应用没接住（例如被卸载）：退回网页版。
+            this.openInBrowser(fallbackUrl);
+          });
+        }
+      }
+    });
+  }
+
+  private openInBrowser(url: string): void {
+    if (url.length === 0) {
+      return;
+    }
+    this.executeBrowserCommand({ command: 'navigate', url: url });
   }
 
   private completeFilePicker(result: HarmonyFilePickerResult): void {

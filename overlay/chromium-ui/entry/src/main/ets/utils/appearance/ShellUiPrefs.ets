@@ -9,6 +9,7 @@ const STORE_NAME = 'shell_ui_prefs';
 const KEY_HIDE_STATUS_BAR = 'hideStatusBarOnScroll';
 const KEY_HIDE_TOP_BAR = 'hideTopBarOnScroll';
 const KEY_HIDE_DOCK = 'hideDockOnScroll';
+const KEY_EXTERNAL_APP_LINKS = 'externalAppLinks';
 
 export class ShellUiPrefs {
   static async loadHideStatusBar(context: common.Context): Promise<boolean> {
@@ -60,6 +61,26 @@ export class ShellUiPrefs {
     try {
       const store = await preferences.getPreferences(context, STORE_NAME);
       await store.put(KEY_HIDE_DOCK, value);
+      await store.flush();
+    } catch (error) {
+    }
+  }
+
+  // 网页里的外链（知乎/B站等已转成对应 scheme 的 intent）是否交给本机应用打开。
+  // 默认开：浏览器常见的就是这个行为。关掉后一律留在浏览器里打开 fallbackUrl。
+  static async loadExternalAppLinks(context: common.Context): Promise<boolean> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      return Boolean(await store.get(KEY_EXTERNAL_APP_LINKS, true));
+    } catch (error) {
+      return true;
+    }
+  }
+
+  static async saveExternalAppLinks(context: common.Context, value: boolean): Promise<void> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      await store.put(KEY_EXTERNAL_APP_LINKS, value);
       await store.flush();
     } catch (error) {
     }

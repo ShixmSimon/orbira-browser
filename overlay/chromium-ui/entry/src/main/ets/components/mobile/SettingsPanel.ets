@@ -58,6 +58,64 @@ interface PrefToggleItem {
   value: boolean;
 }
 
+// 设置项检索：把散在各分区里的条目集中登记一次（名称 + 关键词 + 分区 +
+// 打开方式）。搜索只过滤这个清单，不改动既有分区 UI。
+interface SettingsEntry {
+  id: string;
+  // 匹配范围：标题 + 副标题 + 关键词（同义词、英文、别称）。
+  title: string;
+  subtitle: string;
+  keywords: string[];
+  section: string;
+  // 点击后如何到达：直接跳二级页、由外壳打开独立页，或是某个开关。
+  kind: 'page' | 'shell' | 'toggle' | 'externalToggle';
+}
+
+const SETTINGS_ENTRIES: SettingsEntry[] = [
+  { id: 'searchEngine', title: '搜索引擎', subtitle: '选择默认搜索引擎',
+    keywords: ['engine', 'search', '默认', '百度', 'google', '必应', '搜狗'], section: '常规', kind: 'page' },
+  { id: 'extensions', title: '扩展程序', subtitle: '管理已安装的扩展',
+    keywords: ['extension', '插件', 'addon'], section: '常规', kind: 'shell' },
+
+  { id: 'sitePermissions', title: '网站权限', subtitle: '各网站的相机、定位等权限',
+    keywords: ['permission', '权限', '相机', '定位', '麦克风'], section: '隐私与安全', kind: 'shell' },
+  { id: 'externalAppLinks', title: '允许跳转本机应用', subtitle: '知乎、B站这类链接交给对应应用打开',
+    keywords: ['external', '跳转', '应用', 'scheme', '知乎', 'B站', 'bilibili', '外部'],
+    section: '隐私与安全', kind: 'externalToggle' },
+  { id: 'passwords', title: '密码', subtitle: '查看和管理已保存的密码',
+    keywords: ['password', '密码', '账号', '登录', 'vault'], section: '隐私与安全', kind: 'shell' },
+  { id: 'blockThirdPartyCookies', title: '阻止第三方 Cookie', subtitle: '',
+    keywords: ['cookie', '第三方', '追踪', '隐私'], section: '隐私与安全', kind: 'toggle' },
+  { id: 'popupsBlocked', title: '拦截弹窗', subtitle: '',
+    keywords: ['popup', '弹窗', '拦截', '广告'], section: '隐私与安全', kind: 'toggle' },
+  { id: 'doNotTrack', title: '发送"请勿追踪"请求', subtitle: '',
+    keywords: ['dnt', '请勿追踪', '追踪', '隐私'], section: '隐私与安全', kind: 'toggle' },
+  { id: 'clearBrowsingData', title: '清除浏览数据', subtitle: '历史记录、Cookie、缓存等',
+    keywords: ['clear', '清除', '清理', '历史', '缓存', 'cache', 'history'],
+    section: '隐私与安全', kind: 'page' },
+
+  { id: 'darkMode', title: '深色模式', subtitle: '浅色、深色或跟随系统',
+    keywords: ['dark', '深色', '夜间', '主题', 'theme', '外观'], section: '外观', kind: 'page' },
+  { id: 'hideStatusBarOnScroll', title: '上滑时隐藏状态栏', subtitle: '地址栏收起时一起隐藏，网页铺满全屏',
+    keywords: ['状态栏', '全屏', '隐藏', '上滑'], section: '外观', kind: 'toggle' },
+  { id: 'hideTopBarOnScroll', title: '滚动时隐藏地址栏', subtitle: '向下滚动时收起顶部地址栏',
+    keywords: ['地址栏', '顶栏', '滚动', '隐藏'], section: '外观', kind: 'toggle' },
+  { id: 'hideDockOnScroll', title: '滚动时隐藏底部栏', subtitle: '向下滚动时收起底部栏',
+    keywords: ['底部栏', 'dock', '滚动', '隐藏'], section: '外观', kind: 'toggle' },
+  { id: 'zoom', title: '网页缩放', subtitle: '整页一起放大或缩小',
+    keywords: ['zoom', '缩放', '字体', '放大', '缩小', 'textScale'], section: '外观', kind: 'page' },
+  { id: 'forceDarkWebContents', title: '网页强制深色', subtitle: '',
+    keywords: ['dark', '深色', '网页', '强制'], section: '外观', kind: 'toggle' },
+
+  { id: 'downloadAskWhereToSave', title: '下载前询问', subtitle: '安装包和未知文件总是询问',
+    keywords: ['download', '下载', '询问', '保存位置'], section: '下载', kind: 'toggle' },
+
+  { id: 'javascriptEnabled', title: '启用 JavaScript', subtitle: '',
+    keywords: ['javascript', 'js', '脚本'], section: '高级', kind: 'toggle' },
+  { id: 'preloadPages', title: '预加载网页', subtitle: '',
+    keywords: ['preload', '预加载', '预读', '加速'], section: '高级', kind: 'toggle' }
+];
+
 @Component
 export struct SettingsPanel {
   @StorageLink('auraPanelPrefs') @Watch('onPrefsPayload') prefsJson: string = '';
@@ -71,9 +129,13 @@ export struct SettingsPanel {
   onOpenPasswords: () => void = (): void => {};
 
   @State private page: string = 'main';
+  // 设置检索：输入框内容 + 是否展开（点放大镜展开，清空或返回收起）。
+  @State private searchText: string = '';
+  @State private searching: boolean = false;
   // 渐变模糊滚动效果按官方要求 bindToScrollable：主面板与搜索引擎页各一个。
   private mainScroller: Scroller = new Scroller();
   private enginesScroller: Scroller = new Scroller();
+  private searchScroller: Scroller = new Scroller();
   @State private toggleItems: PrefToggleItem[] = [];
   @State private engines: SearchEngine[] = [];
   @State private defaultEngineName: string = '';
@@ -85,6 +147,7 @@ export struct SettingsPanel {
   @StorageLink('auraHideStatusBarOnScroll') hideStatusBarOnScroll: boolean = false;
   @StorageLink('auraHideTopBarOnScroll') hideTopBarOnScroll: boolean = true;
   @StorageLink('auraHideDockOnScroll') hideDockOnScroll: boolean = true;
+  @StorageLink('auraExternalAppLinks') externalAppLinks: boolean = true;
   @StorageLink('auraHuaweiAccount') accountJson: string = '';
   private requestSeq: number = 0;
   private retryTimer: number = -1;
@@ -282,6 +345,109 @@ export struct SettingsPanel {
     return this.colorModeSetting === 'light' ? '浅色' : '跟随系统';
   }
 
+  // ---- 设置检索 ----
+
+  private searchQuery(): string {
+    return this.searchText.trim().toLowerCase();
+  }
+
+  private matchedEntries(): SettingsEntry[] {
+    const query = this.searchQuery();
+    if (query.length === 0) {
+      return SETTINGS_ENTRIES;
+    }
+    const hits: SettingsEntry[] = [];
+    SETTINGS_ENTRIES.forEach((entry: SettingsEntry): void => {
+      const haystack: string =
+        `${entry.title} ${entry.subtitle} ${entry.section} ${entry.keywords.join(' ')}`.toLowerCase();
+      if (haystack.indexOf(query) >= 0) {
+        hits.push(entry);
+      }
+    });
+    return hits;
+  }
+
+  private entryValue(entry: SettingsEntry): boolean {
+    if (entry.kind === 'externalToggle') {
+      return this.externalAppLinks;
+    }
+    if (entry.id === 'hideStatusBarOnScroll') {
+      return this.hideStatusBarOnScroll;
+    }
+    if (entry.id === 'hideTopBarOnScroll') {
+      return this.hideTopBarOnScroll;
+    }
+    if (entry.id === 'hideDockOnScroll') {
+      return this.hideDockOnScroll;
+    }
+    return this.prefValue(entry.id as ShellPrefKey);
+  }
+
+  private toggleEntry(entry: SettingsEntry, value: boolean): void {
+    const context = this.getUIContext().getHostContext() as common.Context | undefined;
+    if (entry.kind === 'externalToggle') {
+      AppStorage.setOrCreate('auraExternalAppLinks', value);
+      if (context) {
+        ShellUiPrefs.saveExternalAppLinks(context, value);
+      }
+      return;
+    }
+    if (entry.id === 'hideStatusBarOnScroll') {
+      AppStorage.setOrCreate('auraHideStatusBarOnScroll', value);
+      if (context) {
+        ShellUiPrefs.saveHideStatusBar(context, value);
+      }
+      return;
+    }
+    if (entry.id === 'hideTopBarOnScroll') {
+      AppStorage.setOrCreate('auraHideTopBarOnScroll', value);
+      if (context) {
+        ShellUiPrefs.saveHideTopBar(context, value);
+      }
+      return;
+    }
+    if (entry.id === 'hideDockOnScroll') {
+      AppStorage.setOrCreate('auraHideDockOnScroll', value);
+      if (context) {
+        ShellUiPrefs.saveHideDock(context, value);
+      }
+      return;
+    }
+    this.setPref(entry.id as ShellPrefKey, value);
+  }
+
+  // 搜索结果点击：开关就地切换，其余跳到对应页。
+  private openEntry(entry: SettingsEntry): void {
+    if (entry.kind === 'toggle' || entry.kind === 'externalToggle' ||
+      (entry.kind === 'page' && (entry.id === 'hideStatusBarOnScroll' ||
+        entry.id === 'hideTopBarOnScroll' || entry.id === 'hideDockOnScroll'))) {
+      this.toggleEntry(entry, !this.entryValue(entry));
+      return;
+    }
+    if (entry.id === 'searchEngine') {
+      this.leaveSearch('engines');
+    } else if (entry.id === 'clearBrowsingData') {
+      this.leaveSearch('clear');
+    } else if (entry.id === 'darkMode') {
+      this.leaveSearch('appearance');
+    } else if (entry.id === 'zoom') {
+      this.leaveSearch('zoom');
+    } else if (entry.id === 'passwords') {
+      this.onOpenPasswords();
+    } else if (entry.id === 'sitePermissions') {
+      this.onOpenSitePermissions();
+    } else if (entry.id === 'extensions') {
+      this.onOpenExtensions();
+    }
+  }
+
+  // 收起搜索再跳页：避免二级页返回后还停在搜索态。
+  private leaveSearch(target: string): void {
+    this.searching = false;
+    this.searchText = '';
+    this.page = target;
+  }
+
   private chooseColorMode(mode: ColorModeSetting): void {
     this.colorModeSetting = mode;
     const context = this.getUIContext().getHostContext() as common.Context | undefined;
@@ -314,6 +480,9 @@ export struct SettingsPanel {
   // 落进 HarmonyOS 7 之后沉浸光感仍然生效的「Navigation 标题栏」区域；
   // 自己画一条 Row 挂材质是拿不到的（还会把圆钮变成全透明）。
   private titleText(): string {
+    if (this.searching) {
+      return '搜索设置';
+    }
     if (this.page === 'clear') {
       return '清除浏览数据';
     }
@@ -332,8 +501,13 @@ export struct SettingsPanel {
     return '设置';
   }
 
-  // 返回：二级页回主面板，主面板才真的退出设置。
+  // 返回：二级页回主面板，主面板才真的退出设置；搜索态先收起搜索。
   private handleTitleBack(): void {
+    if (this.searching) {
+      this.searching = false;
+      this.searchText = '';
+      return;
+    }
     if (this.page === 'main') {
       this.onBack();
     } else {
@@ -416,6 +590,107 @@ export struct SettingsPanel {
     .padding({ left: 16, right: 16 })
   }
 
+  // 设置检索页：一个输入框 + 命中清单。开关项就地切换（带当前状态），
+  // 其余跳到对应二级页或交给外壳打开独立页。
+  @Builder
+  private SearchView() {
+    Column() {
+      Row({ space: 8 }) {
+        Image($r('app.media.aura_search'))
+          .width(20)
+          .height(20)
+          .fillColor($r('app.color.icon_secondary'))
+        TextInput({ placeholder: '搜索设置项', text: this.searchText })
+          .fontSize(16)
+          .fontColor($r('app.color.text_primary'))
+          .placeholderColor($r('app.color.text_secondary'))
+          .backgroundColor(Color.Transparent)
+          .layoutWeight(1)
+          .onChange((value: string): void => {
+            this.searchText = value;
+          })
+        if (this.searchText.length > 0) {
+          Image($r('app.media.aura_close'))
+            .width(18)
+            .height(18)
+            .fillColor($r('app.color.icon_secondary'))
+            .onClick((): void => {
+              this.searchText = '';
+            })
+        }
+      }
+      .width('100%')
+      .height(44)
+      .padding({ left: 14, right: 14 })
+      .borderRadius(12)
+      .backgroundColor($r('app.color.card_background'))
+      .margin({ bottom: 8 })
+
+      Scroll(this.searchScroller) {
+        Column() {
+          ForEach(this.matchedEntries(), (entry: SettingsEntry) => {
+            this.SearchResultRow(entry)
+          }, (entry: SettingsEntry): string => entry.id)
+
+          if (this.matchedEntries().length === 0) {
+            Text('没有找到相关设置项')
+              .fontSize(14)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+              .textAlign(TextAlign.Center)
+              .margin({ top: 32 })
+          }
+        }
+        .width('100%')
+      }
+      .layoutWeight(1)
+      .scrollBar(BarState.Off)
+      .align(Alignment.TopStart)
+    }
+    .width('100%')
+    .height('100%')
+    .padding({ top: glassHeaderInsetVp(), left: 16, right: 16 })
+  }
+
+  @Builder
+  private SearchResultRow(entry: SettingsEntry) {
+    Row({ space: 12 }) {
+      Column({ space: 2 }) {
+        Text(entry.title)
+          .fontSize(16)
+          .fontColor($r('app.color.text_primary'))
+        if (entry.subtitle.length > 0) {
+          Text(entry.subtitle)
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+        }
+        Text(entry.section)
+          .fontSize(11)
+          .fontColor($r('app.color.text_secondary'))
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      if (entry.kind === 'toggle' || entry.kind === 'externalToggle' ||
+        entry.id === 'hideStatusBarOnScroll' || entry.id === 'hideTopBarOnScroll' ||
+        entry.id === 'hideDockOnScroll') {
+        Toggle({ type: ToggleType.Switch, isOn: this.entryValue(entry) })
+          .onChange((isOn: boolean): void => {
+            this.toggleEntry(entry, isOn);
+          })
+      }
+    }
+    .width('100%')
+    .constraintSize({ minHeight: 56 })
+    .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+    .borderRadius(12)
+    .backgroundColor($r('app.color.card_background'))
+    .margin({ bottom: 8 })
+    .onClick((): void => {
+      this.openEntry(entry);
+    })
+  }
+
   @Builder
   private MainView() {
     Column() {
@@ -463,6 +738,16 @@ export struct SettingsPanel {
             this.NavRow($r('app.media.aura_globe'), '网站权限', '', (): void => {
               this.onOpenSitePermissions();
             }, false)
+            this.CardDivider()
+            this.ShellToggleRow($r('app.media.aura_globe'), '允许跳转本机应用',
+              '知乎、B站这类链接询问后交给对应应用打开；关掉则一律在浏览器里打开',
+              this.externalAppLinks, (isOn: boolean): void => {
+                AppStorage.setOrCreate('auraExternalAppLinks', isOn);
+                const context = this.getUIContext().getHostContext() as common.Context | undefined;
+                if (context) {
+                  ShellUiPrefs.saveExternalAppLinks(context, isOn);
+                }
+              })
             this.CardDivider()
             this.NavRow($r('app.media.aura_lock'), '密码', '', (): void => {
               this.onOpenPasswords();
@@ -852,7 +1137,22 @@ export struct SettingsPanel {
   build() {
     GlassPage({
       title: this.titleText(),
-      scrollers: [this.mainScroller, this.enginesScroller],
+      scrollers: [this.mainScroller, this.enginesScroller, this.searchScroller],
+      menus: {
+        value: [
+          {
+            content: {
+              icon: $r('app.media.aura_search'),
+              label: '搜索',
+              isEnabled: true,
+              action: (): void => {
+                this.searching = true;
+                this.searchText = '';
+              }
+            }
+          }
+        ]
+      },
       onBack: (): void => {
         this.handleTitleBack();
       }
@@ -862,39 +1162,46 @@ export struct SettingsPanel {
       // 最顶端）。Visibility.None 保留组件实例，各页滚动位置原样留住。
       Stack() {
         Column() {
+          this.SearchView()
+        }
+        .width('100%')
+        .height('100%')
+        .visibility(this.searching ? Visibility.Visible : Visibility.None)
+
+        Column() {
           this.MainView()
         }
         .width('100%')
         .height('100%')
-        .visibility(this.page === 'main' ? Visibility.Visible : Visibility.None)
+        .visibility(!this.searching && this.page === 'main' ? Visibility.Visible : Visibility.None)
 
         Column() {
           this.ClearView()
         }
         .width('100%')
         .height('100%')
-        .visibility(this.page === 'clear' ? Visibility.Visible : Visibility.None)
+        .visibility(!this.searching && this.page === 'clear' ? Visibility.Visible : Visibility.None)
 
         Column() {
           this.EnginesView()
         }
         .width('100%')
         .height('100%')
-        .visibility(this.page === 'engines' ? Visibility.Visible : Visibility.None)
+        .visibility(!this.searching && this.page === 'engines' ? Visibility.Visible : Visibility.None)
 
         Column() {
           this.AppearanceView()
         }
         .width('100%')
         .height('100%')
-        .visibility(this.page === 'appearance' ? Visibility.Visible : Visibility.None)
+        .visibility(!this.searching && this.page === 'appearance' ? Visibility.Visible : Visibility.None)
 
         Column() {
           this.ZoomView()
         }
         .width('100%')
         .height('100%')
-        .visibility(this.page === 'zoom' ? Visibility.Visible : Visibility.None)
+        .visibility(!this.searching && this.page === 'zoom' ? Visibility.Visible : Visibility.None)
 
         Column() {
           // 标题栏由本页统一提供（设置的所有二级页共用一条 Navigation 标题栏），
