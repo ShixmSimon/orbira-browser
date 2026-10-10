@@ -18,7 +18,7 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { BookmarkNode, BrowserCommandPayload } from 'engine';
 import { displayUrl, pickAndStageImportFile, saveExportedFile, deleteStagedFile } from './PanelBridge';
 import { AuraSectionLabel } from './LumieKit';
-import { GlassPage, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
+import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
 import { MoreMenuDialog, MoreMenuItemSpec } from './MoreMenuDialog';
 
 interface BookmarkIoPayload {
@@ -47,7 +47,8 @@ interface FolderOption {
 }
 
 const MAX_LOAD_RETRIES: number = 3;
-const LOAD_RETRY_MS: number = 1500;
+const LOAD_RETRY_MS: number = 700;
+const LOAD_SHOW_MS: number = 350;
 
 @Component
 export struct BookmarksPanel {
@@ -69,13 +70,17 @@ export struct BookmarksPanel {
   @State private currentFolderId: string = '';
   // 移动设备根（根级回包里 rootType==='mobile'；根级新建的默认落点）。
   @State private mobileFolderId: string = '';
-  @State private loading: boolean = true;
+  // ⚠️ 初值必须是 false（2026-10-10 用户反馈「进页面直接显示加载中」）：
+  // 引擎正常回包只要几十毫秒，loading=true 初值会让首帧就渲染出「加载中…」，
+  // 看起来像卡了一下。真实逻辑见 loadLayer（延迟 LOAD_SHOW_MS 才显形）。
+  @State private loading: boolean = false;
   private navStack: string[] = [];
   // 回包匹配：只采用最新一次请求的回包（layer = 目录层，search = 搜索）。
   private pendingKind: 'layer' | 'search' | 'collect' = 'layer';
   private pendingSeq: number = 0;
   private requestSeq: number = 0;
   private retryTimer: number = -1;
+  private loadTimer: number = -1;
   private retryCount: number = 0;
   private pendingImportPath: string = '';
   private pendingExportPath: string = '';
@@ -112,9 +117,23 @@ export struct BookmarksPanel {
   private folderParent: Map<string, string> = new Map();
   private folderTitle: Map<string, string> = new Map();
   private folderKids: Map<string, number> = new Map();
+  // 父→子 列表（移动文件夹时递归排除子孙用）。
+  private folderChildren: Map<string, string[]> = new Map();
+  // 从行菜单直接触发移动（不进编辑表单）：源节点 id、是否文件夹、要排除的子树根。
+  @State private moveNodeId: string = '';
+  @State private moveNodeIsFolder: boolean = false;
+  @State private moveExcludeRoot: string = '';
   private collectSeen: Set<string> = new Set();
   private collectOutstanding: number = 0;
   private collectStartSeq: number = 0;
+
+  // 批量管理：选择模式 + 已选 id 集合 + 批量移动标记。
+  @State private selectMode: boolean = false;
+  @State private selectedIds: string[] = [];
+  @State private batchMoveMode: boolean = false;
+
+  // ⋯ 菜单项（原地 mutate，让「多选」按需出现）。
+  private moreItems: MoreMenuItemSpec[] = [];
 
   private listScroller: Scroller = new Scroller();
 
@@ -122,7 +141,9 @@ export struct BookmarksPanel {
     const dsp = display.getDefaultDisplaySync();
     this.windowW = dsp.width / dsp.densityPixels;
     this.windowH = dsp.height / dsp.densityPixels;
-    this.onListChanged();
+    // 用持久化的书签列表直接填充首屏（@StorageLink 跨挂载保留），避免「进页面
+    // 就闪加载中」——已有缓存数据时静默重拉，只有真正首次无数据才走 loading。
+    this.hydrateFromCache();
     this.onRecentChanged();
     this.loadLayer('');
   }
@@ -135,21 +156,76 @@ export struct BookmarksPanel {
     this.cleanupPendingImport();
   }
 
+  /** 首屏 hydration：从持久化的 auraPanelBookmarkList 直接回填根层。
+   *  @StorageLink 跨挂载保留，所以重进页面时通常已有缓存——直接填进 currentNodes
+   *  让 hadData=true，loadLayer 就不会闪「加载中」。仅回填根层（parentId 为空）；
+   *  搜索回包也走这个存储且无 parentId，但书签同源，短暂闪一下随即被 loadLayer
+   *  刷新，比「加载中」体验好。 */
+  private hydrateFromCache(): void {
+    if (this.listJson.length === 0) {
+      return;
+    }
+    try {
+      const payload = JSON.parse(this.listJson) as BookmarkListPayload;
+      if ((payload.parentId ?? '').length > 0) {
+        return;
+      }
+      const nodes = payload.nodes ?? [];
+      if (nodes.length > 0) {
+        this.currentNodes = nodes;
+        for (const node of nodes) {
+          if (node.rootType === 'mobile') {
+            this.mobileFolderId = node.id;
+            break;
+          }
+        }
+      }
+    } catch (error) {
+    }
+  }
+
   // -- 数据层 -----------------------------------------------------------------
 
   /** 拉取某层：parentId 空 = 三个根文件夹，否则该文件夹的直接子节点。 */
   private loadLayer(parentId: string): void {
-    this.loading = true;
+    this.clearLoadTimers();
     this.retryCount = 0;
     this.pendingKind = 'layer';
     this.requestSeq += 1;
     this.pendingSeq = this.requestSeq;
+    // 「加载中」默认不显示（loading 初值 false）：已有数据时完全静默重拉；
+    // 无数据时才等 LOAD_SHOW_MS 再显形——引擎正常回包（< 350ms）一个字的
+    // 加载提示都不会闪，只有偶发吞命令（引擎真没回）才显形并触发重试。
+    this.loading = false;
+    const hadData = this.currentNodes.length > 0 ||
+      (this.currentFolderId.length === 0 && this.recentNodes.length > 0);
+    if (!hadData) {
+      const seq = this.pendingSeq;
+      this.loadTimer = setTimeout((): void => {
+        this.loadTimer = -1;
+        if (this.pendingSeq === seq) {
+          this.loading = true;
+          this.scheduleRetry();
+        }
+      }, LOAD_SHOW_MS);
+    }
     if (parentId.length === 0) {
       this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq });
     } else {
       this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq, parentId: parentId });
     }
-    this.scheduleRetry();
+  }
+
+  // 统一清理加载相关的两个定时器（延迟显示 + 重试）。
+  private clearLoadTimers(): void {
+    if (this.loadTimer !== -1) {
+      clearTimeout(this.loadTimer);
+      this.loadTimer = -1;
+    }
+    if (this.retryTimer !== -1) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = -1;
+    }
   }
 
   private scheduleRetry(): void {
@@ -212,10 +288,7 @@ export struct BookmarksPanel {
         this.searchResults = nodes;
       }
       this.loading = false;
-      if (this.retryTimer !== -1) {
-        clearTimeout(this.retryTimer);
-        this.retryTimer = -1;
-      }
+      this.clearLoadTimers();
     } catch (error) {
       this.loading = false;
     }
@@ -253,8 +326,12 @@ export struct BookmarksPanel {
     this.onCommand({ command: 'searchBookmarks', requestId: this.requestSeq, query: q, maxCount: 50 });
   }
 
-  /** 返回钮：子文件夹先逐级上退，到根再关面板。 */
+  /** 返回钮：选择态先退出多选 → 子文件夹逐级上退 → 到根再关面板。 */
   private handleBack(): void {
+    if (this.selectMode) {
+      this.exitSelect();
+      return;
+    }
     if (this.navStack.length > 0) {
       const parent = this.navStack.pop();
       this.currentFolderId = parent !== undefined ? parent : '';
@@ -271,6 +348,7 @@ export struct BookmarksPanel {
     this.folderParent.clear();
     this.folderTitle.clear();
     this.folderKids.clear();
+    this.folderChildren.clear();
     this.collectSeen.clear();
     this.collectSeen.add('');
     this.collectOutstanding = 1;
@@ -292,6 +370,12 @@ export struct BookmarksPanel {
       this.folderParent.set(node.id, node.parentId);
       this.folderTitle.set(node.id, node.title.length > 0 ? node.title : '未命名文件夹');
       this.folderKids.set(node.id, node.childCount ?? 0);
+      // 建 父→子 列表（移动文件夹时递归排除子孙用）。
+      const par = node.parentId;
+      if (!this.folderChildren.has(par)) {
+        this.folderChildren.set(par, []);
+      }
+      this.folderChildren.get(par)!.push(node.id);
       if (!this.collectSeen.has(node.id)) {
         this.collectSeen.add(node.id);
         this.collectOutstanding += 1;
@@ -319,11 +403,24 @@ export struct BookmarksPanel {
     return parts.join(' / ');
   }
 
+  /** 收集 root 及其全部后代（移动文件夹时排除自身与子孙）。 */
+  private collectDescendants(root: string, out: Set<string>): void {
+    out.add(root);
+    const kids = this.folderChildren.get(root) ?? [];
+    for (const k of kids) {
+      this.collectDescendants(k, out);
+    }
+  }
+
   private buildPickerOptions(): void {
+    const excluded = new Set<string>();
+    if (this.moveExcludeRoot.length > 0) {
+      // 文件夹不能移进自己或自己的子孙。
+      this.collectDescendants(this.moveExcludeRoot, excluded);
+    }
     const out: FolderOption[] = [];
     for (const id of this.folderIds) {
-      if (id === this.formParentId) {
-        // 当前所在文件夹不列（移进去等于没动）。
+      if (excluded.has(id)) {
         continue;
       }
       const kids = this.folderKids.get(id);
@@ -338,8 +435,50 @@ export struct BookmarksPanel {
   }
 
   private pickMoveTarget(id: string): void {
-    this.moveTargetId = id;
+    const ids = this.batchMoveMode
+      ? this.selectedIds.slice()
+      : (this.moveNodeId.length > 0 ? [this.moveNodeId] : []);
     this.pickerVisible = false;
+    this.moveNodeId = '';
+    this.moveNodeIsFolder = false;
+    this.moveExcludeRoot = '';
+    this.batchMoveMode = false;
+    if (ids.length === 0) {
+      return;
+    }
+    this.requestSeq += 1;
+    this.onCommand({
+      command: 'moveBookmarks',
+      ids: ids,
+      parentId: id,
+      index: this.folderKids.get(id) ?? 0,
+      requestId: this.requestSeq
+    });
+    this.getUIContext().getPromptAction().showToast({
+      message: `已移动 ${ids.length} 项`,
+      duration: 1500
+    });
+    this.selectedIds = [];
+    this.selectMode = false;
+    // 移动后当前层内容变化（书签离开 / 文件夹换父），主动重拉。
+    this.loadLayer(this.currentFolderId);
+  }
+
+  /** 从行菜单进入「移动到」（不进编辑表单）。 */
+  private openMove(node: BookmarkNode): void {
+    this.moveNodeId = node.id;
+    this.moveNodeIsFolder = node.type === 'folder';
+    // 文件夹移动：排除自身及子孙；书签移动：不排除（可移进任意文件夹）。
+    this.moveExcludeRoot = node.type === 'folder' ? node.id : '';
+    this.rowMenuId = '';
+    this.openFolderPicker();
+  }
+
+  /** 行菜单/列表里按 id 找节点（覆盖当前层 / 最近添加 / 搜索结果）。 */
+  private findNodeById(id: string): BookmarkNode | undefined {
+    return this.currentNodes.find((c: BookmarkNode): boolean => c.id === id) ??
+      this.recentNodes.find((c: BookmarkNode): boolean => c.id === id) ??
+      this.searchResults.find((c: BookmarkNode): boolean => c.id === id);
   }
 
   private openNode(node: BookmarkNode): void {
@@ -368,7 +507,7 @@ export struct BookmarksPanel {
 
   private openRowMenu(node: BookmarkNode): void {
     const cardW = 190;
-    const cardH = node.type === 'folder' ? 108 : 204;
+    const cardH = node.type === 'folder' ? 156 : 252;
     this.rowMenuX = Math.min(Math.max(this.menuPressX - cardW / 2, 12),
       Math.max(12, this.windowW - cardW - 12));
     this.rowMenuY = Math.min(this.menuPressY + 8, Math.max(12, this.windowH - cardH - 96));
@@ -396,7 +535,7 @@ export struct BookmarksPanel {
         return;
       }
       this.requestSeq += 1;
-      this.onCommand({ command: 'removeBookmark', id: node.id, requestId: this.requestSeq });
+      this.onCommand({ command: 'removeBookmarks', ids: [node.id], requestId: this.requestSeq });
       if (node.type === 'folder' && this.currentFolderId === node.id) {
         // 删除的是正浏览的文件夹：立即退回上一层。
         const parent = this.navStack.length > 0 ? this.navStack.pop() : undefined;
@@ -405,6 +544,94 @@ export struct BookmarksPanel {
       }
     }).catch((error: Error): void => {
     });
+  }
+
+  // -- 批量管理（选择模式 + 批量删除 / 批量移动） -------------------------------
+
+  private isSelected(id: string): boolean {
+    return this.selectedIds.indexOf(id) >= 0;
+  }
+
+  private toggleSelect(id: string): void {
+    const idx = this.selectedIds.indexOf(id);
+    if (idx >= 0) {
+      this.selectedIds.splice(idx, 1);
+    } else {
+      this.selectedIds.push(id);
+    }
+    // 重新赋值触发 @State 更新（ArkUI 对数组原地修改不重渲染）。
+    this.selectedIds = this.selectedIds.slice();
+  }
+
+  // 当前视图可见的节点 id（根级含「最近添加」平铺区）。
+  private visibleNodeIds(): string[] {
+    const ids: string[] = [];
+    for (const node of this.currentNodes) {
+      ids.push(node.id);
+    }
+    if (this.currentFolderId.length === 0) {
+      for (const node of this.recentNodes) {
+        ids.push(node.id);
+      }
+    }
+    return ids;
+  }
+
+  private selectAllVisible(): void {
+    this.selectedIds = this.visibleNodeIds();
+  }
+
+  private enterSelect(): void {
+    this.selectedIds = [];
+    this.selectMode = true;
+  }
+
+  private exitSelect(): void {
+    this.selectedIds = [];
+    this.selectMode = false;
+  }
+
+  // 批量删除：统一走复数命令 removeBookmarks（引擎契约带 ids[]，
+  // BookmarkOpResultEvent.failedIds 标识跳过的项）。单条删除也改用复数，
+  // 修正此前单数 removeBookmark 可能不被引擎识别的问题。
+  private batchRemove(): void {
+    if (this.selectedIds.length === 0) {
+      return;
+    }
+    const count = this.selectedIds.length;
+    const ids = this.selectedIds.slice();
+    this.getUIContext().getPromptAction().showDialog({
+      title: '删除所选',
+      message: `确定删除选中的 ${count} 项吗？文件夹会连同里面的内容一起删除。`,
+      buttons: [
+        { text: '取消', color: '#5F6368' },
+        { text: '删除', color: '#E24B4A' }
+      ]
+    }).then((result: promptAction.ShowDialogSuccessResponse): void => {
+      if (result.index !== 1) {
+        return;
+      }
+      this.requestSeq += 1;
+      this.onCommand({ command: 'removeBookmarks', ids: ids, requestId: this.requestSeq });
+      if (ids.indexOf(this.currentFolderId) >= 0) {
+        // 删掉的正好是当前文件夹：退回上一层。
+        const parent = this.navStack.length > 0 ? this.navStack.pop() : undefined;
+        this.currentFolderId = parent !== undefined ? parent : '';
+      }
+      this.selectedIds = [];
+      this.selectMode = false;
+      this.loadLayer(this.currentFolderId);
+    }).catch((error: Error): void => {
+    });
+  }
+
+  // 批量移动：打开文件夹选择器（batchMoveMode），选完发复数 moveBookmarks。
+  private batchMove(): void {
+    if (this.selectedIds.length === 0) {
+      return;
+    }
+    this.batchMoveMode = true;
+    this.openFolderPicker();
   }
 
   // -- 表单弹窗（添加/编辑书签、新建/重命名文件夹） -----------------------------
@@ -481,8 +708,8 @@ export struct BookmarksPanel {
         const kids = this.folderKids.get(this.moveTargetId);
         this.requestSeq += 1;
         this.onCommand({
-          command: 'moveBookmark',
-          id: this.editUuid,
+          command: 'moveBookmarks',
+          ids: [this.editUuid],
           parentId: this.moveTargetId,
           index: kids !== undefined ? kids : 0,
           requestId: this.requestSeq
@@ -652,34 +879,43 @@ export struct BookmarksPanel {
   // -- ⋯ 子菜单（CustomDialog）------------------------------------------------
 
   private showMoreSheet(): void {
+    this.moreItems.length = 0;
+    this.moreItems.push(
+      {
+        icon: $r('app.media.aura_plus'),
+        label: '手动添加书签',
+        action: (): void => {
+          this.openForm('addBookmark');
+        }
+      },
+      {
+        icon: $r('app.media.aura_import'),
+        label: '导入书签',
+        action: (): void => {
+          this.startImport();
+        }
+      },
+      {
+        icon: $r('app.media.aura_export'),
+        label: '导出书签',
+        action: (): void => {
+          this.startExport();
+        }
+      },
+      {
+        icon: $r('app.media.aura_check'),
+        label: '多选',
+        action: (): void => {
+          this.enterSelect();
+        }
+      }
+    );
     this.moreMenuDialog.open();
   }
 
   private moreMenuDialog: CustomDialogController = new CustomDialogController({
     builder: MoreMenuDialog({
-      items: [
-        {
-          icon: $r('app.media.aura_plus'),
-          label: '手动添加书签',
-          action: (): void => {
-            this.openForm('addBookmark');
-          }
-        },
-        {
-          icon: $r('app.media.aura_import'),
-          label: '导入书签',
-          action: (): void => {
-            this.startImport();
-          }
-        },
-        {
-          icon: $r('app.media.aura_export'),
-          label: '导出书签',
-          action: (): void => {
-            this.startExport();
-          }
-        }
-      ] as MoreMenuItemSpec[]
+      items: this.moreItems
     }),
     autoCancel: true,
     customStyle: true,
@@ -691,20 +927,42 @@ export struct BookmarksPanel {
   // -- UI ---------------------------------------------------------------------
 
   @Builder
+  private SelectBox(id: string) {
+    Column() {
+      if (this.isSelected(id)) {
+        Image($r('app.media.aura_check'))
+          .width(16)
+          .height(16)
+          .fillColor($r('app.color.on_accent'))
+      }
+    }
+    .width(26)
+    .height(26)
+    .borderRadius(13)
+    .border({ width: 2, color: this.isSelected(id) ? $r('app.color.accent_primary') : $r('app.color.divider') })
+    .backgroundColor(this.isSelected(id) ? $r('app.color.accent_primary') : Color.Transparent)
+    .justifyContent(FlexAlign.Center)
+  }
+
+  @Builder
   private FolderRow(node: BookmarkNode) {
     Column() {
       Row({ space: 12 }) {
-        Column() {
-          Image($r('app.media.aura_folder'))
-            .width(20)
-            .height(20)
-            .fillColor($r('app.color.text_primary'))
+        if (this.selectMode) {
+          this.SelectBox(node.id)
+        } else {
+          Column() {
+            Image($r('app.media.aura_folder'))
+              .width(20)
+              .height(20)
+              .fillColor($r('app.color.text_primary'))
+          }
+          .width(38)
+          .height(38)
+          .borderRadius(10)
+          .backgroundColor($r('app.color.surface_secondary'))
+          .justifyContent(FlexAlign.Center)
         }
-        .width(38)
-        .height(38)
-        .borderRadius(10)
-        .backgroundColor($r('app.color.surface_secondary'))
-        .justifyContent(FlexAlign.Center)
 
         Column({ space: 2 }) {
           Text(node.title.length > 0 ? node.title : '未命名文件夹')
@@ -721,30 +979,36 @@ export struct BookmarksPanel {
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
 
-        Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.aura_more'))
-            .width(18)
-            .height(18)
+        if (!this.selectMode) {
+          Button({ type: ButtonType.Circle }) {
+            Image($r('app.media.aura_more'))
+              .width(18)
+              .height(18)
+              .fillColor($r('app.color.icon_secondary'))
+          }
+          .width(40)
+          .height(40)
+          .backgroundColor(Color.Transparent)
+          .accessibilityText('文件夹操作')
+          .onClick(() => {
+            this.openRowMenu(node);
+          })
+
+          Image($r('app.media.aura_chevron'))
+            .width(16)
+            .height(16)
             .fillColor($r('app.color.icon_secondary'))
         }
-        .width(40)
-        .height(40)
-        .backgroundColor(Color.Transparent)
-        .accessibilityText('文件夹操作')
-        .onClick(() => {
-          this.openRowMenu(node);
-        })
-
-        Image($r('app.media.aura_chevron'))
-          .width(16)
-          .height(16)
-          .fillColor($r('app.color.icon_secondary'))
       }
       .width('100%')
       .constraintSize({ minHeight: 60 })
       .padding({ left: 16, right: 12, top: 8, bottom: 8 })
       .onClick(() => {
-        this.openNode(node);
+        if (this.selectMode) {
+          this.toggleSelect(node.id);
+        } else {
+          this.openNode(node);
+        }
       })
     }
     .width('100%')
@@ -760,10 +1024,14 @@ export struct BookmarksPanel {
   private BookmarkRow(node: BookmarkNode, index: number, total: number) {
     Column() {
       Row({ space: 12 }) {
-        Image($r('app.media.aura_bookmark'))
-          .width(22)
-          .height(22)
-          .fillColor($r('app.color.icon_primary'))
+        if (this.selectMode) {
+          this.SelectBox(node.id)
+        } else {
+          Image($r('app.media.aura_bookmark'))
+            .width(22)
+            .height(22)
+            .fillColor($r('app.color.icon_primary'))
+        }
 
         Column({ space: 2 }) {
           Text(node.title.length > 0 ? node.title : displayUrl(node.url ?? ''))
@@ -782,25 +1050,31 @@ export struct BookmarksPanel {
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
 
-        Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.aura_more'))
-            .width(18)
-            .height(18)
-            .fillColor($r('app.color.icon_secondary'))
+        if (!this.selectMode) {
+          Button({ type: ButtonType.Circle }) {
+            Image($r('app.media.aura_more'))
+              .width(18)
+              .height(18)
+              .fillColor($r('app.color.icon_secondary'))
+          }
+          .width(40)
+          .height(40)
+          .backgroundColor(Color.Transparent)
+          .accessibilityText('书签操作')
+          .onClick(() => {
+            this.openRowMenu(node);
+          })
         }
-        .width(40)
-        .height(40)
-        .backgroundColor(Color.Transparent)
-        .accessibilityText('书签操作')
-        .onClick(() => {
-          this.openRowMenu(node);
-        })
       }
       .width('100%')
       .constraintSize({ minHeight: 60 })
       .padding({ left: 16, right: 6, top: 8, bottom: 8 })
       .onClick(() => {
-        this.openNode(node);
+        if (this.selectMode) {
+          this.toggleSelect(node.id);
+        } else {
+          this.openNode(node);
+        }
       })
 
       if (index < total - 1) {
@@ -852,22 +1126,20 @@ export struct BookmarksPanel {
         Column() {
           if (this.rowMenuIsFolder) {
             this.RowMenuRow($r('app.media.aura_edit'), '重命名', (): void => {
-              const id = this.rowMenuId;
-              const node = this.currentNodes.find((candidate: BookmarkNode): boolean =>
-                candidate.id === id) ??
-                this.recentNodes.find((candidate: BookmarkNode): boolean =>
-                  candidate.id === id);
+              const node = this.findNodeById(this.rowMenuId);
               this.rowMenuId = '';
               if (node !== undefined) {
                 this.openForm('renameFolder', node);
               }
             }, 0)
+            this.RowMenuRow($r('app.media.aura_folder'), '移动到', (): void => {
+              const node = this.findNodeById(this.rowMenuId);
+              if (node !== undefined) {
+                this.openMove(node);
+              }
+            }, 0)
             this.RowMenuRow($r('app.media.aura_trash'), '删除', (): void => {
-              const id = this.rowMenuId;
-              const node = this.currentNodes.find((candidate: BookmarkNode): boolean =>
-                candidate.id === id) ??
-                this.recentNodes.find((candidate: BookmarkNode): boolean =>
-                  candidate.id === id);
+              const node = this.findNodeById(this.rowMenuId);
               this.rowMenuId = '';
               if (node !== undefined) {
                 this.removeWithConfirm(node);
@@ -875,44 +1147,34 @@ export struct BookmarksPanel {
             }, 0)
           } else {
             this.RowMenuRow($r('app.media.aura_window'), '在新标签页打开', (): void => {
-              const id = this.rowMenuId;
-              const node = this.currentNodes.find((candidate: BookmarkNode): boolean =>
-                candidate.id === id) ??
-                this.recentNodes.find((candidate: BookmarkNode): boolean =>
-                  candidate.id === id);
+              const node = this.findNodeById(this.rowMenuId);
               this.rowMenuId = '';
               if (node !== undefined) {
                 this.openNode(node);
               }
             }, 0)
             this.RowMenuRow($r('app.media.aura_edit'), '编辑', (): void => {
-              const id = this.rowMenuId;
-              const node = this.currentNodes.find((candidate: BookmarkNode): boolean =>
-                candidate.id === id) ??
-                this.recentNodes.find((candidate: BookmarkNode): boolean =>
-                  candidate.id === id);
+              const node = this.findNodeById(this.rowMenuId);
               this.rowMenuId = '';
               if (node !== undefined) {
                 this.openForm('editBookmark', node);
               }
             }, 0)
+            this.RowMenuRow($r('app.media.aura_folder'), '移动到', (): void => {
+              const node = this.findNodeById(this.rowMenuId);
+              if (node !== undefined) {
+                this.openMove(node);
+              }
+            }, 0)
             this.RowMenuRow($r('app.media.aura_copy'), '复制链接', (): void => {
-              const id = this.rowMenuId;
-              const node = this.currentNodes.find((candidate: BookmarkNode): boolean =>
-                candidate.id === id) ??
-                this.recentNodes.find((candidate: BookmarkNode): boolean =>
-                  candidate.id === id);
+              const node = this.findNodeById(this.rowMenuId);
               this.rowMenuId = '';
               if (node !== undefined && node.url !== undefined) {
                 this.copyLink(node.url);
               }
             }, 0)
             this.RowMenuRow($r('app.media.aura_trash'), '删除', (): void => {
-              const id = this.rowMenuId;
-              const node = this.currentNodes.find((candidate: BookmarkNode): boolean =>
-                candidate.id === id) ??
-                this.recentNodes.find((candidate: BookmarkNode): boolean =>
-                  candidate.id === id);
+              const node = this.findNodeById(this.rowMenuId);
               this.rowMenuId = '';
               if (node !== undefined) {
                 this.removeWithConfirm(node);
@@ -974,45 +1236,6 @@ export struct BookmarksPanel {
               })
           }
           .width('100%')
-
-          if (this.dialogMode === 'editBookmark' || this.dialogMode === 'renameFolder') {
-            // 「移动到」入口：显示当前所在文件夹，点开选择器换位置。
-            Column({ space: 6 }) {
-              Text('所在文件夹')
-                .fontSize(13)
-                .fontColor($r('app.color.text_secondary'))
-                .width('100%')
-              Row({ space: 8 }) {
-                Image($r('app.media.aura_folder'))
-                  .width(18)
-                  .height(18)
-                  .fillColor($r('app.color.icon_secondary'))
-                Text(this.moveTargetId.length > 0
-                  ? this.folderDisplayPath(this.moveTargetId)
-                  : (this.folderTitle.has(this.formParentId)
-                    ? this.folderDisplayPath(this.formParentId)
-                    : (this.formParentId === this.mobileFolderId ? '移动设备书签' : '当前文件夹')))
-                  .fontSize(15)
-                  .fontColor($r('app.color.text_primary'))
-                  .maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                  .layoutWeight(1)
-                Image($r('app.media.aura_chevron'))
-                  .width(14)
-                  .height(14)
-                  .fillColor($r('app.color.icon_secondary'))
-              }
-              .width('100%')
-              .height(46)
-              .padding({ left: 14, right: 12 })
-              .borderRadius(12)
-              .backgroundColor($r('app.color.surface_secondary'))
-              .onClick(() => {
-                this.openFolderPicker();
-              })
-            }
-            .width('100%')
-          }
 
           if (this.dialogMode === 'addBookmark' || this.dialogMode === 'editBookmark') {
             Column({ space: 6 }) {
@@ -1148,32 +1371,127 @@ export struct BookmarksPanel {
     }
   }
 
-  build() {
-    GlassPage({
-      title: '书签',
-      scrollers: [this.listScroller],
-      menus: {
-        value: [
-          {
-            content: {
-              icon: $r('app.media.aura_plus'),
-              label: '新建文件夹',
-              isEnabled: true,
-              action: (): void => {
-                this.openForm('addFolder');
-              }
+  // 悬浮批量操作条：绝对定位于 body Stack 底部，自绘仿玻璃药丸（float_bar_bg +
+  // 细描边 + 投影）。**宽度随内容走**：外层全宽 Row 只负责底部定位与水平居中，
+  // 自身透明且透传点击；内层 Scroll 不再设 minWidth，只约束 maxWidth 100%，
+  // 于是只有一个「全选」时就是一小颗药丸，四周/下方都露出列表与页面底色，
+  // 不会被拉成横贯屏幕的白色长条（用户反馈「和长」「有遮罩」）。
+  // 选中后出现「删除 / 移动」，药丸随之变长；极端宽字符靠横向 Scroll 兜底。
+  @Builder
+  private BatchActionBar() {
+    if (this.selectMode) {
+      Stack({ alignContent: Alignment.Center }) {
+        Scroll() {
+          Row({ space: 8 }) {
+            Row({ space: 6 }) {
+              Image($r('app.media.aura_check'))
+                .width(16)
+                .height(16)
+                .fillColor($r('app.color.accent_primary'))
+              Text('全选')
+                .fontSize(14)
+                .fontColor($r('app.color.accent_primary'))
             }
-          },
-          {
-            content: {
-              icon: $r('app.media.aura_more'),
-              label: '更多操作',
-              action: (): void => {
-                this.showMoreSheet();
+            .height(42)
+            .padding({ left: 16, right: 16 })
+            .borderRadius(21)
+            .onClick(() => {
+              this.selectAllVisible();
+            })
+
+            if (this.selectedIds.length > 0) {
+              Row({ space: 6 }) {
+                Image($r('app.media.aura_trash'))
+                  .width(16)
+                  .height(16)
+                  .fillColor($r('app.color.danger'))
+                Text(`删除 (${this.selectedIds.length})`)
+                  .fontSize(14)
+                  .fontColor($r('app.color.danger'))
               }
+              .height(42)
+              .padding({ left: 16, right: 16 })
+              .borderRadius(21)
+              .onClick(() => {
+                this.batchRemove();
+              })
+
+              Row({ space: 6 }) {
+                Image($r('app.media.aura_folder'))
+                  .width(16)
+                  .height(16)
+                  .fillColor($r('app.color.accent_primary'))
+                Text(`移动 (${this.selectedIds.length})`)
+                  .fontSize(14)
+                  .fontColor($r('app.color.accent_primary'))
+              }
+              .height(42)
+              .padding({ left: 16, right: 16 })
+              .borderRadius(21)
+              .onClick(() => {
+                this.batchMove();
+              })
             }
           }
-        ]
+          .justifyContent(FlexAlign.Center)
+          .padding({ left: 8, right: 8 })
+        }
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Off)
+        .constraintSize({ maxWidth: '100%' })
+        .clip(true)
+        .backgroundColor($r('app.color.float_bar_bg'))
+        // 不用 backgroundBlurStyle(Thin)：系统 Thin 材质会再叠一层白，实测把 60%
+        // 白色药丸渲染成不透明纯白（254,254,254），用户看到的就是"不透"。
+        .border({ width: 0.5, color: $r('app.color.divider') })
+        .borderRadius(23)
+        .shadow({ radius: 18, color: $r('app.color.shadow'), offsetY: 6 })
+        .padding({ top: 5, bottom: 5 })
+      }
+      .width('100%')
+      .position({ bottom: glassBottomInsetVp() })
+      .hitTestBehavior(HitTestMode.Transparent)
+    }
+  }
+
+  build() {
+    GlassPage({
+      title: this.selectMode ? `已选 ${this.selectedIds.length} 项` : '书签',
+      scrollers: [this.listScroller],
+      menus: {
+        value: this.selectMode
+          ? [
+            {
+              content: {
+                icon: $r('app.media.aura_close'),
+                label: '取消',
+                action: (): void => {
+                  this.exitSelect();
+                }
+              }
+            }
+          ]
+          : [
+            {
+              content: {
+                icon: $r('app.media.aura_plus'),
+                label: '新建文件夹',
+                isEnabled: true,
+                action: (): void => {
+                  this.openForm('addFolder');
+                }
+              }
+            },
+            {
+              content: {
+                icon: $r('app.media.aura_more'),
+                label: '更多操作',
+                action: (): void => {
+                  this.showMoreSheet();
+                }
+              }
+            }
+          ]
       },
       onBack: (): void => {
         this.handleBack();
@@ -1228,6 +1546,9 @@ export struct BookmarksPanel {
         .clip(true)
         }
         .width('100%')
+        // 末尾留白写在「滚动内容」里而不是视口上：列表铺满全高、不留死区，
+        // 最后一行也能滚到悬浮药丸之上（见 BatchActionBar 注释）。
+        .padding({ bottom: this.selectMode ? (56 + glassBottomInsetVp()) : 0 })
         }
         .layoutWeight(1)
         .padding({ top: 12 })
@@ -1290,20 +1611,31 @@ export struct BookmarksPanel {
           }
         }
         .width('100%')
+        // 同上：底部占位进内容，视口保持全高。
+        .padding({ bottom: this.selectMode ? (56 + glassBottomInsetVp()) : 0 })
         }
         .layoutWeight(1)
         .padding({ top: 12 })
         .scrollBar(BarState.Off)
         .align(Alignment.TopStart)
       }
+
+      // 批量操作条改为悬浮胶囊（见 BatchActionBar()，挂 body Stack，不占流式高度）。
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 16, right: 16, top: glassHeaderInsetVp() })
+    .padding({
+      left: 16,
+      right: 16,
+      top: glassHeaderInsetVp()
+      // 选择态底部占位不写在这里：会缩短滚动视口 → 视口边缘出现切一半的行
+      // + 底部死区（用户反馈的"有遮罩"）。改为写进滚动内容末尾。
+    })
 
     this.RowMenuOverlay()
     this.FormDialog()
     this.FolderPicker()
+    this.BatchActionBar()
     }
     .width('100%')
     .height('100%')

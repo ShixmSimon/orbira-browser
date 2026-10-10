@@ -65,6 +65,10 @@
       "value": "#E029292C"
     },
     {
+      "name": "float_bar_bg",
+      "value": "#9929292C"
+    },
+    {
       "name": "menu_glass",
       "value": "#FF29292C"
     },

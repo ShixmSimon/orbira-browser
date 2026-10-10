@@ -5,10 +5,12 @@
  * 'auraPanelHistory'）；删除或别处变化后引擎推 historyChanged
  * （转存到 'auraPanelEvent'），本页据此重拉。
  */
-import { BrowserCommandPayload, HistoryItem } from 'engine';
+import { BrowserCommandPayload, HistoryItem, HistoryVisitRef } from 'engine';
 import { displayUrl, dayGroupLabel, formatClock } from './PanelBridge';
 import { AuraSectionLabel } from './LumieKit';
-import { GlassPage, glassHeaderInsetVp } from './GlassPage';
+import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
+import { promptAction } from '@kit.ArkUI';
+import { MoreMenuDialog, MoreMenuItemSpec } from './MoreMenuDialog';
 
 interface HistoryGroup {
   label: string;
@@ -49,6 +51,12 @@ export struct HistoryPanel {
   @State private filteredGroups: HistoryGroup[] = [];
   private requestSeq: number = 0;
   private retryTimer: number = -1;
+
+  // 批量管理：选择模式 + 已选历史项（以 url|visitTime 为 key）。
+  @State private selectMode: boolean = false;
+  @State private selectedHistoryKeys: string[] = [];
+  // ⋯ 菜单项（原地 mutate，让「多选」按需出现）。
+  private moreItems: MoreMenuItemSpec[] = [];
 
   aboutToAppear(): void {
     // Seed from storage first: a @StorageLink does not fire @Watch for its
@@ -114,14 +122,135 @@ export struct HistoryPanel {
     });
   }
 
+  // -- 批量管理 ----------------------------------------------------------------
+
+  private historyKey(item: HistoryItem): string {
+    return `${item.url}|${item.visitTime}`;
+  }
+
+  private isSelectedHistory(key: string): boolean {
+    return this.selectedHistoryKeys.indexOf(key) >= 0;
+  }
+
+  private toggleHistory(item: HistoryItem): void {
+    const key = this.historyKey(item);
+    const idx = this.selectedHistoryKeys.indexOf(key);
+    if (idx >= 0) {
+      this.selectedHistoryKeys.splice(idx, 1);
+    } else {
+      this.selectedHistoryKeys.push(key);
+    }
+    this.selectedHistoryKeys = this.selectedHistoryKeys.slice();
+  }
+
+  private allHistoryKeys(): string[] {
+    const keys: string[] = [];
+    for (const item of this.items) {
+      keys.push(this.historyKey(item));
+    }
+    return keys;
+  }
+
+  private enterHistorySelect(): void {
+    this.selectedHistoryKeys = [];
+    this.selectMode = true;
+  }
+
+  private exitHistorySelect(): void {
+    this.selectedHistoryKeys = [];
+    this.selectMode = false;
+  }
+
+  private selectAllHistory(): void {
+    this.selectedHistoryKeys = this.allHistoryKeys();
+  }
+
+  private batchRemoveHistory(): void {
+    if (this.selectedHistoryKeys.length === 0) {
+      return;
+    }
+    const keys = this.selectedHistoryKeys;
+    const items = this.items.filter((item: HistoryItem): boolean =>
+      keys.indexOf(this.historyKey(item)) >= 0);
+    const count = items.length;
+    this.getUIContext().getPromptAction().showDialog({
+      title: '删除所选',
+      message: `确定删除选中的 ${count} 条历史记录吗？`,
+      buttons: [
+        { text: '取消', color: '#5F6368' },
+        { text: '删除', color: '#E24B4A' }
+      ]
+    }).then((result: promptAction.ShowDialogSuccessResponse): void => {
+      if (result.index !== 1) {
+        return;
+      }
+      const payloadItems: HistoryVisitRef[] = items.map(
+        (item: HistoryItem): HistoryVisitRef => ({ url: item.url, visitTime: item.visitTime })
+      );
+      this.onCommand({ command: 'removeHistoryItems', items: payloadItems });
+      this.selectedHistoryKeys = [];
+      this.selectMode = false;
+    }).catch((error: Error): void => {
+    });
+  }
+
+  private showMoreSheet(): void {
+    this.moreItems.length = 0;
+    this.moreItems.push(
+      {
+        icon: $r('app.media.aura_check'),
+        label: '多选',
+        action: (): void => {
+          this.enterHistorySelect();
+        }
+      }
+    );
+    this.moreMenuDialog.open();
+  }
+
+  private moreMenuDialog: CustomDialogController = new CustomDialogController({
+    builder: MoreMenuDialog({
+      items: this.moreItems
+    }),
+    autoCancel: true,
+    customStyle: true,
+    maskColor: Color.Transparent,
+    alignment: DialogAlignment.TopEnd,
+    // ⚠️ 用 glassTopSafeVp()（= 状态栏高）而不是 glassHeaderInsetVp()：后者还含
+    // 标题行 56 + 渐隐带 16，菜单卡会被推到列表中部（用户反馈「位置异常」）。
+    offset: { dx: -12, dy: glassTopSafeVp() + 62 }
+  });
+
+  @Builder
+  private SelectBoxHistory(key: string) {
+    Column() {
+      if (this.isSelectedHistory(key)) {
+        Image($r('app.media.aura_check'))
+          .width(16)
+          .height(16)
+          .fillColor($r('app.color.on_accent'))
+      }
+    }
+    .width(26)
+    .height(26)
+    .borderRadius(13)
+    .border({ width: 2, color: this.isSelectedHistory(key) ? $r('app.color.accent_primary') : $r('app.color.divider') })
+    .backgroundColor(this.isSelectedHistory(key) ? $r('app.color.accent_primary') : Color.Transparent)
+    .justifyContent(FlexAlign.Center)
+  }
+
   @Builder
   private HistoryRow(item: HistoryItem, isLast: boolean) {
     Column() {
       Row({ space: 12 }) {
-        Image($r('app.media.aura_clock'))
-          .width(22)
-          .height(22)
-          .fillColor($r('app.color.icon_primary'))
+        if (this.selectMode) {
+          this.SelectBoxHistory(this.historyKey(item))
+        } else {
+          Image($r('app.media.aura_clock'))
+            .width(22)
+            .height(22)
+            .fillColor($r('app.color.icon_primary'))
+        }
 
         Column({ space: 2 }) {
           Text(item.title.length > 0 ? item.title : displayUrl(item.url))
@@ -140,25 +269,31 @@ export struct HistoryPanel {
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
 
-        Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.aura_close'))
-            .width(18)
-            .height(18)
-            .fillColor($r('app.color.icon_secondary'))
+        if (!this.selectMode) {
+          Button({ type: ButtonType.Circle }) {
+            Image($r('app.media.aura_close'))
+              .width(18)
+              .height(18)
+              .fillColor($r('app.color.icon_secondary'))
+          }
+          .width(40)
+          .height(40)
+          .backgroundColor(Color.Transparent)
+          .accessibilityText('删除这条记录')
+          .onClick(() => {
+            this.removeItem(item);
+          })
         }
-        .width(40)
-        .height(40)
-        .backgroundColor(Color.Transparent)
-        .accessibilityText('删除这条记录')
-        .onClick(() => {
-          this.removeItem(item);
-        })
       }
       .width('100%')
       .constraintSize({ minHeight: 60 })
       .padding({ left: 16, right: 6, top: 8, bottom: 8 })
       .onClick(() => {
-        this.openItem(item);
+        if (this.selectMode) {
+          this.toggleHistory(item);
+        } else {
+          this.openItem(item);
+        }
       })
 
       if (!isLast) {
@@ -192,10 +327,113 @@ export struct HistoryPanel {
     this.filteredGroups = out;
   }
 
+  // 悬浮批量操作条：绝对定位于 body Stack 底部，自绘仿玻璃药丸（float_bar_bg +
+  // 细描边 + 投影）。**宽度随内容走**：外层全宽 Row 只负责底部定位与水平居中，
+  // 自身透明且透传点击；内层 Scroll 不设 minWidth，只约束 maxWidth 100%，
+  // 只有一个「全选」时就是一小颗药丸，四周/下方露出列表与页面底色，不会被拉成
+  // 横贯屏幕的白色长条。选中后出现「删除」，药丸随之变长，横向 Scroll 兜底。
+  @Builder
+  private BatchActionBar() {
+    if (this.selectMode) {
+      Stack({ alignContent: Alignment.Center }) {
+        Scroll() {
+          Row({ space: 8 }) {
+            Row({ space: 6 }) {
+              Image($r('app.media.aura_check'))
+                .width(16)
+                .height(16)
+                .fillColor($r('app.color.accent_primary'))
+              Text('全选')
+                .fontSize(14)
+                .fontColor($r('app.color.accent_primary'))
+            }
+            .height(42)
+            .padding({ left: 16, right: 16 })
+            .borderRadius(21)
+            .onClick(() => {
+              this.selectAllHistory();
+            })
+
+            if (this.selectedHistoryKeys.length > 0) {
+              Row({ space: 6 }) {
+                Image($r('app.media.aura_trash'))
+                  .width(16)
+                  .height(16)
+                  .fillColor($r('app.color.danger'))
+                Text(`删除 (${this.selectedHistoryKeys.length})`)
+                  .fontSize(14)
+                  .fontColor($r('app.color.danger'))
+              }
+              .height(42)
+              .padding({ left: 16, right: 16 })
+              .borderRadius(21)
+              .onClick(() => {
+                this.batchRemoveHistory();
+              })
+            }
+          }
+          .justifyContent(FlexAlign.Center)
+          .padding({ left: 8, right: 8 })
+        }
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Off)
+        .constraintSize({ maxWidth: '100%' })
+        .clip(true)
+        .backgroundColor($r('app.color.float_bar_bg'))
+        // 不用 backgroundBlurStyle(Thin)：系统 Thin 材质会再叠一层白，实测把 60%
+        // 白色药丸渲染成不透明纯白（254,254,254），用户看到的就是"不透"。
+        .border({ width: 0.5, color: $r('app.color.divider') })
+        .borderRadius(23)
+        .shadow({ radius: 18, color: $r('app.color.shadow'), offsetY: 6 })
+        .padding({ top: 5, bottom: 5 })
+      }
+      .width('100%')
+      .position({ bottom: glassBottomInsetVp() })
+      .hitTestBehavior(HitTestMode.Transparent)
+    }
+  }
+
     build() {
     // 标题栏交给 GlassPage（落在 Navigation 标题栏里 —— HarmonyOS 7 之后
     // 只有这块区域 + 弹窗类还在沉浸光感的生效范围内）。
-    GlassPage({ title: '历史', scrollers: [this.listScroller], onBack: (): void => { this.onBack(); } }) {
+    GlassPage({
+      title: this.selectMode ? `已选 ${this.selectedHistoryKeys.length} 项` : '历史',
+      scrollers: [this.listScroller],
+      menus: {
+        value: this.selectMode
+          ? [
+            {
+              content: {
+                icon: $r('app.media.aura_close'),
+                label: '取消',
+                action: (): void => {
+                  this.exitHistorySelect();
+                }
+              }
+            }
+          ]
+          : [
+            {
+              content: {
+                icon: $r('app.media.aura_more'),
+                label: '更多操作',
+                action: (): void => {
+                  this.showMoreSheet();
+                }
+              }
+            }
+          ]
+      },
+      onBack: (): void => {
+        // 选择态下返回键先退出多选，别直接退页面。
+        if (this.selectMode) {
+          this.exitHistorySelect();
+          return;
+        }
+        this.onBack();
+      }
+    }) {
+    Stack({ alignContent: Alignment.TopStart }) {
     Column() {
       if (this.items.length === 0) {
         Column() {
@@ -258,17 +496,25 @@ export struct HistoryPanel {
           }
           .width('100%')
           // 大标题带：滚动内容穿过「历史」大标题时逐渐虚化（见 GlassPage 文件头）。
-          .padding({ top: glassHeaderInsetVp() })
+          // 选择态末尾留白写在滚动内容里（不是视口），列表铺满全高无死区。
+          .padding({ top: glassHeaderInsetVp(), bottom: this.selectMode ? (56 + glassBottomInsetVp()) : 0 })
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)
         .align(Alignment.TopStart)
       }
+
+      // 批量操作条改为悬浮胶囊（见 BatchActionBar()，挂 body Stack，不占流式高度）。
     }
     .width('100%')
     .height('100%')
     .padding({ left: 16, right: 16 })
     .backgroundColor($r('app.color.page_background'))
+
+    this.BatchActionBar()
+    }
+    .width('100%')
+    .height('100%')
     }
   }
 }

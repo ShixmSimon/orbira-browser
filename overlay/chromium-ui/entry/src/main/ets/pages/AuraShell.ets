@@ -874,8 +874,11 @@ struct AuraShell {
     }
 
     if (event.event === 'savedPasswords') {
+      const sp = shellEvent<SavedPasswordsEvent>(event);
+      // 必须连同 requestId 一起存回（对齐 bookmarkList 的 {requestId,nodes}），
+      // 否则面板 onPasswordsPayload 的 seq 校验永远对不上、回包被丢弃、卡"加载中"。
       AppStorage.setOrCreate('auraPanelPasswords',
-        JSON.stringify(shellEvent<SavedPasswordsEvent>(event).items ?? []));
+        JSON.stringify({ requestId: sp.requestId ?? -1, items: sp.items ?? [] }));
       return;
     }
     if (event.event === 'passwordRevealed') {

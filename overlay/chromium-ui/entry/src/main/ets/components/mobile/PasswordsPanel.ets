@@ -12,7 +12,8 @@ import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { userAuth } from '@kit.UserAuthenticationKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
-import { GlassPage, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
+import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
+import { promptAction } from '@kit.ArkUI';
 import { MoreMenuDialog, MoreMenuItemSpec } from './MoreMenuDialog';
 import {
   BrowserCommandPayload,
@@ -63,8 +64,8 @@ export struct PasswordsPanel {
   onClose: () => void = (): void => {};
 
   @State private items: SavedPasswordItem[] = [];
-  // 验证门优先（真机 11:09 复验：未授权时 getSavedPasswords 引擎静默不回包，
-  // 试探法直接卡"加载中"——回退为显式验证门，验证成功后 reload 必有数据）。
+  // 验证门优先：进入先做本机验证，通过后 passwordAuthGranted + reload，
+  // 引擎必有数据（requestId 回环已对齐书签，不会卡"加载中"）。
   @State private verified: boolean = false;
   private retryTimer: number = -1;
   private retryCount: number = 0;
@@ -90,6 +91,8 @@ export struct PasswordsPanel {
   private pendingImportPath: string = '';
   private pendingExportPath: string = '';
   private pendingExportRequestId: number = 0;
+  // ⋯ 菜单项（原地 mutate，让「批量管理」按需出现）。
+  private moreItems: MoreMenuItemSpec[] = [];
 
   aboutToDisappear(): void {
     if (this.retryTimer !== -1) {
@@ -558,6 +561,68 @@ export struct PasswordsPanel {
     });
   }
 
+  // -- 批量管理 ----------------------------------------------------------------
+
+  private isSelectedPwd(id: string): boolean {
+    return this.selectedPwdIds.indexOf(id) >= 0;
+  }
+
+  private togglePwd(item: SavedPasswordItem): void {
+    const idx = this.selectedPwdIds.indexOf(item.id);
+    if (idx >= 0) {
+      this.selectedPwdIds.splice(idx, 1);
+    } else {
+      this.selectedPwdIds.push(item.id);
+    }
+    this.selectedPwdIds = this.selectedPwdIds.slice();
+  }
+
+  private enterPwdSelect(): void {
+    this.selectedPwdIds = [];
+    this.selectMode = true;
+  }
+
+  private exitPwdSelect(): void {
+    this.selectedPwdIds = [];
+    this.selectMode = false;
+  }
+
+  private selectAllPwd(): void {
+    const ids: string[] = [];
+    for (const item of this.filteredPasswords) {
+      ids.push(item.id);
+    }
+    this.selectedPwdIds = ids;
+  }
+
+  // 批量删除：循环发 deletePassword（引擎无复数删除命令）。每条回包触发
+  // onResultPayload 的 deletePassword 分支（reload），列表自动刷新。
+  private batchRemovePwd(): void {
+    if (this.selectedPwdIds.length === 0) {
+      return;
+    }
+    const ids = this.selectedPwdIds.slice();
+    this.getUIContext().getPromptAction().showDialog({
+      title: '删除所选',
+      message: `确定删除选中的 ${ids.length} 条密码吗？删除后不能恢复。`,
+      buttons: [
+        { text: '取消', color: '#5F6368' },
+        { text: '删除', color: '#E24B4A' }
+      ]
+    }).then((result: promptAction.ShowDialogSuccessResponse): void => {
+      if (result.index !== 1) {
+        return;
+      }
+      for (const id of ids) {
+        this.requestSeq += 1;
+        this.onCommand({ command: 'deletePassword', requestId: this.requestSeq, id: id });
+      }
+      this.selectedPwdIds = [];
+      this.selectMode = false;
+    }).catch((error: Error): void => {
+    });
+  }
+
   // -- 导入 / 导出（对齐 Lumie v2） -------------------------------------------
 
   // ⋯「导入密码」入口：先弹自绘弹窗（格式说明 + 增量/覆盖），选完模式
@@ -664,13 +729,35 @@ export struct PasswordsPanel {
   }
 
   @Builder
+  private SelectBoxPwd(id: string) {
+    Column() {
+      if (this.isSelectedPwd(id)) {
+        Image($r('app.media.aura_check'))
+          .width(16)
+          .height(16)
+          .fillColor($r('app.color.on_accent'))
+      }
+    }
+    .width(26)
+    .height(26)
+    .borderRadius(13)
+    .border({ width: 2, color: this.isSelectedPwd(id) ? $r('app.color.accent_primary') : $r('app.color.divider') })
+    .backgroundColor(this.isSelectedPwd(id) ? $r('app.color.accent_primary') : Color.Transparent)
+    .justifyContent(FlexAlign.Center)
+  }
+
+  @Builder
   private PasswordRow(item: SavedPasswordItem, index: number) {
     Column() {
       Row({ space: 12 }) {
-        Image($r('app.media.aura_lock'))
-          .width(22)
-          .height(22)
-          .fillColor($r('app.color.icon_primary'))
+        if (this.selectMode) {
+          this.SelectBoxPwd(item.id)
+        } else {
+          Image($r('app.media.aura_lock'))
+            .width(22)
+            .height(22)
+            .fillColor($r('app.color.icon_primary'))
+        }
 
         Column({ space: 2 }) {
           Text(displayUrl(item.origin))
@@ -689,13 +776,19 @@ export struct PasswordsPanel {
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
 
-        AuraChevron()
+        if (!this.selectMode) {
+          AuraChevron()
+        }
       }
       .width('100%')
       .constraintSize({ minHeight: 60 })
       .padding({ left: 16, right: 16, top: 8, bottom: 8 })
       .onClick(() => {
-        this.openDetail(item);
+        if (this.selectMode) {
+          this.togglePwd(item);
+        } else {
+          this.openDetail(item);
+        }
       })
 
       if (index < this.items.length - 1) {
@@ -709,79 +802,86 @@ export struct PasswordsPanel {
 
   @Builder
   private ListView() {
-    if (this.items.length === 0) {
-      Column({ space: 6 }) {
-        Text(this.loading ? '加载中…' : '还没有保存的密码')
-          .fontSize(15)
-          .fontColor($r('app.color.text_secondary'))
-        if (!this.loading) {
-          Text('在网页上登录时，浏览器会询问是否保存密码。')
-            .fontSize(13)
+    Column() {
+      if (this.items.length === 0) {
+        Column({ space: 6 }) {
+          Text(this.loading ? '加载中…' : '还没有保存的密码')
+            .fontSize(15)
             .fontColor($r('app.color.text_secondary'))
-        }
-      }
-      .width('100%')
-      .layoutWeight(1)
-      .justifyContent(FlexAlign.Center)
-    } else {
-      Scroll(this.listScroller) {
-        Column() {
-          Row({ space: 8 }) {
-            Image($r('app.media.chromium_search'))
-              .width(16)
-              .height(16)
-              .fillColor($r('app.color.icon_secondary'))
-            TextInput({ text: this.searchText, placeholder: '搜索密码' })
-              .layoutWeight(1)
-              .height(38)
-              .fontSize(14)
-              .fontColor($r('app.color.text_primary'))
-              .placeholderColor($r('app.color.text_secondary'))
-              .backgroundColor(Color.Transparent)
-              .onChange((value: string) => {
-                this.searchText = value;
-                this.recomputeFiltered();
-              })
-          }
-          .width('100%')
-          .height(40)
-          .borderRadius(20)
-          .backgroundColor($r('app.color.surface_secondary'))
-          .padding({ left: 12, right: 12 })
-          .margin({ bottom: 10 })
-
-          if (this.filteredPasswords.length === 0) {
-            Text('没有匹配的密码')
-              .fontSize(14)
+          if (!this.loading) {
+            Text('在网页上登录时，浏览器会询问是否保存密码。')
+              .fontSize(13)
               .fontColor($r('app.color.text_secondary'))
-              .width('100%')
-              .textAlign(TextAlign.Center)
-              .margin({ top: 40 })
           }
-          Column() {
-            ForEach(this.filteredPasswords, (item: SavedPasswordItem, index: number) => {
-              this.PasswordRow(item, index)
-            }, (item: SavedPasswordItem): string => item.id)
-          }
-          .width('100%')
-          .borderRadius(16)
-          .backgroundColor($r('app.color.card_background'))
-          .clip(true)
-
-          Text('在网页上登录时，浏览器会询问是否保存密码；右上角可以导入、导出。')
-            .fontSize(12)
-            .fontColor($r('app.color.text_secondary'))
-            .width('100%')
-            .padding({ left: 4, right: 4, top: 10 })
         }
         .width('100%')
-        // 大标题带：滚动内容穿过「密码」大标题时逐渐虚化（见 GlassPage 文件头）。
-        .padding({ top: glassHeaderInsetVp() })
+        .layoutWeight(1)
+        .justifyContent(FlexAlign.Center)
+      } else {
+        Scroll(this.listScroller) {
+          Column() {
+            Row({ space: 8 }) {
+              Image($r('app.media.chromium_search'))
+                .width(16)
+                .height(16)
+                .fillColor($r('app.color.icon_secondary'))
+              TextInput({ text: this.searchText, placeholder: '搜索密码' })
+                .layoutWeight(1)
+                .height(38)
+                .fontSize(14)
+                .fontColor($r('app.color.text_primary'))
+                .placeholderColor($r('app.color.text_secondary'))
+                .backgroundColor(Color.Transparent)
+                .onChange((value: string) => {
+                  this.searchText = value;
+                  this.recomputeFiltered();
+                })
+            }
+            .width('100%')
+            .height(40)
+            .borderRadius(20)
+            .backgroundColor($r('app.color.surface_secondary'))
+            .padding({ left: 12, right: 12 })
+            .margin({ bottom: 10 })
+
+            if (this.filteredPasswords.length === 0) {
+              Text('没有匹配的密码')
+                .fontSize(14)
+                .fontColor($r('app.color.text_secondary'))
+                .width('100%')
+                .textAlign(TextAlign.Center)
+                .margin({ top: 40 })
+            }
+            Column() {
+              ForEach(this.filteredPasswords, (item: SavedPasswordItem, index: number) => {
+                this.PasswordRow(item, index)
+              }, (item: SavedPasswordItem): string => item.id)
+            }
+            .width('100%')
+            .borderRadius(16)
+            .backgroundColor($r('app.color.card_background'))
+            .clip(true)
+
+            Text('在网页上登录时，浏览器会询问是否保存密码；右上角可以导入、导出。')
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+              .padding({ left: 4, right: 4, top: 10 })
+          }
+          .width('100%')
+          // 大标题带：滚动内容穿过「密码」大标题时逐渐虚化（见 GlassPage 文件头）。
+          // 选择态末尾留白写在滚动内容里（不是视口），列表铺满全高无死区。
+          .padding({ top: glassHeaderInsetVp(), bottom: this.selectMode && this.view === 'list' ? (56 + glassBottomInsetVp()) : 0 })
+        }
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
+        .align(Alignment.TopStart)
       }
-      .layoutWeight(1)
-      .scrollBar(BarState.Off)
-      .align(Alignment.TopStart)
+
+      // 批量操作条改为悬浮胶囊（见 BatchActionBar()，挂 body Stack，不占流式高度）。
     }
+    .width('100%')
+    .height('100%')
   }
 
   @Builder
@@ -1025,6 +1125,7 @@ export struct PasswordsPanel {
                 .height(46)
                 .fontSize(15)
                 .type(this.revealed ? InputType.Normal : InputType.Password)
+                .showPasswordIcon(false)
                 .backgroundColor($r('app.color.surface_secondary'))
                 .borderRadius(10)
                 .onChange((value: string): void => {
@@ -1097,27 +1198,40 @@ export struct PasswordsPanel {
     if (this.view !== 'list') {
       return;
     }
+    this.moreItems.length = 0;
+    this.moreItems.push(
+      {
+        icon: $r('app.media.aura_import'),
+        label: '导入密码',
+        action: (): void => {
+          this.openImportDialog();
+        }
+      },
+      {
+        icon: $r('app.media.aura_export'),
+        label: '导出密码',
+        action: (): void => {
+          this.startExport();
+        }
+      }
+    );
+    if (this.verified) {
+      this.moreItems.push(
+        {
+          icon: $r('app.media.aura_check'),
+          label: '多选',
+          action: (): void => {
+            this.enterPwdSelect();
+          }
+        }
+      );
+    }
     this.moreMenuDialog.open();
   }
 
   private moreMenuDialog: CustomDialogController = new CustomDialogController({
     builder: MoreMenuDialog({
-      items: [
-        {
-          icon: $r('app.media.aura_import'),
-          label: '导入密码',
-          action: (): void => {
-            this.openImportDialog();
-          }
-        },
-        {
-          icon: $r('app.media.aura_export'),
-          label: '导出密码',
-          action: (): void => {
-            this.startExport();
-          }
-        }
-      ] as MoreMenuItemSpec[]
+      items: this.moreItems
     }),
     autoCancel: true,
     customStyle: true,
@@ -1134,6 +1248,9 @@ export struct PasswordsPanel {
   @State private importOverwrite: boolean = false;
   // 过滤结果落 @State（同 HistoryPanel：方法间接读 @State 不建立更新依赖）。
   @State private filteredPasswords: SavedPasswordItem[] = [];
+  // 批量管理：选择模式 + 已选密码 id 集合（仅列表态、已验证时可用）。
+  @State private selectMode: boolean = false;
+  @State private selectedPwdIds: string[] = [];
 
   // 重算过滤结果（写入 @State）：搜索词变化与数据源变化处都要调用。
   private recomputeFiltered(): void {
@@ -1243,28 +1360,111 @@ export struct PasswordsPanel {
     }
   }
 
+  // 悬浮批量操作条：绝对定位于 body Stack 底部，自绘仿玻璃药丸（float_bar_bg +
+  // 细描边 + 投影）。**宽度随内容走**：外层全宽 Row 只负责底部定位与水平居中，
+  // 自身透明且透传点击；内层 Scroll 不设 minWidth，只约束 maxWidth 100%，
+  // 只有一个「全选」时就是一小颗药丸，四周/下方露出列表与页面底色，不会被拉成
+  // 横贯屏幕的白色长条。选中后出现「删除」，药丸随之变长，横向 Scroll 兜底。
+  // 仅列表态（已验证）有意义。
+  @Builder
+  private BatchActionBar() {
+    if (this.selectMode && this.view === 'list') {
+      Stack({ alignContent: Alignment.Center }) {
+        Scroll() {
+          Row({ space: 8 }) {
+            Row({ space: 6 }) {
+              Image($r('app.media.aura_check'))
+                .width(16)
+                .height(16)
+                .fillColor($r('app.color.accent_primary'))
+              Text('全选')
+                .fontSize(14)
+                .fontColor($r('app.color.accent_primary'))
+            }
+            .height(42)
+            .padding({ left: 16, right: 16 })
+            .borderRadius(21)
+            .onClick(() => {
+              this.selectAllPwd();
+            })
+
+            if (this.selectedPwdIds.length > 0) {
+              Row({ space: 6 }) {
+                Image($r('app.media.aura_trash'))
+                  .width(16)
+                  .height(16)
+                  .fillColor($r('app.color.danger'))
+                Text(`删除 (${this.selectedPwdIds.length})`)
+                  .fontSize(14)
+                  .fontColor($r('app.color.danger'))
+              }
+              .height(42)
+              .padding({ left: 16, right: 16 })
+              .borderRadius(21)
+              .onClick(() => {
+                this.batchRemovePwd();
+              })
+            }
+          }
+          .justifyContent(FlexAlign.Center)
+          .padding({ left: 8, right: 8 })
+        }
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Off)
+        .constraintSize({ maxWidth: '100%' })
+        .clip(true)
+        .backgroundColor($r('app.color.float_bar_bg'))
+        // 不用 backgroundBlurStyle(Thin)：系统 Thin 材质会再叠一层白，实测把 60%
+        // 白色药丸渲染成不透明纯白（254,254,254），用户看到的就是"不透"。
+        .border({ width: 0.5, color: $r('app.color.divider') })
+        .borderRadius(23)
+        .shadow({ radius: 18, color: $r('app.color.shadow'), offsetY: 6 })
+        .padding({ top: 5, bottom: 5 })
+      }
+      .width('100%')
+      .position({ bottom: glassBottomInsetVp() })
+      .hitTestBehavior(HitTestMode.Transparent)
+    }
+  }
+
   build() {
     // 标题栏放进 Navigation（HarmonyOS 7 之后只有 Navigation 标题栏 / 底部
     // TabBar / 弹窗类还在沉浸光感的生效范围内）。右侧还有「更多」，故不用
     // GlassPage，自己包一层。
     GlassPage({
-      title: this.view === 'detail' ? '密码详情' : '密码',
+      title: this.selectMode
+        ? `已选 ${this.selectedPwdIds.length} 项`
+        : (this.view === 'detail' ? '密码详情' : '密码'),
       scrollers: [this.listScroller, this.detailScroller],
       menus: {
-        value: [
-          {
-            content: {
-              icon: $r('app.media.aura_more'),
-              label: '更多操作',
-              action: (): void => {
-                this.showMoreSheet();
+        value: this.selectMode
+          ? [
+            {
+              content: {
+                icon: $r('app.media.aura_close'),
+                label: '取消',
+                action: (): void => {
+                  this.exitPwdSelect();
+                }
               }
             }
-          }
-        ]
+          ]
+          : [
+            {
+              content: {
+                icon: $r('app.media.aura_more'),
+                label: '更多操作',
+                action: (): void => {
+                  this.showMoreSheet();
+                }
+              }
+            }
+          ]
       },
       onBack: (): void => {
-        if (this.view === 'detail') {
+        if (this.selectMode) {
+          this.exitPwdSelect();
+        } else if (this.view === 'detail') {
           this.closeDetail();
         } else {
           this.onBack();
@@ -1288,6 +1488,7 @@ export struct PasswordsPanel {
     .backgroundColor($r('app.color.page_background'))
 
     this.ImportDialog()
+    this.BatchActionBar()
     }
     .width('100%')
     .height('100%')
