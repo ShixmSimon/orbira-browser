@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 
+#include "base/functional/callback.h"
 #include "components/viz/common/resources/shared_image_format.h"
 #include "ui/gfx/buffer_types.h"
 #include "ui/gfx/client_native_pixmap_factory.h"
@@ -43,6 +44,9 @@ class NativePixmapGLBinding;
 // buffer stays registered for a while after its last pixmap goes, in case
 // its handle is still on the way. Renderers, processes of their own, only
 // write into the buffer: they map the dma-buf fd directly.
+// Idle entries are retired after a ten-second handoff grace period, even if
+// no more buffers are allocated. Re-importing one restarts that period on its
+// next release. Memory pressure never shortens the handoff grace period.
 
 // Whether `format` is one this platform allocates and imports.
 bool IsOhosNativePixmapFormat(viz::SharedImageFormat format);
@@ -55,6 +59,28 @@ scoped_refptr<gfx::NativePixmap> CreateOhosNativePixmapFromHandle(
     gfx::Size size,
     viz::SharedImageFormat format,
     gfx::NativePixmapHandle handle);
+
+// Wraps an acquired decoder surface buffer in the GPU process. The caller
+// transfers a release closure that owns the buffer/consumer queue. No mapping,
+// pixel copy, writable tag, or cross-process dma-buf re-identification is used.
+// The returned pixmap is GPU-only; only its SharedImage mailbox is exported.
+// If the decoder supplies a known buffer color space, replace *color_space;
+// otherwise preserve the caller's stream color space. Call before GPU import.
+scoped_refptr<gfx::NativePixmap> CreateOhosVideoNativePixmap(
+    void* window_buffer,
+    gfx::ColorSpace* color_space,
+    base::OnceClosure release);
+
+// Stable allocation identity, not the address of a per-acquisition wrapper.
+// Only decoder surface pixmaps have one. Scope it to the decoder's epoch.
+std::optional<uint32_t> GetOhosVideoNativePixmapId(
+    const gfx::NativePixmap& pixmap);
+
+// Holds the allocation through an independent native wrapper, without holding
+// the frame's ConsumerSurface lease. Safe to retain in an import cache; the
+// original pixmap must separately survive until that frame's GPU reads finish.
+scoped_refptr<gfx::NativePixmap> CloneOhosVideoNativePixmapForImport(
+    const gfx::NativePixmap& pixmap);
 
 // Imports `pixmap` as an EGLImage through EGL_NATIVE_BUFFER_OHOS, tagged with
 // `color_space` so the driver converts YUV with the right matrix and range,

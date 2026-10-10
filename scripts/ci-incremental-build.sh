@@ -219,6 +219,13 @@ else
   apply_incremental_patch "${repo_root}/patches/ohos-csv-import-lifecycle.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-memfd-shared-memory.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-child-exit-observation.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-video-zero-copy.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-hevc-capability.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-adaptive-vsync.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-tab-discarding.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-camera-frame-layout.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-camera-lifecycle.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-camera-timeline.patch"
 
   # ---- sync overlay into the tree -------------------------------------------
   # The overlay holds whole files the adapter adds or replaces. Copying by

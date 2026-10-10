@@ -2,12 +2,15 @@
 
 ## 状态
 
-2026-10-08：外壳在 Pad 模拟器 HarmonyOS 7.0.0.107 / API 26 上复测
-`5d016bcc`：原生密码页成功导入 3 条 CSV；隔离 renderer 已通过资源启动，加载
-WebUI 模板与系统字体，保持独立 UID，但创建共享内存时仍访问应用 el2 cache，
-因目录不存在而 SIGTRAP。`365333c0` 修复共享内存后端与退出状态观测，
-已通过原生编译、HAR 打包，等待外壳复测。
-**P0 未解决，默认仍关闭试验开关。**
+2026-10-08：外壳在 Pad 模拟器 HarmonyOS 7.0.0.107 / API 26 上验证
+`83cd4f72`，开启 `ohos-isolate-renderers` 后基础运行通过：renderer 使用独立 UID
+并持续运行，原生密码页、本地 HTTP、HTTPS 页面及脚本正常；隔离开启时原生页
+成功导入 3 条密码。退出回调注册成功，观察到一次请求触发的快速正常回收，随后
+20 秒内没有 SIGTRAP 或 channel error。关闭隔离时，共享内存错误日志也已限频。
+
+**Pad 模拟器基础功能通过；P0 整体验收未完成，试验开关默认仍关闭。**
+真机 Pad、2in1、原生层文件/网络权限边界、只读共享内存攻击测试、跨 UID 强制
+终止与完整功能回归仍待验证；手机的进程隔离方案也尚未解决。
 
 当前代码中有三种不同的边界，不能混为一谈：
 
@@ -99,17 +102,68 @@ FD 复制、环境、路径、FD 列表、GPU 启动参数和资源 FD 失败。
 ### 共享内存与退出状态
 
 runner 当前 `platform_shared_memory_region_posix.cc` 已有 memfd 实现，但仅对
-Linux/ChromeOS 启用。新增 `ohos-memfd-shared-memory.patch` 为 OHOS 启用该实现：
-按需分配、设置 `0600` 所有者权限、封印大小，并通过 `/proc/self/fd` 取得真正的只读 FD，保留 Chromium 的
-Writable/ReadOnly/Unsafe 句柄契约。memfd 无需应用 cache 目录，但只读 FD 重开仍
-需要访问 `/proc/self/fd`，必须在目标 SELinux 域复测。`0600` 防止其他 UID 将
-收到的只读 memfd 重新打开成可写；不能沿用内核默认的所有用户可读写权限。隔离 renderer 在 memfd 失败
-时明确报错，不回退到应用私有临时目录；普通进程保留旧文件后端的兼容回退。
+Linux/ChromeOS 启用。`ohos-memfd-shared-memory.patch` 为 OHOS 启用该实现。
+`365333c0` 的 `fchmod(0600)` 在普通应用与 isolated renderer 中都被 EACCES
+拒绝；日志尚不能单独确定是 SELinux 还是其他系统策略。本轮移除该调用，改用：
 
-每个进程首次成功会记录 `OHOS shared memory memfd active`。失败分别记录
-`memfd_create failed`、`ftruncate failed`、`size sealing failed` 或
-`readonly reopen failed`，含 errno。扩展已有 memfd 大小封印/只读映射测试至
-OHOS，并增加不存在 TMPDIR 的隔离 renderer 测试；默认构建不执行这些单元测试。
+- 创建 Writable memfd 时仅封印大小，保留添加封印的能力。先通过 `/proc/self/fd`
+  取得 `O_RDONLY` 配对 FD；若重开被拒绝，更新后的共享内存补丁使用
+  `F_DUPFD_CLOEXEC` 保留配对 FD，此时仍是 Writable，尚不能当作只读句柄传递。
+- 转换为 ReadOnly 时，先添加 `F_SEAL_FUTURE_WRITE | F_SEAL_SEAL`，成功后才交出
+  只读句柄。已有的生产方可写映射继续有效；接收方即使重开为 `O_RDWR`，也不能
+  `pwrite`、创建新的共享可写映射或把新建只读映射改为可写。转换失败保留 Writable
+  状态并返回失败，不伪装为只读。
+- 使用重复 FD 的路径在转换后仍显示 `O_RDWR`，但内核写入封印禁止新的写入。
+  接收端仅在大小封印、未来写入封印和封印锁全部存在时接受它为 ReadOnly；
+  不接受未封印的 `O_RDWR`。导入 Writable memfd 时验证主 FD 的读写权限、大小
+  封印和仍可追加写入封印的状态，再从主 FD 重建转换 FD，丢弃传来的第二个 FD。
+  这样由 `F_DUPFD_CLOEXEC` 保证同一内存，不依赖额外的 `fstat/getattr` 权限。
+  已封印为只读的 FD 不能重新导入为 Writable/Unsafe。
+- 创建 Unsafe 或由 Writable 转换为 Unsafe 时封闭封印集合，禁止接收方追加写入
+  封印破坏后续合法映射。Unsafe 本身允许所有接收方写入。
+- 普通进程仍保留旧文件后端。转换时识别不支持封印的磁盘文件和初始封印仅为
+  `F_SEAL_SEAL` 的普通 tmpfs 文件，并检查其没有组/其他用户写权限。
+  隔离 renderer 不回退到应用私有 cache，也不放宽沙箱。
+
+匿名性、大小封印与 `O_RDONLY` 本身不足以防止通过 procfs 恢复写入权限，不能
+只删除 `fchmod` 而不补上上述约束。此实现依赖目标内核允许 `F_SEAL_FUTURE_WRITE`；
+新增重复 FD 路径移除了对 procfs 只读重开的硬依赖。
+`83cd4f72` 的 Pad 模拟器基础运行已通过，但反馈未包含
+`readonly sealing active`，不能据此确认只读封印路径及攻击测试在目标域中通过。
+
+每进程首次成功分别记录 `OHOS shared memory memfd active (conversion write seals)`
+和 `OHOS shared memory readonly sealing active`。失败的阶段与 errno 只记录一次，
+避免普通进程的文件回退刷屏；例如 `size sealing failed`、`conversion fd duplication failed`
+或 `readonly sealing failed`。
+
+旧版 `83cd4f72` 反馈中，浏览器先出现 `readonly reopen failed: EACCES`，后又出现
+`memfd active`。旧版源码中前者会使当前 Writable 分配退出 memfd 路径；普通进程随后
+尝试旧文件后端，隔离 renderer 则返回失败。后续 `memfd active` 只说明另一笔分配
+成功使用 memfd，可能是无需重开的 Unsafe 内存，不表示先前失败的分配靠写入封印
+恢复成功，也不能证明所有共享内存均走 memfd。该轮基础测试没有观察到这一错误阻塞网页。
+
+后续收到 `readonly reopen failed` → `isolated shared memory unavailable` →
+`CreateSharedImage: Could not get SHM for data upload` → Compositor SIGTRAP 的反馈。
+这覆盖了隔离 renderer 中必须创建 Writable 共享内存的场景，证实旧版重开失败
+会导致分配失败。新增补丁在成功复制 FD 后继续分配，并每进程仅记录一次
+`OHOS shared memory procfs reopen unavailable; using sealed-fd conversion`。
+随后应出现 `readonly sealing active`；仍需在实际触发设备上复测 SharedImage 上传、
+Canvas/WebGL、普通网页及隔离开关两种模式。设备型号、系统版本及 build 待补充。
+
+Chromium 单元测试覆盖不存在 TMPDIR 的隔离 renderer、只读 FD 重开攻击、已有
+可写映射继续生效、Unsafe 后续映射以及只读封印失败不改变句柄状态；默认 HAR 构建
+不执行这些单元测试。Adapter CI 另运行 `scripts/check-memfd-seals.py`，用 Linux
+真实系统调用验证未加写入封印时可重开写入、加封印后拒绝写入和新可写映射；该检查
+不能替代 HarmonyOS 设备与 Chromium 单元测试。新增检查不使用 procfs 创建配对 FD，
+通过独立 Python 子进程接收封印后的重复 FD，验证读取成功、写入/新可写映射/
+只读映射升级/扩缩容均失败，生产方已有映射仍可写。新增 Chromium 单元测试覆盖
+重复 FD 的转换与导入、第二个 inode 被替换、已封印主 FD 拒绝 Writable 导入、
+未封印只读导入拒绝以及转换失败关闭路径；
+默认 HAR 构建仍不执行这些 Chromium 单元测试。
+
+新增 Linux 合同测试在独立接收进程中使用 seccomp 强制让属性查询返回 EACCES，
+验证从主 FD 重建转换 FD、旧生产方映射继续写入和只读读取，同时确认传入的
+不相关第二个 inode 未被读取或封印。这模拟权限边界，不代表真实设备上的拒绝原因已确认。
 
 SDK 将退出回调错误 `16000050` 定义为内部错误。OpenHarmony 公开
 [`AppNativeSpawnManager::RegisterNativeChildExitNotify`](https://github.com/openharmony/ability_ability_runtime/blob/master/services/appmgr/src/app_native_spawn_manager.cpp)
@@ -172,9 +226,11 @@ SSH 不可达，因此通过只读 CI 快照任务取得 runner 实际源码。�
 成功导入并在列表可见；普通 UID 的原生导入通路已通过本次设备验证。不能从这次
 结果单独确定上一版阻塞的具体原因；30 秒超时/断连恢复的新增单元测试尚未执行。
 
-下一轮重点复测隔离模式的 HTTPS、内置页和 renderer 退出/恢复，日志过滤
-`OHOS shared memory`、`OHOS native child tracking`、`OHOS native child pidfd`，
-并保留 `OHOS child bootstrap` / `OHOS child startup`。
+下一轮在真机 Pad 和 2in1 重复基础场景，并按上方清单执行原生层权限边界、
+只读内存和跨 UID 强制终止/恢复测试，随后覆盖跨站 iframe、图形媒体与前后台切换。
+日志过滤 `OHOS shared memory`、`OHOS native child tracking`、
+`OHOS native child pidfd`，并保留 `OHOS child bootstrap` / `OHOS child startup`。
+不要将此次 20 秒观察窗口或一次正常回收等同于长期稳定性、强制终止或崩溃恢复验收。
 
 验证记录：
 
@@ -211,3 +267,65 @@ SSH 不可达，因此通过只读 CI 快照任务取得 runner 实际源码。�
   `420f8562c54e47fec4662c9bb01cbc6d42ebdbc405b77589abed8c1c9030524c`。
   失败 job 日志接口返回 BlobNotFound，attempt 日志包为空，暂未取得上传失败的
   具体 stderr。以上不影响 HAR 的下载，但该版本的符号附件仍待补齐。
+
+- `365333c0` 外壳复测（Pad / HarmonyOS 7.0.0.107 / API 26）：退出回调注册成功、
+  pidfd=1；崩溃能够显示错误代码 5。独立 UID renderer 仍因 memfd `fchmod` EACCES
+  而崩溃；关闭隔离时 25 秒出现 153 次相同错误。密码导入没有重新测试。
+- 本轮基于 [runner 快照 37730232256](https://github.com/miramira8295/chromium-hmos/actions/runs/37730232256)
+  核对当前源码，快照 SHA256 以及与 `365333c0` 已应用补丁的一致性均通过。
+  新补丁首次/重复应用及从 `602d236`、`0ed2fcc`、`365333c0` 升级均已用实际
+  `apply_incremental_patch` 函数验证。
+
+- `83cd4f72` 的 [Adapter CI](https://github.com/miramira8295/chromium-hmos/actions/runs/37730732685)
+  通过，包含真实 Linux memfd 重开、写入、映射权限测试；
+  [Incremental build](https://github.com/miramira8295/chromium-hmos/actions/runs/37730732708)
+  **全部通过**，原生编译 318 步、247 秒，HAR 为 136432443 字节，ELF build-id 为
+  `22f50b7c01b7b0c232d1903a9408c54226b81fb4`。
+  [build-83cd4f72](https://github.com/miramira8295/chromium-hmos/releases/tag/build-83cd4f72)
+  的 `engine.har`、符号包和 `SHA256SUMS` 均已上传。
+  HAR SHA256：`aef3a6e61697fc88eb2d030c43f2c71497f8796d12b534f806e675c9660bb531`。
+  Chromium 新增单元测试未执行，HarmonyOS 设备复测仍交给外壳；本机未操作设备，
+  没有生成签名 HAP。重点验证隔离/普通模式的 HTTPS、内置页、崩溃恢复和密码导入，
+  同时保留 `OHOS shared memory` 的创建、只读封印及失败阶段日志。
+
+- `83cd4f72` 外壳复测（仅 Pad 模拟器 / HarmonyOS 7.0.0.107 / API 26）：
+  - 开启隔离：renderer 使用 UID 20110019、20110020、20110022、20110023 等独立
+    UID；浏览器与 network/storage utility 保持应用 UID 20020065。
+  - 原生密码页、本地 HTTP 测试页、HTTPS example.com 均显示正常，页面脚本运行。
+    原生页密码导入提示“已将 3 个密码导入”。
+  - 退出回调注册成功。一次 renderer 退出带 `shutdown_requested=1 fast_shutdown=1`；
+    后续 20 秒没有 signo(5) 或 channel error，记录为正常回收的观察结果。
+  - 浏览器出现一次 `readonly reopen failed: Permission denied (13)`，浏览器与
+    renderer 均出现 `memfd active (conversion write seals)`。本次反馈未提供
+    `readonly sealing active`；不能将 memfd 分配成功等同于只读封印安全验收。
+  - 关闭隔离：`memfd active` 共 4 条、`readonly reopen failed` 共 2 条，各进程
+    错误只记录一次，相较旧版 25 秒 153 条错误已明显减少。
+  - 真机 Pad、2in1 和原生层对抗性边界测试未覆盖。本轮只更新验证记录，继续使用
+    `build-83cd4f72` 作为复测包。
+
+- `3a1baca8` 外壳反馈回归：Mate 70 Pro+ 单进程打开标签页总览必现 SIGTRAP，
+  外部链接冷启动 3/3 崩溃；Pad 模拟器多进程加隔离也出现两次。
+  符号包 build-id `c287e1d9b3963be89d5c40555870ed368ed57fa3` 已核验。
+  `PlatformSharedMemoryRegion::Take` 的反汇编确认 x22 保存 Mode，值 1 对应
+  Writable；当前证据不能将其归为 ReadOnly/O_RDWR 拒绝。runner 快照
+  `37772039250` 已校验全部 80 个文件哈希，共享内存实现与该提交一致。
+  本轮移除 Writable memfd 导入对 `fstat`/inode 比较的依赖，改从已校验主 FD
+  重建转换 FD；未关闭权限校验或 `Take` 的 CHECK。失败时记录
+  `OHOS shared memory import rejected mode=... size=... error=... flags=...`
+  及 seals、各查询的 errno，便于区分封印、访问模式和 FD 失效。
+  首次成功导入记录 `writable import rebuilt conversion fd`。
+  具体旧版拒绝分支仍待确认；必须复测手机总览、外链冷启动及 Pad 隔离模式，
+  不能仅凭 Linux 封印测试通过认定本次设备崩溃已消失。
+
+- `a743b865` 已交付用于上述回归复测：
+  [Adapter CI](https://github.com/miramira8295/chromium-hmos/actions/runs/37773582895)
+  与 [原生构建](https://github.com/miramira8295/chromium-hmos/actions/runs/37773582909)
+  均成功。Linux 封印、重复 FD 跨进程权限和强制拒绝 getattr 的测试全部通过；
+  干净树、`83cd4f72`、`3a1baca8` 的补丁升级及重复应用已验证。
+  原生编译 318 步、251 秒，ELF build-id：
+  `d7d9c9f0273d60357da9a3b8d8dfe85431c0690c`。
+  [build-a743b865](https://github.com/miramira8295/chromium-hmos/releases/tag/build-a743b865)
+  的 HAR、符号包和 SHA256SUMS 均已上传，清单与 GitHub 资产 digest 一致。
+  HAR 大小 136504889 字节，SHA256：
+  `3c6815a95a2d117f668905c0e8ff5d1448386974e5fe5e03dc08f57ce4d28b40`。
+  未执行 OHOS Chromium 单元测试或操作设备；手机和 Pad 的崩溃是否消失仍待外壳确认。

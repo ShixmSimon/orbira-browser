@@ -12,35 +12,38 @@
 #include <optional>
 
 #include "base/containers/circular_deque.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/timer/timer.h"
+#include "media/base/callback_registry.h"
+#include "media/base/cdm_context.h"
 #include "media/base/decoder_buffer.h"
 #include "media/base/media_log.h"
 #include "media/base/supported_video_decoder_config.h"
 #include "media/base/video_decoder.h"
 #include "media/base/video_decoder_config.h"
 #include "media/gpu/media_gpu_export.h"
+#include "media/gpu/ohos/ohos_video_frame_converter.h"
+#include "media/gpu/ohos/ohos_video_surface.h"
 
 namespace media {
 
 class VideoFrame;
 
-// Decodes through an AVCodecKit hardware decoder in buffer mode and copies
-// each NV12 picture into a VideoFrame in system memory.
-//
-// Buffer mode, not surface mode, because the port has no NativePixmap or
-// GpuMemoryBuffer support to wrap an OH_NativeBuffer as a SharedImage.
-// Memory-backed frames cross to the renderer as shared memory
-// (media/mojo/mojom/video_frame_mojom_traits.cc), which uploads them the same
-// way it uploads FFmpeg output.
+// AVCodecKit hardware decoding. Eligible streams use Surface -> SharedImage by
+// default, with Buffer mode as the compatibility fallback during initialization.
 class MEDIA_GPU_EXPORT OhosVideoDecoder final : public VideoDecoder {
  public:
   OhosVideoDecoder(scoped_refptr<base::SequencedTaskRunner> task_runner,
                    std::unique_ptr<MediaLog> media_log,
-                   SupportedVideoDecoderConfigs supported_configs);
+                   SupportedVideoDecoderConfigs supported_configs,
+                   scoped_refptr<base::SequencedTaskRunner> gpu_task_runner,
+                   OhosVideoFrameConverter::GetCommandBufferStubCB get_stub_cb,
+                   const gpu::GpuDriverBugWorkarounds& workarounds);
   OhosVideoDecoder(const OhosVideoDecoder&) = delete;
   OhosVideoDecoder& operator=(const OhosVideoDecoder&) = delete;
   ~OhosVideoDecoder() override;
@@ -91,6 +94,16 @@ class MEDIA_GPU_EXPORT OhosVideoDecoder final : public VideoDecoder {
     int32_t height;
     int32_t stride;
     int32_t slice_height;
+    gfx::ColorSpace color_space;
+  };
+
+  struct SurfaceOutput {
+    uint32_t index;
+    base::TimeDelta timestamp;
+    gfx::Rect visible_rect;
+    gfx::Size natural_size;
+    gfx::ColorSpace color_space;
+    gfx::HDRMetadata hdr_metadata;
   };
 
   enum class State {
@@ -124,13 +137,23 @@ class MEDIA_GPU_EXPORT OhosVideoDecoder final : public VideoDecoder {
   void OnNeedInputBuffer(uint32_t generation, CodecBuffer input);
   void OnNewOutputBuffer(uint32_t generation, CodecBuffer output);
 
+  void OnGpuInitialized(uint32_t generation, InitCB init_cb, bool supported);
+  void FinishInitialize(InitCB init_cb);
+  void AdvanceGeneration();
   DecoderStatus CreateCodec();
+  void RenderNextSurfaceOutput();
+  void OnSurfaceFrameAvailable(uint32_t generation);
+  void OnSurfaceFrameConverted(uint32_t generation,
+                               scoped_refptr<VideoFrame> frame);
+  void OnSurfaceFrameReleased(uint32_t generation);
+  void MaybeCompleteSurfaceDrain();
   void DestroyCodec();
   // Drops every buffer index the codec has handed out and restarts it. Used
   // after end of stream (the codec takes no input in that state) and on
   // Reset().
   bool FlushAndRestartCodec();
   void PumpInput();
+  void OnCdmEvent(CdmContext::Event event);
   bool QueueInput(const CodecBuffer& input, const DecoderBuffer& buffer);
   bool UpdateOutputLayout();
   scoped_refptr<VideoFrame> CopyOutput(OH_AVBuffer* buffer,
@@ -142,10 +165,20 @@ class MEDIA_GPU_EXPORT OhosVideoDecoder final : public VideoDecoder {
   const scoped_refptr<base::SequencedTaskRunner> task_runner_;
   const std::unique_ptr<MediaLog> media_log_;
   const SupportedVideoDecoderConfigs supported_configs_;
+  const scoped_refptr<base::SequencedTaskRunner> gpu_task_runner_;
+  const scoped_refptr<OhosVideoFrameConverter> frame_converter_;
 
   State state_ = State::kUninitialized;
   VideoDecoderConfig config_;
   OutputCB output_cb_;
+  WaitingCB waiting_cb_;
+
+  // For encrypted streams: the CDM whose DRM Kit session decrypts them. The
+  // media service keeps it alive for as long as this decoder.
+  raw_ptr<CdmContext> cdm_context_ = nullptr;
+  std::unique_ptr<CallbackRegistration> cdm_event_registration_;
+  // Encrypted input is held while the CDM has no usable key.
+  bool waiting_for_key_ = false;
 
   // Identifies the current codec instance and flush epoch. Every callback
   // carries the value current when AVCodecKit invoked it, so tasks that refer
@@ -160,6 +193,19 @@ class MEDIA_GPU_EXPORT OhosVideoDecoder final : public VideoDecoder {
   base::circular_deque<PendingDecode> pending_decodes_;
   DecodeCB eos_decode_cb_;
   std::optional<OutputLayout> output_layout_;
+
+  bool surface_enabled_ = false;
+  scoped_refptr<OhosVideoSurface> surface_;
+  base::circular_deque<SurfaceOutput> surface_outputs_;
+  // Only one rendered buffer awaits acquisition: consumer FIFO and this entry
+  // have an unambiguous PTS association, including duplicate timestamps.
+  std::optional<SurfaceOutput> rendered_output_;
+  base::OneShotTimer surface_timeout_;
+  size_t surface_frames_in_flight_ = 0;
+  size_t pending_conversions_ = 0;
+  bool surface_eos_ = false;
+  uint64_t surface_frame_count_ = 0;
+  bool buffer_frame_logged_ = false;
 
   SEQUENCE_CHECKER(sequence_checker_);
   base::WeakPtrFactory<OhosVideoDecoder> weak_factory_{this};

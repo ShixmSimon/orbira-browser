@@ -11,6 +11,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstring>
 #include <map>
 #include <set>
@@ -20,12 +21,18 @@
 #include <vector>
 
 #include "base/files/scoped_file.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/raw_ptr_exclusion.h"
+#include "base/memory_coordinator/async_memory_consumer_registration.h"
+#include "base/memory_coordinator/memory_consumer.h"
 #include "base/no_destructor.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/synchronization/lock.h"
+#include "base/task/thread_pool.h"
 #include "base/thread_annotations.h"
 #include "base/time/time.h"
 #include "ui/gfx/client_native_pixmap.h"
@@ -145,7 +152,7 @@ void ReleaseEntry(BufferEntry& entry) {
 // nor by a DMA_BUF_SET_NAME name, which its fdinfo does not show. So each
 // buffer carries its id in the padding after its last plane, which nothing
 // else writes, and a handle is resolved by reading it back.
-class BufferRegistry {
+class BufferRegistry : public base::MemoryConsumer {
  public:
   static BufferRegistry& Get() {
     static base::NoDestructor<BufferRegistry> registry;
@@ -302,7 +309,6 @@ class BufferRegistry {
     }
 
     base::AutoLock hold(lock_);
-    PurgeUnused();
     entries_[key] = std::move(entry);
     return key;
   }
@@ -319,6 +325,7 @@ class BufferRegistry {
           ReadTag(fd, entry->size - sizeof(BufferTag));
       if (tag && tag->magic == kBufferTagMagic && tag->key == key) {
         ++entry->users;
+        entry->unused_since = base::TimeTicks();
         return key;
       }
     }
@@ -330,6 +337,7 @@ class BufferRegistry {
     auto it = entries_.find(key);
     if (it != entries_.end() && --it->second->users == 0) {
       it->second->unused_since = base::TimeTicks::Now();
+      SchedulePurgeLocked();
     }
   }
 
@@ -354,18 +362,87 @@ class BufferRegistry {
 
  private:
   friend class base::NoDestructor<BufferRegistry>;
-  BufferRegistry() = default;
+  BufferRegistry()
+      : memory_consumer_registration_(
+            "OhosNativeBufferRegistry",
+            {base::MemoryConsumerTraits::EstimatedMemoryUsage::kLarge,
+             base::MemoryConsumerTraits::ReleaseMemoryCost::
+                 kFreesPagesWithoutTraversal,
+             base::MemoryConsumerTraits::InformationRetention::kLossless,
+             base::MemoryConsumerTraits::ExecutionType::kAsynchronous,
+             base::MemoryConsumerTraits::SupportsMemoryLimit::kNo},
+            this,
+            base::MemoryConsumerRegistration::CheckUnregister::kDisabled) {}
 
-  void PurgeUnused() EXCLUSIVE_LOCKS_REQUIRED(lock_) {
-    const base::TimeTicks now = base::TimeTicks::Now();
-    for (auto it = entries_.begin(); it != entries_.end();) {
-      if (it->second->users == 0 &&
-          now - it->second->unused_since > kUnusedBufferGrace) {
-        ReleaseEntry(*it->second);
-        it = entries_.erase(it);
-      } else {
-        ++it;
+  // This is a handle handoff grace period, not an optional image cache. Even
+  // critical pressure must not evict a buffer whose handle may still be in
+  // transit. Drain only expired entries, just as the delayed task does.
+  void OnReleaseMemory() override {
+    base::ThreadPool::PostTask(
+        FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
+        base::BindOnce(&BufferRegistry::PurgeUnused, base::Unretained(this),
+                       /*from_delayed_task=*/false));
+  }
+  void OnUpdateMemoryLimit() override {}
+
+  void SchedulePurgeLocked() EXCLUSIVE_LOCKS_REQUIRED(lock_) {
+    if (purge_pending_) {
+      return;
+    }
+    std::optional<base::TimeTicks> next_deadline;
+    for (const auto& [key, entry] : entries_) {
+      if (entry->users == 0) {
+        const base::TimeTicks deadline = entry->unused_since + kUnusedBufferGrace;
+        if (!next_deadline || deadline < *next_deadline) {
+          next_deadline = deadline;
+        }
       }
+    }
+    if (!next_deadline) {
+      return;
+    }
+    // The singleton outlives the ThreadPool. Coalesce all idle buffers into
+    // one task, and stop posting once none remain. Native handle destruction
+    // may call into the allocator, so run it off the GPU thread.
+    purge_pending_ = base::ThreadPool::PostDelayedTask(
+        FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
+        base::BindOnce(&BufferRegistry::PurgeUnused, base::Unretained(this),
+                       /*from_delayed_task=*/true),
+        std::max(base::TimeDelta(), *next_deadline - base::TimeTicks::Now()));
+  }
+
+  void PurgeUnused(bool from_delayed_task) {
+    std::vector<std::unique_ptr<BufferEntry>> retired;
+    size_t released_bytes = 0;
+    {
+      base::AutoLock hold(lock_);
+      if (from_delayed_task) {
+        purge_pending_ = false;
+      }
+      const base::TimeTicks now = base::TimeTicks::Now();
+      for (auto it = entries_.begin(); it != entries_.end();) {
+        // Recheck under the same lock as Acquire/Unuse. Re-importing a buffer
+        // protects it; releasing it again starts a fresh, full grace period.
+        if (it->second->users == 0 &&
+            now - it->second->unused_since >= kUnusedBufferGrace) {
+          released_bytes += it->second->size;
+          retired.push_back(std::move(it->second));
+          it = entries_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+      SchedulePurgeLocked();
+    }
+    // Remove entries before dropping the lock, so no importer can acquire
+    // one while its native handles are being destroyed. Existing users keep
+    // their entries registered and never enter this list.
+    for (const auto& entry : retired) {
+      ReleaseEntry(*entry);
+    }
+    if (!retired.empty()) {
+      VLOG(1) << "OHOS native pixmap: reclaimed " << retired.size()
+              << " idle buffers, " << released_bytes << " bytes";
     }
   }
 
@@ -374,7 +451,12 @@ class BufferRegistry {
   // Format and size of buffers with no padding to hold a tag.
   std::set<std::tuple<int32_t, int, int>> untaggable_ GUARDED_BY(lock_);
   std::map<uint64_t, std::unique_ptr<BufferEntry>> entries_ GUARDED_BY(lock_);
+  bool purge_pending_ GUARDED_BY(lock_) = false;
+  base::AsyncMemoryConsumerRegistration memory_consumer_registration_;
 };
+
+OH_NativeBuffer_ColorSpace OhosColorSpaceFor(
+    const gfx::ColorSpace& color_space);
 
 class OhosNativePixmap : public gfx::NativePixmap {
  public:
@@ -389,7 +471,38 @@ class OhosNativePixmap : public gfx::NativePixmap {
     });
   }
 
+  OhosNativePixmap(OHNativeWindowBuffer* window_buffer,
+                   gfx::Size size,
+                   viz::SharedImageFormat format,
+                   uint32_t buffer_id,
+                   base::OnceClosure release)
+      : key_(0),
+        size_(size),
+        format_(format),
+        video_buffer_id_(buffer_id),
+        video_window_(window_buffer),
+        video_release_(std::move(release)) {}
+
+  OHNativeWindowBuffer* WindowBuffer(const gfx::ColorSpace& color_space) const {
+    if (video_window_) {
+      // The decoder owns color-space metadata on this buffer. Do not mutate it.
+      return video_window_;
+    }
+    return BufferRegistry::Get().With(
+        key_, [&color_space](BufferEntry* entry) -> OHNativeWindowBuffer* {
+          if (!entry || !entry->window_buffer) {
+            return nullptr;
+          }
+          if (entry->planes.size() > 1) {
+            OH_NativeBuffer_SetColorSpace(entry->buffer,
+                                          OhosColorSpaceFor(color_space));
+          }
+          return entry->window_buffer;
+        });
+  }
+
   uint64_t key() const { return key_; }
+  std::optional<uint32_t> video_buffer_id() const { return video_buffer_id_; }
 
   bool AreDmaBufFdsValid() const override { return fd_ >= 0; }
   int GetDmaBufFd(size_t plane) const override { return fd_; }
@@ -437,11 +550,20 @@ class OhosNativePixmap : public gfx::NativePixmap {
   }
 
  private:
-  ~OhosNativePixmap() override { BufferRegistry::Get().Unuse(key_); }
+  ~OhosNativePixmap() override {
+    if (key_) {
+      BufferRegistry::Get().Unuse(key_);
+    }
+  }
 
   const uint64_t key_;
   const gfx::Size size_;
   const viz::SharedImageFormat format_;
+  const std::optional<uint32_t> video_buffer_id_;
+  // Kept alive by video_release_: either a per-frame consumer queue lease or
+  // an independent allocation reference used by a cached import.
+  RAW_PTR_EXCLUSION OHNativeWindowBuffer* video_window_ = nullptr;
+  base::ScopedClosureRunner video_release_;
   // Owned by the registry entry, which outlives this pixmap.
   int fd_ = -1;
   std::vector<PlaneLayout> planes_;
@@ -570,6 +692,48 @@ OH_NativeBuffer_ColorSpace OhosColorSpaceFor(const gfx::ColorSpace& space) {
   }
 }
 
+// Colorimetry reported by the decoder's actual output takes precedence over
+// container metadata (e.g. a platform decoder may perform color conversion).
+// Unknown/absent metadata leaves the stream color space intact.
+std::optional<gfx::ColorSpace> OhosVideoColorSpace(
+    OH_NativeBuffer_ColorSpace space) {
+  using Primary = gfx::ColorSpace::PrimaryID;
+  using Transfer = gfx::ColorSpace::TransferID;
+  using Matrix = gfx::ColorSpace::MatrixID;
+  using Range = gfx::ColorSpace::RangeID;
+  switch (space) {
+    case OH_COLORSPACE_BT709_FULL:
+    case OH_COLORSPACE_BT709_LIMIT:
+      return gfx::ColorSpace(
+          Primary::BT709, Transfer::BT709, Matrix::BT709,
+          space == OH_COLORSPACE_BT709_FULL ? Range::FULL : Range::LIMITED);
+    case OH_COLORSPACE_BT601_EBU_FULL:
+    case OH_COLORSPACE_BT601_EBU_LIMIT:
+      return gfx::ColorSpace(
+          Primary::BT470BG, Transfer::BT709, Matrix::BT470BG,
+          space == OH_COLORSPACE_BT601_EBU_FULL ? Range::FULL : Range::LIMITED);
+    case OH_COLORSPACE_BT601_SMPTE_C_FULL:
+    case OH_COLORSPACE_BT601_SMPTE_C_LIMIT:
+      return gfx::ColorSpace(
+          Primary::SMPTE170M, Transfer::BT709, Matrix::SMPTE170M,
+          space == OH_COLORSPACE_BT601_SMPTE_C_FULL ? Range::FULL
+                                                    : Range::LIMITED);
+    case OH_COLORSPACE_BT2020_HLG_FULL:
+    case OH_COLORSPACE_BT2020_HLG_LIMIT:
+      return gfx::ColorSpace(Primary::BT2020, Transfer::HLG, Matrix::BT2020_NCL,
+                             space == OH_COLORSPACE_BT2020_HLG_FULL
+                                 ? Range::FULL
+                                 : Range::LIMITED);
+    case OH_COLORSPACE_BT2020_PQ_FULL:
+    case OH_COLORSPACE_BT2020_PQ_LIMIT:
+      return gfx::ColorSpace(
+          Primary::BT2020, Transfer::PQ, Matrix::BT2020_NCL,
+          space == OH_COLORSPACE_BT2020_PQ_FULL ? Range::FULL : Range::LIMITED);
+    default:
+      return std::nullopt;
+  }
+}
+
 class OhosNativePixmapGLBinding : public NativePixmapGLBinding {
  public:
   OhosNativePixmapGLBinding(scoped_refptr<gfx::NativePixmap> pixmap,
@@ -646,6 +810,84 @@ scoped_refptr<gfx::NativePixmap> CreateOhosNativePixmapFromHandle(
   return base::MakeRefCounted<OhosNativePixmap>(*key, size, format);
 }
 
+scoped_refptr<gfx::NativePixmap> CreateOhosVideoNativePixmap(
+    void* window_buffer,
+    gfx::ColorSpace* color_space,
+    base::OnceClosure release) {
+  base::ScopedClosureRunner release_on_failure(std::move(release));
+  auto* window = static_cast<OHNativeWindowBuffer*>(window_buffer);
+  OH_NativeBuffer* buffer = nullptr;
+  if (!window || OH_NativeBuffer_FromNativeWindowBuffer(window, &buffer) != 0 ||
+      !buffer) {
+    return nullptr;
+  }
+  OH_NativeBuffer_Config config = {};
+  OH_NativeBuffer_GetConfig(buffer, &config);
+  if (config.width <= 0 || config.height <= 0) {
+    return nullptr;
+  }
+  viz::SharedImageFormat format;
+  switch (config.format) {
+    case NATIVEBUFFER_PIXEL_FMT_YCBCR_420_SP:
+      format = viz::MultiPlaneFormat::kNV12;
+      break;
+    case NATIVEBUFFER_PIXEL_FMT_YCBCR_P010:
+      format = viz::MultiPlaneFormat::kP010;
+      break;
+    default:
+      // Do not infer precision or chroma order from the compressed profile.
+      LOG(ERROR) << "OHOS video zero-copy: unsupported native format "
+                 << config.format;
+      return nullptr;
+  }
+  OH_NativeBuffer_ColorSpace native_space = OH_COLORSPACE_NONE;
+  if (OH_NativeBuffer_GetColorSpace(buffer, &native_space) == 0) {
+    if (auto decoded_space = OhosVideoColorSpace(native_space)) {
+      *color_space = *decoded_space;
+    }
+  }
+  format.SetPrefersExternalSampler();
+  return base::MakeRefCounted<OhosNativePixmap>(
+      window, gfx::Size(config.width, config.height), format,
+      OH_NativeBuffer_GetSeqNum(buffer),
+      release_on_failure.Release());
+}
+
+std::optional<uint32_t> GetOhosVideoNativePixmapId(
+    const gfx::NativePixmap& pixmap) {
+  return static_cast<const OhosNativePixmap&>(pixmap).video_buffer_id();
+}
+
+scoped_refptr<gfx::NativePixmap> CloneOhosVideoNativePixmapForImport(
+    const gfx::NativePixmap& pixmap) {
+  const auto& video = static_cast<const OhosNativePixmap&>(pixmap);
+  const auto id = video.video_buffer_id();
+  if (!id) {
+    return nullptr;
+  }
+  OH_NativeBuffer* buffer = nullptr;
+  if (OH_NativeBuffer_FromNativeWindowBuffer(
+          video.WindowBuffer(gfx::ColorSpace()), &buffer) != 0 || !buffer) {
+    return nullptr;
+  }
+  // Do not retain the acquired queue wrapper: it carries a frame lease, and
+  // its release runs on the decoder sequence. This independent wrapper owns
+  // only an allocation reference and is used/destroyed on the GPU sequence.
+  auto* window =
+      OH_NativeWindow_CreateNativeWindowBufferFromNativeBuffer(buffer);
+  if (!window) {
+    return nullptr;
+  }
+  using OwnedWindowBuffer =
+      std::unique_ptr<OHNativeWindowBuffer,
+                      decltype(&OH_NativeWindow_DestroyNativeWindowBuffer)>;
+  return base::MakeRefCounted<OhosNativePixmap>(
+      window, pixmap.GetBufferSize(), pixmap.GetSharedImageFormat(), *id,
+      base::BindOnce([](OwnedWindowBuffer) {},
+                     OwnedWindowBuffer(
+                         window, &OH_NativeWindow_DestroyNativeWindowBuffer)));
+}
+
 std::unique_ptr<NativePixmapGLBinding> ImportOhosNativePixmap(
     scoped_refptr<gfx::NativePixmap> pixmap,
     const gfx::ColorSpace& color_space,
@@ -654,19 +896,8 @@ std::unique_ptr<NativePixmapGLBinding> ImportOhosNativePixmap(
   if (!pixmap || !IsOhosNativePixmapFormat(pixmap->GetSharedImageFormat())) {
     return nullptr;
   }
-  const uint64_t key = static_cast<OhosNativePixmap*>(pixmap.get())->key();
-  OHNativeWindowBuffer* window_buffer = BufferRegistry::Get().With(
-      key, [&color_space](BufferEntry* entry) -> OHNativeWindowBuffer* {
-        if (!entry || !entry->window_buffer) {
-          return nullptr;
-        }
-        // How the driver converts YUV; an RGB buffer has nothing to convert.
-        if (entry->planes.size() > 1) {
-          OH_NativeBuffer_SetColorSpace(entry->buffer,
-                                        OhosColorSpaceFor(color_space));
-        }
-        return entry->window_buffer;
-      });
+  OHNativeWindowBuffer* window_buffer =
+      static_cast<OhosNativePixmap*>(pixmap.get())->WindowBuffer(color_space);
   if (!window_buffer) {
     LOG(ERROR) << "OHOS native pixmap: nothing to import";
     return nullptr;
@@ -698,6 +929,8 @@ std::unique_ptr<NativePixmapGLBinding> ImportOhosNativePixmap(
 }
 
 void* GetOhosNativeBuffer(const gfx::NativePixmap& pixmap) {
+  // Decoder surface pixmaps are GPU-only and are not offered to Dawn. Keep
+  // this allocator-backed WebGPU path independent of video buffer ownership.
   if (!pixmap.AreDmaBufFdsValid()) {
     return nullptr;
   }

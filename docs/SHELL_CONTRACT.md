@@ -166,7 +166,7 @@ struct Browser {
 
 ### `BrowserStateSnapshot`
 
-引擎每 200ms 检查一次状态,有变化才回调。常用字段:
+状态在标签、页面、加载进度、缩放、阅读模式、焦点变化以及外壳每条命令之后重建,最快 100ms 一次,有变化才回调;另有每 2 秒一次的检查兜底,应用在后台时停止。常用字段:
 
 | 字段 | 说明 |
 |---|---|
@@ -179,6 +179,7 @@ struct Browser {
 | `zoomPercent` | 当前标签的网页缩放,100 为正常。 |
 | `inReaderMode`、`readerModeAvailable` | 是否在阅读模式;当前页能否进入。 |
 | 标签的 `id`、`audible`、`muted` | 稳定 id;正在发声;已静音。 |
+| 标签的 `discarded` | 页面未加载:被引擎为省内存丢弃,或从上次会话恢复后还没打开过。标题、图标、前进后退记录都在;激活时自动重新加载,外壳宜显示为加载中而不是空白。见 [OHOS_TAB_DISCARDING.md](OHOS_TAB_DISCARDING.md)。 |
 | `isPwaWindow`、`pwaAppId`、`pwaStartUrl` | 当前窗口是否是 PWA。 |
 | `bookmarked` | 当前标签页的网址是否已加入书签。菜单里的书签开关用它。 |
 | `version` | 协议版本。 |
@@ -370,7 +371,7 @@ Chromium 自己的安装确认框,用户确认后才装。
 | `setTabMuted` | `id?`, `muted` | 不传 `id` 时作用于当前标签 |
 | `setZoom` | `percent?` | 25–500,不传表示回到 100 |
 | `toggleReaderMode` | | 进入 / 退出阅读模式 |
-| `getTabThumbnails` | `requestId`, `ids`, `widthVp` | `tabThumbnails { requestId, items }` |
+| `getTabThumbnails` | `requestId`, `ids`, `widthVp`，可选 `aspect`（卡片宽高比，默认 4/3，范围 0.4～2.5） | `tabThumbnails { requestId, items }`；截网页顶部这个比例的一块，`aspect` 越小截得越多 |
 | `getRecentlyClosed` | `requestId`, `maxCount` | `recentlyClosed { requestId, items }` |
 | `restoreRecentlyClosed` | `id?` | 不传 `id` 时恢复最近一项 |
 | `removeTopSite` | `url` | 加入 top sites 黑名单 |
@@ -483,7 +484,7 @@ function report() {
 | `newTab` | `url?` | 新建标签页 |
 | `activateTab` | `index` | 切换标签页 |
 | `closeTab` | `index` | 关闭标签页 |
-| `requestState` | | 让引擎立即推送一次 `BrowserStateSnapshot` |
+| `requestState` | | 让引擎立即推送一次 `BrowserStateSnapshot`,即使没有变化 |
 | `filePickerResult` | `requestId`, `paths`, `fileTypeIndex`, `canceled` | 回复 `filePickerRequested` |
 | `permissionResult` | `requestId`, `granted`, `denied` | 回复 `permissionsRequested` |
 | `systemPermissionState` | `location`: `'allowed' \| 'denied' \| 'notDetermined'` | 上报应用的定位权限状态 |
@@ -694,7 +695,7 @@ Chromium 首次访问时重新抓。这是一直如此，不是偶尔。
 
 **下载**
 
-下载开始、进度变化（每个下载约 500ms 最多一次）、状态变化、被删除时，引擎推送 `downloadUpdated`，字段见 `DownloadItem`：`id`、`url`、`fileName`、`filePath`、`mimeType`、`receivedBytes`、`totalBytes`、`state`（`'inProgress' | 'paused' | 'completed' | 'cancelled' | 'failed'`）、`failReason`、`canResume`、`dangerous`、`dangerType`、`startTime`、`endTime`，被删除时另带 `removed: true`。
+下载开始、进度变化（每个下载约 500ms 最多一次）、状态变化、被删除时，引擎推送 `downloadUpdated`，字段见 `DownloadItem`：`id`、`url`、`fileName`、`filePath`、`mimeType`、`receivedBytes`、`totalBytes`、`state`（`'inProgress' | 'paused' | 'completed' | 'cancelled' | 'failed'`）、`failReason`、`canResume`、`fileMissing`、`dangerous`、`dangerType`、`startTime`、`endTime`，被删除时另带 `removed: true`。`fileMissing` 为 true 表示已完成的下载文件已在浏览器外被删除或移走：每次 `listDownloads` 时引擎检查一遍，查到后另推一条 `downloadUpdated`；这时 `retry` 会重新下载这个网址，并删掉这条旧记录。旧引擎没有这个字段，按 false 处理。
 
 **危险文件**：`dangerous` 为 true 的下载会停在 `inProgress`，等用户决定。外壳必须给出"仍然保留"和"丢弃"两个选项，分别发 `keepDangerous` 和 `discardDangerous`，否则这个下载会一直停在那里。
 
@@ -702,7 +703,7 @@ Chromium 首次访问时重新抓。这是一直如此，不是偶尔。
 |---|---|---|
 | `listDownloads` | `requestId` | `downloadList { requestId, items }`，最新的在前 |
 | `setDownloadDirectory` | `uri` | 设定下载目录，见下文"保存位置" |
-| `downloadAction` | `id`, `action`: `'pause' \| 'resume' \| 'cancel' \| 'retry' \| 'remove' \| 'removeAndDeleteFile' \| 'keepDangerous' \| 'discardDangerous'` | `remove` 只删记录，`removeAndDeleteFile` 连文件一起删 |
+| `downloadAction` | `id`, `action`: `'pause' \| 'resume' \| 'cancel' \| 'retry' \| 'remove' \| 'removeAndDeleteFile' \| 'keepDangerous' \| 'discardDangerous'` | `remove` 只删记录，`removeAndDeleteFile` 连文件一起删；`retry` 对失败或已取消的下载续传或重下，对 `fileMissing` 的已完成下载重新下载，并删掉这条旧记录（引擎另推 `removed: true`） |
 
 - **保存位置**：
   - 外壳页面出现后调用 HAR 的 `ShellDownloadDirectory.prepare(context)`。它用 `DocumentViewPicker` 的下载模式取到 `Download/<包名>` 目录，不弹界面，授权长期有效。
@@ -743,7 +744,7 @@ Chromium 首次访问时重新抓。这是一直如此，不是偶尔。
 
 偏好键（只接受这些）：`blockThirdPartyCookies`、`doNotTrack`、`safeBrowsing`（`'off' | 'standard' | 'enhanced'`）、`preloadPages`、`popupsBlocked`、`javascriptEnabled`、`textScale`、`autofillAddresses`、`autofillCards`、`downloadAskWhereToSave`、`passwordVault`、`forceDarkWebContents`(网页强制深色,已打开的标签页立即生效)。
 
-- `textScale` 是 50–200 的百分比。桌面版 Chromium 没有只放大文字的设置，所以这里改的是网页的默认缩放比例，整页一起放大。
+- `textScale` 是 50–200 的百分比。桌面版 Chromium 没有只放大文字的设置，所以这里改的是网页的默认缩放比例，整页一起放大。网页实际的默认缩放还要乘上系统字体大小（设置 > 显示 > 字体大小，`Configuration.fontSizeScale`，限制在 0.8–2.0），由引擎 HAR 的 `fontscale` 服务自动跟随，外壳不用处理；`textScale` 读出来的仍是外壳设的值，不含系统字体部分。自己设过缩放的网站保持自己的比例。`--disable-features=OhosFollowSystemFontSize` 可关闭跟随。
 - 这个版本没有配置 Google API 密钥，`safeBrowsing` 开关能保存，但实际上很可能不起作用，设置页不要承诺有安全浏览保护。
 - 没有 `passwordFillRequiresAuth`（已去掉）：把已保存的密码填进网页总要验证身份，和查看、复制、编辑、导出一样，没有开关。设备上没有锁屏也没有录入生物特征时没有东西可以拿来验证，照常填充。
 - `passwordVault` 默认关。打开后由系统密码保险箱填充和保存网页密码：点登录框时内核直接调起保险箱（每个表单问一次），用户选的账号由内核填进网页；登录成功后保险箱询问是否保存，同时 Chromium 不弹提示、悄悄存一份，关掉开关后照常可用。打开期间 Chromium 自己的填充建议、自动填充和强密码提示都不出现。保险箱调用由外壳用 `registerShellSystemService('passwordvault', …)` 实现（`autoFillManager` 的 ViewData 接口要 API 26，引擎 HAR 按 API 20 编译）。保险箱要求设备设了锁屏密码，外壳只在可用时让开关可点。
@@ -924,7 +925,7 @@ pageFullscreenChanged { windowId?: number, fullscreen: boolean }
 `backHandled { handled: true, by: 'fullscreen' }`,随后发 `pageFullscreenChanged
 { fullscreen: false }`。网页自己退出(Esc、页面按钮)也会发这条。
 
-内核在 200ms 一次的状态轮询里读全屏状态,所以事件最多晚 200ms 到。
+内核在网页切换全屏时立即重建状态并发出事件;定时检查兜底。
 
 **下拉刷新(仅手机)**
 
