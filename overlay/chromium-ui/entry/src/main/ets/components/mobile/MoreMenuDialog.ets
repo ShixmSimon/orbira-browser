@@ -1,18 +1,15 @@
 /*
  * 贴右上角弹出的「更多操作」菜单卡 —— CustomDialog 承载。
  *
- * 为什么走 CustomDialog：弹窗在独立子窗口里，属于沉浸材质的「允许区」
- * （GlassScope.HOST）——卡片挂官方 systemMaterial 能拿到真玻璃 + 边缘流光
- * （和系统 AlertDialog 同源的窗口机制），这是页内自绘 Stack 卡拿不到的。
- * 材质不可用时兜底 menu_glass 实底（观感退化为之前的自绘卡，不会透明）。
+ * ⚠️ 2026-10-10 真机定案：**弹窗子窗口里自定义组件挂 systemMaterial 不渲染**
+ * （材质挂上了却把 backgroundColor 顶掉 → 整块透明）。系统流光只存在于
+ * AlertDialog/ActionSheet 等「系统默认样式」的弹窗上——系统自己画的那层，
+ * 自定义内容拿不到。别再试在 CustomDialog/页内 Stack 卡上挂材质；
+ * 菜单卡的最终形态就是 menu_glass 实底 + 圆角 + 阴影（无流光）。
  *
- * 定位：alignment TopEnd + offset —— 卡片右缘距屏右 12vp、顶在标题行下方，
- * 复刻旧版 bindMenu 的弹出位置。autoCancel 点外自动收起，maskColor 透明
- * （不做全屏变暗，菜单卡语义）。
+ * 仍用 CustomDialog 承载的理由：形态/定位稳定（贴右上、标题行正下方），
+ * autoCancel 点外自动收起，独立窗口不参与页面布局。
  */
-import uiMaterial from '@ohos.arkui.uiMaterial';
-import { glassMaterial, GlassRole, GlassScope, glassNoneShadow } from '../../utils/appearance/GlassMaterial';
-
 export interface MoreMenuItemSpec {
   icon: Resource;
   label: string;
@@ -23,9 +20,6 @@ export interface MoreMenuItemSpec {
 export struct MoreMenuDialog {
   controller?: CustomDialogController;
   items: MoreMenuItemSpec[] = [];
-  // 弹窗子窗口 = 允许区 → 材质会真的渲染（THICK 压得住下层 + 自带阴影光效）。
-  private readonly glass: uiMaterial.Material | undefined =
-    glassMaterial(GlassRole.CARD, GlassScope.HOST);
 
   build() {
     Column() {
@@ -52,11 +46,7 @@ export struct MoreMenuDialog {
     .width(190)
     .padding({ top: 6, bottom: 6 })
     .borderRadius(22)
-    .systemMaterial(this.glass)
-    // 材质接管背景色（官方约定让位给它）；拿不到材质就退回 menu_glass 实底。
-    .backgroundColor(this.glass === undefined ? $r('app.color.menu_glass') : Color.Transparent)
-    .shadow(this.glass === undefined
-      ? { radius: 26, color: $r('app.color.shadow'), offsetY: 8 }
-      : glassNoneShadow())
+    .backgroundColor($r('app.color.menu_glass'))
+    .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
   }
 }
