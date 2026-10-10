@@ -11,6 +11,7 @@ import { BookmarkNode, BrowserCommandPayload } from 'engine';
 import { displayUrl, pickAndStageImportFile, saveExportedFile, deleteStagedFile } from './PanelBridge';
 import { AuraSectionLabel } from './LumieKit';
 import { GlassPage, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
+import { MoreMenuDialog, MoreMenuItemSpec } from './MoreMenuDialog';
 
 interface BookmarkIoPayload {
   kind?: string;
@@ -439,81 +440,48 @@ export struct BookmarksPanel {
     .height('100%')
   }
 
-  // ⋯ 的子菜单：恢复「贴标题栏右侧弹出的小菜单卡」形态（用户定案：弃用
-  // 底部 ActionSheet），卡片走自绘 menu_glass 家族，与首页长按菜单同款。
+  // ⋯ 的子菜单：CustomDialog 承载（弹窗子窗口 = 沉浸材质允许区，卡片挂
+  // 官方 systemMaterial 拿真玻璃 + 边缘流光，与系统 AlertDialog 同源机制；
+  // 材质不可用时 MoreMenuDialog 内部自动兜底 menu_glass 实底）。
+  // 形态仍是对齐旧版 bindMenu：贴右上、标题行正下方弹出的小菜单卡。
   private showMoreSheet(): void {
-    this.moreMenuVisible = true;
+    this.moreMenuDialog.open();
   }
 
-  private moreMenuY(): number {
-    return glassTopSafeVp() + 56 + 6;
-  }
-
-  // 自绘更多菜单卡：position 右对齐（x='100%' + markAnchor 把卡片右缘收到
-  // 距屏右 12vp），y 在标题行正下方 —— 复刻旧版 bindMenu 的弹出位置。
-  @Builder
-  private MoreMenuOverlay() {
-    if (this.moreMenuVisible) {
-    Stack({ alignContent: Alignment.TopStart }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .onClick(() => {
-          this.moreMenuVisible = false;
-        })
-
-      Column() {
-        this.MoreMenuRow($r('app.media.aura_plus'), '手动添加书签', (): void => {
-          this.moreMenuVisible = false;
-          this.openAddDialog();
-        })
-        this.MoreMenuRow($r('app.media.aura_import'), '导入书签', (): void => {
-          this.moreMenuVisible = false;
-          this.startImport();
-        })
-        this.MoreMenuRow($r('app.media.aura_export'), '导出书签', (): void => {
-          this.moreMenuVisible = false;
-          this.startExport();
-        })
-      }
-      .width(190)
-      .padding({ top: 6, bottom: 6 })
-      .borderRadius(22)
-      .backgroundColor($r('app.color.menu_glass'))
-      .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
-      .position({ x: '100%', y: this.moreMenuY() })
-      .markAnchor({ x: 202 })
-      .transition(TransitionEffect.asymmetric(
-        TransitionEffect.opacity(0)
-          .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 })),
-        TransitionEffect.opacity(0)
-      ).animation({ duration: 180, curve: Curve.Friction }))
-    }
-    .width('100%')
-    .height('100%')
-    }
-  }
-
-  @Builder
-  private MoreMenuRow(icon: Resource, label: string, action: () => void) {
-    Row({ space: 14 }) {
-      Image(icon)
-        .width(21)
-        .height(21)
-        .fillColor($r('app.color.icon_primary'))
-      Text(label)
-        .fontSize(15)
-        .fontColor($r('app.color.text_primary'))
-      Blank()
-    }
-    .width('100%')
-    .height(48)
-    .padding({ left: 18, right: 16 })
-    .onClick(action)
-  }
+  private moreMenuDialog: CustomDialogController = new CustomDialogController({
+    builder: MoreMenuDialog({
+      items: [
+        {
+          icon: $r('app.media.aura_plus'),
+          label: '手动添加书签',
+          action: (): void => {
+            this.openAddDialog();
+          }
+        },
+        {
+          icon: $r('app.media.aura_import'),
+          label: '导入书签',
+          action: (): void => {
+            this.startImport();
+          }
+        },
+        {
+          icon: $r('app.media.aura_export'),
+          label: '导出书签',
+          action: (): void => {
+            this.startExport();
+          }
+        }
+      ] as MoreMenuItemSpec[]
+    }),
+    autoCancel: true,
+    customStyle: true,
+    maskColor: Color.Transparent,
+    alignment: DialogAlignment.TopEnd,
+    offset: { dx: -12, dy: glassTopSafeVp() + 62 }
+  });
 
   private listScroller: Scroller = new Scroller();
-  @State private moreMenuVisible: boolean = false;
 
   // 搜索：标题/网址命中即留（只搜书签项，文件夹本身不进结果）。
   private matchesQuery(node: BookmarkNode, q: string): boolean {
@@ -625,9 +593,6 @@ export struct BookmarksPanel {
         }
       }
     }) {
-    // body 包成 Stack：自绘更多菜单卡挂这里（viewport 固定）。GlassPage
-    // 尾随闭包只允许一个 @BuilderParam，悬浮层进不了 GlassPage 只能挂 body。
-    Stack({ alignContent: Alignment.TopStart }) {
     Column() {
       if (this.nodes.length === 0) {
         Column({ space: 6 }) {
@@ -798,9 +763,6 @@ export struct BookmarksPanel {
     .height('100%')
     .padding({ left: 16, right: 16 })
     .backgroundColor($r('app.color.page_background'))
-
-    this.MoreMenuOverlay()
-    }
     }
   }
 }
