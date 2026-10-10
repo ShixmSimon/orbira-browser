@@ -39,6 +39,13 @@ interface BookmarkListPayload {
 
 type FormMode = '' | 'addBookmark' | 'editBookmark' | 'addFolder' | 'renameFolder';
 
+// 「移动到」选择器的一项文件夹（title 为含路径的显示名）。
+interface FolderOption {
+  id: string;
+  title: string;
+  childCount: number;
+}
+
 const MAX_LOAD_RETRIES: number = 3;
 const LOAD_RETRY_MS: number = 1500;
 
@@ -65,7 +72,7 @@ export struct BookmarksPanel {
   @State private loading: boolean = true;
   private navStack: string[] = [];
   // 回包匹配：只采用最新一次请求的回包（layer = 目录层，search = 搜索）。
-  private pendingKind: 'layer' | 'search' = 'layer';
+  private pendingKind: 'layer' | 'search' | 'collect' = 'layer';
   private pendingSeq: number = 0;
   private requestSeq: number = 0;
   private retryTimer: number = -1;
@@ -93,6 +100,21 @@ export struct BookmarksPanel {
   private menuPressY: number = 0;
   private windowW: number = 360;
   private windowH: number = 780;
+
+  // 「移动到」：打开选择器时 BFS 拉全树，收集全部文件夹。
+  @State private pickerVisible: boolean = false;
+  @State private pickerFolders: FolderOption[] = [];
+  // 表单里选中的移动目标（'' = 不移动）。
+  @State private moveTargetId: string = '';
+  // 正在编辑/新建的节点的父文件夹（显示「所在文件夹」用）。
+  @State private formParentId: string = '';
+  private folderIds: string[] = [];
+  private folderParent: Map<string, string> = new Map();
+  private folderTitle: Map<string, string> = new Map();
+  private folderKids: Map<string, number> = new Map();
+  private collectSeen: Set<string> = new Set();
+  private collectOutstanding: number = 0;
+  private collectStartSeq: number = 0;
 
   private listScroller: Scroller = new Scroller();
 
@@ -165,6 +187,13 @@ export struct BookmarksPanel {
     }
     try {
       const payload = JSON.parse(this.listJson) as BookmarkListPayload;
+      if (this.pendingKind === 'collect') {
+        // 文件夹收集：接受收集开始之后的任何回包（多层并发在途）。
+        if ((payload.requestId ?? -1) >= this.collectStartSeq) {
+          this.onCollectPacket(payload.nodes ?? []);
+        }
+        return;
+      }
       if ((payload.requestId ?? -1) !== this.pendingSeq) {
         return;
       }
@@ -233,6 +262,84 @@ export struct BookmarksPanel {
       return;
     }
     this.onBack();
+  }
+
+  // -- 「移动到」：BFS 收集全部文件夹 -------------------------------------------
+
+  private openFolderPicker(): void {
+    this.folderIds = [];
+    this.folderParent.clear();
+    this.folderTitle.clear();
+    this.folderKids.clear();
+    this.collectSeen.clear();
+    this.collectSeen.add('');
+    this.collectOutstanding = 1;
+    this.collectStartSeq = this.requestSeq + 1;
+    this.pendingKind = 'collect';
+    this.requestSeq += 1;
+    this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq });
+  }
+
+  private onCollectPacket(nodes: BookmarkNode[]): void {
+    this.collectOutstanding -= 1;
+    for (const node of nodes) {
+      if (node.type !== 'folder') {
+        continue;
+      }
+      if (!this.folderParent.has(node.id)) {
+        this.folderIds.push(node.id);
+      }
+      this.folderParent.set(node.id, node.parentId);
+      this.folderTitle.set(node.id, node.title.length > 0 ? node.title : '未命名文件夹');
+      this.folderKids.set(node.id, node.childCount ?? 0);
+      if (!this.collectSeen.has(node.id)) {
+        this.collectSeen.add(node.id);
+        this.collectOutstanding += 1;
+        this.requestSeq += 1;
+        this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq, parentId: node.id });
+      }
+    }
+    if (this.collectOutstanding <= 0) {
+      this.buildPickerOptions();
+    }
+  }
+
+  /** 文件夹显示名：沿父链拼路径（移动设备书签 / 工作 / 账号）。 */
+  private folderDisplayPath(id: string): string {
+    const parts: string[] = [];
+    let cursor = id;
+    let guard = 0;
+    while (cursor.length > 0 && this.folderTitle.has(cursor) && guard < 8) {
+      const title = this.folderTitle.get(cursor);
+      parts.unshift(title !== undefined ? title : '');
+      const parent = this.folderParent.get(cursor);
+      cursor = parent !== undefined ? parent : '';
+      guard += 1;
+    }
+    return parts.join(' / ');
+  }
+
+  private buildPickerOptions(): void {
+    const out: FolderOption[] = [];
+    for (const id of this.folderIds) {
+      if (id === this.formParentId) {
+        // 当前所在文件夹不列（移进去等于没动）。
+        continue;
+      }
+      const kids = this.folderKids.get(id);
+      out.push({
+        id: id,
+        title: this.folderDisplayPath(id),
+        childCount: kids !== undefined ? kids : 0
+      } as FolderOption);
+    }
+    this.pickerFolders = out;
+    this.pickerVisible = true;
+  }
+
+  private pickMoveTarget(id: string): void {
+    this.moveTargetId = id;
+    this.pickerVisible = false;
   }
 
   private openNode(node: BookmarkNode): void {
@@ -304,6 +411,10 @@ export struct BookmarksPanel {
 
   private openForm(mode: FormMode, node?: BookmarkNode): void {
     this.editUuid = node !== undefined ? node.id : '';
+    this.moveTargetId = '';
+    this.formParentId = mode === 'addBookmark' || mode === 'addFolder'
+      ? this.targetParentId()
+      : (node !== undefined ? node.parentId : '');
     this.formTitle = node !== undefined ? node.title : '';
     this.formUrl = node !== undefined && node.url !== undefined ? node.url : '';
     if (mode === 'addBookmark') {
@@ -365,8 +476,21 @@ export struct BookmarksPanel {
         url: this.dialogMode === 'editBookmark' ? this.formUrl.trim() : undefined,
         requestId: this.requestSeq
       });
+      if (this.moveTargetId.length > 0 && this.moveTargetId !== this.formParentId) {
+        // 「移动到」：放到目标文件夹末尾（引擎收到后推 bookmarksChanged，本页重拉）。
+        const kids = this.folderKids.get(this.moveTargetId);
+        this.requestSeq += 1;
+        this.onCommand({
+          command: 'moveBookmark',
+          id: this.editUuid,
+          parentId: this.moveTargetId,
+          index: kids !== undefined ? kids : 0,
+          requestId: this.requestSeq
+        });
+      }
     }
     this.cancelForm();
+    this.moveTargetId = '';
   }
 
   private formHeadline(): string {
@@ -850,6 +974,45 @@ export struct BookmarksPanel {
           }
           .width('100%')
 
+          if (this.dialogMode === 'editBookmark' || this.dialogMode === 'renameFolder') {
+            // 「移动到」入口：显示当前所在文件夹，点开选择器换位置。
+            Column({ space: 6 }) {
+              Text('所在文件夹')
+                .fontSize(13)
+                .fontColor($r('app.color.text_secondary'))
+                .width('100%')
+              Row({ space: 8 }) {
+                Image($r('app.media.aura_folder'))
+                  .width(18)
+                  .height(18)
+                  .fillColor($r('app.color.icon_secondary'))
+                Text(this.moveTargetId.length > 0
+                  ? this.folderDisplayPath(this.moveTargetId)
+                  : (this.folderTitle.has(this.formParentId)
+                    ? this.folderDisplayPath(this.formParentId)
+                    : (this.formParentId === this.mobileFolderId ? '移动设备书签' : '当前文件夹')))
+                  .fontSize(15)
+                  .fontColor($r('app.color.text_primary'))
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .layoutWeight(1)
+                Image($r('app.media.aura_chevron'))
+                  .width(14)
+                  .height(14)
+                  .fillColor($r('app.color.icon_secondary'))
+              }
+              .width('100%')
+              .height(46)
+              .padding({ left: 14, right: 12 })
+              .borderRadius(12)
+              .backgroundColor($r('app.color.surface_secondary'))
+              .onClick(() => {
+                this.openFolderPicker();
+              })
+            }
+            .width('100%')
+          }
+
           if (this.dialogMode === 'addBookmark' || this.dialogMode === 'editBookmark') {
             Column({ space: 6 }) {
               Text('网址')
@@ -907,7 +1070,72 @@ export struct BookmarksPanel {
         .borderRadius(22)
         .backgroundColor($r('app.color.menu_glass'))
         .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
-        .margin({ left: 28, right: 28 })
+        .margin({ left: 44, right: 44 })
+      }
+      .width('100%')
+      .height('100%')
+    }
+  }
+
+  // 「移动到」文件夹选择器（自绘卡，列表 = BFS 收集的全部文件夹）。
+  @Builder
+  private FolderPicker() {
+    if (this.pickerVisible) {
+      Stack({ alignContent: Alignment.Center }) {
+        Column()
+          .width('100%')
+          .height('100%')
+          .backgroundColor($r('app.color.modal_scrim'))
+          .onClick(() => {
+            this.pickerVisible = false;
+          })
+
+        Column({ space: 12 }) {
+          Text('移动到')
+            .fontSize(17)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .width('100%')
+
+          Scroll() {
+            Column({ space: 4 }) {
+              ForEach(this.pickerFolders, (option: FolderOption) => {
+                Row({ space: 12 }) {
+                  Image($r('app.media.aura_folder'))
+                    .width(20)
+                    .height(20)
+                    .fillColor($r('app.color.icon_secondary'))
+                  Text(option.title)
+                    .fontSize(15)
+                    .fontColor($r('app.color.text_primary'))
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .layoutWeight(1)
+                  Text(`${option.childCount} 项`)
+                    .fontSize(12)
+                    .fontColor($r('app.color.text_secondary'))
+                }
+                .width('100%')
+                .height(48)
+                .padding({ left: 12, right: 12 })
+                .borderRadius(10)
+                .onClick(() => {
+                  this.pickMoveTarget(option.id);
+                })
+              }, (option: FolderOption): string => option.id)
+            }
+            .width('100%')
+          }
+          .constraintSize({ maxHeight: 380 })
+          .scrollBar(BarState.Off)
+          .width('100%')
+        }
+        .width('100%')
+        .padding(20)
+        .borderRadius(22)
+        .backgroundColor($r('app.color.menu_glass'))
+        .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
+        .margin({ left: 44, right: 44 })
       }
       .width('100%')
       .height('100%')
@@ -1055,6 +1283,7 @@ export struct BookmarksPanel {
 
     this.RowMenuOverlay()
     this.FormDialog()
+    this.FolderPicker()
     }
     .width('100%')
     .height('100%')
