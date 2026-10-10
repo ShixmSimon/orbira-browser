@@ -63,9 +63,9 @@ export struct PasswordsPanel {
   onClose: () => void = (): void => {};
 
   @State private items: SavedPasswordItem[] = [];
-  // 试探法：组件创建即发 getSavedPasswords —— 引擎授权窗口（60s）内直接
-  // 出列表（免重复验证）；未授权回 authRequired 再回验证门。
-  @State private verified: boolean = true;
+  // 验证门优先（真机 11:09 复验：未授权时 getSavedPasswords 引擎静默不回包，
+  // 试探法直接卡"加载中"——回退为显式验证门，验证成功后 reload 必有数据）。
+  @State private verified: boolean = false;
   private retryTimer: number = -1;
   private retryCount: number = 0;
   private pendingSeq: number = 0;
@@ -1164,6 +1164,7 @@ export struct PasswordsPanel {
             this.importDialogVisible = false;
           })
 
+        Row() {
         Column({ space: 14 }) {
           Text('导入密码')
             .fontSize(17)
@@ -1233,7 +1234,9 @@ export struct PasswordsPanel {
         .borderRadius(22)
         .backgroundColor($r('app.color.menu_glass'))
         .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
-        .margin({ left: 44, right: 44 })
+        }
+        .padding({ left: 44, right: 44 })
+        .width('100%')
       }
       .width('100%')
       .height('100%')

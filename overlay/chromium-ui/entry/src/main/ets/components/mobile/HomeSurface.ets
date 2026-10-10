@@ -607,6 +607,7 @@ export struct HomeSurface {
           this.closeAddShortcut();
         })
 
+      Row() {
       Column({ space: 14 }) {
         Text(this.editingOriginalUrl.length > 0 ? '编辑快捷方式' : '添加快捷方式')
           .fontSize(17)
@@ -688,12 +689,15 @@ export struct HomeSurface {
       .borderRadius(22)
       .backgroundColor($r('app.color.menu_glass'))
       .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
-      .margin({ left: 28, right: 28 })
+      .margin({ left: 0, right: 0 })
       .transition(TransitionEffect.asymmetric(
         TransitionEffect.opacity(0)
           .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 })),
         TransitionEffect.opacity(0)
       ).animation({ duration: 200, curve: Curve.Friction }))
+      }
+      .padding({ left: 44, right: 44 })
+      .width('100%')
     }
     .width('100%')
     .height('100%')

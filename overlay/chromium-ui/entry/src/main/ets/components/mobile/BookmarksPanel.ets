@@ -950,6 +950,7 @@ export struct BookmarksPanel {
             this.cancelForm();
           })
 
+        Row() {
         Column({ space: 14 }) {
           Text(this.formHeadline())
             .fontSize(17)
@@ -1070,7 +1071,9 @@ export struct BookmarksPanel {
         .borderRadius(22)
         .backgroundColor($r('app.color.menu_glass'))
         .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
-        .margin({ left: 44, right: 44 })
+        }
+        .padding({ left: 44, right: 44 })
+        .width('100%')
       }
       .width('100%')
       .height('100%')
@@ -1090,6 +1093,7 @@ export struct BookmarksPanel {
             this.pickerVisible = false;
           })
 
+        Row() {
         Column({ space: 12 }) {
           Text('移动到')
             .fontSize(17)
@@ -1135,7 +1139,9 @@ export struct BookmarksPanel {
         .borderRadius(22)
         .backgroundColor($r('app.color.menu_glass'))
         .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
-        .margin({ left: 44, right: 44 })
+        }
+        .padding({ left: 44, right: 44 })
+        .width('100%')
       }
       .width('100%')
       .height('100%')
@@ -1237,6 +1243,19 @@ export struct BookmarksPanel {
       } else {
         Scroll(this.listScroller) {
         Column() {
+          if (this.currentNodes.length === 0 && this.currentFolderId.length > 0) {
+            // 空文件夹提示（v3.1 重写时遗漏，用户反馈补回）。
+            Column({ space: 6 }) {
+              Text('这个文件夹是空的')
+                .fontSize(15)
+                .fontColor($r('app.color.text_secondary'))
+              Text('右上角 + 可以在这里新建文件夹，⋯ 菜单添加书签')
+                .fontSize(13)
+                .fontColor($r('app.color.text_secondary'))
+            }
+            .width('100%')
+            .margin({ top: 60 })
+          } else {
           // 当前层：根级 = 三个根文件夹；子层 = 该文件夹内容（文件夹在前）。
           ForEach(this.currentNodes, (node: BookmarkNode, index: number) => {
             if (node.type === 'folder') {
@@ -1267,6 +1286,7 @@ export struct BookmarksPanel {
             .borderRadius(16)
             .backgroundColor($r('app.color.card_background'))
             .clip(true)
+          }
           }
         }
         .width('100%')
