@@ -114,6 +114,7 @@ export struct PasswordsPanel {
     }
     try {
       this.items = JSON.parse(this.passwordsJson) as SavedPasswordItem[];
+      this.recomputeFiltered();
       this.loading = false;
     } catch (error) {
       this.loading = false;
@@ -679,6 +680,7 @@ export struct PasswordsPanel {
               .backgroundColor(Color.Transparent)
               .onChange((value: string) => {
                 this.searchText = value;
+                this.recomputeFiltered();
               })
           }
           .width('100%')
@@ -688,7 +690,7 @@ export struct PasswordsPanel {
           .padding({ left: 12, right: 12 })
           .margin({ bottom: 10 })
 
-          if (this.filteredPasswords().length === 0) {
+          if (this.filteredPasswords.length === 0) {
             Text('没有匹配的密码')
               .fontSize(14)
               .fontColor($r('app.color.text_secondary'))
@@ -697,7 +699,7 @@ export struct PasswordsPanel {
               .margin({ top: 40 })
           }
           Column() {
-            ForEach(this.filteredPasswords(), (item: SavedPasswordItem, index: number) => {
+            ForEach(this.filteredPasswords, (item: SavedPasswordItem, index: number) => {
               this.PasswordRow(item, index)
             }, (item: SavedPasswordItem): string => item.id)
           }
@@ -893,12 +895,15 @@ export struct PasswordsPanel {
   private listScroller: Scroller = new Scroller();
   private detailScroller: Scroller = new Scroller();
   @State private searchText: string = '';
+  // 过滤结果落 @State（同 HistoryPanel：方法间接读 @State 不建立更新依赖）。
+  @State private filteredPasswords: SavedPasswordItem[] = [];
 
-  // 搜索过滤：来源/用户名命中即留。
-  private filteredPasswords(): SavedPasswordItem[] {
+  // 重算过滤结果（写入 @State）：搜索词变化与数据源变化处都要调用。
+  private recomputeFiltered(): void {
     const q = this.searchText.trim().toLowerCase();
     if (q.length === 0) {
-      return this.items;
+      this.filteredPasswords = this.items;
+      return;
     }
     const out: SavedPasswordItem[] = [];
     for (const item of this.items) {
@@ -906,10 +911,10 @@ export struct PasswordsPanel {
         out.push(item);
       }
     }
-    return out;
+    this.filteredPasswords = out;
   }
 
-  build() {
+    build() {
     // 标题栏放进 Navigation（HarmonyOS 7 之后只有 Navigation 标题栏 / 底部
     // TabBar / 弹窗类还在沉浸光感的生效范围内）。右侧还有「更多」，故不用
     // GlassPage，自己包一层。

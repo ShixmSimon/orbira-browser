@@ -44,6 +44,9 @@ export struct HistoryPanel {
   // 渐变模糊滚动效果按官方要求 bindToScrollable。
   private listScroller: Scroller = new Scroller();
   @State private searchText: string = '';
+  // 过滤结果落 @State：build 里 ForEach/if 经方法间接读 @State 不会建立更新依赖
+  //（编译器不分析方法体），搜索词变化时列表不刷新——显式重算才能驱动更新。
+  @State private filteredGroups: HistoryGroup[] = [];
   private requestSeq: number = 0;
   private retryTimer: number = -1;
 
@@ -81,6 +84,7 @@ export struct HistoryPanel {
     try {
       this.items = JSON.parse(this.historyJson) as HistoryItem[];
       this.groups = groupHistory(this.items);
+      this.recomputeFiltered();
       this.loading = false;
     } catch (error) {
       this.loading = false;
@@ -166,11 +170,12 @@ export struct HistoryPanel {
     .width('100%')
   }
 
-  // 搜索过滤：标题/网址命中即留；分组内没有命中项的整组丢弃。
-  private filteredGroups(): HistoryGroup[] {
+  // 重算过滤结果（写入 @State）：搜索词变化与数据源变化处都要调用。
+  private recomputeFiltered(): void {
     const q = this.searchText.trim().toLowerCase();
     if (q.length === 0) {
-      return this.groups;
+      this.filteredGroups = this.groups;
+      return;
     }
     const out: HistoryGroup[] = [];
     for (const group of this.groups) {
@@ -184,10 +189,10 @@ export struct HistoryPanel {
         out.push({ label: group.label, items: items } as HistoryGroup);
       }
     }
-    return out;
+    this.filteredGroups = out;
   }
 
-  build() {
+    build() {
     // 标题栏交给 GlassPage（落在 Navigation 标题栏里 —— HarmonyOS 7 之后
     // 只有这块区域 + 弹窗类还在沉浸光感的生效范围内）。
     GlassPage({ title: '历史', scrollers: [this.listScroller], onBack: (): void => { this.onBack(); } }) {
@@ -218,6 +223,7 @@ export struct HistoryPanel {
                 .backgroundColor(Color.Transparent)
                 .onChange((value: string) => {
                   this.searchText = value;
+                  this.recomputeFiltered();
                 })
             }
             .width('100%')
@@ -227,7 +233,7 @@ export struct HistoryPanel {
             .padding({ left: 12, right: 12 })
             .margin({ bottom: 10 })
 
-            if (this.filteredGroups().length === 0) {
+            if (this.filteredGroups.length === 0) {
               Text('没有匹配的历史记录')
                 .fontSize(14)
                 .fontColor($r('app.color.text_secondary'))
@@ -235,7 +241,7 @@ export struct HistoryPanel {
                 .textAlign(TextAlign.Center)
                 .margin({ top: 40 })
             }
-            ForEach(this.filteredGroups(), (group: HistoryGroup, index: number) => {
+            ForEach(this.filteredGroups, (group: HistoryGroup, index: number) => {
               AuraSectionLabel({ text: group.label, tightTop: index === 0 })
               Column() {
                 ForEach(group.items, (item: HistoryItem, index: number) => {
@@ -246,7 +252,9 @@ export struct HistoryPanel {
               .borderRadius(16)
               .backgroundColor($r('app.color.card_background'))
               .clip(true)
-            }, (group: HistoryGroup): string => group.label)
+            // 键里带上条数：过滤后同组标签（如"今天"）条数变化时键不同，
+            // 强制 itemGenerator 重跑——否则 ForEach 复用旧组节点，看起来"搜索无效"。
+            }, (group: HistoryGroup): string => `${group.label}#${group.items.length}`)
           }
           .width('100%')
           // 大标题带：滚动内容穿过「历史」大标题时逐渐虚化（见 GlassPage 文件头）。

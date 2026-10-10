@@ -44,6 +44,13 @@ function normUrl(url: string): string {
   return s;
 }
 
+// 首页磁贴（手动快捷方式 + 引擎常用网站合成后的渲染单元）。
+interface HomeTile {
+  url: string;
+  title: string;
+  manual: boolean;
+}
+
 @Component
 export struct HomeSurface {
   @StorageLink('auraTopSites') @Watch('onTopSitesChanged') topSitesJson: string = '';
@@ -58,6 +65,10 @@ export struct HomeSurface {
   @State private topSites: TopSite[] = [];
   // 手动添加的快捷方式（preferences 持久化），渲染排在常用网站前面。
   @State private shortcuts: HomeShortcut[] = [];
+  // 合成后的磁贴渲染序列（手动+引擎、按用户排序）——落 @State 驱动更新。
+  @State private tileList: HomeTile[] = [];
+  // 用户排序表（normUrl 后的 url 有序列表，preferences 持久化）。
+  private tileOrder: string[] = [];
   @State private showAddShortcut: boolean = false;
   @State private newShortcutTitle: string = '';
   @State private newShortcutUrl: string = '';
@@ -102,6 +113,10 @@ export struct HomeSurface {
     });
     HomeShortcuts.load(context).then((items: HomeShortcut[]): void => {
       this.shortcuts = items;
+      HomeShortcuts.loadOrder(context).then((order: string[]): void => {
+        this.tileOrder = order;
+        this.rebuildTiles();
+      });
       this.requestFavicons();
     });
   }
@@ -133,12 +148,67 @@ export struct HomeSurface {
     }
   }
 
+  // 合成磁贴渲染序列：手动项在前、引擎项在后（来源各自有序），再按用户
+  // 排序表（tileOrder）重排——表里有的按表位次，没有的按原顺序垫后。
+  // 数据源（shortcuts/topSites/blocklist/order）任一变化后都要调用。
+  private rebuildTiles(): void {
+    const seq: HomeTile[] = [];
+    for (const item of this.shortcuts) {
+      seq.push({ url: item.url, title: item.title, manual: true } as HomeTile);
+    }
+    for (const site of this.visibleTopSites()) {
+      seq.push({ url: site.url, title: site.title, manual: false } as HomeTile);
+    }
+    const ranked: HomeTile[] = [];
+    const used: boolean[] = [];
+    for (let i = 0; i < seq.length; i++) {
+      used.push(false);
+    }
+    for (const ou of this.tileOrder) {
+      const target = normUrl(ou);
+      for (let i = 0; i < seq.length; i++) {
+        if (!used[i] && normUrl(seq[i].url) === target) {
+          used[i] = true;
+          ranked.push(seq[i]);
+          break;
+        }
+      }
+    }
+    for (let i = 0; i < seq.length; i++) {
+      if (!used[i]) {
+        ranked.push(seq[i]);
+      }
+    }
+    this.tileList = ranked;
+  }
+
+  // 上移/下移磁贴：交换排序表相邻项并持久化（引擎项也支持——排序表覆盖
+  // 全部磁贴；首/末项越界时静默忽略）。
+  private moveTile(url: string, dir: number): void {
+    const urls: string[] = [];
+    for (const tile of this.tileList) {
+      urls.push(normUrl(tile.url));
+    }
+    const idx = urls.indexOf(normUrl(url));
+    const j = idx + dir;
+    if (idx < 0 || j < 0 || j >= urls.length) {
+      return;
+    }
+    const tmp = urls[idx];
+    urls[idx] = urls[j];
+    urls[j] = tmp;
+    this.tileOrder = urls;
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    HomeShortcuts.saveOrder(context, urls);
+    this.rebuildTiles();
+  }
+
   // 长按 = 自绘操作菜单（用户定案 2026-10-10：弃用系统 ActionSheet，只留
   // 「编辑 / 删除」，样式与 ⋮ 卡/网页长按卡同一家族 menu_glass 实底）。
   // 菜单卡弹在按压点附近（钳制在屏内）；全屏透明层负责点外收起。
   private showSiteActions(site: TopSite, isManual: boolean): void {
     const cardW = SHORTCUT_MENU_CARD_VP;
-    const cardH = 108;
+    const cardH = 204;
     this.menuX = Math.min(Math.max(this.menuPressX - cardW / 2, 12),
       Math.max(12, this.windowW - cardW - 12));
     this.menuY = Math.min(this.menuPressY + 8, Math.max(12, this.windowH - cardH - 96));
@@ -200,6 +270,7 @@ export struct HomeSurface {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
     HomeShortcuts.remove(context, url).then((items: HomeShortcut[]): void => {
       this.shortcuts = items;
+      this.rebuildTiles();
       this.getUIContext().getPromptAction().showToast({ message: '已移除', duration: 1500 });
     });
   }
@@ -227,6 +298,7 @@ export struct HomeSurface {
       : HomeShortcuts.add(context, title, url);
     promise.then((items: HomeShortcut[]): void => {
       this.shortcuts = items;
+      this.rebuildTiles();
       this.closeAddShortcut();
       this.requestFavicons();
       const message = editing && existsManual ? '已保存' : '已添加到主页';
@@ -260,6 +332,7 @@ export struct HomeSurface {
         }
       }
       this.topSites = remaining;
+      this.rebuildTiles();
       this.getUIContext().getPromptAction().showToast({ message: '已移除', duration: 1500 });
     }).catch((error: Error): void => {
     });
@@ -294,6 +367,7 @@ export struct HomeSurface {
     try {
       this.topSites = JSON.parse(this.topSitesJson) as TopSite[];
       this.applyBlocklist();
+      this.rebuildTiles();
       if (this.topSites.length > 0) {
         this.clearRetry();
       }
@@ -408,6 +482,9 @@ export struct HomeSurface {
           .height(54)
           .borderRadius(15)
           .objectFit(ImageFit.Cover)
+          // Image 默认 draggable(true)：长按图标会启动拖拽、抢占磁贴的
+          // LongPressGesture（长按文字正常、长按图标无反应的根因）。
+          .draggable(false)
           .backgroundColor($r('app.color.surface_secondary'))
       } else {
         Text(initialOf(site))
@@ -464,12 +541,22 @@ export struct HomeSurface {
         })
 
       Column() {
+        this.ShortcutMenuRow($r('app.media.aura_chevron'), '上移', (): void => {
+          const url = this.shortcutMenuUrl;
+          this.shortcutMenuUrl = '';
+          this.moveTile(url, -1);
+        }, -90)
+        this.ShortcutMenuRow($r('app.media.aura_chevron'), '下移', (): void => {
+          const url = this.shortcutMenuUrl;
+          this.shortcutMenuUrl = '';
+          this.moveTile(url, 1);
+        }, 90)
         this.ShortcutMenuRow($r('app.media.aura_edit'), '编辑', (): void => {
           this.beginEditFromMenu();
-        })
+        }, 0)
         this.ShortcutMenuRow($r('app.media.aura_trash'), '删除', (): void => {
           this.deleteFromMenu();
-        })
+        }, 0)
       }
       .width(SHORTCUT_MENU_CARD_VP)
       .padding({ top: 6, bottom: 6 })
@@ -488,12 +575,13 @@ export struct HomeSurface {
   }
 
   @Builder
-  private ShortcutMenuRow(icon: Resource, label: string, action: () => void) {
+  private ShortcutMenuRow(icon: Resource, label: string, action: () => void, iconAngle: number) {
     Row({ space: 14 }) {
       Image(icon)
         .width(21)
         .height(21)
         .fillColor($r('app.color.icon_primary'))
+        .rotate({ angle: iconAngle })
       Text(label)
         .fontSize(15)
         .fontColor($r('app.color.text_primary'))
@@ -687,13 +775,11 @@ export struct HomeSurface {
 
       if (!this.incognito) {
         Flex({ wrap: FlexWrap.Wrap }) {
-          // 手动添加的快捷方式排最前（用户固定的优先于访问习惯生成）。
-          ForEach(this.shortcuts, (item: HomeShortcut) => {
-            this.ShortcutTile({ url: item.url, title: item.title } as TopSite, true)
-          }, (item: HomeShortcut): string => `m|${item.url}`)
-          ForEach(this.visibleTopSites(), (site: TopSite) => {
-            this.ShortcutTile(site, false)
-          }, (site: TopSite): string => site.url)
+          // 磁贴统一从 tileList 渲染（手动+引擎合成、按用户排序持久化，
+          // 长按菜单「上移/下移」排序）。
+          ForEach(this.tileList, (tile: HomeTile) => {
+            this.ShortcutTile({ url: tile.url, title: tile.title } as TopSite, tile.manual)
+          }, (tile: HomeTile): string => normUrl(tile.url))
 
           // 「添加快捷方式」磁贴
           Column({ space: 7 }) {

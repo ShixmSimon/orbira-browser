@@ -45,6 +45,8 @@ export struct BookmarksPanel {
   private pendingExportPath: string = '';
   private pendingExportRequestId: number = 0;
   @State private searchText: string = '';
+  // 搜索命中结果落 @State（同 HistoryPanel：方法间接读 @State 不建立更新依赖）。
+  @State private searchResults: BookmarkNode[] = [];
   @State private expandedFolders: string[] = [];
 
   aboutToAppear(): void {
@@ -88,6 +90,7 @@ export struct BookmarksPanel {
     }
     try {
       this.nodes = JSON.parse(this.bookmarksJson) as BookmarkNode[];
+      this.recomputeSearch();
       this.loading = false;
     } catch (error) {
       this.loading = false;
@@ -483,15 +486,12 @@ export struct BookmarksPanel {
 
   private listScroller: Scroller = new Scroller();
 
-  // 搜索：标题/网址命中即留（只搜书签项，文件夹本身不进结果）。
-  private matchesQuery(node: BookmarkNode, q: string): boolean {
-    return node.title.toLowerCase().includes(q) || (node.url ?? '').toLowerCase().includes(q);
-  }
-
-  private searchHits(): BookmarkNode[] {
+  // 重算搜索命中（写入 @State）：搜索词变化与数据源变化处都要调用。
+  private recomputeSearch(): void {
     const q = this.searchText.trim().toLowerCase();
     if (q.length === 0) {
-      return [];
+      this.searchResults = [];
+      return;
     }
     const out: BookmarkNode[] = [];
     for (const node of this.nodes) {
@@ -499,7 +499,11 @@ export struct BookmarksPanel {
         out.push(node);
       }
     }
-    return out;
+    this.searchResults = out;
+  }
+
+    private matchesQuery(node: BookmarkNode, q: string): boolean {
+    return node.title.toLowerCase().includes(q) || (node.url ?? '').toLowerCase().includes(q);
   }
 
   // 文件夹分组：引擎载荷里有 type=folder 节点时启用文件夹视图。
@@ -625,6 +629,7 @@ export struct BookmarksPanel {
                 .backgroundColor(Color.Transparent)
                 .onChange((value: string) => {
                   this.searchText = value;
+                  this.recomputeSearch();
                 })
             }
             .width('100%')
@@ -636,7 +641,7 @@ export struct BookmarksPanel {
 
             if (this.searchText.trim().length > 0) {
               // 搜索：平铺命中项（标题/网址）。
-              if (this.searchHits().length === 0) {
+              if (this.searchResults.length === 0) {
                 Text('没有匹配的书签')
                   .fontSize(14)
                   .fontColor($r('app.color.text_secondary'))
@@ -645,7 +650,7 @@ export struct BookmarksPanel {
                   .margin({ top: 40 })
               }
               Column() {
-                ForEach(this.searchHits(), (node: BookmarkNode, index: number) => {
+                ForEach(this.searchResults, (node: BookmarkNode, index: number) => {
                   this.BookmarkRow(node, index)
                 }, (node: BookmarkNode): string => node.id)
               }

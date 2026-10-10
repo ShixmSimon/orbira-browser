@@ -10,6 +10,8 @@ import { preferences } from '@kit.ArkData';
 
 const STORE_NAME = 'shell_ui_prefs';
 const KEY_SHORTCUTS = 'homeShortcuts';
+// 磁贴排序表：normUrl 后的 url 有序列表（覆盖手动 + 引擎磁贴）。
+const KEY_ORDER = 'homeTileOrder';
 
 export interface HomeShortcut {
   title: string;
@@ -82,6 +84,38 @@ export class HomeShortcuts {
     out.unshift({ title: title, url: url } as HomeShortcut);
     await HomeShortcuts.save(context, out);
     return out;
+  }
+
+  /** 读取磁贴顺序表（无记录返回空数组 = 按默认顺序渲染）。 */
+  static async loadOrder(context: common.Context | undefined): Promise<string[]> {
+    if (!context) {
+      return [];
+    }
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      const raw = await store.get(KEY_ORDER, '[]') as string;
+      const out: string[] = [];
+      for (const v of JSON.parse(raw.length > 0 ? raw : '[]') as string[]) {
+        if (v && v.length > 0) {
+          out.push(v);
+        }
+      }
+      return out;
+    } catch (error) {
+      return [];
+    }
+  }
+
+  static async saveOrder(context: common.Context | undefined, urls: string[]): Promise<void> {
+    if (!context) {
+      return;
+    }
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      await store.put(KEY_ORDER, JSON.stringify(urls));
+      await store.flush();
+    } catch (error) {
+    }
   }
 
   /** 按 url 移除。返回更新后的列表。 */

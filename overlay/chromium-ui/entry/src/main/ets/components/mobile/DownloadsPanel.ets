@@ -54,6 +54,8 @@ export struct DownloadsPanel {
   // 渐变模糊滚动效果按官方要求 bindToScrollable。
   private listScroller: Scroller = new Scroller();
   @State private searchText: string = '';
+  // 过滤结果落 @State（同 HistoryPanel：方法间接读 @State 不建立更新依赖）。
+  @State private filteredDownloads: DownloadItem[] = [];
   private requestSeq: number = 0;
   private retryTimer: number = -1;
   private lastReloadAt: number = 0;
@@ -92,6 +94,7 @@ export struct DownloadsPanel {
     }
     try {
       this.items = JSON.parse(this.downloadsJson) as DownloadItem[];
+      this.recomputeFiltered();
       this.loading = false;
     } catch (error) {
       this.loading = false;
@@ -353,11 +356,12 @@ export struct DownloadsPanel {
     .width('100%')
   }
 
-  // 搜索过滤：文件名/网址命中即留。
-  private filteredDownloads(): DownloadItem[] {
+  // 重算过滤结果（写入 @State）：搜索词变化与数据源变化处都要调用。
+  private recomputeFiltered(): void {
     const q = this.searchText.trim().toLowerCase();
     if (q.length === 0) {
-      return this.items;
+      this.filteredDownloads = this.items;
+      return;
     }
     const out: DownloadItem[] = [];
     for (const item of this.items) {
@@ -365,10 +369,10 @@ export struct DownloadsPanel {
         out.push(item);
       }
     }
-    return out;
+    this.filteredDownloads = out;
   }
 
-  build() {
+    build() {
     // 标题栏交给 GlassPage（落在 Navigation 标题栏里 —— HarmonyOS 7 之后
     // 只有这块区域 + 弹窗类还在沉浸光感的生效范围内）。
     GlassPage({ title: '下载', scrollers: [this.listScroller], onBack: (): void => { this.onBack(); } }) {
@@ -399,6 +403,7 @@ export struct DownloadsPanel {
                 .backgroundColor(Color.Transparent)
                 .onChange((value: string) => {
                   this.searchText = value;
+                  this.recomputeFiltered();
                 })
             }
             .width('100%')
@@ -408,7 +413,7 @@ export struct DownloadsPanel {
             .padding({ left: 12, right: 12 })
             .margin({ bottom: 10 })
 
-            if (this.filteredDownloads().length === 0) {
+            if (this.filteredDownloads.length === 0) {
               Text('没有匹配的下载记录')
                 .fontSize(14)
                 .fontColor($r('app.color.text_secondary'))
@@ -417,7 +422,7 @@ export struct DownloadsPanel {
                 .margin({ top: 40 })
             }
             Column() {
-              ForEach(this.filteredDownloads(), (item: DownloadItem, index: number) => {
+              ForEach(this.filteredDownloads, (item: DownloadItem, index: number) => {
                 this.DownloadRow(item, index)
               }, (item: DownloadItem): string => item.id)
             }
