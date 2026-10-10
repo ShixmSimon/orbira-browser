@@ -4,10 +4,7 @@
  * （AuraShell 转存到 'auraPanelPrefs' / 'auraPanelEngines' / 'auraPanelAbout'）。
  * setPref 成功后引擎推 prefsChanged（转存到 'auraPanelEvent'），本页据此重拉。
  */
-import { common, ConfigurationConstant } from '@kit.AbilityKit';
-import { deviceInfo } from '@kit.BasicServicesKit';
-import uiMaterial from '@ohos.arkui.uiMaterial';
-import { hdsMaterial } from '@kit.UIDesignKit';
+import { common } from '@kit.AbilityKit';
 import { AppearanceSettings, ColorModeSetting } from '../../utils/appearance/AppearanceSettings';
 import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp } from './GlassPage';
 import { ShellUiPrefs } from '../../utils/appearance/ShellUiPrefs';
@@ -89,18 +86,6 @@ export struct SettingsPanel {
   @StorageLink('auraHideTopBarOnScroll') hideTopBarOnScroll: boolean = true;
   @StorageLink('auraHideDockOnScroll') hideDockOnScroll: boolean = true;
   @StorageLink('auraHuaweiAccount') accountJson: string = '';
-  // Runtime diagnostics at the bottom of the page: device API level,
-  // immersive-material support / switch / level, and both colour-mode
-  // values (shell view vs. system configuration).
-  @State private diagApi: string = '…';
-  @State private diagMaterialSupport: string = '…';
-  @State private diagMaterialState: string = '…';
-  @State private diagMaterialLevel: string = '…';
-  // HDS 侧探测：getSystemMaterialTypes() 报告本机可渲染的材质类型
-  // （Lumie 同款入口；全 NONE = 系统材质被关掉）。
-  @State private diagHdsMaterial: string = '…';
-  @State private diagColorScheme: string = '…';
-  @State private diagSystemColorMode: string = '…';
   private requestSeq: number = 0;
   private retryTimer: number = -1;
 
@@ -116,7 +101,6 @@ export struct SettingsPanel {
     this.reloadEngines();
     this.reloadAbout();
     this.loadColorModeSetting();
-    this.collectDiagnostics();
     // One retry in case the first round was sent before the engine answered.
     this.retryTimer = setTimeout((): void => {
       this.retryTimer = -1;
@@ -155,29 +139,30 @@ export struct SettingsPanel {
     this.onCommand({ command: 'getAboutInfo', requestId: this.requestSeq });
   }
 
-  private accountInfo(): HuaweiAccountInfo {
-    if (this.accountJson.length === 0) {
-      return { signedIn: false, openID: '', unionID: '' };
-    }
-    try {
-      const value = JSON.parse(this.accountJson) as HuaweiAccountInfo;
-      return {
-        signedIn: value.signedIn === true,
-        openID: String(value.openID ?? ''),
-        unionID: String(value.unionID ?? '')
-      };
-    } catch (error) {
-      return { signedIn: false, openID: '', unionID: '' };
-    }
-  }
-
-  private accountTitle(): string {
-    return this.accountInfo().signedIn ? '已登录华为账号' : '华为账号';
-  }
-
-  private accountSubtitle(): string {
-    return this.accountInfo().signedIn ? '已登录' : '登录后同步书签和密码';
-  }
+  // 华为账号入口隐藏后，下面三个方法暂无调用方；保留以便随时恢复入口。
+  // private accountInfo(): HuaweiAccountInfo {
+  //   if (this.accountJson.length === 0) {
+  //     return { signedIn: false, openID: '', unionID: '' };
+  //   }
+  //   try {
+  //     const value = JSON.parse(this.accountJson) as HuaweiAccountInfo;
+  //     return {
+  //       signedIn: value.signedIn === true,
+  //       openID: String(value.openID ?? ''),
+  //       unionID: String(value.unionID ?? '')
+  //     };
+  //   } catch (error) {
+  //     return { signedIn: false, openID: '', unionID: '' };
+  //   }
+  // }
+  //
+  // private accountTitle(): string {
+  //   return this.accountInfo().signedIn ? '已登录华为账号' : '华为账号';
+  // }
+  //
+  // private accountSubtitle(): string {
+  //   return this.accountInfo().signedIn ? '已登录' : '登录后同步书签和密码';
+  // }
 
   private onPrefsPayload(): void {
     if (this.prefsJson.length === 0) {
@@ -290,70 +275,6 @@ export struct SettingsPanel {
     });
   }
 
-  // Snapshots the runtime facts that decide whether the HarmonyOS 7
-  // immersive-light effects can show up at all. Every probe is guarded:
-  // on devices without API 26 the uiMaterial namespace simply throws.
-  private collectDiagnostics(): void {
-    this.diagApi = String(deviceInfo.sdkApiVersion);
-    try {
-      this.diagMaterialSupport = uiMaterial.isImmersiveMaterialSupported() ? '是' : '否';
-    } catch (error) {
-      this.diagMaterialSupport = 'API 不可用';
-    }
-    try {
-      const state = uiMaterial.getMaterialInfo().state;
-      if (state === uiMaterial.MaterialState.ENABLE) {
-        this.diagMaterialState = 'ENABLE';
-      } else if (state === uiMaterial.MaterialState.DISABLE) {
-        this.diagMaterialState = 'DISABLE';
-      } else {
-        this.diagMaterialState = 'DEFAULT';
-      }
-    } catch (error) {
-      this.diagMaterialState = 'API 不可用';
-    }
-    try {
-      const level = uiMaterial.getGlobalMaterialLevel();
-      if (level === uiMaterial.MaterialLevel.EXQUISITE) {
-        this.diagMaterialLevel = '高（完整效果）';
-      } else if (level === uiMaterial.MaterialLevel.GENTLE) {
-        this.diagMaterialLevel = '中（均衡）';
-      } else {
-        this.diagMaterialLevel = '低（降级）';
-      }
-    } catch (error) {
-      this.diagMaterialLevel = 'API 不可用';
-    }
-    try {
-      const materialTypes: Array<hdsMaterial.MaterialType> = hdsMaterial.getSystemMaterialTypes();
-      const supported: boolean = materialTypes.some((type: hdsMaterial.MaterialType): boolean =>
-        type !== hdsMaterial.MaterialType.NONE);
-      if (!supported) {
-        this.diagHdsMaterial = '不可用';
-      } else {
-        const immersive: boolean = materialTypes.some((type: hdsMaterial.MaterialType): boolean =>
-          type === hdsMaterial.MaterialType.IMMERSIVE);
-        this.diagHdsMaterial = immersive ? '可用 · IMMERSIVE' : '可用 · ADAPTIVE';
-      }
-    } catch (error) {
-      this.diagHdsMaterial = 'API 不可用';
-    }
-    this.diagColorScheme = String(AppStorage.get('auraColorScheme') ?? '?');
-    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
-    if (context) {
-      const mode = context.config.colorMode;
-      if (mode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK) {
-        this.diagSystemColorMode = 'dark';
-      } else if (mode === ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT) {
-        this.diagSystemColorMode = 'light';
-      } else {
-        this.diagSystemColorMode = 'not-set';
-      }
-    } else {
-      this.diagSystemColorMode = '?';
-    }
-  }
-
   private colorModeLabel(): string {
     if (this.colorModeSetting === 'dark') {
       return '深色';
@@ -375,10 +296,6 @@ export struct SettingsPanel {
       setTimeout((): void => {
         this.onCommand({ command: 'reload' });
       }, 400);
-      // Refresh the diagnostics so the colour-mode rows reflect the switch.
-      setTimeout((): void => {
-        this.collectDiagnostics();
-      }, 600);
     });
   }
 
@@ -479,26 +396,6 @@ export struct SettingsPanel {
   }
 
   @Builder
-  private DiagRow(label: string, value: string) {
-    Row({ space: 12 }) {
-      Image($r('app.media.aura_info'))
-        .width(22)
-        .height(22)
-        .fillColor($r('app.color.icon_secondary'))
-      Text(label)
-        .fontSize(13)
-        .fontColor($r('app.color.text_secondary'))
-      Blank()
-      Text(value)
-        .fontSize(13)
-        .fontColor($r('app.color.text_primary'))
-    }
-    .width('100%')
-    .constraintSize({ minHeight: 44 })
-    .padding({ left: 16, right: 16 })
-  }
-
-  @Builder
   private ToggleRow(icon: Resource, label: string, key: ShellPrefKey) {
     Row({ space: 12 }) {
       Image(icon)
@@ -524,23 +421,25 @@ export struct SettingsPanel {
     Column() {
       Scroll(this.mainScroller) {
         Column() {
-          this.SectionLabel('华为账号', true)
-          Column() {
-            AuraNavIconRow({
-              icon: $r('app.media.aura_account'),
-              title: this.accountTitle(),
-              subtitle: this.accountSubtitle(),
-              showDivider: false,
-              onTap: (): void => {
-                this.page = 'account';
-              }
-            })
-          }
-          .width('100%')
-          .padding({ left: 0, right: 0, top: 2, bottom: 2 })
-          .borderRadius(16)
-          .backgroundColor($r('app.color.card_background'))
-          .clip(true)
+          // 华为账号入口：按要求隐藏（同步/登录能力暂不面向用户开放）。
+          // 恢复方式：把下面整段注释打开即可，二级页 AccountPanel 代码保留未删。
+          // this.SectionLabel('华为账号', true)
+          // Column() {
+          //   AuraNavIconRow({
+          //     icon: $r('app.media.aura_account'),
+          //     title: this.accountTitle(),
+          //     subtitle: this.accountSubtitle(),
+          //     showDivider: false,
+          //     onTap: (): void => {
+          //       this.page = 'account';
+          //     }
+          //   })
+          // }
+          // .width('100%')
+          // .padding({ left: 0, right: 0, top: 2, bottom: 2 })
+          // .borderRadius(16)
+          // .backgroundColor($r('app.color.card_background'))
+          // .clip(true)
 
           this.SectionLabel('常规')
           Column() {
@@ -660,30 +559,6 @@ export struct SettingsPanel {
               .textAlign(TextAlign.Center)
               .margin({ top: 24, bottom: 8 })
           }
-
-          this.SectionLabel('诊断信息')
-          Column() {
-            this.DiagRow('UI 构建', 'v8 · HDS 背板 + 渐变遮罩')
-            this.CardDivider()
-            this.DiagRow('设备 API', this.diagApi)
-            this.CardDivider()
-            this.DiagRow('材质支持', this.diagMaterialSupport)
-            this.CardDivider()
-            this.DiagRow('材质开关', this.diagMaterialState)
-            this.CardDivider()
-            this.DiagRow('算力档', this.diagMaterialLevel)
-            this.CardDivider()
-            this.DiagRow('HDS 材质', this.diagHdsMaterial)
-            this.CardDivider()
-            this.DiagRow('应用色彩', this.diagColorScheme)
-            this.CardDivider()
-            this.DiagRow('系统色彩', this.diagSystemColorMode)
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 2, bottom: 2 })
-          .borderRadius(16)
-          .backgroundColor($r('app.color.card_background'))
-          .clip(true)
 
         }
         .width('100%')
