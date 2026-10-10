@@ -69,6 +69,8 @@ export struct PasswordsPanel {
   @State private loading: boolean = true;
   @State private view: string = 'list';
   @State private editId: string = '';
+  // 详情页两态：查看（Lumie 风格行式 + 复制）默认；编辑单独进入。
+  @State private detailMode: string = 'view';
   @State private editOrigin: string = '';
   @State private editUsername: string = '';
   @State private editPassword: string = '';
@@ -414,6 +416,7 @@ export struct PasswordsPanel {
 
   private openDetail(item: SavedPasswordItem): void {
     this.view = 'detail';
+    this.detailMode = 'view';
     this.editId = item.id;
     this.editOrigin = item.origin;
     this.editUsername = item.username;
@@ -426,6 +429,11 @@ export struct PasswordsPanel {
   }
 
   private closeDetail(): void {
+    if (this.detailMode === 'edit') {
+      // 编辑态返回先回查看态，不丢详情。
+      this.detailMode = 'view';
+      return;
+    }
     this.view = 'list';
     this.editId = '';
     this.editPassword = '';
@@ -464,6 +472,7 @@ export struct PasswordsPanel {
       command.note = this.editNote;
     }
     this.busy = true;
+    this.detailMode = 'view';
     this.onCommand(command);
     // busy 由回包清掉；失败时 onResultPayload 弹提示。
     setTimeout((): void => {
@@ -733,124 +742,281 @@ export struct PasswordsPanel {
       Column() {
         AuraSectionLabel({ text: displayUrl(this.editOrigin), tightTop: true })
 
-        Column({ space: 14 }) {
+        if (this.detailMode === 'view') {
+          // 查看态（Lumie 风格）：行式布局 + 每行复制；编辑单独进入。
           Column() {
-            this.EditFieldLabel('用户名')
-            TextInput({ text: this.editUsername, placeholder: '没有用户名' })
-              .height(46)
-              .fontSize(15)
-              .backgroundColor($r('app.color.surface_secondary'))
-              .borderRadius(10)
-              .onChange((value: string): void => {
-                this.editUsername = value;
-                this.usernameTouched = true;
-              })
-          }
-          .width('100%')
+            Row({ space: 12 }) {
+              Column({ space: 2 }) {
+                Text('用户名')
+                  .fontSize(13)
+                  .fontColor($r('app.color.text_secondary'))
+                Text(this.editUsername.length > 0 ? this.editUsername : '—')
+                  .fontSize(16)
+                  .fontColor($r('app.color.text_primary'))
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .width('100%')
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
 
-          Column() {
-            Row() {
-              this.EditFieldLabel('密码')
-              Blank()
-              if (!this.revealed) {
-                Text('显示')
+              Button({ type: ButtonType.Circle }) {
+                Image($r('app.media.aura_copy'))
+                  .width(18)
+                  .height(18)
+                  .fillColor($r('app.color.icon_secondary'))
+              }
+              .width(38)
+              .height(38)
+              .backgroundColor(Color.Transparent)
+              .accessibilityText('复制用户名')
+              .onClick(() => {
+                if (this.editUsername.length > 0) {
+                  this.copyText(this.editUsername);
+                  this.getUIContext().getPromptAction().showToast({ message: '已复制', duration: 1500 });
+                }
+              })
+            }
+            .width('100%')
+            .constraintSize({ minHeight: 56 })
+
+            Divider()
+              .color($r('app.color.divider'))
+
+            Row({ space: 12 }) {
+              Column({ space: 2 }) {
+                Text('密码')
                   .fontSize(13)
-                  .fontColor($r('app.color.accent_primary'))
-                  .onClick(() => {
-                    this.revealForEdit();
-                  })
-              } else {
-                Text('隐藏')
-                  .fontSize(13)
-                  .fontColor($r('app.color.accent_primary'))
-                  .onClick(() => {
-                    this.revealed = false;
-                  })
+                  .fontColor($r('app.color.text_secondary'))
+                Text(this.revealed
+                  ? (this.editPassword.length > 0 ? this.editPassword : '—')
+                  : '••••••••')
+                  .fontSize(16)
+                  .fontColor($r('app.color.text_primary'))
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .width('100%')
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              Button({ type: ButtonType.Circle }) {
+                Image($r('app.media.aura_eye'))
+                  .width(18)
+                  .height(18)
+                  .fillColor($r('app.color.icon_secondary'))
+              }
+              .width(38)
+              .height(38)
+              .backgroundColor(Color.Transparent)
+              .accessibilityText(this.revealed ? '隐藏密码' : '显示密码')
+              .onClick(() => {
+                if (this.revealed) {
+                  this.revealed = false;
+                } else {
+                  this.revealForEdit();
+                }
+              })
+
+              if (this.revealed && this.editPassword.length > 0) {
+                Button({ type: ButtonType.Circle }) {
+                  Image($r('app.media.aura_copy'))
+                    .width(18)
+                    .height(18)
+                    .fillColor($r('app.color.icon_secondary'))
+                }
+                .width(38)
+                .height(38)
+                .backgroundColor(Color.Transparent)
+                .accessibilityText('复制密码')
+                .onClick(() => {
+                  this.copyText(this.editPassword);
+                  this.getUIContext().getPromptAction().showToast({ message: '已复制', duration: 1500 });
+                })
               }
             }
             .width('100%')
+            .constraintSize({ minHeight: 56 })
 
-            TextInput({
-              text: this.editPassword,
-              placeholder: this.revealed ? '不修改请留空' : '点"显示"载入已保存的密码'
-            })
-              .height(46)
-              .fontSize(15)
-              .type(this.revealed ? InputType.Normal : InputType.Password)
-              .backgroundColor($r('app.color.surface_secondary'))
-              .borderRadius(10)
-              .onChange((value: string): void => {
-                this.editPassword = value;
-                this.passwordTouched = true;
-              })
+            Divider()
+              .color($r('app.color.divider'))
+
+            Row({ space: 12 }) {
+              Column({ space: 2 }) {
+                Text('备注')
+                  .fontSize(13)
+                  .fontColor($r('app.color.text_secondary'))
+                Text(this.editNote.length > 0 ? this.editNote : '—')
+                  .fontSize(16)
+                  .fontColor($r('app.color.text_primary'))
+                  .maxLines(2)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .width('100%')
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              if (this.editNote.length > 0) {
+                Button({ type: ButtonType.Circle }) {
+                  Image($r('app.media.aura_copy'))
+                    .width(18)
+                    .height(18)
+                    .fillColor($r('app.color.icon_secondary'))
+                }
+                .width(38)
+                .height(38)
+                .backgroundColor(Color.Transparent)
+                .accessibilityText('复制备注')
+                .onClick(() => {
+                  this.copyText(this.editNote);
+                  this.getUIContext().getPromptAction().showToast({ message: '已复制', duration: 1500 });
+                })
+              }
+            }
+            .width('100%')
+            .constraintSize({ minHeight: 56 })
           }
           .width('100%')
+          .padding({ left: 16, right: 8, top: 4, bottom: 4 })
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
 
-          Column() {
-            this.EditFieldLabel('备注')
-            TextInput({ text: this.editNote, placeholder: '没有备注' })
-              .height(46)
-              .fontSize(15)
-              .backgroundColor($r('app.color.surface_secondary'))
-              .borderRadius(10)
-              .onChange((value: string): void => {
-                this.editNote = value;
-                this.noteTouched = true;
-              })
+          Row() {
+            Text('编辑')
+              .fontSize(16)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.on_accent'))
           }
+          .justifyContent(FlexAlign.Center)
           .width('100%')
-        }
-        .width('100%')
-        .padding(16)
-        .borderRadius(16)
-        .backgroundColor($r('app.color.card_background'))
-        .alignItems(HorizontalAlign.Start)
+          .height(46)
+          .borderRadius(12)
+          .backgroundColor($r('app.color.accent_primary'))
+          .margin({ top: 16 })
+          .onClick(() => {
+            this.detailMode = 'edit';
+          })
 
-        Text('改了哪个字段就保存哪个；什么都不改直接返回即可。')
-          .fontSize(12)
-          .fontColor($r('app.color.text_secondary'))
-          .width('100%')
-          .padding({ left: 4, top: 10 })
-
-        // 自绘按钮（对齐全应用风格；系统 Button 的状态蒙层与自绘体系不统一）。
-        Row() {
-          Text(this.busy ? '保存中…' : '保存')
-            .fontSize(16)
-            .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.on_accent'))
-        }
-        .justifyContent(FlexAlign.Center)
-        .width('100%')
-        .height(46)
-        .borderRadius(12)
-        .backgroundColor($r('app.color.accent_primary'))
-        .opacity(this.busy ? 0.5 : 1)
-        .margin({ top: 16 })
-        .onClick(() => {
-          if (!this.busy) {
-            this.saveEdit();
+          Row() {
+            Text('删除这条密码')
+              .fontSize(16)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.danger'))
           }
-        })
-
-        Row() {
-          Text('删除这条密码')
-            .fontSize(16)
-            .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.danger'))
-        }
-        .justifyContent(FlexAlign.Center)
-        .width('100%')
-        .height(46)
-        .borderRadius(12)
-        .backgroundColor($r('app.color.card_background'))
-        .margin({ top: 10 })
-        .onClick(() => {
+          .justifyContent(FlexAlign.Center)
+          .width('100%')
+          .height(46)
+          .borderRadius(12)
+          .backgroundColor($r('app.color.card_background'))
+          .margin({ top: 10 })
+          .onClick(() => {
             const item = this.items.find((candidate: SavedPasswordItem): boolean =>
               candidate.id === this.editId);
             if (item !== undefined) {
               this.confirmRemove(item);
             }
           })
+        } else {
+          // 编辑态：字段表单（改哪个存哪个）。
+          Column({ space: 14 }) {
+            Column() {
+              this.EditFieldLabel('用户名')
+              TextInput({ text: this.editUsername, placeholder: '没有用户名' })
+                .height(46)
+                .fontSize(15)
+                .backgroundColor($r('app.color.surface_secondary'))
+                .borderRadius(10)
+                .onChange((value: string): void => {
+                  this.editUsername = value;
+                  this.usernameTouched = true;
+                })
+            }
+            .width('100%')
+
+            Column() {
+              Row() {
+                this.EditFieldLabel('密码')
+                Blank()
+                if (!this.revealed) {
+                  Text('显示')
+                    .fontSize(13)
+                    .fontColor($r('app.color.accent_primary'))
+                    .onClick(() => {
+                      this.revealForEdit();
+                    })
+                } else {
+                  Text('隐藏')
+                    .fontSize(13)
+                    .fontColor($r('app.color.accent_primary'))
+                    .onClick(() => {
+                      this.revealed = false;
+                    })
+                }
+              }
+              .width('100%')
+
+              TextInput({
+                text: this.editPassword,
+                placeholder: this.revealed ? '不修改请留空' : '点"显示"载入已保存的密码'
+              })
+                .height(46)
+                .fontSize(15)
+                .type(this.revealed ? InputType.Normal : InputType.Password)
+                .backgroundColor($r('app.color.surface_secondary'))
+                .borderRadius(10)
+                .onChange((value: string): void => {
+                  this.editPassword = value;
+                  this.passwordTouched = true;
+                })
+            }
+            .width('100%')
+
+            Column() {
+              this.EditFieldLabel('备注')
+              TextInput({ text: this.editNote, placeholder: '没有备注' })
+                .height(46)
+                .fontSize(15)
+                .backgroundColor($r('app.color.surface_secondary'))
+                .borderRadius(10)
+                .onChange((value: string): void => {
+                  this.editNote = value;
+                  this.noteTouched = true;
+                })
+            }
+            .width('100%')
+          }
+          .width('100%')
+          .padding(16)
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .alignItems(HorizontalAlign.Start)
+
+          Text('改了哪个字段就保存哪个；什么都不改直接返回即可。')
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+            .padding({ left: 4, top: 10 })
+
+          Row() {
+            Text(this.busy ? '保存中…' : '保存')
+              .fontSize(16)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.on_accent'))
+          }
+          .justifyContent(FlexAlign.Center)
+          .width('100%')
+          .height(46)
+          .borderRadius(12)
+          .backgroundColor($r('app.color.accent_primary'))
+          .opacity(this.busy ? 0.5 : 1)
+          .margin({ top: 16 })
+          .onClick(() => {
+            if (!this.busy) {
+              this.saveEdit();
+            }
+          })
+        }
+
       }
       .width('100%')
       // 大标题带：滚动内容穿过「密码详情」大标题时逐渐虚化（见 GlassPage 文件头）。
