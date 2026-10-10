@@ -6,15 +6,16 @@
  */
 import { BrowserCommandPayload, FaviconImage, TopSite } from 'engine';
 import { common } from '@kit.AbilityKit';
-import { promptAction } from '@kit.ArkUI';
+import { promptAction, display } from '@kit.ArkUI';
 import { normalizeAddress } from './ShellUtils';
 import { ScanService } from './ScanService';
 import { TopSitesBlocklist } from '../../utils/appearance/TopSitesBlocklist';
 import { HomeShortcut, HomeShortcuts } from '../../utils/appearance/HomeShortcuts';
-import { pasteboard } from '@kit.BasicServicesKit';
 
 const TOP_SITE_RETRY_MS: number = 1500;
 const MAX_TOP_SITE_RETRIES: number = 3;
+// 长按菜单卡宽度（与 ⋮ 卡/网页长按卡同一家族，Lumie 风格）。
+const SHORTCUT_MENU_CARD_VP: number = 190;
 
 function initialOf(site: TopSite): string {
   const title = site.title.trim();
@@ -60,6 +61,18 @@ export struct HomeSurface {
   @State private showAddShortcut: boolean = false;
   @State private newShortcutTitle: string = '';
   @State private newShortcutUrl: string = '';
+  // 「编辑快捷方式」：非空 = 正在编辑（值为原 url）。编辑引擎常用网站保存后
+  // 会落成手动快捷方式，渲染按 url 去重自动顶掉原引擎项。
+  @State private editingOriginalUrl: string = '';
+  // 长按菜单：目标 url（'' = 收起）+ 是否手动项 + 菜单卡落点（vp，已钳制）。
+  @State private shortcutMenuUrl: string = '';
+  @State private shortcutMenuManual: boolean = false;
+  @State private menuX: number = 0;
+  @State private menuY: number = 0;
+  private menuPressX: number = 0;
+  private menuPressY: number = 0;
+  private windowW: number = 360;
+  private windowH: number = 780;
   @State private query: string = '';
   // url -> data URL, from getFavicons; sites without one keep the letter
   // avatar placeholder.
@@ -72,6 +85,9 @@ export struct HomeSurface {
   private blocklist: Set<string> = new Set();
 
   aboutToAppear(): void {
+    const dsp = display.getDefaultDisplaySync();
+    this.windowW = dsp.width / dsp.densityPixels;
+    this.windowH = dsp.height / dsp.densityPixels;
     // 种子解析：@StorageLink 的初值不会触发 @Watch，而且引擎回的 JSON 与已存
     // 的那份逐字节相同时也不会有变更通知 —— 从网页回到主页时组件是新建的，
     // 只靠 @Watch 就永远等不到，常用网站会整排消失（实测）。
@@ -117,43 +133,67 @@ export struct HomeSurface {
     }
   }
 
-  // 长按 = 对齐 Lumie 的操作菜单：打开 / 复制链接 / 移除快捷方式。
+  // 长按 = 自绘操作菜单（用户定案 2026-10-10：弃用系统 ActionSheet，只留
+  // 「编辑 / 删除」，样式与 ⋮ 卡/网页长按卡同一家族 menu_glass 实底）。
+  // 菜单卡弹在按压点附近（钳制在屏内）；全屏透明层负责点外收起。
   private showSiteActions(site: TopSite, isManual: boolean): void {
-    ActionSheet.show({
-      title: site.title.length > 0 ? site.title : site.url,
-      message: '',
-      sheets: [
-        {
-          title: '打开',
-          action: (): void => {
-            this.openSite(site);
-          }
-        },
-        {
-          title: '复制链接',
-          action: (): void => {
-            this.copyLink(site.url);
-          }
-        },
-        {
-          title: '移除快捷方式',
-          action: (): void => {
-            if (isManual) {
-              this.removeManualShortcut(site.url);
-            } else {
-              this.confirmRemoveSite(site);
-            }
-          }
-        }
-      ]
-    });
+    const cardW = SHORTCUT_MENU_CARD_VP;
+    const cardH = 108;
+    this.menuX = Math.min(Math.max(this.menuPressX - cardW / 2, 12),
+      Math.max(12, this.windowW - cardW - 12));
+    this.menuY = Math.min(this.menuPressY + 8, Math.max(12, this.windowH - cardH - 96));
+    this.shortcutMenuManual = isManual;
+    this.shortcutMenuUrl = site.url;
   }
 
-  private copyLink(url: string): void {
-    const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, url);
-    pasteboard.getSystemPasteboard().setData(data).catch((): void => {
-    });
-    this.getUIContext().getPromptAction().showToast({ message: '链接已复制', duration: 1500 });
+  // 「编辑」：手动项就地更新；引擎常用网站改完保存后落成手动项。
+  private beginEditFromMenu(): void {
+    const url = this.shortcutMenuUrl;
+    const manual = this.shortcutMenuManual;
+    this.shortcutMenuUrl = '';
+    let title = '';
+    if (manual) {
+      for (const item of this.shortcuts) {
+        if (item.url === url) {
+          title = item.title;
+          break;
+        }
+      }
+    } else {
+      for (const site of this.topSites) {
+        if (site.url === url) {
+          title = site.title;
+          break;
+        }
+      }
+    }
+    this.editingOriginalUrl = url;
+    this.newShortcutTitle = title;
+    this.newShortcutUrl = url;
+    this.showAddShortcut = true;
+  }
+
+  private deleteFromMenu(): void {
+    const url = this.shortcutMenuUrl;
+    const manual = this.shortcutMenuManual;
+    this.shortcutMenuUrl = '';
+    if (manual) {
+      this.removeManualShortcut(url);
+      return;
+    }
+    for (const site of this.topSites) {
+      if (site.url === url) {
+        this.confirmRemoveSite(site);
+        return;
+      }
+    }
+  }
+
+  private closeAddShortcut(): void {
+    this.showAddShortcut = false;
+    this.editingOriginalUrl = '';
+    this.newShortcutTitle = '';
+    this.newShortcutUrl = '';
   }
 
   private removeManualShortcut(url: string): void {
@@ -172,13 +212,25 @@ export struct HomeSurface {
     }
     const title = this.newShortcutTitle.trim();
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
-    HomeShortcuts.add(context, title, url).then((items: HomeShortcut[]): void => {
+    const editing = this.editingOriginalUrl.length > 0;
+    let existsManual = false;
+    if (editing) {
+      for (const item of this.shortcuts) {
+        if (item.url === this.editingOriginalUrl) {
+          existsManual = true;
+          break;
+        }
+      }
+    }
+    const promise = editing && existsManual
+      ? HomeShortcuts.update(context, this.editingOriginalUrl, title, url)
+      : HomeShortcuts.add(context, title, url);
+    promise.then((items: HomeShortcut[]): void => {
       this.shortcuts = items;
-      this.showAddShortcut = false;
-      this.newShortcutTitle = '';
-      this.newShortcutUrl = '';
+      this.closeAddShortcut();
       this.requestFavicons();
-      this.getUIContext().getPromptAction().showToast({ message: '已添加到主页', duration: 1500 });
+      const message = editing && existsManual ? '已保存' : '已添加到主页';
+      this.getUIContext().getPromptAction().showToast({ message: message, duration: 1500 });
     });
   }
 
@@ -378,6 +430,12 @@ export struct HomeSurface {
     }
     .width('25%')
     .padding({ top: 14 })
+    .onTouch((event: TouchEvent): void => {
+      if (event.type === TouchType.Down && event.touches.length > 0) {
+        this.menuPressX = event.touches[0].windowX;
+        this.menuPressY = event.touches[0].windowY;
+      }
+    })
     // 用 GestureGroup 显式声明"单击=打开 / 长按=操作菜单"，避免隐式 onClick 的
     // tap 手势抢占长按导致长按无反应。Exclusive：两者互斥，先识别到的生效。
     .gesture(GestureGroup(GestureMode.Exclusive,
@@ -392,7 +450,173 @@ export struct HomeSurface {
     ))
   }
 
+  // 长按快捷方式的自绘菜单卡：与 ⋮ 卡/网页长按卡同一套（menu_glass 全
+  // 不透明 + 圆角 22 + 阴影，行高 48 图标 21 文字 15）。只留「编辑 / 删除」。
+  // 全屏透明层负责点外收起；卡片 .position 在按压点附近（showSiteActions 已钳制）。
+  @Builder
+  private ShortcutMenuOverlay() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .onClick(() => {
+          this.shortcutMenuUrl = '';
+        })
+
+      Column() {
+        this.ShortcutMenuRow($r('app.media.aura_edit'), '编辑', (): void => {
+          this.beginEditFromMenu();
+        })
+        this.ShortcutMenuRow($r('app.media.aura_trash'), '删除', (): void => {
+          this.deleteFromMenu();
+        })
+      }
+      .width(SHORTCUT_MENU_CARD_VP)
+      .padding({ top: 6, bottom: 6 })
+      .borderRadius(22)
+      .backgroundColor($r('app.color.menu_glass'))
+      .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
+      .position({ x: this.menuX, y: this.menuY })
+      .transition(TransitionEffect.asymmetric(
+        TransitionEffect.opacity(0)
+          .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 })),
+        TransitionEffect.opacity(0)
+      ).animation({ duration: 180, curve: Curve.Friction }))
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  @Builder
+  private ShortcutMenuRow(icon: Resource, label: string, action: () => void) {
+    Row({ space: 14 }) {
+      Image(icon)
+        .width(21)
+        .height(21)
+        .fillColor($r('app.color.icon_primary'))
+      Text(label)
+        .fontSize(15)
+        .fontColor($r('app.color.text_primary'))
+      Blank()
+    }
+    .width('100%')
+    .height(48)
+    .padding({ left: 18, right: 16 })
+    .onClick(action)
+  }
+
+  // 添加/编辑快捷方式弹层：卡片居中、遮罩盖满全屏（根 Stack 悬浮层）。
+  // 样式统一到自绘体系：menu_glass 实底 + 圆角 22 + 阴影；按钮为自绘 Row
+  //（血泪 #9：系统 Button 的默认状态蒙层/样式与自绘体系不统一）。
+  @Builder
+  private AddShortcutOverlay() {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor($r('app.color.modal_scrim'))
+        .onClick(() => {
+          this.closeAddShortcut();
+        })
+
+      Column({ space: 14 }) {
+        Text(this.editingOriginalUrl.length > 0 ? '编辑快捷方式' : '添加快捷方式')
+          .fontSize(17)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .width('100%')
+
+        Column({ space: 6 }) {
+          Text('名称')
+            .fontSize(13)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+          TextInput({ text: this.newShortcutTitle, placeholder: '网站名称（可留空）' })
+            .height(46)
+            .fontSize(15)
+            .fontColor($r('app.color.text_primary'))
+            .placeholderColor($r('app.color.text_secondary'))
+            .backgroundColor($r('app.color.surface_secondary'))
+            .borderRadius(12)
+            .onChange((value: string): void => {
+              this.newShortcutTitle = value;
+            })
+        }
+        .width('100%')
+
+        Column({ space: 6 }) {
+          Text('网址')
+            .fontSize(13)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+          TextInput({ text: this.newShortcutUrl, placeholder: 'https://…' })
+            .height(46)
+            .fontSize(15)
+            .fontColor($r('app.color.text_primary'))
+            .placeholderColor($r('app.color.text_secondary'))
+            .backgroundColor($r('app.color.surface_secondary'))
+            .borderRadius(12)
+            .onChange((value: string): void => {
+              this.newShortcutUrl = value;
+            })
+        }
+        .width('100%')
+
+        Row({ space: 12 }) {
+          Row() {
+            Text('取消')
+              .fontSize(15)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_primary'))
+          }
+          .justifyContent(FlexAlign.Center)
+          .layoutWeight(1)
+          .height(44)
+          .borderRadius(12)
+          .backgroundColor($r('app.color.surface_secondary'))
+          .onClick(() => {
+            this.closeAddShortcut();
+          })
+
+          Row() {
+            Text(this.editingOriginalUrl.length > 0 ? '保存' : '添加')
+              .fontSize(15)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.on_accent'))
+          }
+          .justifyContent(FlexAlign.Center)
+          .layoutWeight(1)
+          .height(44)
+          .borderRadius(12)
+          .backgroundColor($r('app.color.accent_primary'))
+          .onClick(() => {
+            this.confirmAddShortcut();
+          })
+        }
+        .width('100%')
+      }
+      .width('100%')
+      .padding(20)
+      .borderRadius(22)
+      .backgroundColor($r('app.color.menu_glass'))
+      .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
+      .margin({ left: 28, right: 28 })
+      .transition(TransitionEffect.asymmetric(
+        TransitionEffect.opacity(0)
+          .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 })),
+        TransitionEffect.opacity(0)
+      ).animation({ duration: 200, curve: Curve.Friction }))
+    }
+    .width('100%')
+    .height('100%')
+  }
+
   build() {
+    // 根级 Stack：内容层 + 悬浮层（长按菜单 / 添加弹窗）。悬浮层必须是根
+    // Stack 的直接子节点——之前添加弹窗放在内容 Column 的流式布局里，
+    // height('100%') 从网格底部又撑了一整屏，遮罩只盖半屏、卡片被顶出屏幕
+    // （真机截图：只见半张卡）。挂在根 Stack 上 = viewport 固定，居中可见。
+    Stack({ alignContent: Alignment.TopStart }) {
     Column() {
       Blank()
         .height('15%')
@@ -501,94 +725,24 @@ export struct HomeSurface {
         .margin({ top: 18 })
       }
 
-      // 添加快捷方式弹层（页内自绘，双输入 + 取消/添加）。
-      if (this.showAddShortcut) {
-        Stack() {
-          Column()
-            .width('100%')
-            .height('100%')
-            .backgroundColor($r('app.color.modal_scrim'))
-            .onClick(() => {
-              this.showAddShortcut = false;
-            })
-
-          Column({ space: 14 }) {
-            Text('添加快捷方式')
-              .fontSize(17)
-              .fontWeight(FontWeight.Medium)
-              .fontColor($r('app.color.text_primary'))
-              .width('100%')
-
-            Column({ space: 6 }) {
-              Text('名称')
-                .fontSize(13)
-                .fontColor($r('app.color.text_secondary'))
-                .width('100%')
-              TextInput({ text: this.newShortcutTitle, placeholder: '网站名称（可留空）' })
-                .height(46)
-                .fontSize(15)
-                .backgroundColor($r('app.color.surface_secondary'))
-                .borderRadius(10)
-                .onChange((value: string): void => {
-                  this.newShortcutTitle = value;
-                })
-            }
-            .width('100%')
-
-            Column({ space: 6 }) {
-              Text('网址')
-                .fontSize(13)
-                .fontColor($r('app.color.text_secondary'))
-                .width('100%')
-              TextInput({ text: this.newShortcutUrl, placeholder: 'https://…' })
-                .height(46)
-                .fontSize(15)
-                .backgroundColor($r('app.color.surface_secondary'))
-                .borderRadius(10)
-                .onChange((value: string): void => {
-                  this.newShortcutUrl = value;
-                })
-            }
-            .width('100%')
-
-            Row({ space: 12 }) {
-              Button('取消')
-                .layoutWeight(1)
-                .height(42)
-                .fontSize(15)
-                .fontColor($r('app.color.text_primary'))
-                .backgroundColor($r('app.color.surface_secondary'))
-                .borderRadius(10)
-                .onClick(() => {
-                  this.showAddShortcut = false;
-                })
-              Button('添加')
-                .layoutWeight(1)
-                .height(42)
-                .fontSize(15)
-                .fontColor($r('app.color.on_accent'))
-                .backgroundColor($r('app.color.accent_primary'))
-                .borderRadius(10)
-                .onClick(() => {
-                  this.confirmAddShortcut();
-                })
-            }
-            .width('100%')
-          }
-          .padding(20)
-          .borderRadius(20)
-          .backgroundColor($r('app.color.card_background'))
-          .margin({ left: 32, right: 32 })
-        }
-        .width('100%')
-        .height('100%')
-      }
-
       Blank()
     }
     .width('100%')
     .height('100%')
     .padding({ top: this.topSafeVp, left: 24, right: 24 })
     .backgroundColor($r('app.color.surface_primary'))
+
+    // 长按快捷方式的自绘菜单卡（Lumie 风格）。
+    if (this.shortcutMenuUrl.length > 0) {
+      this.ShortcutMenuOverlay()
+    }
+
+    // 添加/编辑快捷方式弹层。
+    if (this.showAddShortcut) {
+      this.AddShortcutOverlay()
+    }
+    }
+    .width('100%')
+    .height('100%')
   }
 }

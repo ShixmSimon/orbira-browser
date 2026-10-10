@@ -63,6 +63,27 @@ export class HomeShortcuts {
     return kept;
   }
 
+  /**
+   * 更新一条（按 originalUrl 定位；找不到 = 引擎项「编辑落成手动项」，
+   * 等效添加）。url 改名后与其它条目撞车时去重。返回更新后的列表。
+   */
+  static async update(context: common.Context | undefined, originalUrl: string,
+    title: string, url: string): Promise<HomeShortcut[]> {
+    const items = await HomeShortcuts.load(context);
+    const out: HomeShortcut[] = [];
+    for (const item of items) {
+      if (item.url === originalUrl) {
+        continue;
+      }
+      if (item.url !== url) {
+        out.push(item);
+      }
+    }
+    out.unshift({ title: title, url: url } as HomeShortcut);
+    await HomeShortcuts.save(context, out);
+    return out;
+  }
+
   /** 按 url 移除。返回更新后的列表。 */
   static async remove(context: common.Context | undefined, url: string): Promise<HomeShortcut[]> {
     const items = await HomeShortcuts.load(context);
