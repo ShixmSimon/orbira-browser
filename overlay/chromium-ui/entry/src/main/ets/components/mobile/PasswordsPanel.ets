@@ -63,7 +63,12 @@ export struct PasswordsPanel {
   onClose: () => void = (): void => {};
 
   @State private items: SavedPasswordItem[] = [];
-  @State private verified: boolean = false;
+  // 试探法：组件创建即发 getSavedPasswords —— 引擎授权窗口（60s）内直接
+  // 出列表（免重复验证）；未授权回 authRequired 再回验证门。
+  @State private verified: boolean = true;
+  private retryTimer: number = -1;
+  private retryCount: number = 0;
+  private pendingSeq: number = 0;
   @State private verifying: boolean = false;
   @State private verifyError: string = '';
   @State private loading: boolean = true;
@@ -87,6 +92,10 @@ export struct PasswordsPanel {
   private pendingExportRequestId: number = 0;
 
   aboutToDisappear(): void {
+    if (this.retryTimer !== -1) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = -1;
+    }
     if (this.pendingAuthInstance !== null) {
       try {
         this.pendingAuthInstance.cancel();
@@ -95,6 +104,21 @@ export struct PasswordsPanel {
       this.pendingAuthInstance = null;
     }
     this.cleanupPendingImport();
+  }
+
+  aboutToAppear(): void {
+    // 缓存种子：上次的数据先显示（不闪"加载中"），再 reload 刷新。
+    // 种子直接解析缓存（AppStorage 里的 requestId 是旧请求的，不走校验）。
+    if (this.passwordsJson.length > 0) {
+      try {
+        const cached = JSON.parse(this.passwordsJson) as SavedPasswordsEvent;
+        this.items = (cached.items ?? []) as SavedPasswordItem[];
+        this.recomputeFiltered();
+        this.loading = false;
+      } catch (error) {
+      }
+    }
+    this.reload();
   }
 
   private cleanupPendingImport(): void {
@@ -106,8 +130,32 @@ export struct PasswordsPanel {
 
   private reload(): void {
     this.loading = true;
+    this.retryCount = 0;
     this.requestSeq += 1;
+    this.pendingSeq = this.requestSeq;
     this.onCommand({ command: 'getSavedPasswords', requestId: this.requestSeq });
+    this.scheduleRetry();
+  }
+
+  private scheduleRetry(): void {
+    if (this.retryTimer !== -1) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = -1;
+    }
+    if (this.retryCount >= 3) {
+      return;
+    }
+    this.retryCount += 1;
+    const seq = this.pendingSeq;
+    this.retryTimer = setTimeout((): void => {
+      this.retryTimer = -1;
+      if (this.loading && this.pendingSeq === seq) {
+        this.requestSeq += 1;
+        this.pendingSeq = this.requestSeq;
+        this.onCommand({ command: 'getSavedPasswords', requestId: this.requestSeq });
+        this.scheduleRetry();
+      }
+    }, 1500);
   }
 
   private onPasswordsPayload(): void {
@@ -115,9 +163,18 @@ export struct PasswordsPanel {
       return;
     }
     try {
-      this.items = JSON.parse(this.passwordsJson) as SavedPasswordItem[];
+      const payload = JSON.parse(this.passwordsJson) as SavedPasswordsEvent;
+      // 只认最新请求的回包（旧回包/验证门的空回包不覆盖状态）。
+      if ((payload.requestId ?? -1) !== this.pendingSeq) {
+        return;
+      }
+      this.items = (payload.items ?? []) as SavedPasswordItem[];
       this.recomputeFiltered();
       this.loading = false;
+      if (this.retryTimer !== -1) {
+        clearTimeout(this.retryTimer);
+        this.retryTimer = -1;
+      }
     } catch (error) {
       this.loading = false;
     }
@@ -934,30 +991,36 @@ export struct PasswordsPanel {
             .width('100%')
 
             Column() {
-              Row() {
-                this.EditFieldLabel('密码')
+              // 行尾眼睛按钮承载显示/隐藏（旧版"显示"文字会被挤出屏，
+              // 且与 TextInput 自带的眼睛图标重复——用户定案保留眼睛）。
+              Row({ space: 8 }) {
+                Text('密码')
+                  .fontSize(13)
+                  .fontColor($r('app.color.text_secondary'))
                 Blank()
-                if (!this.revealed) {
-                  Text('显示')
-                    .fontSize(13)
-                    .fontColor($r('app.color.accent_primary'))
-                    .onClick(() => {
-                      this.revealForEdit();
-                    })
-                } else {
-                  Text('隐藏')
-                    .fontSize(13)
-                    .fontColor($r('app.color.accent_primary'))
-                    .onClick(() => {
-                      this.revealed = false;
-                    })
+                Button({ type: ButtonType.Circle }) {
+                  Image($r('app.media.aura_eye'))
+                    .width(18)
+                    .height(18)
+                    .fillColor($r('app.color.icon_secondary'))
                 }
+                .width(34)
+                .height(34)
+                .backgroundColor(Color.Transparent)
+                .accessibilityText(this.revealed ? '隐藏密码' : '显示密码')
+                .onClick(() => {
+                  if (this.revealed) {
+                    this.revealed = false;
+                  } else {
+                    this.revealForEdit();
+                  }
+                })
               }
               .width('100%')
 
               TextInput({
                 text: this.editPassword,
-                placeholder: this.revealed ? '不修改请留空' : '点"显示"载入已保存的密码'
+                placeholder: '不修改请留空；点眼睛载入'
               })
                 .height(46)
                 .fontSize(15)
@@ -1170,7 +1233,7 @@ export struct PasswordsPanel {
         .borderRadius(22)
         .backgroundColor($r('app.color.menu_glass'))
         .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
-        .margin({ left: 28, right: 28 })
+        .margin({ left: 44, right: 44 })
       }
       .width('100%')
       .height('100%')
