@@ -227,6 +227,7 @@ export interface BrowserRuntimeEvent {
     'nfcScanStart' | 'nfcScanStop' | 'nfcWrite' | 'nfcWriteCancel' | 'nfcMakeReadOnly' |
     // Profile data; read these through shellEvent<T>() (ShellServiceTypes).
     'bookmarkList' | 'bookmarkCreated' | 'bookmarksChanged' |
+    'bookmarksForSync' |
     'bookmarkImportDone' | 'bookmarkExportDone' |
     'historyResults' | 'historyChanged' | 'autocompleteResults' | 'topSites' |
     'downloadUpdated' | 'downloadList' |
