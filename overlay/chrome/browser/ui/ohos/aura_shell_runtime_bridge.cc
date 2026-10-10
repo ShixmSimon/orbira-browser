@@ -37,6 +37,7 @@
 
 #include "base/command_line.h"
 #include "base/containers/span.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -45,6 +46,7 @@
 #include "base/json/json_writer.h"
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/no_destructor.h"
@@ -54,6 +56,7 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
@@ -63,6 +66,7 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/lifetime/application_lifetime.h"
+#include "chrome/browser/performance_manager/public/background_tab_loading_policy.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
@@ -111,6 +115,7 @@
 #include "components/dom_distiller/core/url_utils.h"
 #include "components/sessions/core/tab_restore_types.h"
 #include "components/zoom/zoom_controller.h"
+#include "components/zoom/zoom_observer.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
 #include "components/payments/mojom/payment_request_data.mojom.h"
 #include "content/public/browser/ohos_contacts_picker.h"
@@ -137,6 +142,8 @@
 #include "components/content_settings/core/browser/content_settings_observer.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
+#include "chrome/browser/ui/zoom/chrome_zoom_level_prefs.h"
+#include "components/ohos_system_service/system_service_ohos.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/embedder_support/user_agent_utils.h"
 #include "components/sessions/content/session_tab_helper.h"
@@ -156,6 +163,7 @@
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/side_panel/side_panel.h"
 #include "chrome/browser/ui/views/toolbar/app_menu.h"
@@ -175,6 +183,7 @@
 #include "components/find_in_page/find_types.h"
 #include "components/printing/browser/print_to_pdf/pdf_print_result.h"
 #include "components/printing/browser/print_to_pdf/pdf_print_utils.h"
+#include "content/public/browser/media_capture_devices.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/overscroll_configuration.h"
@@ -185,6 +194,7 @@
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/referrer.h"
 #include "content/public/renderer/render_thread.h"
@@ -214,6 +224,7 @@
 #include "url/gurl.h"
 #include "url/origin.h"
 #include "base/strings/escape.h"
+#include "build/build_config.h"
 #include "url/url_constants.h"
 
 namespace chrome::ohos {
@@ -281,7 +292,9 @@ constexpr int kMaxBrowserLookupAttempts = 50;
 constexpr base::TimeDelta kBrowserLookupDelay = base::Milliseconds(100);
 constexpr base::TimeDelta kThemeFontRendererRestartDelay =
     base::Milliseconds(250);
-constexpr base::TimeDelta kBrowserStatePollInterval = base::Milliseconds(200);
+// The browser state is rebuilt on events; this poll only catches what no
+// event reported, and stops while the app is in the background.
+constexpr base::TimeDelta kBrowserStatePollInterval = base::Seconds(2);
 // Enough for a shell's startup burst; anything past it is dropped and logged.
 constexpr size_t kMaxPendingCommands = 64;
 
@@ -340,6 +353,13 @@ struct RuntimeBridgeState {
       GUARDED_BY(lock);
   float last_shown_ratio GUARDED_BY(lock) = -1.0f;
   bool pending_shutdown GUARDED_BY(lock) = false;
+
+  bool IsCameraForeground() const EXCLUSIVE_LOCKS_REQUIRED(lock) {
+    return app_visible &&
+           (window_visibility.empty() ||
+            std::ranges::any_of(window_visibility,
+                               [](const auto& item) { return item.second; }));
+  }
 };
 
 RuntimeBridgeState& GetState() {
@@ -924,6 +944,86 @@ void RequestOhosPermissionsFor(ContentSettingsType content_type,
   DispatchRuntimeEvent(std::move(event));
 }
 
+// Page zoom follows the system font size (Settings > Display > Font size):
+// the engine HAR's "fontscale" service reports Configuration.fontSizeScale,
+// which ChromeZoomLevelPrefs applies on top of the default zoom pref (the
+// shell's textScale). Off with --disable-features=OhosFollowSystemFontSize.
+BASE_FEATURE(kOhosFollowSystemFontSize,
+             "OhosFollowSystemFontSize",
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+class OhosSystemFontScaleWatcher {
+ public:
+  static OhosSystemFontScaleWatcher& GetInstance() {
+    static base::NoDestructor<OhosSystemFontScaleWatcher> instance;
+    return *instance;
+  }
+
+  void Start() {
+    if (std::exchange(started_, true) ||
+        !base::FeatureList::IsEnabled(kOhosFollowSystemFontSize)) {
+      return;
+    }
+    events_ = ohos_system_service::SubscribeToEvents(
+        kService, base::BindRepeating(&OhosSystemFontScaleWatcher::OnEvent,
+                                      base::Unretained(this)));
+    Query(/*attempt=*/0);
+  }
+
+ private:
+  friend class base::NoDestructor<OhosSystemFontScaleWatcher>;
+
+  static constexpr char kService[] = "fontscale";
+  static constexpr int kMaxQueryAttempts = 5;
+  static constexpr base::TimeDelta kQueryRetryDelay = base::Seconds(2);
+
+  OhosSystemFontScaleWatcher() = default;
+
+  // The current scale; later changes arrive as events. An engine HAR without
+  // the service answers with an error, and the scale stays 1.
+  void Query(int attempt) {
+    ohos_system_service::Call(
+        kService, "get", base::DictValue(),
+        base::BindOnce(&OhosSystemFontScaleWatcher::OnReply,
+                       base::Unretained(this), attempt));
+  }
+
+  void OnReply(int attempt, ohos_system_service::Reply reply) {
+    if (reply.ok) {
+      Apply(reply.result_dict().FindDouble("scale"));
+      return;
+    }
+    // ArkTS may not be attached yet this early in startup.
+    if (!ohos_system_service::IsAvailable() &&
+        attempt + 1 < kMaxQueryAttempts) {
+      base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+          FROM_HERE,
+          base::BindOnce(&OhosSystemFontScaleWatcher::Query,
+                         base::Unretained(this), attempt + 1),
+          kQueryRetryDelay);
+      return;
+    }
+    LOG(WARNING) << "OHOS font scale: unavailable (" << reply.error << ")";
+  }
+
+  void OnEvent(const std::string& event, const base::DictValue& data) {
+    if (event == "scale") {
+      Apply(data.FindDouble("scale"));
+    }
+  }
+
+  void Apply(std::optional<double> scale) {
+    if (!scale || !(*scale > 0)) {
+      return;
+    }
+    LOG(WARNING) << "OHOS font scale: system " << *scale;
+    ChromeZoomLevelPrefs::SetOhosSystemFontScale(*scale);
+  }
+
+  bool started_ = false;
+  std::unique_ptr<ohos_system_service::EventSubscription> events_;
+};
+
 // Watches every profile's content settings so that granting a site one of the
 // web permissions above pulls in the HarmonyOS permission behind it.
 class OhosWebPermissionWatcher : public content_settings::Observer,
@@ -1085,7 +1185,11 @@ bool ApplyUserAgentToWebContents(content::WebContents* contents,
   }
 
   contents->SetUserAgentOverride(desired, /*override_in_new_tabs=*/true);
-  if (reload && contents->GetController().GetLastCommittedEntry()) {
+  // Not a tab with no page in it -- restored and not opened yet, or
+  // discarded: it takes the new agent when it loads, and reloading it here
+  // loaded every restored tab at once, behind the user's back.
+  if (reload && contents->GetController().GetLastCommittedEntry() &&
+      !contents->GetController().NeedsReload()) {
     contents->GetController().Reload(content::ReloadType::NORMAL,
                                      /*check_for_repost=*/false);
   }
@@ -1184,10 +1288,11 @@ BrowserTargetState BuildBrowserTargetState(gfx::AcceleratedWidget widget,
 }
 
 // The URL as the shell sees it. The state is rebuilt, serialised and compared
-// on the UI thread every 200 ms, so its cost is paid in touch latency: one
-// 137 KB data: URL made each poll take 25 ms (48 ms worst) instead of 0.7 ms,
-// holding touch input back for up to six frames. The shell only displays it,
-// so a data: URL is reported by its header and anything else is capped.
+// on the UI thread up to ten times a second, so its cost is paid in touch
+// latency: one 137 KB data: URL made each rebuild take 25 ms (48 ms worst)
+// instead of 0.7 ms, holding touch input back for up to six frames. The shell
+// only displays it, so a data: URL is reported by its header and anything else
+// is capped.
 std::string ShellVisibleUrl(const GURL& url) {
   constexpr size_t kMaxShellUrlLength = 2048;
   const std::string& spec = url.possibly_invalid_spec();
@@ -1838,7 +1943,12 @@ constexpr size_t kMaxCachedThumbnails = 12;
 
 // Wide enough to look right on the grid without paying for the whole screen.
 constexpr int kMaxThumbnailWidthPx = 720;
+// Width over height of the picture, unless the shell asks for another shape
+// (getTabThumbnails "aspect"): a portrait card wants more of the page. The
+// range keeps a bad value from asking for a sliver or a whole long page.
 constexpr double kThumbnailAspect = 4.0 / 3.0;
+constexpr double kMinThumbnailAspect = 0.4;
+constexpr double kMaxThumbnailAspect = 2.5;
 
 base::LRUCache<std::string, std::string>& ThumbnailCache() {
   static base::NoDestructor<base::LRUCache<std::string, std::string>> cache(
@@ -1864,18 +1974,18 @@ std::string EncodeThumbnail(const SkBitmap& bitmap) {
 
 gfx::Size ThumbnailSizeFor(content::RenderWidgetHostView* view,
                            double width_vp,
-                           float scale) {
+                           float scale,
+                           double aspect) {
   const int width = std::clamp(
       static_cast<int>(width_vp * scale), 64, kMaxThumbnailWidthPx);
-  return gfx::Size(width, static_cast<int>(width / kThumbnailAspect));
+  return gfx::Size(width, static_cast<int>(width / aspect));
 }
 
 // The top of the page, cropped to the card's shape rather than squashed into
 // it: a squashed screenshot reads as a broken image.
-gfx::Rect ThumbnailSourceRect(const gfx::Size& view_size) {
+gfx::Rect ThumbnailSourceRect(const gfx::Size& view_size, double aspect) {
   const int height = std::min(
-      view_size.height(),
-      static_cast<int>(view_size.width() / kThumbnailAspect));
+      view_size.height(), static_cast<int>(view_size.width() / aspect));
   return gfx::Rect(0, 0, view_size.width(), std::max(height, 1));
 }
 
@@ -1892,9 +2002,36 @@ void RememberThumbnail(content::WebContents* contents,
   }
 }
 
+// When each tab's cached picture was taken, and of what: the same tab, size,
+// crop and page asked for again this soon gets the picture just taken. The
+// shell asks for the current tab when it settles and again when the grid
+// opens, often within a second of each other.
+constexpr base::TimeDelta kThumbnailReuseWindow = base::Seconds(1);
+
+struct RecentThumbnail {
+  std::string key;
+  base::TimeTicks taken;
+  // The capture it came from; see NextThumbnailCapture().
+  uint64_t capture = 0;
+};
+
+// Captures are numbered as they start. Their answers come back in any order
+// -- encoding runs on the thread pool -- and a number is how an answer knows
+// whether a later capture has overtaken it.
+uint64_t NextThumbnailCapture() {
+  static uint64_t last = 0;
+  return ++last;
+}
+
+std::map<std::string, RecentThumbnail>& RecentThumbnails() {
+  static base::NoDestructor<std::map<std::string, RecentThumbnail>> recent;
+  return *recent;
+}
+
 void ForgetIncognitoThumbnails() {
   for (const std::string& id : IncognitoThumbnailIds()) {
     ThumbnailCache().Erase(ThumbnailCache().Peek(id));
+    RecentThumbnails().erase(id);
   }
   IncognitoThumbnailIds().clear();
 }
@@ -1946,14 +2083,47 @@ class ThumbnailBatch : public base::RefCounted<ThumbnailBatch> {
   base::ListValue items_;
 };
 
-void OnThumbnailCaptured(scoped_refptr<ThumbnailBatch> batch,
-                         base::WeakPtr<content::WebContents> contents,
-                         std::string id,
-                         const content::CopyFromSurfaceResult& result) {
-  std::string png;
-  if (result.has_value()) {
-    png = EncodeThumbnail(result.value().bitmap);
+// Requests waiting on a capture already under way, by capture key. One
+// CopyFromSurface and one encode answer all of them.
+using ThumbnailWaiter = base::OnceCallback<void(std::string png_base64)>;
+
+struct PendingThumbnail {
+  base::TimeTicks started;
+  // The capture these waiters are waiting on. A capture given up on and
+  // started again gets a new number, and the old one's answer is not theirs.
+  uint64_t capture = 0;
+  std::vector<ThumbnailWaiter> waiters;
+};
+
+// A capture is given up on after this long and asked for again, so one whose
+// answer never comes cannot hold every later request for that tab.
+constexpr base::TimeDelta kThumbnailCaptureGiveUp = base::Seconds(3);
+
+std::map<std::string, PendingThumbnail>& PendingThumbnails() {
+  static base::NoDestructor<std::map<std::string, PendingThumbnail>> pending;
+  return *pending;
+}
+
+void FinishThumbnailCapture(base::WeakPtr<content::WebContents> contents,
+                            std::string id,
+                            std::string key,
+                            uint64_t capture,
+                            std::string png) {
+  // Kept only while the tab is there to say whether it is incognito: a
+  // picture of an incognito page must not outlive its window in this cache.
+  // And only if no later capture of the tab is in it already: a picture of
+  // the page before a navigation, finishing late, must not replace one of the
+  // page after it.
+  std::map<std::string, RecentThumbnail>& recent = RecentThumbnails();
+  auto previous = recent.find(id);
+  const bool newest =
+      previous == recent.end() || previous->second.capture < capture;
+  if (!png.empty() && contents && newest) {
     RememberThumbnail(contents.get(), id, png);
+    if (recent.size() > 4 * kMaxCachedThumbnails) {
+      recent.clear();
+    }
+    recent[id] = {key, base::TimeTicks::Now(), capture};
   }
   if (png.empty()) {
     // Fall back to whatever was last seen of this tab rather than nothing.
@@ -1962,7 +2132,39 @@ void OnThumbnailCaptured(scoped_refptr<ThumbnailBatch> batch,
       png = cached->second;
     }
   }
-  batch->Add(std::move(id), std::move(png));
+  auto waiting = PendingThumbnails().find(key);
+  if (waiting == PendingThumbnails().end() ||
+      waiting->second.capture != capture) {
+    // Given up on and started again: the waiters belong to the new capture.
+    return;
+  }
+  std::vector<ThumbnailWaiter> waiters = std::move(waiting->second.waiters);
+  PendingThumbnails().erase(waiting);
+  for (ThumbnailWaiter& waiter : waiters) {
+    std::move(waiter).Run(png);
+  }
+}
+
+// PNG and Base64 off the UI thread: at grid size they took long enough to
+// hold touch input back, once per tab switch now that the shell keeps its own
+// pictures.
+void OnThumbnailCaptured(base::WeakPtr<content::WebContents> contents,
+                         std::string id,
+                         std::string key,
+                         uint64_t capture,
+                         const content::CopyFromSurfaceResult& result) {
+  if (!result.has_value()) {
+    FinishThumbnailCapture(std::move(contents), std::move(id), std::move(key),
+                           capture, std::string());
+    return;
+  }
+  base::ThreadPool::PostTaskAndReplyWithResult(
+      FROM_HERE,
+      {base::TaskPriority::USER_VISIBLE,
+       base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
+      base::BindOnce(&EncodeThumbnail, result.value().bitmap),
+      base::BindOnce(&FinishThumbnailCapture, std::move(contents),
+                     std::move(id), std::move(key), capture));
 }
 
 void SendTabThumbnails(gfx::AcceleratedWidget widget,
@@ -1970,6 +2172,9 @@ void SendTabThumbnails(gfx::AcceleratedWidget widget,
                        const base::DictValue& command) {
   const int request_id = command.FindInt("requestId").value_or(0);
   const double width_vp = command.FindDouble("widthVp").value_or(170.0);
+  const double aspect =
+      std::clamp(command.FindDouble("aspect").value_or(kThumbnailAspect),
+                 kMinThumbnailAspect, kMaxThumbnailAspect);
   const base::ListValue* ids = command.FindList("ids");
   std::vector<std::pair<std::string, content::WebContents*>> wanted;
   if (ids) {
@@ -2005,11 +2210,40 @@ void SendTabThumbnails(gfx::AcceleratedWidget widget,
                                                       : std::string());
       continue;
     }
+    const gfx::Rect source =
+        ThumbnailSourceRect(view->GetVisibleViewportSize(), aspect);
+    const gfx::Size output = ThumbnailSizeFor(view, width_vp, scale, aspect);
+    const content::NavigationEntry* entry =
+        contents->GetController().GetLastCommittedEntry();
+    const std::string key = base::StrCat(
+        {id, "|", source.ToString(), "|", output.ToString(), "|",
+         base::NumberToString(entry ? entry->GetUniqueID() : 0)});
+
+    auto recent = RecentThumbnails().find(id);
+    if (recent != RecentThumbnails().end() && recent->second.key == key &&
+        base::TimeTicks::Now() - recent->second.taken <
+            kThumbnailReuseWindow) {
+      auto cached = ThumbnailCache().Get(id);
+      if (cached != ThumbnailCache().end()) {
+        batch->Add(id, cached->second);
+        continue;
+      }
+    }
+
+    PendingThumbnail& pending = PendingThumbnails()[key];
+    const base::TimeTicks now = base::TimeTicks::Now();
+    const bool in_flight = !pending.waiters.empty() &&
+                           now - pending.started < kThumbnailCaptureGiveUp;
+    pending.waiters.push_back(base::BindOnce(&ThumbnailBatch::Add, batch, id));
+    if (in_flight) {
+      continue;
+    }
+    pending.started = now;
+    pending.capture = NextThumbnailCapture();
     view->CopyFromSurface(
-        ThumbnailSourceRect(view->GetVisibleViewportSize()),
-        ThumbnailSizeFor(view, width_vp, scale), base::Seconds(2),
-        base::BindOnce(&OnThumbnailCaptured, batch, contents->GetWeakPtr(),
-                       id));
+        source, output, base::Seconds(2),
+        base::BindOnce(&OnThumbnailCaptured, contents->GetWeakPtr(), id, key,
+                       pending.capture));
   }
 }
 
@@ -2172,7 +2406,7 @@ bool IsInReaderMode(content::WebContents* contents) {
 
 // Whether the distiller thinks this page is an article. Blink reports this
 // after each navigation and the driver keeps the last answer, so reading it
-// costs nothing -- which matters when the state is polled every 200ms.
+// costs nothing -- which matters when the state is rebuilt this often.
 bool IsReaderModeAvailable(content::WebContents* contents) {
   if (!contents || IsInReaderMode(contents)) {
     return false;
@@ -2502,12 +2736,17 @@ void RestoreLastSessionTabs(gfx::AcceleratedWidget widget,
         }
         int count = 0;
         const int selected = main->selected_tab_index;
+        // The tabs behind the selected one, handed to the background tab
+        // loader as SessionRestore does; it loads as many as the device's
+        // cap allows (OhosTabDiscardingPolicy: none on a phone, 3 on a
+        // tablet) and leaves the rest to load when opened.
+        std::vector<content::WebContents*> background_tabs;
         for (size_t i = 0; i < main->tabs.size(); ++i) {
           const sessions::SessionTab& tab = *main->tabs[i];
           if (tab.navigations.empty()) {
             continue;
           }
-          chrome::AddRestoredTab(
+          content::WebContents* contents = chrome::AddRestoredTab(
               browser, tab.navigations, tabs->count(),
               tab.normalized_navigation_index(), tab.extension_app_id,
               tab.group, static_cast<int>(i) == selected, tab.pinned,
@@ -2515,7 +2754,15 @@ void RestoreLastSessionTabs(gfx::AcceleratedWidget widget,
               /*storage_namespace=*/nullptr, tab.user_agent_override,
               tab.extra_data, /*from_session_restore=*/true,
               /*is_active_browser=*/std::nullopt);
+          if (contents && static_cast<int>(i) != selected) {
+            background_tabs.push_back(contents);
+          }
           ++count;
+        }
+        if (!background_tabs.empty() &&
+            performance_manager::policies::CanScheduleLoadForRestoredTabs()) {
+          performance_manager::policies::ScheduleLoadForRestoredTabs(
+              std::move(background_tabs));
         }
         LOG(WARNING) << "OHOS restored " << count
                      << " tabs of the last session's main window";
@@ -2701,6 +2948,10 @@ std::string BuildBrowserStateJson(std::string_view ui_family,
       // can be muted without ever having made a sound.
       tab.Set("audible", contents->IsCurrentlyAudible());
       tab.Set("muted", contents->IsAudioMuted());
+      // Discarded to save memory, or restored and never opened: either way
+      // the page is not loaded and loads again when the tab is activated.
+      // WasDiscarded() is not the test: it can outlast the reload.
+      tab.Set("discarded", contents->GetController().NeedsReload());
     }
     tab_values.Append(std::move(tab));
   }
@@ -2853,7 +3104,306 @@ bool IsPageFullscreen(BrowserWindowInterface* browser) {
   return controller && controller->IsTabFullscreen();
 }
 
-void PollBrowserStateOnUiThread(uint64_t generation) {
+// --- When the browser state is rebuilt. --------------------------------------
+//
+// The snapshot used to be rebuilt every 200 ms whether anything had changed
+// or not: on a still page, five wakeups a second to walk every tab and build
+// JSON nobody would be sent. It is now rebuilt when something it reports may
+// have changed -- the tab strip, the active tab's page, its zoom, its reader
+// mode verdict, and every command, navigation and setting the shell sends --
+// and the timer stays as a safety net for anything not covered.
+
+enum class StateUpdateReason { kEvent, kPoll };
+
+// Events come in bursts -- a load reports its progress many times a second --
+// so a rebuild runs at once when none ran recently, and otherwise once this
+// long after the last one.
+constexpr base::TimeDelta kMinEventStateUpdateInterval =
+    base::Milliseconds(100);
+
+struct StateUpdateScheduler {
+  bool pending = false;
+  base::TimeTicks last_run;
+};
+
+// UI thread only.
+StateUpdateScheduler& GetStateUpdateScheduler() {
+  static StateUpdateScheduler scheduler;
+  return scheduler;
+}
+
+void UpdateBrowserStateOnUiThread(uint64_t generation,
+                                  StateUpdateReason reason);
+// Defined below, with the inset retry and the poll they start.
+void EnsureViewportInsetRetry(
+    uint64_t generation,
+    const std::map<gfx::AcceleratedWidget, int>& bottom_insets);
+void EnsureStatePoll(uint64_t generation);
+
+void RunRequestedBrowserStateUpdate(uint64_t generation) {
+  GetStateUpdateScheduler().pending = false;
+  UpdateBrowserStateOnUiThread(generation, StateUpdateReason::kEvent);
+}
+
+// Asks for the browser state to be rebuilt and sent if it changed. Any
+// thread; cheap to call often.
+void RequestBrowserStateUpdate() {
+  scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner;
+  uint64_t generation = 0;
+  {
+    RuntimeBridgeState& state = GetState();
+    base::AutoLock lock(state.lock);
+    ui_task_runner = state.ui_task_runner;
+    generation = state.browser_generation;
+  }
+  if (!ui_task_runner) {
+    return;
+  }
+  if (!ui_task_runner->BelongsToCurrentThread()) {
+    ui_task_runner->PostTask(FROM_HERE,
+                             base::BindOnce(&RequestBrowserStateUpdate));
+    return;
+  }
+  StateUpdateScheduler& scheduler = GetStateUpdateScheduler();
+  if (scheduler.pending) {
+    return;
+  }
+  scheduler.pending = true;
+  const base::TimeDelta wait =
+      std::max(base::TimeDelta(), scheduler.last_run +
+                                      kMinEventStateUpdateInterval -
+                                      base::TimeTicks::Now());
+  ui_task_runner->PostDelayedTask(
+      FROM_HERE, base::BindOnce(&RunRequestedBrowserStateUpdate, generation),
+      wait);
+}
+
+// Requests a rebuild when it goes out of scope, so a function with many
+// returns asks on every one of them.
+class ScopedBrowserStateUpdate {
+ public:
+  ScopedBrowserStateUpdate() = default;
+  ScopedBrowserStateUpdate(const ScopedBrowserStateUpdate&) = delete;
+  ScopedBrowserStateUpdate& operator=(const ScopedBrowserStateUpdate&) =
+      delete;
+  ~ScopedBrowserStateUpdate() { RequestBrowserStateUpdate(); }
+};
+
+// Watches one tab, active or not, for what the tab list reports of every tab:
+// its title and whether it is making a sound. The tab strip hears of both too,
+// but only after Chromium's 200 ms UI coalescing.
+class TabStateWatcher : public content::WebContentsObserver {
+ public:
+  explicit TabStateWatcher(content::WebContents* contents)
+      : content::WebContentsObserver(contents) {}
+
+  void TitleWasSet(content::NavigationEntry* entry) override {
+    RequestBrowserStateUpdate();
+  }
+  void OnAudioStateChanged(bool audible) override {
+    RequestBrowserStateUpdate();
+  }
+};
+
+// Watches one window's tab strip, and the active tab in it, for anything the
+// browser state reports.
+class BrowserStateWatcher : public TabStripModelObserver,
+                            public content::WebContentsObserver,
+                            public zoom::ZoomObserver,
+                            public dom_distiller::DistillabilityObserver {
+ public:
+  explicit BrowserStateWatcher(TabStripModel* tabs) : tabs_(tabs) {
+    tabs_->AddObserver(this);
+    Follow(tabs_->GetActiveWebContents());
+    WatchEveryTab();
+  }
+  BrowserStateWatcher(const BrowserStateWatcher&) = delete;
+  BrowserStateWatcher& operator=(const BrowserStateWatcher&) = delete;
+  ~BrowserStateWatcher() override { Follow(nullptr); }
+
+  // TabStripModelObserver:
+  void OnTabStripModelChanged(TabStripModel* tab_strip_model,
+                              const TabStripModelChange& change,
+                              const TabStripSelectionChange& selection) override {
+    Follow(tab_strip_model->GetActiveWebContents());
+    WatchEveryTab();
+    RequestBrowserStateUpdate();
+  }
+  void OnTabChangedAt(tabs::TabInterface* tab,
+                      TabChangeType change_type) override {
+    RequestBrowserStateUpdate();
+  }
+  void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index) override {
+    RequestBrowserStateUpdate();
+  }
+  void OnTabStripModelDestroyed(TabStripModel* tab_strip_model) override;
+
+  // content::WebContentsObserver, for the active tab:
+  void DidStartLoading() override { RequestBrowserStateUpdate(); }
+  void DidStopLoading() override { RequestBrowserStateUpdate(); }
+  void LoadProgressChanged(double progress) override {
+    RequestBrowserStateUpdate();
+  }
+  void DidFinishNavigation(content::NavigationHandle* handle) override {
+    RequestBrowserStateUpdate();
+  }
+  void PrimaryPageChanged(content::Page& page) override {
+    RequestBrowserStateUpdate();
+  }
+  void RenderViewHostChanged(content::RenderViewHost* old_host,
+                             content::RenderViewHost* new_host) override {
+    RequestBrowserStateUpdate();
+  }
+  void TitleWasSet(content::NavigationEntry* entry) override {
+    RequestBrowserStateUpdate();
+  }
+  void DidChangeVisibleSecurityState() override {
+    RequestBrowserStateUpdate();
+  }
+  void DidToggleFullscreenModeForTab(bool entered_fullscreen,
+                                     bool will_cause_resize) override {
+    RequestBrowserStateUpdate();
+  }
+  void OnWebContentsFocused(content::RenderWidgetHost* host) override {
+    RequestBrowserStateUpdate();
+  }
+  void OnWebContentsLostFocus(content::RenderWidgetHost* host) override {
+    RequestBrowserStateUpdate();
+  }
+  void WebContentsDestroyed() override {
+    // Not through Follow(): the distiller's driver may already be gone, and
+    // asking to remove an observer from it would make a new one.
+    if (zoom_) {
+      zoom_->RemoveObserver(this);
+      zoom_ = nullptr;
+    }
+    Observe(nullptr);
+  }
+
+  // zoom::ZoomObserver:
+  void OnZoomControllerDestroyed(zoom::ZoomController* controller) override {
+    controller->RemoveObserver(this);
+    zoom_ = nullptr;
+  }
+  void OnZoomChanged(
+      const zoom::ZoomController::ZoomChangedEventData& data) override {
+    RequestBrowserStateUpdate();
+  }
+
+  // dom_distiller::DistillabilityObserver:
+  void OnResult(const dom_distiller::DistillabilityResult& result) override {
+    RequestBrowserStateUpdate();
+  }
+
+ private:
+  void Follow(content::WebContents* contents) {
+    if (contents == web_contents()) {
+      return;
+    }
+    if (content::WebContents* previous = web_contents()) {
+      if (zoom_) {
+        zoom_->RemoveObserver(this);
+        zoom_ = nullptr;
+      }
+      dom_distiller::RemoveObserver(previous, this);
+    }
+    Observe(contents);
+    if (contents) {
+      zoom_ = zoom::ZoomController::FromWebContents(contents);
+      if (zoom_) {
+        zoom_->AddObserver(this);
+      }
+      dom_distiller::AddObserver(contents, this);
+    }
+  }
+
+  // One TabStateWatcher per tab in the strip, no more and no fewer.
+  void WatchEveryTab() {
+    std::map<content::WebContents*, std::unique_ptr<TabStateWatcher>> watched;
+    for (int index = 0; index < tabs_->count(); ++index) {
+      content::WebContents* contents = tabs_->GetWebContentsAt(index);
+      if (!contents) {
+        continue;
+      }
+      auto existing = tab_watchers_.find(contents);
+      // A watcher whose tab is gone watches nothing, and a new tab at the
+      // same address needs a new one.
+      if (existing != tab_watchers_.end() && existing->second->web_contents()) {
+        watched.emplace(contents, std::move(existing->second));
+      } else {
+        watched.emplace(contents, std::make_unique<TabStateWatcher>(contents));
+      }
+    }
+    tab_watchers_ = std::move(watched);
+  }
+
+  const raw_ptr<TabStripModel> tabs_;
+  raw_ptr<zoom::ZoomController> zoom_ = nullptr;
+  std::map<content::WebContents*, std::unique_ptr<TabStateWatcher>>
+      tab_watchers_;
+};
+
+std::map<TabStripModel*, std::unique_ptr<BrowserStateWatcher>>&
+GetBrowserStateWatchers() {
+  static base::NoDestructor<
+      std::map<TabStripModel*, std::unique_ptr<BrowserStateWatcher>>>
+      watchers;
+  return *watchers;
+}
+
+void BrowserStateWatcher::OnTabStripModelDestroyed(
+    TabStripModel* tab_strip_model) {
+  Follow(nullptr);
+  auto& watchers = GetBrowserStateWatchers();
+  auto it = watchers.find(tab_strip_model);
+  if (it == watchers.end()) {
+    return;
+  }
+  // Not deleted here: the model is still walking its observers.
+  std::unique_ptr<BrowserStateWatcher> self = std::move(it->second);
+  watchers.erase(it);
+  base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(FROM_HERE,
+                                                             std::move(self));
+  RequestBrowserStateUpdate();
+}
+
+// Starts watching `tabs` if nothing does yet. Every rebuild calls this for
+// every window, so a new window is watched from its first one.
+void WatchBrowserState(TabStripModel* tabs) {
+  if (!tabs) {
+    return;
+  }
+  auto& watchers = GetBrowserStateWatchers();
+  if (!watchers.contains(tabs)) {
+    watchers.emplace(tabs, std::make_unique<BrowserStateWatcher>(tabs));
+  }
+}
+
+// The top-level fields that differ between two snapshots, for the log line
+// that says what an event did not report.
+std::string ChangedStateFields(const std::string& before,
+                               const std::string& after) {
+  std::optional<base::Value> old_value =
+      base::JSONReader::Read(before, base::JSON_PARSE_RFC);
+  std::optional<base::Value> new_value =
+      base::JSONReader::Read(after, base::JSON_PARSE_RFC);
+  if (!old_value || !new_value || !old_value->is_dict() ||
+      !new_value->is_dict()) {
+    return "(all)";
+  }
+  std::vector<std::string> fields;
+  for (const auto [key, value] : new_value->GetDict()) {
+    const base::Value* old_field = old_value->GetDict().Find(key);
+    if (!old_field || *old_field != value) {
+      fields.push_back(key);
+    }
+  }
+  return base::JoinString(fields, ",");
+}
+
+void UpdateBrowserStateOnUiThread(uint64_t generation,
+                                  StateUpdateReason reason) {
+  GetStateUpdateScheduler().last_run = base::TimeTicks::Now();
   std::string ui_family;
   std::map<gfx::AcceleratedWidget, int> bottom_insets;
   int top_controls_height = 0;
@@ -2870,6 +3420,8 @@ void PollBrowserStateOnUiThread(uint64_t generation) {
 
   const bool mobile = IsMobileUiFamily(ui_family);
   ApplyUserAgentToAllTabs(mobile, /*reload=*/false);
+  EnsureViewportInsetRetry(generation, bottom_insets);
+  EnsureStatePoll(generation);
 
   std::vector<std::pair<gfx::AcceleratedWidget, std::string>> snapshots;
   std::vector<std::pair<gfx::AcceleratedWidget, bool>> page_fullscreen;
@@ -2883,6 +3435,7 @@ void PollBrowserStateOnUiThread(uint64_t generation) {
           if (widget != gfx::kNullAcceleratedWidget) {
             const auto inset = bottom_insets.find(widget);
             TabStripModel* tabs = browser->GetTabStripModel();
+            WatchBrowserState(tabs);
             UpdateShellAccessibility(widget,
                                      tabs ? tabs->GetActiveWebContents() : nullptr);
             if (inset != bottom_insets.end() && tabs) {
@@ -2973,19 +3526,143 @@ void PollBrowserStateOnUiThread(uint64_t generation) {
     for (const auto& [widget, state_json] : snapshots) {
       std::string& previous = state.last_browser_state_json[widget];
       if (state_json != previous) {
+        // Found by the timer, not an event: something an event should have
+        // reported. Each such line names a source still to be watched. An
+        // event already waiting its turn had reported it.
+        if (reason == StateUpdateReason::kPoll && !previous.empty() &&
+            !GetStateUpdateScheduler().pending) {
+          LOG(WARNING) << "OHOS browser state: poll found unreported change: "
+                       << ChangedStateFields(previous, state_json);
+        }
         previous = state_json;
         changed.emplace_back(widget, state_json);
       }
     }
     callback = state.browser_state_callback;
-    task_runner = state.ui_task_runner;
   }
   if (callback) {
     for (const auto& [widget, state_json] : changed) {
       callback.Run(widget, state_json);
     }
   }
+}
+
+// --- Resending the keyboard's inset. ---------------------------------------
+//
+// ApplyViewportInsets() resends an inset the page lost, and used to rely on
+// the 200 ms poll to be called again. That is its own timer now, running only
+// while some window has an inset -- the keyboard is up -- and doing nothing
+// but that, so the state poll can slow down without a lost inset waiting for
+// it.
+
+constexpr base::TimeDelta kViewportInsetRetryInterval =
+    base::Milliseconds(200);
+
+// UI thread only.
+bool& ViewportInsetRetryRunning() {
+  static bool running = false;
+  return running;
+}
+
+void RetryViewportInsetsOnUiThread(uint64_t generation) {
+  std::map<gfx::AcceleratedWidget, int> bottom_insets;
+  scoped_refptr<base::SingleThreadTaskRunner> task_runner;
+  {
+    RuntimeBridgeState& state = GetState();
+    base::AutoLock lock(state.lock);
+    if (!state.ui_task_runner || state.browser_generation != generation) {
+      ViewportInsetRetryRunning() = false;
+      return;
+    }
+    bottom_insets = state.viewport_bottom_inset;
+    task_runner = state.ui_task_runner;
+  }
+  std::erase_if(bottom_insets,
+                [](const auto& entry) { return entry.second <= 0; });
+  if (bottom_insets.empty()) {
+    ViewportInsetRetryRunning() = false;
+    return;
+  }
+  if (GlobalBrowserCollection* browsers =
+          GlobalBrowserCollection::GetInstance()) {
+    browsers->ForEach([&bottom_insets](BrowserWindowInterface* browser) {
+      const auto inset = bottom_insets.find(GetBrowserWidget(browser));
+      TabStripModel* tabs = browser->GetTabStripModel();
+      if (inset != bottom_insets.end() && tabs) {
+        ApplyViewportInsets(tabs->GetActiveWebContents(), inset->second);
+      }
+      return true;
+    });
+  }
   task_runner->PostDelayedTask(
+      FROM_HERE, base::BindOnce(&RetryViewportInsetsOnUiThread, generation),
+      kViewportInsetRetryInterval);
+}
+
+// Starts the retry if a window has an inset and it is not running.
+void EnsureViewportInsetRetry(
+    uint64_t generation,
+    const std::map<gfx::AcceleratedWidget, int>& bottom_insets) {
+  if (ViewportInsetRetryRunning() ||
+      std::ranges::none_of(bottom_insets,
+                           [](const auto& entry) { return entry.second > 0; })) {
+    return;
+  }
+  ViewportInsetRetryRunning() = true;
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE, base::BindOnce(&RetryViewportInsetsOnUiThread, generation),
+      kViewportInsetRetryInterval);
+}
+
+// The generation whose poll is running, or 0 when none is: it stops in the
+// background and is started again by the next rebuild. UI thread only.
+uint64_t& StatePollGeneration() {
+  static uint64_t generation = 0;
+  return generation;
+}
+
+void PollBrowserStateOnUiThread(uint64_t generation) {
+  if (StatePollGeneration() != generation) {
+    return;  // A later generation's poll took over.
+  }
+  scoped_refptr<base::SingleThreadTaskRunner> task_runner;
+  {
+    RuntimeBridgeState& state = GetState();
+    base::AutoLock lock(state.lock);
+    if (!state.ui_task_runner || state.browser_generation != generation ||
+        !state.app_visible) {
+      StatePollGeneration() = 0;
+      return;
+    }
+    task_runner = state.ui_task_runner;
+  }
+  // A rebuild an event asked for within the last interval did this tick's
+  // work already: the poll only covers time nothing else did.
+  if (base::TimeTicks::Now() - GetStateUpdateScheduler().last_run >=
+      kBrowserStatePollInterval) {
+    UpdateBrowserStateOnUiThread(generation, StateUpdateReason::kPoll);
+  }
+  task_runner->PostDelayedTask(
+      FROM_HERE, base::BindOnce(&PollBrowserStateOnUiThread, generation),
+      kBrowserStatePollInterval);
+}
+
+// Starts the poll for `generation` unless it runs already or the app is in
+// the background. Every rebuild calls this, so coming back to the
+// foreground -- a visibility change, which rebuilds -- starts it again.
+void EnsureStatePoll(uint64_t generation) {
+  if (StatePollGeneration() == generation) {
+    return;
+  }
+  {
+    RuntimeBridgeState& state = GetState();
+    base::AutoLock lock(state.lock);
+    if (!state.app_visible) {
+      return;
+    }
+  }
+  StatePollGeneration() = generation;
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE, base::BindOnce(&PollBrowserStateOnUiThread, generation),
       kBrowserStatePollInterval);
 }
@@ -2994,6 +3671,7 @@ void NavigateOnUiThread(gfx::AcceleratedWidget widget,
                         GURL url,
                         ui::PageTransition transition,
                         int attempt) {
+  ScopedBrowserStateUpdate update_state;
   BrowserWindowInterface* browser = FindBrowserForWidget(widget);
   if (!browser) {
     if (attempt >= kMaxBrowserLookupAttempts) {
@@ -3085,6 +3763,7 @@ bool CloseTopBrowserDialog(BrowserWindowInterface* browser) {
 }
 
 void ApplyWindowStateOnUiThread(gfx::AcceleratedWidget widget, int attempt) {
+  ScopedBrowserStateUpdate update_state;
   BrowserWindowInterface* browser = FindBrowserForWidget(widget);
   if (!browser || !browser->GetWindow()) {
     if (attempt >= kMaxBrowserLookupAttempts) {
@@ -3182,6 +3861,7 @@ void ApplyPullToRefresh(bool enabled) {
 }
 
 void ApplyUiFamilyOnUiThread(std::string ui_family) {
+  ScopedBrowserStateUpdate update_state;
   const bool mobile = IsMobileUiFamily(ui_family);
   ApplyPullToRefresh(ui_family == "mobile_phone");
   const bool use_touch_ui = ui_family != "aura_pc";
@@ -3209,6 +3889,7 @@ void ApplyUiFamilyOnUiThread(std::string ui_family) {
 }
 
 void ApplyColorSchemeOnUiThread(std::string color_scheme) {
+  ScopedBrowserStateUpdate update_state;
   const ui::NativeTheme::PreferredColorScheme preferred_scheme =
       color_scheme == "dark" ? ui::NativeTheme::PreferredColorScheme::kDark
                              : ui::NativeTheme::PreferredColorScheme::kLight;
@@ -3252,8 +3933,16 @@ void ApplyColorSchemeOnUiThread(std::string color_scheme) {
 
 void ExecuteBrowserCommandOnUiThread(gfx::AcceleratedWidget widget,
                                      base::DictValue command) {
+  ScopedBrowserStateUpdate update_state;
   const std::string* name = command.FindString("command");
-  if (!name || *name == "requestState") {
+  if (name && *name == "requestState") {
+    // Sent again even if nothing changed: the shell asking has lost it.
+    RuntimeBridgeState& state = GetState();
+    base::AutoLock lock(state.lock);
+    state.last_browser_state_json.erase(widget);
+    return;
+  }
+  if (!name) {
     return;
   }
 
@@ -4057,7 +4746,10 @@ void ReloadAllTabsAfterThemeFontChange() {
     TabStripModel* tabs = browser->GetTabStripModel();
     if (tabs) {
       for (int index = 0; index < tabs->count(); ++index) {
-        if (content::WebContents* contents = tabs->GetWebContentsAt(index)) {
+        content::WebContents* contents = tabs->GetWebContentsAt(index);
+        // A tab with no page in it gets the new font when it loads; see
+        // ApplyUserAgentToWebContents().
+        if (contents && !contents->GetController().NeedsReload()) {
           contents->GetController().Reload(content::ReloadType::NORMAL,
                                            /*check_for_repost=*/false);
         }
@@ -4073,6 +4765,7 @@ void ReloadAllTabsAfterThemeFontChange() {
 }
 
 void ReloadThemeFontsOnUiThread(std::string font_id) {
+  ScopedBrowserStateUpdate update_state;
   const bool font_manager_reloaded = skia::ReloadOhosFontManager(font_id);
   ui::ResourceBundle::GetSharedInstance().ReloadFonts();
 
@@ -4209,6 +4902,15 @@ bool IsAuraShellUserAgentPinned(content::WebContents* contents) {
   return contents && PinnedUserAgent::FromWebContents(contents);
 }
 
+// The CPU this build runs on, as a Linux User-Agent and UA-CH name it.
+#if defined(ARCH_CPU_ARM64)
+constexpr char kDesktopSiteCpu[] = "aarch64";
+constexpr char kDesktopSiteArchitecture[] = "arm";
+#else
+constexpr char kDesktopSiteCpu[] = "x86_64";
+constexpr char kDesktopSiteArchitecture[] = "x86";
+#endif
+
 blink::UserAgentOverride AuraShellDesktopSiteUserAgent() {
   blink::UserAgentOverride desktop;
   desktop.ua_string_override =
@@ -4231,9 +4933,14 @@ blink::UserAgentOverride AuraShellDesktopSiteUserAgent() {
     return desktop;  // --user-agent replaced the string; leave it be
   }
   const size_t chrome_end = ohos.find(' ', chrome);
+  //
+  // Both name the CPU the device has, as Chrome on an ARM Linux machine does:
+  // "Linux aarch64" with a UA-CH architecture of arm. Claiming x86 beside an
+  // ARM GPU that WebGL reports was one more contradiction, and the desktop
+  // site still failed Turnstile on a phone with it.
   desktop.ua_string_override = base::StrCat(
-      {"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like "
-       "Gecko) ",
+      {"Mozilla/5.0 (X11; Linux ", kDesktopSiteCpu,
+       ") AppleWebKit/537.36 (KHTML, like Gecko) ",
        std::string_view(ohos).substr(chrome, chrome_end == std::string::npos
                                                  ? std::string::npos
                                                  : chrome_end - chrome),
@@ -4253,7 +4960,7 @@ blink::UserAgentOverride AuraShellDesktopSiteUserAgent() {
         base::StringPrintf("%d.%d.%d", major, minor, bugfix);
   }
   metadata.wow64 = false;
-  metadata.architecture = "x86";
+  metadata.architecture = kDesktopSiteArchitecture;
   metadata.bitness = "64";
   metadata.mobile = false;
   return desktop;
@@ -4453,6 +5160,7 @@ void NotifyAuraShellBrowserStarted() {
   }
   ApplyPullToRefresh(IsAuraShellMobilePhoneUi());
   OhosWebPermissionWatcher::GetInstance().Start();
+  OhosSystemFontScaleWatcher::GetInstance().Start();
   // Only Android installs one upstream; without it screen.orientation.lock()
   // rejects with NotSupportedError.
   static base::NoDestructor<ScreenOrientationDelegateOhos>
@@ -4481,16 +5189,16 @@ void NotifyAuraShellBrowserStarted() {
   std::optional<GURL> pending_url;
   std::optional<std::string> pending_theme_font_id;
   bool pending_shutdown = false;
+  bool camera_foreground = true;
   std::string ui_family;
   std::string color_scheme;
   scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner;
   std::vector<std::pair<gfx::AcceleratedWidget, base::DictValue>>
       pending_commands;
-  uint64_t browser_generation = 0;
   {
     base::AutoLock lock(state.lock);
     state.ui_task_runner = base::SingleThreadTaskRunner::GetCurrentDefault();
-    browser_generation = ++state.browser_generation;
+    ++state.browser_generation;
     state.last_browser_state_json.clear();
     ui_task_runner = state.ui_task_runner;
     pending_commands = std::move(state.pending_commands);
@@ -4501,13 +5209,15 @@ void NotifyAuraShellBrowserStarted() {
     color_scheme = state.color_scheme;
     pending_shutdown = state.pending_shutdown;
     state.pending_shutdown = false;
+    camera_foreground = state.IsCameraForeground();
   }
 
+  content::MediaCaptureDevices::SetApplicationForegroundForOhos(
+      camera_foreground);
   ApplyUiFamilyOnUiThread(std::move(ui_family));
   ApplyColorSchemeOnUiThread(std::move(color_scheme));
-  ui_task_runner->PostTask(
-      FROM_HERE,
-      base::BindOnce(&PollBrowserStateOnUiThread, browser_generation));
+  ui_task_runner->PostTask(FROM_HERE,
+                           base::BindOnce(&RequestBrowserStateUpdate));
   for (auto& [widget, command] : pending_commands) {
     ui_task_runner->PostTask(
         FROM_HERE, base::BindOnce(&ExecuteBrowserCommandOnUiThread, widget,
@@ -5420,6 +6130,7 @@ void SetAuraShellBrowserVisible(gfx::AcceleratedWidget widget, bool visible) {
   {
     RuntimeBridgeState& state = GetState();
     base::AutoLock lock(state.lock);
+    const bool was_camera_foreground = state.IsCameraForeground();
     if (widget == gfx::kNullAcceleratedWidget) {
       state.app_visible = visible;
       if (!visible) {
@@ -5432,6 +6143,17 @@ void SetAuraShellBrowserVisible(gfx::AcceleratedWidget widget, bool visible) {
       }
     }
     ui_task_runner = state.ui_task_runner;
+    const bool is_camera_foreground = state.IsCameraForeground();
+    if (ui_task_runner && was_camera_foreground != is_camera_foreground) {
+      // Post in the same order as visibility transitions, before taking any
+      // early return while applying a window that has not been created yet.
+      // A hidden Pad window must not stop capture in another visible window.
+      ui_task_runner->PostTask(
+          FROM_HERE,
+          base::BindOnce(
+              &content::MediaCaptureDevices::SetApplicationForegroundForOhos,
+              is_camera_foreground));
+    }
   }
   if (ui_task_runner) {
     ui_task_runner->PostTask(
