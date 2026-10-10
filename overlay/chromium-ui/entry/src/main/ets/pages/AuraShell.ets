@@ -54,7 +54,7 @@ import {
   ExtensionDetailsEvent,
   FaviconsEvent,
   HistoryResultsEvent,
-  BookmarksForSyncEvent,
+  BookmarkListEvent,
   PasswordCommandResultEvent,
   PasswordRevealedEvent,
   PasswordsExportedEvent,
@@ -979,10 +979,15 @@ struct AuraShell {
         JSON.stringify(shellEvent<RecentBookmarksEvent>(event).nodes ?? []));
       return;
     }
-    // 全量书签树（sync 通道，by UUID）——书签页的文件夹导航/改名/删除都基于它。
-    if (event.event === 'bookmarksForSync') {
-      AppStorage.setOrCreate('auraPanelBookmarkSync',
-        JSON.stringify(shellEvent<BookmarksForSyncEvent>(event).nodes ?? []));
+    // 分层书签树（getBookmarks/searchBookmarks 的回包）——书签页的文件夹
+    // 导航/搜索基于它（bookmarkApiVersion 1-3 的稳定命令）。
+    if (event.event === 'bookmarkList') {
+      const listed = shellEvent<BookmarkListEvent>(event);
+      AppStorage.setOrCreate('auraPanelBookmarkList', JSON.stringify({
+        requestId: listed.requestId,
+        parentId: listed.parentId ?? '',
+        nodes: listed.nodes ?? []
+      }));
       return;
     }
     if (event.event === 'historyResults') {

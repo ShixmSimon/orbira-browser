@@ -1,26 +1,23 @@
 /*
- * 手机自绘书签页 v3（2026-10-10）：完整书签树 + 文件夹管理。
+ * 手机自绘书签页 v3.1（2026-10-10）：分层书签树 + 文件夹管理。
  *
- * 数据流：getBookmarksForSync -> bookmarksForSync 事件（AuraShell 转存到
- * 'auraPanelBookmarkSync'，全树 by UUID）——本页在树里做文件夹导航（点文件夹
- * 进入、返回钮逐级上退）、行菜单（书签：打开/编辑/复制链接/删除；文件夹：
- * 重命名/删除）、新建文件夹与编辑书签都走 applyBookmarks（upsert/remove 批量
- * 写回，引擎回 bookmarksChanged 后本页重拉树）。
- * 标题栏 + = 新建文件夹（原「收藏当前网页」与手动添加重复，撤）；⋯ 菜单 =
- * 手动添加书签（预填当前页）/ 导入 / 导出（HTML，文件选择与沙箱复制由外壳负责）。
+ * 数据流：getBookmarks（parentId 省略 = 三个根文件夹；带 = 该文件夹子节点）
+ * -> bookmarkList 事件（AuraShell 转存 'auraPanelBookmarkList'）——点文件夹
+ * 进入（navStack 记路径）、返回钮逐级上退；搜索走 searchBookmarks（引擎
+ * 按标题/网址匹配，命中带 path）。写入走版本 1-3 稳定命令：addBookmark /
+ * createBookmarkFolder / updateBookmark（改名/编辑）/ removeBookmark（文件夹
+ * 级联删）。引擎回 bookmarkCreated / bookmarksChanged / bookmarkOpResult
+ * （转存 'auraPanelEvent'）后重拉当前层。
+ * ⚠️ 不要用 getBookmarksForSync/applyBookmarks（版本 4）：当前引擎 HAR 的
+ * bookmarkApiVersion 还没实现它们，命令会被吞、页面永远"加载中"（实测）。
+ * 标题栏 + = 新建文件夹；⋯ 菜单 = 手动添加书签（预填当前页）/导入/导出。
  */
 import { common } from '@kit.AbilityKit';
-import { util } from '@kit.ArkTS';
 import { display, promptAction } from '@kit.ArkUI';
 import { pasteboard } from '@kit.BasicServicesKit';
-import {
-  BrowserCommandPayload,
-  SyncBookmarkNode,
-  SyncBookmarkOp,
-  SyncBookmarkRemove,
-  SyncBookmarkUpsert
-} from 'engine';
+import { BookmarkNode, BrowserCommandPayload } from 'engine';
 import { displayUrl, pickAndStageImportFile, saveExportedFile, deleteStagedFile } from './PanelBridge';
+import { AuraSectionLabel } from './LumieKit';
 import { GlassPage, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
 import { MoreMenuDialog, MoreMenuItemSpec } from './MoreMenuDialog';
 
@@ -34,28 +31,45 @@ interface BookmarkIoPayload {
   error?: string;
 }
 
+interface BookmarkListPayload {
+  requestId?: number;
+  parentId?: string;
+  nodes?: BookmarkNode[];
+}
+
 type FormMode = '' | 'addBookmark' | 'editBookmark' | 'addFolder' | 'renameFolder';
+
+const MAX_LOAD_RETRIES: number = 3;
+const LOAD_RETRY_MS: number = 1500;
 
 @Component
 export struct BookmarksPanel {
   @Prop currentUrl: string = '';
   @Prop currentTitle: string = '';
-  @StorageLink('auraPanelBookmarkSync') @Watch('onSyncChanged') syncJson: string = '';
+  // 当前层节点（getBookmarks 回包；根级 = 三个根文件夹）。
+  @StorageLink('auraPanelBookmarkList') @Watch('onListChanged') listJson: string = '';
+  // 最近添加（根级下方平铺；getRecentBookmarks 通道）。
+  @StorageLink('auraPanelBookmarks') @Watch('onRecentChanged') bookmarksJson: string = '';
   @StorageLink('auraPanelBookmarkIo') @Watch('onIoPayload') bookmarkIoJson: string = '';
   @StorageLink('auraPanelEvent') @Watch('onPanelEvent') panelEventJson: string = '';
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
   onBack: () => void = (): void => {};
   onClose: () => void = (): void => {};
 
-  // 全树（bookmarksForSync，parents 在前、同级按 index）。
-  @State private syncNodes: SyncBookmarkNode[] = [];
-  // 当前所在文件夹的 uuid（'' = 树还没到，到货后设为 mobile 根）。
-  @State private currentFolderUuid: string = '';
-  // 当前文件夹的直接子节点（落 @State：方法间接读状态不建立更新依赖）。
-  @State private visibleNodes: SyncBookmarkNode[] = [];
+  @State private currentNodes: BookmarkNode[] = [];
+  @State private recentNodes: BookmarkNode[] = [];
+  // 当前所在文件夹 id（'' = 根级）。
+  @State private currentFolderId: string = '';
+  // 移动设备根（根级回包里 rootType==='mobile'；根级新建的默认落点）。
+  @State private mobileFolderId: string = '';
   @State private loading: boolean = true;
+  private navStack: string[] = [];
+  // 回包匹配：只采用最新一次请求的回包（layer = 目录层，search = 搜索）。
+  private pendingKind: 'layer' | 'search' = 'layer';
+  private pendingSeq: number = 0;
   private requestSeq: number = 0;
   private retryTimer: number = -1;
+  private retryCount: number = 0;
   private pendingImportPath: string = '';
   private pendingExportPath: string = '';
   private pendingExportRequestId: number = 0;
@@ -66,12 +80,12 @@ export struct BookmarksPanel {
   @State private formUrl: string = '';
   private editUuid: string = '';
 
-  // 搜索（全树 url 节点，标题/网址命中）。
+  // 搜索（searchBookmarks 命令，命中带 path）。
   @State private searchText: string = '';
-  @State private searchResults: SyncBookmarkNode[] = [];
+  @State private searchResults: BookmarkNode[] = [];
 
   // 行菜单（自绘卡，首页同款）：目标节点 + 落点。
-  @State private rowMenuUuid: string = '';
+  @State private rowMenuId: string = '';
   @State private rowMenuIsFolder: boolean = false;
   @State private rowMenuX: number = 0;
   @State private rowMenuY: number = 0;
@@ -86,14 +100,9 @@ export struct BookmarksPanel {
     const dsp = display.getDefaultDisplaySync();
     this.windowW = dsp.width / dsp.densityPixels;
     this.windowH = dsp.height / dsp.densityPixels;
-    this.onSyncChanged();
-    this.reload();
-    this.retryTimer = setTimeout((): void => {
-      this.retryTimer = -1;
-      if (this.loading) {
-        this.reload();
-      }
-    }, 1500);
+    this.onListChanged();
+    this.onRecentChanged();
+    this.loadLayer('');
   }
 
   aboutToDisappear(): void {
@@ -106,145 +115,158 @@ export struct BookmarksPanel {
 
   // -- 数据层 -----------------------------------------------------------------
 
-  private reload(): void {
+  /** 拉取某层：parentId 空 = 三个根文件夹，否则该文件夹的直接子节点。 */
+  private loadLayer(parentId: string): void {
     this.loading = true;
+    this.retryCount = 0;
+    this.pendingKind = 'layer';
     this.requestSeq += 1;
-    this.onCommand({ command: 'getBookmarksForSync', requestId: this.requestSeq });
+    this.pendingSeq = this.requestSeq;
+    if (parentId.length === 0) {
+      this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq });
+    } else {
+      this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq, parentId: parentId });
+    }
+    this.scheduleRetry();
   }
 
-  private onSyncChanged(): void {
-    if (this.syncJson.length === 0) {
+  private scheduleRetry(): void {
+    if (this.retryTimer !== -1) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = -1;
+    }
+    if (this.retryCount >= MAX_LOAD_RETRIES) {
+      return;
+    }
+    this.retryCount += 1;
+    const seq = this.pendingSeq;
+    this.retryTimer = setTimeout((): void => {
+      this.retryTimer = -1;
+      if (this.loading && this.pendingSeq === seq) {
+        // 引擎没回：重发同一层。
+        if (this.pendingKind === 'layer') {
+          const parentId = this.currentFolderId;
+          this.requestSeq += 1;
+          this.pendingSeq = this.requestSeq;
+          if (parentId.length === 0) {
+            this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq });
+          } else {
+            this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq, parentId: parentId });
+          }
+          this.scheduleRetry();
+        }
+      }
+    }, LOAD_RETRY_MS);
+  }
+
+  private onListChanged(): void {
+    if (this.listJson.length === 0) {
       return;
     }
     try {
-      this.syncNodes = JSON.parse(this.syncJson) as SyncBookmarkNode[];
-      if (this.currentFolderUuid.length === 0) {
-        this.currentFolderUuid = this.mobileRootUuid();
+      const payload = JSON.parse(this.listJson) as BookmarkListPayload;
+      if ((payload.requestId ?? -1) !== this.pendingSeq) {
+        return;
       }
-      this.recomputeVisible();
-      this.recomputeSearch();
+      const nodes = payload.nodes ?? [];
+      if (this.pendingKind === 'layer') {
+        this.currentNodes = nodes;
+        if (this.currentFolderId.length === 0) {
+          for (const node of nodes) {
+            if (node.rootType === 'mobile') {
+              this.mobileFolderId = node.id;
+              break;
+            }
+          }
+        }
+      } else {
+        this.searchResults = nodes;
+      }
       this.loading = false;
+      if (this.retryTimer !== -1) {
+        clearTimeout(this.retryTimer);
+        this.retryTimer = -1;
+      }
     } catch (error) {
       this.loading = false;
     }
   }
 
-  private onPanelEvent(): void {
-    // bookmarkCreated / bookmarkOpResult / bookmarksChanged: reload.
-    this.reload();
-  }
-
-  /** 移动设备根（新文件夹/书签的默认落点；树里没找到返回 ''）。 */
-  private mobileRootUuid(): string {
-    for (const node of this.syncNodes) {
-      if (node.rootType === 'mobile') {
-        return node.uuid;
-      }
-    }
-    return '';
-  }
-
-  private recomputeVisible(): void {
-    if (this.currentFolderUuid.length === 0) {
-      this.visibleNodes = [];
+  private onRecentChanged(): void {
+    if (this.bookmarksJson.length === 0) {
       return;
     }
-    const out: SyncBookmarkNode[] = [];
-    for (const node of this.syncNodes) {
-      if (node.parentUuid === this.currentFolderUuid) {
-        out.push(node);
-      }
+    try {
+      this.recentNodes = JSON.parse(this.bookmarksJson) as BookmarkNode[];
+    } catch (error) {
     }
-    out.sort((a: SyncBookmarkNode, b: SyncBookmarkNode): number => a.index - b.index);
-    this.visibleNodes = out;
   }
 
-  private recomputeSearch(): void {
-    const q = this.searchText.trim().toLowerCase();
+  private onPanelEvent(): void {
+    // bookmarkCreated / bookmarkOpResult / bookmarksChanged: 重拉当前层。
+    if (this.searchText.trim().length > 0) {
+      this.runSearch(this.searchText);
+      return;
+    }
+    this.loadLayer(this.currentFolderId);
+  }
+
+  /** 搜索走引擎（searchBookmarks，按标题/网址匹配，命中带 path）。 */
+  private runSearch(query: string): void {
+    const q = query.trim();
     if (q.length === 0) {
       this.searchResults = [];
       return;
     }
-    const out: SyncBookmarkNode[] = [];
-    for (const node of this.syncNodes) {
-      if (!node.isFolder &&
-        (node.title.toLowerCase().includes(q) || node.url.toLowerCase().includes(q))) {
-        out.push(node);
-      }
-    }
-    this.searchResults = out;
+    this.pendingKind = 'search';
+    this.requestSeq += 1;
+    this.pendingSeq = this.requestSeq;
+    this.onCommand({ command: 'searchBookmarks', requestId: this.requestSeq, query: q, maxCount: 50 });
   }
 
-  /** 返回钮：在子文件夹里先逐级上退，到根再关面板。 */
+  /** 返回钮：子文件夹先逐级上退，到根再关面板。 */
   private handleBack(): void {
-    if (this.currentFolderUuid.length > 0) {
-      const current = this.findNode(this.currentFolderUuid);
-      if (current !== undefined && current.rootType === undefined) {
-        this.currentFolderUuid = current.parentUuid;
-        this.recomputeVisible();
-        return;
-      }
+    if (this.navStack.length > 0) {
+      const parent = this.navStack.pop();
+      this.currentFolderId = parent !== undefined ? parent : '';
+      this.loadLayer(this.currentFolderId);
+      return;
     }
     this.onBack();
   }
 
-  private findNode(uuid: string): SyncBookmarkNode | undefined {
-    for (const node of this.syncNodes) {
-      if (node.uuid === uuid) {
-        return node;
-      }
-    }
-    return undefined;
-  }
-
-  private openNode(node: SyncBookmarkNode): void {
-    if (node.isFolder) {
-      this.currentFolderUuid = node.uuid;
-      this.recomputeVisible();
+  private openNode(node: BookmarkNode): void {
+    if (node.type === 'folder') {
+      this.navStack.push(this.currentFolderId);
+      this.currentFolderId = node.id;
+      this.loadLayer(node.id);
       return;
     }
-    if (node.url.length === 0) {
+    if (node.url === undefined || node.url.length === 0) {
       return;
     }
     this.onCommand({ command: 'navigate', url: node.url });
     this.onClose();
   }
 
-  private applyOps(ops: SyncBookmarkOp[]): void {
-    this.requestSeq += 1;
-    this.onCommand({
-      command: 'applyBookmarks',
-      requestId: this.requestSeq,
-      origin: 'sync',
-      ops: ops
-    });
-  }
-
-  private genUuid(): string {
-    return util.generateRandomUUID(false);
-  }
-
-  /** 当前文件夹的直接子节点数（新建节点排在末尾）。 */
-  private childCountOf(folderUuid: string): number {
-    let n = 0;
-    for (const node of this.syncNodes) {
-      if (node.parentUuid === folderUuid) {
-        n += 1;
-      }
+  /** 新建书签/文件夹的父层：根级落到移动设备根，子层落到当前文件夹。 */
+  private targetParentId(): string {
+    if (this.currentFolderId.length > 0) {
+      return this.currentFolderId;
     }
-    return n;
+    return this.mobileFolderId;
   }
 
   // -- 行菜单 -----------------------------------------------------------------
 
-  private openRowMenu(node: SyncBookmarkNode): void {
+  private openRowMenu(node: BookmarkNode): void {
     const cardW = 190;
-    const cardH = node.isFolder ? 108 : 204;
+    const cardH = node.type === 'folder' ? 108 : 204;
     this.rowMenuX = Math.min(Math.max(this.menuPressX - cardW / 2, 12),
       Math.max(12, this.windowW - cardW - 12));
     this.rowMenuY = Math.min(this.menuPressY + 8, Math.max(12, this.windowH - cardH - 96));
-    this.rowMenuIsFolder = node.isFolder;
-    this.rowMenuUuid = node.uuid;
+    this.rowMenuIsFolder = node.type === 'folder';
+    this.rowMenuId = node.id;
   }
 
   private copyLink(url: string): void {
@@ -254,10 +276,10 @@ export struct BookmarksPanel {
     this.getUIContext().getPromptAction().showToast({ message: '链接已复制', duration: 1500 });
   }
 
-  private removeWithConfirm(node: SyncBookmarkNode): void {
+  private removeWithConfirm(node: BookmarkNode): void {
     this.getUIContext().getPromptAction().showDialog({
-      title: node.isFolder ? '删除文件夹' : '删除书签',
-      message: node.title.length > 0 ? node.title : node.url,
+      title: node.type === 'folder' ? '删除文件夹' : '删除书签',
+      message: node.title.length > 0 ? node.title : (node.url ?? ''),
       buttons: [
         { text: '取消', color: '#5F6368' },
         { text: '删除', color: '#E24B4A' }
@@ -266,13 +288,13 @@ export struct BookmarksPanel {
       if (result.index !== 1) {
         return;
       }
-      const op: SyncBookmarkRemove = { op: 'remove', uuid: node.uuid };
-      this.applyOps([op]);
-      if (node.isFolder && this.currentFolderUuid === node.uuid) {
-        // 删除的是正浏览的文件夹：退到其父级（remove 级联，本页立即上退）。
-        const parent = this.findNode(node.parentUuid);
-        this.currentFolderUuid = parent !== undefined ? parent.uuid : this.mobileRootUuid();
-        this.recomputeVisible();
+      this.requestSeq += 1;
+      this.onCommand({ command: 'removeBookmark', id: node.id, requestId: this.requestSeq });
+      if (node.type === 'folder' && this.currentFolderId === node.id) {
+        // 删除的是正浏览的文件夹：立即退回上一层。
+        const parent = this.navStack.length > 0 ? this.navStack.pop() : undefined;
+        this.currentFolderId = parent !== undefined ? parent : '';
+        this.loadLayer(this.currentFolderId);
       }
     }).catch((error: Error): void => {
     });
@@ -280,12 +302,12 @@ export struct BookmarksPanel {
 
   // -- 表单弹窗（添加/编辑书签、新建/重命名文件夹） -----------------------------
 
-  private openForm(mode: FormMode, node?: SyncBookmarkNode): void {
-    this.editUuid = node !== undefined ? node.uuid : '';
+  private openForm(mode: FormMode, node?: BookmarkNode): void {
+    this.editUuid = node !== undefined ? node.id : '';
     this.formTitle = node !== undefined ? node.title : '';
-    this.formUrl = node !== undefined ? node.url : '';
+    this.formUrl = node !== undefined && node.url !== undefined ? node.url : '';
     if (mode === 'addBookmark') {
-      // 手动添加：预填当前页（等价原「收藏当前网页」，+ 撤掉后这里是唯一入口）。
+      // 手动添加：预填当前页（承接原「收藏当前网页」，+ 撤掉后这里是唯一入口）。
       if (this.formTitle.length === 0 && this.formUrl.length === 0) {
         this.formUrl = this.currentUrl;
         this.formTitle = this.currentTitle;
@@ -308,44 +330,41 @@ export struct BookmarksPanel {
       if (url.length === 0) {
         return;
       }
-      const op: SyncBookmarkUpsert = {
-        op: 'upsert',
-        uuid: this.genUuid(),
-        parentUuid: this.currentFolderUuid,
-        isFolder: false,
-        title: title.length > 0 ? title : url,
-        url: url,
-        index: this.childCountOf(this.currentFolderUuid)
-      };
-      this.applyOps([op]);
+      this.requestSeq += 1;
+      const parent = this.targetParentId();
+      if (parent.length === 0) {
+        this.onCommand({ command: 'addBookmark', url: url, title: title, requestId: this.requestSeq });
+      } else {
+        this.onCommand({
+          command: 'addBookmark',
+          url: url,
+          title: title,
+          parentId: parent,
+          requestId: this.requestSeq
+        });
+      }
     } else if (this.dialogMode === 'addFolder') {
       const name = title.length > 0 ? title : '新建文件夹';
-      const op: SyncBookmarkUpsert = {
-        op: 'upsert',
-        uuid: this.genUuid(),
-        parentUuid: this.currentFolderUuid,
-        isFolder: true,
-        title: name,
-        url: '',
-        index: this.childCountOf(this.currentFolderUuid)
-      };
-      this.applyOps([op]);
+      this.requestSeq += 1;
+      this.onCommand({
+        command: 'createBookmarkFolder',
+        requestId: this.requestSeq,
+        parentId: this.targetParentId(),
+        title: name
+      });
     } else if (this.dialogMode === 'editBookmark' || this.dialogMode === 'renameFolder') {
-      const node = this.findNode(this.editUuid);
-      if (node === undefined) {
+      if (this.editUuid.length === 0) {
         this.cancelForm();
         return;
       }
-      const op: SyncBookmarkUpsert = {
-        op: 'upsert',
-        uuid: node.uuid,
-        parentUuid: node.parentUuid,
-        isFolder: node.isFolder,
-        title: title.length > 0 ? title : node.title,
-        url: node.url,
-        index: node.index
-      };
-      this.applyOps([op]);
+      this.requestSeq += 1;
+      this.onCommand({
+        command: 'updateBookmark',
+        id: this.editUuid,
+        title: title.length > 0 ? title : undefined,
+        url: this.dialogMode === 'editBookmark' ? this.formUrl.trim() : undefined,
+        requestId: this.requestSeq
+      });
     }
     this.cancelForm();
   }
@@ -397,7 +416,7 @@ export struct BookmarksPanel {
               }
             }
           });
-          this.reload();
+          this.loadLayer(this.currentFolderId);
         } else {
           AlertDialog.show({
             title: '导入没有成功',
@@ -548,7 +567,7 @@ export struct BookmarksPanel {
   // -- UI ---------------------------------------------------------------------
 
   @Builder
-  private FolderRow(node: SyncBookmarkNode) {
+  private FolderRow(node: BookmarkNode) {
     Column() {
       Row({ space: 12 }) {
         Column() {
@@ -571,7 +590,7 @@ export struct BookmarksPanel {
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.text_primary'))
             .width('100%')
-          Text(`${this.childCountOf(node.uuid)} 项`)
+          Text(`${node.childCount ?? 0} 项`)
             .fontSize(12)
             .fontColor($r('app.color.text_secondary'))
         }
@@ -614,7 +633,7 @@ export struct BookmarksPanel {
   }
 
   @Builder
-  private BookmarkRow(node: SyncBookmarkNode, index: number, total: number) {
+  private BookmarkRow(node: BookmarkNode, index: number, total: number) {
     Column() {
       Row({ space: 12 }) {
         Image($r('app.media.aura_bookmark'))
@@ -623,13 +642,13 @@ export struct BookmarksPanel {
           .fillColor($r('app.color.icon_primary'))
 
         Column({ space: 2 }) {
-          Text(node.title.length > 0 ? node.title : displayUrl(node.url))
+          Text(node.title.length > 0 ? node.title : displayUrl(node.url ?? ''))
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .fontSize(16)
             .fontColor($r('app.color.text_primary'))
             .width('100%')
-          Text(displayUrl(node.url))
+          Text(displayUrl(node.url ?? ''))
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .fontSize(12)
@@ -697,56 +716,80 @@ export struct BookmarksPanel {
   // 行菜单：自绘悬浮卡挂 body Stack（viewport 固定；首页同款机制）。
   @Builder
   private RowMenuOverlay() {
-    if (this.rowMenuUuid.length > 0) {
+    if (this.rowMenuId.length > 0) {
       Stack({ alignContent: Alignment.TopStart }) {
         Column()
           .width('100%')
           .height('100%')
           .onClick(() => {
-            this.rowMenuUuid = '';
+            this.rowMenuId = '';
           })
 
         Column() {
           if (this.rowMenuIsFolder) {
             this.RowMenuRow($r('app.media.aura_edit'), '重命名', (): void => {
-              const node = this.findNode(this.rowMenuUuid);
-              this.rowMenuUuid = '';
+              const id = this.rowMenuId;
+              const node = this.currentNodes.find((candidate: BookmarkNode): boolean =>
+                candidate.id === id) ??
+                this.recentNodes.find((candidate: BookmarkNode): boolean =>
+                  candidate.id === id);
+              this.rowMenuId = '';
               if (node !== undefined) {
                 this.openForm('renameFolder', node);
               }
             }, 0)
             this.RowMenuRow($r('app.media.aura_trash'), '删除', (): void => {
-              const node = this.findNode(this.rowMenuUuid);
-              this.rowMenuUuid = '';
+              const id = this.rowMenuId;
+              const node = this.currentNodes.find((candidate: BookmarkNode): boolean =>
+                candidate.id === id) ??
+                this.recentNodes.find((candidate: BookmarkNode): boolean =>
+                  candidate.id === id);
+              this.rowMenuId = '';
               if (node !== undefined) {
                 this.removeWithConfirm(node);
               }
             }, 0)
           } else {
             this.RowMenuRow($r('app.media.aura_window'), '在新标签页打开', (): void => {
-              const node = this.findNode(this.rowMenuUuid);
-              this.rowMenuUuid = '';
+              const id = this.rowMenuId;
+              const node = this.currentNodes.find((candidate: BookmarkNode): boolean =>
+                candidate.id === id) ??
+                this.recentNodes.find((candidate: BookmarkNode): boolean =>
+                  candidate.id === id);
+              this.rowMenuId = '';
               if (node !== undefined) {
                 this.openNode(node);
               }
             }, 0)
             this.RowMenuRow($r('app.media.aura_edit'), '编辑', (): void => {
-              const node = this.findNode(this.rowMenuUuid);
-              this.rowMenuUuid = '';
+              const id = this.rowMenuId;
+              const node = this.currentNodes.find((candidate: BookmarkNode): boolean =>
+                candidate.id === id) ??
+                this.recentNodes.find((candidate: BookmarkNode): boolean =>
+                  candidate.id === id);
+              this.rowMenuId = '';
               if (node !== undefined) {
                 this.openForm('editBookmark', node);
               }
             }, 0)
             this.RowMenuRow($r('app.media.aura_copy'), '复制链接', (): void => {
-              const node = this.findNode(this.rowMenuUuid);
-              this.rowMenuUuid = '';
-              if (node !== undefined) {
+              const id = this.rowMenuId;
+              const node = this.currentNodes.find((candidate: BookmarkNode): boolean =>
+                candidate.id === id) ??
+                this.recentNodes.find((candidate: BookmarkNode): boolean =>
+                  candidate.id === id);
+              this.rowMenuId = '';
+              if (node !== undefined && node.url !== undefined) {
                 this.copyLink(node.url);
               }
             }, 0)
             this.RowMenuRow($r('app.media.aura_trash'), '删除', (): void => {
-              const node = this.findNode(this.rowMenuUuid);
-              this.rowMenuUuid = '';
+              const id = this.rowMenuId;
+              const node = this.currentNodes.find((candidate: BookmarkNode): boolean =>
+                candidate.id === id) ??
+                this.recentNodes.find((candidate: BookmarkNode): boolean =>
+                  candidate.id === id);
+              this.rowMenuId = '';
               if (node !== undefined) {
                 this.removeWithConfirm(node);
               }
@@ -791,7 +834,7 @@ export struct BookmarksPanel {
             .width('100%')
 
           Column({ space: 6 }) {
-            Text(this.dialogMode === 'addFolder' || this.dialogMode === 'renameFolder' ? '名称' : '名称')
+            Text('名称')
               .fontSize(13)
               .fontColor($r('app.color.text_secondary'))
               .width('100%')
@@ -919,7 +962,7 @@ export struct BookmarksPanel {
           .backgroundColor(Color.Transparent)
           .onChange((value: string) => {
             this.searchText = value;
-            this.recomputeSearch();
+            this.runSearch(value);
           })
       }
       .width('100%')
@@ -927,10 +970,9 @@ export struct BookmarksPanel {
       .borderRadius(20)
       .backgroundColor($r('app.color.surface_secondary'))
       .padding({ left: 12, right: 12 })
-      .margin({ bottom: 10 })
 
       if (this.searchText.trim().length > 0) {
-        // 搜索：全树平铺命中项（点击打开）。Scroll 单子组件：内容包一个 Column。
+        // 搜索：引擎全树匹配（searchBookmarks，命中带 path）。
         Scroll(this.listScroller) {
         Column() {
         if (this.searchResults.length === 0) {
@@ -942,9 +984,9 @@ export struct BookmarksPanel {
             .margin({ top: 40 })
         }
         Column() {
-          ForEach(this.searchResults, (node: SyncBookmarkNode, index: number) => {
+          ForEach(this.searchResults, (node: BookmarkNode, index: number) => {
             this.BookmarkRow(node, index, this.searchResults.length)
-          }, (node: SyncBookmarkNode): string => node.uuid)
+          }, (node: BookmarkNode): string => node.id)
         }
         .width('100%')
         .borderRadius(16)
@@ -953,8 +995,8 @@ export struct BookmarksPanel {
         }
         .width('100%')
         }
-        .width('100%')
-        .padding({ top: glassHeaderInsetVp() })
+        .layoutWeight(1)
+        .padding({ top: 12 })
         .scrollBar(BarState.Off)
         .align(Alignment.TopStart)
       } else if (this.loading) {
@@ -964,45 +1006,45 @@ export struct BookmarksPanel {
           .width('100%')
           .textAlign(TextAlign.Center)
           .margin({ top: 40 })
-      } else if (this.visibleNodes.length === 0) {
-        Column({ space: 6 }) {
-          Text('这个文件夹是空的')
-            .fontSize(15)
-            .fontColor($r('app.color.text_secondary'))
-          if (this.currentFolderUuid === this.mobileRootUuid()) {
-            Text('右上角 + 新建文件夹，⋯ 手动添加书签')
-              .fontSize(13)
-              .fontColor($r('app.color.text_secondary'))
-          }
-        }
-        .width('100%')
-        .margin({ top: 60 })
       } else {
         Scroll(this.listScroller) {
-          Column() {
-            // 文件夹在前、书签在后（对齐 Lumie 的树视图）。
-            // 键带子节点数：往文件夹里加/删书签后条数变化 → 键变 → "N 项"刷新。
-            ForEach(this.visibleNodes, (node: SyncBookmarkNode, index: number) => {
-              if (node.isFolder) {
-                this.FolderRow(node)
-              }
-            }, (node: SyncBookmarkNode): string => `f|${node.uuid}#${this.childCountOf(node.uuid)}`)
+        Column() {
+          // 当前层：根级 = 三个根文件夹；子层 = 该文件夹内容（文件夹在前）。
+          ForEach(this.currentNodes, (node: BookmarkNode, index: number) => {
+            if (node.type === 'folder') {
+              this.FolderRow(node)
+            }
+          }, (node: BookmarkNode): string => `f|${node.id}#${node.childCount ?? 0}`)
+
+          if (this.currentFolderId.length === 0 && this.recentNodes.length > 0) {
+            AuraSectionLabel({ text: '最近添加' })
             Column() {
-              ForEach(this.visibleNodes, (node: SyncBookmarkNode, index: number) => {
-                if (!node.isFolder) {
-                  this.BookmarkRow(node, index, this.visibleNodes.length)
+              ForEach(this.recentNodes, (node: BookmarkNode, index: number) => {
+                this.BookmarkRow(node, index, this.recentNodes.length)
+              }, (node: BookmarkNode): string => `r|${node.id}`)
+            }
+            .width('100%')
+            .borderRadius(16)
+            .backgroundColor($r('app.color.card_background'))
+            .clip(true)
+          } else if (this.currentFolderId.length > 0) {
+            Column() {
+              ForEach(this.currentNodes, (node: BookmarkNode, index: number) => {
+                if (node.type !== 'folder') {
+                  this.BookmarkRow(node, index, this.currentNodes.length)
                 }
-              }, (node: SyncBookmarkNode): string => `u|${node.uuid}`)
+              }, (node: BookmarkNode): string => `u|${node.id}`)
             }
             .width('100%')
             .borderRadius(16)
             .backgroundColor($r('app.color.card_background'))
             .clip(true)
           }
-          .width('100%')
-          .padding({ top: glassHeaderInsetVp() })
+        }
+        .width('100%')
         }
         .layoutWeight(1)
+        .padding({ top: 12 })
         .scrollBar(BarState.Off)
         .align(Alignment.TopStart)
       }
