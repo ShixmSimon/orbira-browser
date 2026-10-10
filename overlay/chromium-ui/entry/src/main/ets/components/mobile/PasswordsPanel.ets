@@ -12,7 +12,7 @@ import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { userAuth } from '@kit.UserAuthenticationKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
-import { GlassPage, glassHeaderInsetVp } from './GlassPage';
+import { GlassPage, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
 import {
   BrowserCommandPayload,
   PasswordCommandResultEvent,
@@ -854,32 +854,79 @@ export struct PasswordsPanel {
   }
 
   // ⋯ 的子菜单改走系统 ActionSheet（本页是原生内容，系统弹窗可用）。
+  // ⋯ 的子菜单：恢复「贴标题栏右侧弹出的小菜单卡」形态（用户定案：弃用
+  // 底部 ActionSheet），卡片走自绘 menu_glass 家族，与书签页同款。
   private showMoreSheet(): void {
     if (this.view !== 'list') {
       return;
     }
-    ActionSheet.show({
-      title: '密码操作',
-      message: '',
-      sheets: [
-        {
-          title: '导入密码',
-          action: (): void => {
-            this.startImport();
-          }
-        },
-        {
-          title: '导出密码',
-          action: (): void => {
-            this.startExport();
-          }
-        }
-      ]
-    });
+    this.moreMenuVisible = true;
+  }
+
+  private moreMenuY(): number {
+    return glassTopSafeVp() + 56 + 6;
+  }
+
+  @Builder
+  private MoreMenuOverlay() {
+    if (this.moreMenuVisible) {
+    Stack({ alignContent: Alignment.TopStart }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .onClick(() => {
+          this.moreMenuVisible = false;
+        })
+
+      Column() {
+        this.MoreMenuRow($r('app.media.aura_import'), '导入密码', (): void => {
+          this.moreMenuVisible = false;
+          this.startImport();
+        })
+        this.MoreMenuRow($r('app.media.aura_export'), '导出密码', (): void => {
+          this.moreMenuVisible = false;
+          this.startExport();
+        })
+      }
+      .width(190)
+      .padding({ top: 6, bottom: 6 })
+      .borderRadius(22)
+      .backgroundColor($r('app.color.menu_glass'))
+      .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
+      .position({ x: '100%', y: this.moreMenuY() })
+      .markAnchor({ x: 202 })
+      .transition(TransitionEffect.asymmetric(
+        TransitionEffect.opacity(0)
+          .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 })),
+        TransitionEffect.opacity(0)
+      ).animation({ duration: 180, curve: Curve.Friction }))
+    }
+    .width('100%')
+    .height('100%')
+    }
+  }
+
+  @Builder
+  private MoreMenuRow(icon: Resource, label: string, action: () => void) {
+    Row({ space: 14 }) {
+      Image(icon)
+        .width(21)
+        .height(21)
+        .fillColor($r('app.color.icon_primary'))
+      Text(label)
+        .fontSize(15)
+        .fontColor($r('app.color.text_primary'))
+      Blank()
+    }
+    .width('100%')
+    .height(48)
+    .padding({ left: 18, right: 16 })
+    .onClick(action)
   }
 
   private listScroller: Scroller = new Scroller();
   private detailScroller: Scroller = new Scroller();
+  @State private moreMenuVisible: boolean = false;
   @State private searchText: string = '';
 
   // 搜索过滤：来源/用户名命中即留。
@@ -925,6 +972,8 @@ export struct PasswordsPanel {
         }
       }
     }) {
+    // body 包成 Stack：自绘更多菜单卡挂这里（viewport 固定，与书签页同款）。
+    Stack({ alignContent: Alignment.TopStart }) {
     Column() {
       if (!this.verified) {
         this.GateView()
@@ -939,6 +988,8 @@ export struct PasswordsPanel {
     .padding({ left: 16, right: 16 })
     .backgroundColor($r('app.color.page_background'))
 
+    this.MoreMenuOverlay()
+    }
     }
   }
 }

@@ -156,6 +156,10 @@ export struct GlassContentHeader {
  *   }) {
  *     Column() { ...滚动内容的 Column 记得 .padding({ top: glassHeaderInsetVp() })... }
  *   }
+ *
+ * ⚠️ 尾随闭包语法要求 GlassPage 有且仅有一个 @BuilderParam（body）——页内
+ * 悬浮层（自绘菜单卡等）不要走新增 BuilderParam 的路，让页面把 body 包成
+ * Stack、悬浮层作为 Stack 的兄弟节点自行挂载（书签/密码的更多菜单即此法）。
  */
 @Component
 export struct GlassPage {
