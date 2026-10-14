@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 420" width="240" height="420">
+  <defs>
+    <clipPath id="ph"><rect x="8" y="8" width="224" height="404" rx="28"/></clipPath>
+  </defs>
+  <rect x="0" y="0" width="240" height="420" rx="34" fill="#202124"/>
+  <g clip-path="url(#ph)">
+    <rect x="8" y="8" width="224" height="404" fill="#F2F3F5"/>
+    <rect x="8" y="8" width="224" height="22" fill="#E9EAED"/>
+    <!-- 顶部地址栏 -->
+    <rect x="20" y="40" width="200" height="34" rx="17" fill="#FFFFFF" stroke="#E3E5E8"/>
+    <circle cx="38" cy="57" r="5" fill="#9AA0A6"/>
+    <rect x="50" y="52" width="120" height="10" rx="5" fill="#C9CCD1"/>
+    <!-- 书签磁贴 两行三列 -->
+    <rect x="24" y="98" width="56" height="56" rx="14" fill="#FFFFFF" stroke="#E3E5E8"/>
+    <rect x="92" y="98" width="56" height="56" rx="14" fill="#FFFFFF" stroke="#E3E5E8"/>
+    <rect x="160" y="98" width="56" height="56" rx="14" fill="#FFFFFF" stroke="#E3E5E8"/>
+    <rect x="24" y="166" width="56" height="56" rx="14" fill="#FFFFFF" stroke="#E3E5E8"/>
+    <rect x="92" y="166" width="56" height="56" rx="14" fill="#FFFFFF" stroke="#E3E5E8"/>
+    <rect x="160" y="166" width="56" height="56" rx="14" fill="#FFFFFF" stroke="#E3E5E8"/>
+    <!-- 底部 dock 五格 -->
+    <rect x="20" y="360" width="200" height="44" rx="22" fill="#FFFFFF" stroke="#E3E5E8"/>
+    <circle cx="52" cy="382" r="6" fill="#C9CCD1"/>
+    <circle cx="92" cy="382" r="6" fill="#C9CCD1"/>
+    <circle cx="132" cy="382" r="6" fill="#C9CCD1"/>
+    <circle cx="172" cy="382" r="6" fill="#C9CCD1"/>
+    <circle cx="200" cy="382" r="6" fill="#C9CCD1"/>
+  </g>
+</svg>

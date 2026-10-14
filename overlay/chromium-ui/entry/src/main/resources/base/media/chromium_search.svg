@@ -1,4 +1,1 @@
-<!-- Search icon: added by the shell extension (home surface search box). -->
-<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-  <path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M2.8,10.6A7.8,7.8 0 1 0 18.4,10.6A7.8,7.8 0 1 0 2.8,10.6ZM4.8,10.6A5.8,5.8 0 1 1 16.4,10.6A5.8,5.8 0 1 1 4.8,10.6Z"/><path d="M14.79,16.21L19.59,21.01L21.01,19.59L16.21,14.79ZM14.5,15.5A1,1 0 1 0 16.5,15.5A1,1 0 1 0 14.5,15.5ZM19.3,20.3A1,1 0 1 0 21.3,20.3A1,1 0 1 0 19.3,20.3Z"/></svg>

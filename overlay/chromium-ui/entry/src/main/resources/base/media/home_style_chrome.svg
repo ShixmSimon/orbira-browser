@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 420" width="240" height="420">
+  <defs>
+    <clipPath id="ph2"><rect x="8" y="8" width="224" height="404" rx="28"/></clipPath>
+  </defs>
+  <rect x="0" y="0" width="240" height="420" rx="34" fill="#202124"/>
+  <g clip-path="url(#ph2)">
+    <rect x="8" y="8" width="224" height="404" fill="#F2F3F5"/>
+    <rect x="8" y="8" width="224" height="22" fill="#E9EAED"/>
+    <!-- 书签磁贴 两行三列（无独立顶栏） -->
+    <rect x="24" y="62" width="56" height="56" rx="14" fill="#FFFFFF" stroke="#E3E5E8"/>
+    <rect x="92" y="62" width="56" height="56" rx="14" fill="#FFFFFF" stroke="#E3E5E8"/>
+    <rect x="160" y="62" width="56" height="56" rx="14" fill="#FFFFFF" stroke="#E3E5E8"/>
+    <rect x="24" y="130" width="56" height="56" rx="14" fill="#FFFFFF" stroke="#E3E5E8"/>
+    <rect x="92" y="130" width="56" height="56" rx="14" fill="#FFFFFF" stroke="#E3E5E8"/>
+    <rect x="160" y="130" width="56" height="56" rx="14" fill="#FFFFFF" stroke="#E3E5E8"/>
+    <!-- Chrome dock：主页 | 地址栏胶囊 | 标签页 | 菜单 -->
+    <rect x="16" y="356" width="208" height="48" rx="24" fill="#FFFFFF" stroke="#E3E5E8"/>
+    <circle cx="44" cy="380" r="9" fill="#1A73E8"/>
+    <rect x="64" y="368" width="96" height="24" rx="12" fill="#F1F3F4" stroke="#E3E5E8"/>
+    <rect x="80" y="376" width="60" height="8" rx="4" fill="#C9CCD1"/>
+    <rect x="172" y="368" width="24" height="24" rx="6" fill="#F1F3F4" stroke="#E3E5E8"/>
+    <rect x="178" y="374" width="12" height="3" rx="1.5" fill="#9AA0A6"/>
+    <rect x="178" y="379" width="12" height="3" rx="1.5" fill="#9AA0A6"/>
+    <rect x="178" y="384" width="12" height="3" rx="1.5" fill="#9AA0A6"/>
+  </g>
+</svg>
