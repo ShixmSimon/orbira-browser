@@ -303,8 +303,23 @@ export interface ExtensionDetailsEvent extends ShellServiceEvent {
   siteAccess: ExtensionSiteAccess;
   // False when the extension asks for no sites, or policy decides for it.
   siteAccessChangeable: boolean;
+  // The "允许用户脚本" switch from the extension's detail page. Whether it
+  // shows at all is the extension's own doing -- it has to declare the
+  // userScripts permission (脚本猫 does); the state is a per-extension pref.
+  userScriptsAvailable?: boolean;
+  userScriptsAllowed?: boolean;
   // 'notFound' when there is no such extension.
   error?: string;
+}
+
+// getDeveloperMode / setDeveloperMode: the extensions page's own switch, the
+// profile pref extensions.ui.developer_mode. One pref, two doors -- the
+// desktop page reads and writes the same one.
+export interface DeveloperModeEvent extends ShellServiceEvent {
+  enabled: boolean;
+  // False when the profile has no such pref (no extensions at all): the
+  // shell then shows the switch off and inert.
+  available?: boolean;
 }
 
 export type ExtensionSiteAccess = 'onClick' | 'specificSites' | 'allSites';

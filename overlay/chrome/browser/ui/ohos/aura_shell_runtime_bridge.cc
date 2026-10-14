@@ -90,8 +90,12 @@
 #include "extensions/browser/extension_action_manager.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_action_icon_factory.h"
+#include "chrome/browser/extensions/chrome_zipfile_installer.h"
 #include "chrome/browser/extensions/extension_install_prompt.h"
 #include "extensions/browser/crx_installer.h"
+#include "extensions/browser/extension_file_task_runner.h"
+#include "extensions/browser/extension_registrar.h"
+#include "extensions/browser/zipfile_installer.h"
 #include "extensions/browser/install/crx_install_error.h"
 #include "extensions/browser/install/sandboxed_unpacker_failure_reason.h"
 #include "extensions/browser/install_prompt_data.h"
@@ -1821,12 +1825,30 @@ void InstallExtensionFromFile(gfx::AcceleratedWidget widget,
     DispatchExtensionInstallFailed(widget, path, "notFound", u"");
     return;
   }
-  if (!file.MatchesExtension(FILE_PATH_LITERAL(".crx"))) {
+  // A zip is an unpacked extension in transit -- what the extensions page
+  // takes for a dropped .zip (DeveloperPrivateInstallDroppedFileFunction):
+  // unzip it into the unpacked extensions directory and let the extension
+  // service pick it up from there. Only the shape of the install differs;
+  // the reader chose the file themselves either way.
+  const bool is_zip = file.MatchesExtension(FILE_PATH_LITERAL(".zip"));
+  if (!is_zip && !file.MatchesExtension(FILE_PATH_LITERAL(".crx"))) {
     DispatchExtensionInstallFailed(widget, path, "notCrx", u"");
     return;
   }
-  if (!active) {
+  if (!browser || (!active && !is_zip)) {
     DispatchExtensionInstallFailed(widget, path, "other", u"");
+    return;
+  }
+
+  if (is_zip) {
+    extensions::ExtensionRegistrar* registrar =
+        extensions::ExtensionRegistrar::Get(browser->GetProfile());
+    extensions::ZipFileInstaller::Create(
+        extensions::GetExtensionFileTaskRunner(),
+        extensions::MakeRegisterInExtensionServiceCallback(
+            browser->GetProfile()))
+        ->InstallZipFileToUnpackedExtensionsDir(
+            file, registrar->unpacked_install_directory());
     return;
   }
 
@@ -5355,8 +5377,12 @@ bool PostBrowserCommand(gfx::AcceleratedWidget widget,
       "uninstallExtension",
       "getExtensionDetails",
       "setExtensionSiteAccess",
+      "setExtensionUserScriptsAllowed",
       "openExtensionOptions",
       "setExtensionPinned",
+      "getDeveloperMode",
+      "setDeveloperMode",
+      "loadUnpackedExtension",
       "getTabThumbnails",
       "toggleReaderMode",
       "getRecentlyClosed",

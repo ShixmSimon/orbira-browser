@@ -10,6 +10,7 @@
 #include <tuple>
 #include <utility>
 
+#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
@@ -22,6 +23,8 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/ohos/aura_shell_runtime_bridge.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/common/pref_names.h"
+#include "components/prefs/pref_service.h"
 #include "extensions/browser/disable_reason.h"
 #include "extensions/browser/extension_action.h"
 #include "extensions/browser/extension_action_manager.h"
@@ -36,6 +39,8 @@
 #include "extensions/browser/permissions_manager.h"
 #include "extensions/browser/ui_util.h"
 #include "extensions/browser/uninstall_reason.h"
+#include "extensions/browser/unpacked_installer.h"
+#include "extensions/browser/user_script_manager.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/icons/extension_icon_set.h"
@@ -423,10 +428,27 @@ void SendDetails(gfx::AcceleratedWidget widget,
     event.Set("siteAccessChangeable",
               extensions::PermissionsManager::Get(profile)->CanAffectExtension(
                   *extension));
+    // The "允许用户脚本" switch on the detail page. Whether it shows at all
+    // is the extension's own doing -- it has to declare the userScripts
+    // permission -- and the state is a per-extension pref. Read the way
+    // ExtensionInfoGenerator reads them for that page.
+    event.Set("userScriptsAvailable",
+              extensions::UserScriptManager::IsUserScriptsAPIPermissionAvailable(
+                  *extension));
+    // No static UserScriptManager::Get() in this tree -- the manager hangs off
+    // ExtensionSystem (same read as ExtensionInfoGenerator). It can be null in
+    // odd profiles, hence the guard.
+    extensions::UserScriptManager* user_script_manager =
+        extensions::ExtensionSystem::Get(profile)->user_script_manager();
+    event.Set("userScriptsAllowed",
+              user_script_manager &&
+                  user_script_manager->AreUserScriptsAllowed(*extension));
   } else {
     event.Set("permissions", base::ListValue());
     event.Set("siteAccess", "onClick");
     event.Set("siteAccessChangeable", false);
+    event.Set("userScriptsAvailable", false);
+    event.Set("userScriptsAllowed", false);
     event.Set("error", "notFound");
   }
   DispatchAuraShellRuntimeEventToWidget(widget, std::move(event));
@@ -451,6 +473,140 @@ void OpenOptions(gfx::AcceleratedWidget widget,
   if (!extensions::ExtensionTabUtil::OpenOptionsPage(extension, browser)) {
     DispatchFailed(widget, "openExtensionOptions", *id, "failed");
   }
+}
+
+// --- setExtensionUserScriptsAllowed. ---------------------------------------
+
+// The "允许用户脚本" switch from the extension's detail page. The state is a
+// per-extension pref; that page only shows the switch for an extension that
+// declares the userScripts permission, which is the same gate kept here.
+void SetUserScriptsAllowed(gfx::AcceleratedWidget widget,
+                           Profile* profile,
+                           const base::DictValue& command) {
+  const std::string* id = command.FindString("id");
+  const std::optional<bool> allowed = command.FindBool("enabled");
+  const Extension* extension = id ? FindExtension(profile, *id) : nullptr;
+  if (!extension || !allowed) {
+    DispatchFailed(widget, "setExtensionUserScriptsAllowed", id ? *id : "",
+                   "notFound");
+    return;
+  }
+  if (!extensions::UserScriptManager::IsUserScriptsAPIPermissionAvailable(
+          *extension)) {
+    DispatchFailed(widget, "setExtensionUserScriptsAllowed", *id,
+                   "notAllowed");
+    return;
+  }
+  extensions::UserScriptManager* user_script_manager =
+      extensions::ExtensionSystem::Get(profile)->user_script_manager();
+  if (!user_script_manager) {
+    DispatchFailed(widget, "setExtensionUserScriptsAllowed", *id, "failed");
+    return;
+  }
+  user_script_manager->SetUserScriptPrefEnabled(*id, *allowed);
+  // Answer with the details as they now stand, requestId and all, so the
+  // detail page shows what took rather than what was asked for.
+  base::DictValue echo;
+  echo.Set("id", *id);
+  echo.Set("requestId", command.FindInt("requestId").value_or(0));
+  SendDetails(widget, profile, echo);
+}
+
+// --- Developer mode. -------------------------------------------------------
+
+// The extensions page's own switch: the profile pref
+// extensions.ui.developer_mode. That page hides load-unpacked behind it, and
+// the shell keeps the same pref -- one switch, two doors, so the state is
+// the same whichever door it was set through.
+void SendDeveloperMode(gfx::AcceleratedWidget widget, Profile* profile) {
+  PrefService* prefs = profile->GetPrefs();
+  // FindPreference first: a profile without extensions has no such pref, and
+  // answering false is better than answering nothing.
+  const bool registered =
+      prefs->FindPreference(prefs::kExtensionsUIDeveloperMode) != nullptr;
+  const bool enabled =
+      registered && prefs->GetBoolean(prefs::kExtensionsUIDeveloperMode);
+  base::DictValue event;
+  event.Set("event", "developerMode");
+  event.Set("enabled", enabled);
+  event.Set("available", registered);
+  DispatchAuraShellRuntimeEventToWidget(widget, std::move(event));
+}
+
+void SetDeveloperMode(gfx::AcceleratedWidget widget,
+                      Profile* profile,
+                      const base::DictValue& command) {
+  const std::optional<bool> enabled = command.FindBool("enabled");
+  if (!enabled) {
+    DispatchFailed(widget, "setDeveloperMode", "", "badRequest");
+    return;
+  }
+  PrefService* prefs = profile->GetPrefs();
+  if (!prefs->FindPreference(prefs::kExtensionsUIDeveloperMode)) {
+    DispatchFailed(widget, "setDeveloperMode", "", "notAvailable");
+    return;
+  }
+  prefs->SetBoolean(prefs::kExtensionsUIDeveloperMode, *enabled);
+  // The write back, not the ask: enterprise policy may take it straight off
+  // again, and the switch has to show that.
+  SendDeveloperMode(widget, profile);
+}
+
+// --- loadUnpackedExtension. ------------------------------------------------
+
+// An extension directory on disk, loaded the way the extensions page's
+// 加载未打包 does. Developer mode is that page's gate and it is kept here:
+// the shell asks with the very switch it shows next to the installed count.
+void LoadUnpacked(gfx::AcceleratedWidget widget,
+                  Profile* profile,
+                  const base::DictValue& command) {
+  const std::string* path_value = command.FindString("path");
+  const std::string path = path_value ? *path_value : std::string();
+  if (path.empty()) {
+    DispatchFailed(widget, "loadUnpackedExtension", "", "notFound");
+    return;
+  }
+  const base::FilePath dir = base::FilePath::FromUTF8Unsafe(path);
+  if (!dir.IsAbsolute() || dir.ReferencesParent()) {
+    DispatchFailed(widget, "loadUnpackedExtension", "", "badPath");
+    return;
+  }
+  PrefService* prefs = profile->GetPrefs();
+  if (!prefs->FindPreference(prefs::kExtensionsUIDeveloperMode) ||
+      !prefs->GetBoolean(prefs::kExtensionsUIDeveloperMode)) {
+    DispatchFailed(widget, "loadUnpackedExtension", "", "developerModeOff");
+    return;
+  }
+  // The manifest is what makes a directory an extension; the installer says
+  // the rest. Checked here so the shell can name the problem in its own
+  // words rather than showing whatever the loader would.
+  if (!base::PathExists(dir.Append(FILE_PATH_LITERAL("manifest.json")))) {
+    DispatchFailed(widget, "loadUnpackedExtension", "", "noManifest");
+    return;
+  }
+  // Quiet on failure: the alert Chromium draws lands in the active tab's web
+  // layer, which the shell may be covering entirely. Failures come back as
+  // extensionInstallFailed instead, and the shell shows those itself.
+  scoped_refptr<extensions::UnpackedInstaller> installer =
+      extensions::UnpackedInstaller::Create(profile);
+  installer->set_be_noisy_on_failure(false);
+  installer->set_completion_callback(base::BindOnce(
+      [](gfx::AcceleratedWidget widget, const extensions::Extension* extension,
+         const base::FilePath& path, const std::u16string& error) {
+        if (extension) {
+          // Success is reported by the registry watcher, as
+          // extensionActionsChanged.
+          return;
+        }
+        base::DictValue event;
+        event.Set("event", "extensionInstallFailed");
+        event.Set("path", path.AsUTF8Unsafe());
+        event.Set("reason", "loadUnpackedFailed");
+        event.Set("message", base::UTF16ToUTF8(error));
+        DispatchAuraShellRuntimeEventToWidget(widget, std::move(event));
+      },
+      widget));
+  installer->Load(dir);
 }
 
 }  // namespace
@@ -567,8 +723,16 @@ bool HandleShellExtensionCommand(std::string_view name,
     SendDetails(widget, profile, command);
   } else if (name == "setExtensionSiteAccess") {
     SetSiteAccess(widget, profile, command);
+  } else if (name == "setExtensionUserScriptsAllowed") {
+    SetUserScriptsAllowed(widget, profile, command);
   } else if (name == "openExtensionOptions") {
     OpenOptions(widget, browser, command);
+  } else if (name == "getDeveloperMode") {
+    SendDeveloperMode(widget, profile);
+  } else if (name == "setDeveloperMode") {
+    SetDeveloperMode(widget, profile, command);
+  } else if (name == "loadUnpackedExtension") {
+    LoadUnpacked(widget, profile, command);
   } else {
     return false;
   }

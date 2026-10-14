@@ -216,7 +216,7 @@ export interface BrowserRuntimeEvent {
     'pageDragStarted' | 'pageDragEnded' |
     'recentlyClosed' | 'recentlyClosedChanged' | 'extensionActions' |
     'recentBookmarks' |
-    'extensionActionsChanged' |
+    'extensionActionsChanged' | 'developerMode' |
     'sitePermissionCancelled' |
     'browserControlsRatio' | 'findResult' | 'pageText' |
     'contextMenuRequested' | 'externalUrlRequested' | 'popupBlocked' |

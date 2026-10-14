@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "com.orbira.browser",
     "vendor": "orbira",
-    "versionCode": 1000146,
-    "versionName": "1.0.146",
+    "versionCode": 1000147,
+    "versionName": "1.0.147",
     "icon": "$media:layered_image",
     "label": "$string:app_name",
     "appEnvironments": [

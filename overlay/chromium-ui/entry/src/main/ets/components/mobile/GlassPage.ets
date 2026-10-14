@@ -172,6 +172,20 @@ export struct GlassPage {
    * 右上角按钮；无装饰器的成员更新不触发重渲染，titleBar 不会重新应用 menu，
    * 按钮永远不出现（用户实测）。@Prop 变化即驱动重渲染。 */
   @Prop menus?: HdsNavigationMenuContentOptions;
+  /**
+   * 标题栏右侧自定义内容（HDS stackBuilder 槽，6.0.0(20)+；本 App 兼容基线即
+   * 6.0.0(20)，无设备兼容问题）。传了就在标题行右侧渲染，不传则不占位。
+   * 扩展页用它放「开发者模式」开关——桌面 Chrome 的 chrome://extensions
+   * 同款位置，且标题栏常驻：滚到页面底部用开关时不用滚回去。
+   *
+   * ⚠️ 两个坑（官方文档明示）：
+   * 1. stackBuilder 是标题栏**覆盖层**，可能影响默认标题组件——本项目的用法
+   *    是右对齐摆放（标题在左、无 menu 按钮时右侧为空），不压标题。
+   * 2. 不要为此加 @BuilderParam：尾随闭包语法要求 GlassPage 只有一个
+   *    @BuilderParam（body）。调用方传 `(): void => this.xxx()` 包一层即可
+   *    （HDS 官方样例同款写法）。
+   */
+  titleBarAction?: CustomBuilder;
   @BuilderParam body: () => void;
 
   build() {
@@ -196,7 +210,8 @@ export struct GlassPage {
             this.onBack();
           }
         },
-        menu: this.menus
+        menu: this.menus,
+        stackBuilder: this.titleBarAction
       },
       style: {
         // 官方渐变模糊滚动效果 + 沉浸光感材质（两者配套才是完整的

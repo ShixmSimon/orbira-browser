@@ -38,7 +38,8 @@ import {
   AuxiliaryWindowState,
   BrowserCommandPayload,
   BrowserRuntimeEvent,
-  BrowserStateSnapshot
+  BrowserStateSnapshot,
+  DeveloperModeEvent
 } from 'engine';
 import { CHROMIUM_HOME_URL } from 'engine';
 import { HuaweiKnockShareSession, HuaweiShareAdapter } from 'engine';
@@ -1825,6 +1826,18 @@ struct AuraShell {
     if (event.event === 'extensionActionsChanged') {
       AppStorage.setOrCreate('auraPanelEvent',
         JSON.stringify({ kind: 'extensionActionsChanged', revision: Date.now() }));
+      return;
+    }
+    if (event.event === 'developerMode') {
+      // 扩展页标题栏的「开发者模式」开关：引擎 profile pref 的回音。
+      // 存 AppStorage 供 ExtensionPanel 读；setDeveloperMode 成功后引擎
+      // 会立即回这个事件，所以开关状态永远以引擎为准。
+      const mode = shellEvent<DeveloperModeEvent>(event);
+      AppStorage.setOrCreate('auraDeveloperMode',
+        JSON.stringify({
+          enabled: mode.enabled === true,
+          available: mode.available !== false
+        }));
       return;
     }
     if (event.event === 'extensionInstallFailed') {

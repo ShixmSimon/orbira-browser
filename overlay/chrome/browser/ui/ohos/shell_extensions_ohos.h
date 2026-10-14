@@ -48,8 +48,9 @@ gfx::Image ExtensionManifestIcon(Profile* profile,
                                  int size_px);
 
 // setExtensionEnabled, uninstallExtension, getExtensionDetails,
-// setExtensionSiteAccess and openExtensionOptions. Returns false for any
-// other command name.
+// setExtensionSiteAccess, setExtensionUserScriptsAllowed,
+// openExtensionOptions, getDeveloperMode, setDeveloperMode and
+// loadUnpackedExtension. Returns false for any other command name.
 bool HandleShellExtensionCommand(std::string_view name,
                                  gfx::AcceleratedWidget widget,
                                  BrowserWindowInterface* browser,

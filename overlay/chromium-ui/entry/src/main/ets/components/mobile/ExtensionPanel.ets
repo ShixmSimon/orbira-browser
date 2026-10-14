@@ -22,6 +22,12 @@ interface PanelEventPayload {
   reason?: string;
 }
 
+// getDeveloperMode 的回音（AuraShell 转存到 'auraDeveloperMode'）。
+interface DeveloperModePayload {
+  enabled?: boolean;
+  available?: boolean;
+}
+
 function extensionInitial(name: string): string {
   const trimmed = name.trim();
   return trimmed.length > 0 ? trimmed.substring(0, 1).toUpperCase() : '?';
@@ -40,6 +46,8 @@ export struct ExtensionPanel {
   @StorageLink('auraPanelExtensions') @Watch('onExtensionsPayload') extensionsJson: string = '';
   @StorageLink('auraPanelExtensionDetails') @Watch('onDetailsPayload') detailsJson: string = '';
   @StorageLink('auraPanelEvent') @Watch('onPanelEvent') panelEventJson: string = '';
+  // 开发者模式（标题栏右侧开关）：引擎 profile pref 的回音，AuraShell 转存。
+  @StorageLink('auraDeveloperMode') @Watch('onDeveloperModePayload') developerModeJson: string = '';
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
   onBack: () => void = (): void => {};
   onClose: () => void = (): void => {};
@@ -57,6 +65,18 @@ export struct ExtensionPanel {
   @State private detailSiteAccessChangeable: boolean = false;
   @State private detailMissing: boolean = false;
   @State private installing: boolean = false;
+  // 详情页的扩展信息（引擎列表项本来就有下发，打开详情时随 item 带入）。
+  @State private detailVersion: string = '';
+  @State private detailDescription: string = '';
+  @State private detailAuthor: string = '';
+  // 详情页「允许用户脚本」：只有声明了 userScripts 权限的扩展才显示
+  // （脚本猫这类用户脚本管理器正是如此）；不开它，用户脚本跑不了。
+  @State private detailUserScriptsAvailable: boolean = false;
+  @State private detailUserScriptsAllowed: boolean = false;
+  // 标题栏「开发者模式」开关：profile 级设置（加载未打包的前提），
+  // 状态永远以引擎为准——setDeveloperMode 成功后引擎会回 developerMode 事件。
+  @State private developerMode: boolean = false;
+  @State private developerModeAvailable: boolean = true;
   private requestSeq: number = 0;
   private retryTimer: number = -1;
 
@@ -65,7 +85,10 @@ export struct ExtensionPanel {
     // initial value, and a byte-identical engine reply raises no change
     // either, so a re-opened panel would otherwise lose the list.
     this.onExtensionsPayload();
+    this.onDeveloperModePayload();
     this.reload();
+    // 开发者模式的当前值：开关在标题栏，打开面板就问一次引擎。
+    this.onCommand({ command: 'getDeveloperMode' });
     this.retryTimer = setTimeout((): void => {
       this.retryTimer = -1;
       if (this.items.length === 0) {
@@ -96,6 +119,18 @@ export struct ExtensionPanel {
     }
   }
 
+  private onDeveloperModePayload(): void {
+    if (this.developerModeJson.length === 0) {
+      return;
+    }
+    try {
+      const mode = JSON.parse(this.developerModeJson) as DeveloperModePayload;
+      this.developerMode = mode.enabled === true;
+      this.developerModeAvailable = mode.available !== false;
+    } catch (error) {
+    }
+  }
+
   private onDetailsPayload(): void {
     if (this.detailsJson.length === 0) {
       return;
@@ -114,6 +149,8 @@ export struct ExtensionPanel {
       this.detailPermissions = details.permissions ?? [];
       this.detailSiteAccess = String(details.siteAccess ?? '');
       this.detailSiteAccessChangeable = details.siteAccessChangeable === true;
+      this.detailUserScriptsAvailable = details.userScriptsAvailable === true;
+      this.detailUserScriptsAllowed = details.userScriptsAllowed === true;
       this.detailMissing = false;
     } catch (error) {
     }
@@ -153,6 +190,9 @@ export struct ExtensionPanel {
         }
       });
     } else if (kind === 'extensionCommandFailed') {
+      // 安装类命令失败也要解除「正在安装」：loadUnpackedExtension 被拒
+      // （developerModeOff / noManifest 等）走的是这条回包。
+      this.installing = false;
       const message = String(payload.message ?? '');
       AlertDialog.show({
         title: '操作未完成',
@@ -206,6 +246,13 @@ export struct ExtensionPanel {
     this.detailSiteAccess = '';
     this.detailSiteAccessChangeable = false;
     this.detailMissing = false;
+    // 版本/描述/作者随列表项带入（引擎在 extensionActions 里就下发了），
+    // 不必等详情回包——回包只有权限和站点访问。
+    this.detailVersion = item.version ?? '';
+    this.detailDescription = item.description ?? '';
+    this.detailAuthor = item.author ?? '';
+    this.detailUserScriptsAvailable = false;
+    this.detailUserScriptsAllowed = false;
     this.page = 'detail';
     this.requestSeq += 1;
     this.onCommand({ command: 'getExtensionDetails', requestId: this.requestSeq, id: item.id });
@@ -213,6 +260,72 @@ export struct ExtensionPanel {
 
   private setSiteAccess(mode: ExtensionSiteAccess): void {
     this.onCommand({ command: 'setExtensionSiteAccess', id: this.detailId, mode: mode });
+  }
+
+  private setDeveloperMode(enabled: boolean): void {
+    // 不本地改状态：引擎 setDeveloperMode 成功后会把新值回成 developerMode
+    // 事件，开关以引擎为准（企业策略可能把写入立刻收回，那时得显示收回后的）。
+    this.onCommand({ command: 'setDeveloperMode', enabled: enabled });
+  }
+
+  // 加载未打包：选一个含 manifest.json 的目录。目录 URI 只有临时读权限、
+  // 原生引擎也读不了 content://，所以先把整棵树拷进沙箱再交给引擎。
+  private async loadUnpackedFromFolder(): Promise<void> {
+    if (this.installing) {
+      return;
+    }
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (!context) {
+      return;
+    }
+    let pickedUri = '';
+    try {
+      const options = new picker.DocumentSelectOptions();
+      options.maxSelectNumber = 1;
+      options.selectMode = picker.DocumentSelectMode.FOLDER;
+      const uris: string[] = await new picker.DocumentViewPicker(context).select(options);
+      if (uris.length === 0) {
+        return;
+      }
+      pickedUri = uris[0];
+    } catch (error) {
+      this.getUIContext().getPromptAction().showToast({
+        message: '这个系统不支持选择目录，可改用 .zip 安装',
+        duration: 3000
+      });
+      return;
+    }
+    this.installing = true;
+    this.getUIContext().getPromptAction().showToast({
+      message: '正在读取扩展目录…',
+      duration: 3000
+    });
+    try {
+      // recursion 一次给出所有文件的相对路径（以 / 开头），逐个拷进沙箱。
+      const destRoot = `${context.filesDir}/unpacked-${Date.now()}`;
+      const relatives: string[] = await fs.listFile(pickedUri, { recursion: true });
+      for (const relative of relatives) {
+        const destPath = destRoot + relative;
+        const parent = destPath.substring(0, destPath.lastIndexOf('/'));
+        fs.mkdirSync(parent, true);
+        const source = fs.openSync(pickedUri + relative, fs.OpenMode.READ_ONLY);
+        try {
+          fs.copyFileSync(source.fd, destPath);
+        } finally {
+          fs.closeSync(source);
+        }
+      }
+      // 开发者模式是引擎侧加载未打包的前提，开关在标题栏；这里不需要再判，
+      // 引擎会以 developerModeOff 拒绝并弹出提示。
+      this.onCommand({ command: 'loadUnpackedExtension', path: destRoot });
+    } catch (error) {
+      this.installing = false;
+      console.error('Extension load unpacked failed:', JSON.stringify(error));
+      this.getUIContext().getPromptAction().showToast({
+        message: '读取目录失败，可改用 .zip 安装',
+        duration: 3000
+      });
+    }
   }
 
   private openMoreSettings(): void {
@@ -254,13 +367,18 @@ export struct ExtensionPanel {
     try {
       const options = new picker.DocumentSelectOptions();
       options.maxSelectNumber = 1;
-      options.fileSuffixFilters = ['.crx'];
+      // .zip 一并支持：引擎对 zip 走「解压安装」（和桌面拖放一个路子），
+      // 未打包扩展分发基本就是 zip 包。
+      options.fileSuffixFilters = ['.crx', '.zip'];
       const uris: string[] = await new picker.DocumentViewPicker(context).select(options);
       if (uris.length === 0) {
         return;
       }
       const source = fs.openSync(uris[0], fs.OpenMode.READ_ONLY);
-      const destPath = `${context.filesDir}/imported-extension.crx`;
+      // 目标文件名要带对扩展名：引擎按扩展名分流（.zip → ZipFileInstaller，
+      // .crx → CrxInstaller）。URI 里一般带着文件名，取不到就按 .crx 试。
+      const isZip = uris[0].toLowerCase().indexOf('.zip') >= 0;
+      const destPath = `${context.filesDir}/imported-extension.${isZip ? 'zip' : 'crx'}`;
       fs.copyFileSync(source.fd, destPath);
       fs.closeSync(source);
       this.installing = true;
@@ -283,6 +401,27 @@ export struct ExtensionPanel {
       console.error('Extension install from file failed:', error);
       this.installing = false;
     }
+  }
+
+  // 标题栏右侧「开发者模式」开关（HDS stackBuilder 槽）。桌面
+  // chrome://extensions 同款位置；常驻标题栏，滚到页面底部也能拨。
+  // 状态永远以引擎为准：拨动只发命令，回音由 developerMode 事件带回来。
+  @Builder
+  private DeveloperModeToggle() {
+    Row({ space: 8 }) {
+      Text('开发者模式')
+        .fontSize(13)
+        .fontColor($r('app.color.text_secondary'))
+        .maxLines(1)
+      Toggle({ type: ToggleType.Switch, isOn: this.developerMode })
+        .enabled(this.developerModeAvailable)
+        .onChange((isOn: boolean) => {
+          this.setDeveloperMode(isOn);
+        })
+    }
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .padding({ right: 4 })
   }
 
   @Builder
@@ -417,7 +556,7 @@ export struct ExtensionPanel {
                   .fontSize(16)
                   .fontWeight(FontWeight.Medium)
                   .fontColor($r('app.color.text_primary'))
-                Text('选择已下载的 .crx 文件')
+                Text('选择已下载的 .crx 或 .zip 文件')
                   .fontSize(12)
                   .fontColor($r('app.color.text_secondary'))
               }
@@ -441,13 +580,52 @@ export struct ExtensionPanel {
           .backgroundColor($r('app.color.card_background'))
           .clip(true)
 
+          // 加载未打包：桌面 chrome://extensions 的同款入口，放在「从文件
+          // 安装」下边。选目录 → 整棵树拷进沙箱 → 引擎 UnpackedInstaller。
+          Column() {
+            Row({ space: 12 }) {
+              Image($r('app.media.aura_folder'))
+                .width(22)
+                .height(22)
+                .fillColor($r('app.color.icon_primary'))
+
+              Column({ space: 3 }) {
+                Text('加载未打包')
+                  .fontSize(16)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor($r('app.color.text_primary'))
+                Text('选择含 manifest.json 的扩展目录')
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_secondary'))
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              Image($r('app.media.aura_chevron'))
+                .width(16)
+                .height(16)
+                .fillColor($r('app.color.icon_secondary'))
+                .opacity(0.65)
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 10, bottom: 10 })
+            .onClick(() => {
+              this.loadUnpackedFromFolder();
+            })
+          }
+          .width('100%')
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
+          .margin({ top: 12 })
+
           Column() {
             Row({ space: 12 }) {
               Image($r('app.media.chromium_settings'))
                 .width(22)
                 .height(22)
                 .fillColor($r('app.color.icon_primary'))
-              Text('更多设置')
+              Text('完整扩展页')
                 .fontSize(16)
                 .fontWeight(FontWeight.Medium)
                 .fontColor($r('app.color.text_primary'))
@@ -528,6 +706,93 @@ export struct ExtensionPanel {
               .fontColor($r('app.color.text_secondary'))
               .margin({ top: 20 })
           } else {
+            // 扩展信息：版本/描述/作者随列表项带入（引擎 extensionActions
+            // 本来就下发），没有内容的行不占位。
+            if (this.detailVersion.length > 0 || this.detailDescription.length > 0 ||
+              this.detailAuthor.length > 0) {
+              Column({ space: 8 }) {
+                if (this.detailVersion.length > 0) {
+                  Row({ space: 12 }) {
+                    Text('版本')
+                      .fontSize(13)
+                      .fontColor($r('app.color.text_secondary'))
+                      .width(48)
+                    Text(this.detailVersion)
+                      .fontSize(13)
+                      .fontColor($r('app.color.text_primary'))
+                      .layoutWeight(1)
+                  }
+                  .width('100%')
+                }
+                if (this.detailDescription.length > 0) {
+                  Row({ space: 12 }) {
+                    Text('描述')
+                      .fontSize(13)
+                      .fontColor($r('app.color.text_secondary'))
+                      .width(48)
+                    Text(this.detailDescription)
+                      .fontSize(13)
+                      .fontColor($r('app.color.text_primary'))
+                      .layoutWeight(1)
+                  }
+                  .width('100%')
+                }
+                if (this.detailAuthor.length > 0) {
+                  Row({ space: 12 }) {
+                    Text('作者')
+                      .fontSize(13)
+                      .fontColor($r('app.color.text_secondary'))
+                      .width(48)
+                    Text(this.detailAuthor)
+                      .fontSize(13)
+                      .fontColor($r('app.color.text_primary'))
+                      .layoutWeight(1)
+                  }
+                  .width('100%')
+                }
+              }
+              .width('100%')
+              .padding(16)
+              .borderRadius(16)
+              .backgroundColor($r('app.color.card_background'))
+              .clip(true)
+            }
+
+            // 「允许用户脚本」：桌面详情页同款开关。只有声明了 userScripts
+            // 权限的扩展才出现（引擎侧同一道闸门）；不开它用户脚本跑不了。
+            if (this.detailUserScriptsAvailable) {
+              Row({ space: 12 }) {
+                Column({ space: 3 }) {
+                  Text('允许用户脚本')
+                    .fontSize(16)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor($r('app.color.text_primary'))
+                  Text('让这个扩展运行用户脚本（脚本管理器类扩展必开）')
+                    .fontSize(12)
+                    .fontColor($r('app.color.text_secondary'))
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+
+                Toggle({ type: ToggleType.Switch, isOn: this.detailUserScriptsAllowed })
+                  .onChange((isOn: boolean) => {
+                    // 不本地改状态：引擎 setExtensionUserScriptsAllowed 成功
+                    // 后回一份最新详情（含新 allowed 值），以引擎为准。
+                    this.onCommand({
+                      command: 'setExtensionUserScriptsAllowed',
+                      id: this.detailId,
+                      enabled: isOn
+                    });
+                  })
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+              .borderRadius(16)
+              .backgroundColor($r('app.color.card_background'))
+              .clip(true)
+              .margin({ top: 12 })
+            }
+
             Text('权限')
               .fontSize(13)
               .fontColor($r('app.color.text_secondary'))
@@ -627,6 +892,8 @@ export struct ExtensionPanel {
     GlassPage({
       title: this.page === 'detail' ? this.detailName : '扩展程序',
       scrollers: [this.listScroller, this.detailScroller],
+      // 开发者模式开关进标题栏右侧（桌面 chrome://extensions 同款位置）。
+      titleBarAction: (): void => this.DeveloperModeToggle(),
       onBack: (): void => {
         if (this.page === 'detail') {
           this.page = 'list';
