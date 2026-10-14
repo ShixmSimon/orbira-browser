@@ -297,6 +297,7 @@ export struct SitePermissionsPanel {
           }
           .layoutWeight(1)
           .scrollBar(BarState.Off)
+          .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
           .align(Alignment.TopStart)
         }
       }
@@ -378,6 +379,7 @@ export struct SitePermissionsPanel {
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .align(Alignment.TopStart)
       }
       .width('100%')

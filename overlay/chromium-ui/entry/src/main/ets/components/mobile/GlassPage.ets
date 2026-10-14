@@ -167,8 +167,11 @@ export struct GlassPage {
   onBack: () => void = (): void => {};
   /** 本页滚动容器的 Scroller（渐变模糊滚动效果按官方要求绑定它们）。 */
   scrollers: Scroller[] = [];
-  /** 标题栏右侧动作（HDS menu，可选；书签/密码等带操作按钮的页面传入）。 */
-  menus?: HdsNavigationMenuContentOptions;
+  /** 标题栏右侧动作（HDS menu，可选；书签/密码等带操作按钮的页面传入）。
+   * 1.0.110：加 @Prop —— 设置面板的"主页设置"子页需要在切换子页时**动态出现**
+   * 右上角按钮；无装饰器的成员更新不触发重渲染，titleBar 不会重新应用 menu，
+   * 按钮永远不出现（用户实测）。@Prop 变化即驱动重渲染。 */
+  @Prop menus?: HdsNavigationMenuContentOptions;
   @BuilderParam body: () => void;
 
   build() {

@@ -443,6 +443,7 @@ export struct DownloadsPanel {
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         // Scroll centers content shorter than the viewport by default (the
         // universal `align` attribute defaults to Alignment.Center), which
         // showed up as a big gap under the header. Pin it to the top.

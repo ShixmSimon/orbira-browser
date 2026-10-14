@@ -149,6 +149,7 @@ export struct RecentPanel {
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         // Scroll centers content shorter than the viewport by default (the
         // universal `align` attribute defaults to Alignment.Center); pin to
         // the top instead.

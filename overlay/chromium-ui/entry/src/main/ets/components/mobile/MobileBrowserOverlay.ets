@@ -3,11 +3,13 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { AVCastPicker, AVCastPickerColorMode, AVCastPickerStyle } from '@kit.AVSessionKit';
 import { hdsEffect, hdsMaterial, HdsTabs, HdsTabsFloatingStyle } from '@kit.UIDesignKit';
 import { inputMethod } from '@kit.IMEKit';
-import { curves } from '@kit.ArkUI';
+import { http } from '@kit.NetworkKit';
+import { curves, promptAction } from '@kit.ArkUI';
 import display from '@ohos.display';
 import { showSystemPasteDialog } from './SystemPasteDialog';
 import { ScanService } from './ScanService';
 import {
+  AutocompleteItem,
   BrowserCommandPayload,
   BrowserStateSnapshot,
   BrowserTabState,
@@ -33,7 +35,8 @@ import { PasswordsPanel } from './PasswordsPanel';
 import { RecentPanel } from './RecentPanel';
 import { SettingsPanel } from './SettingsPanel';
 import { SitePermissionsPanel } from './SitePermissionsPanel';
-import { normalizeAddress } from './ShellUtils';
+import { normalizeAddress, searchUrlFor } from './ShellUtils';
+import { ShellUiPrefs } from '../../utils/appearance/ShellUiPrefs';
 import { IncognitoSwitch, SavedTab } from '../../utils/IncognitoSwitch';
 
 // The floating bars' full vertical extents (top gap + bar height), in vp.
@@ -42,7 +45,16 @@ import { IncognitoSwitch, SavedTab } from '../../utils/IncognitoSwitch';
 // page and both bars move together while scrolling (SHELL_CONTRACT.md,
 // "手机：滚动时收起地址栏和 dock"). The dock is not reported: it reserves
 // no room on the page and floats over it.
-export const TOP_BAR_EXTENT_VP: number = 52;
+// 顶栏条带总高：安全区之下 8vp 上边距 + 40vp 胶囊 = 48（1.0.69 用户反馈
+// 「地址栏高度有点大」：胶囊 44→40，整条 52→48；扩展圆钮、编辑态输入框
+// 同步收小）。引擎保留高度 = 安全区 + 本值，收起行程同值 —— 改这里即全局。
+export const TOP_BAR_EXTENT_VP: number = 48;
+// 1.0.91 Chrome 风格 dock 的总高（胶囊 40 + 上下各 8 留白），引擎据此预留顶/底 inset。
+// Chrome 风格 dock 内容高度：地址胶囊 40 + 顶部呼吸 8（底部贴齐胶囊下沿，见 1.0.93）。
+export const CHROME_DOCK_EXTENT_VP: number = 48;
+// 底部 dock 悬浮时，相对屏幕边的留白（左右 + 离底）。对齐简约风格 dock 的 16vp 边距，
+// 让 Chrome 底置地址栏与简约 dock 在视觉尺寸/留白上一致（1.0.106）。
+export const CHROME_DOCK_FLOAT_MARGIN_VP: number = 16;
 // Dock height 48 + container top breathing 12: the bar must travel far
 // enough to fully leave the screen when the page scrolls (controlsRatio 0).
 export const BOTTOM_DOCK_EXTENT_VP: number = 60;
@@ -91,6 +103,76 @@ export function dockCoveredHeightVp(bottomSafeVp: number): number {
   return BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(bottomSafeVp);
 }
 
+// 各家"联想词"接口响应 → 建议词数组（纯字符串解析，规避 ArkTS 的动态 JSON
+// 限制）。支持三种形态：
+//   百度   window.baidu.sug({q:"…",p:false,s:["a","b"]})  （或 cb({…})）
+//   必应   api.bing.com/osjson.aspx      → ["q",["a","b"]]
+//   谷歌   suggestqueries.google.com     → ["q",["a","b"]]
+//   搜狗   window.sogou.sug(["q",["a","b"],…])
+export function parseSuggestionWords(raw: string): string[] {
+  const out: string[] = [];
+  const text = raw.trim();
+  if (text.length === 0) {
+    return out;
+  }
+  let inner = '';
+  // 百度 sugrec 形态：{"q":"x","g":[{"type":"sug","sa":"…","q":"联想词"}…]}
+  // —— 逐个抽 `"q":"…"`（跳过第一处回显，它没有对象包裹）。标记用 `"g":`
+  // 连冒号匹配：bing 的 `["g",…]`（搜单字母 g）不会误触发。
+  const gIndex = text.indexOf('"g":');
+  if (gIndex >= 0) {
+    let cursor = gIndex + 4;
+    while (out.length < 8) {
+      const qKey = text.indexOf('"q":"', cursor);
+      if (qKey < 0) {
+        break;
+      }
+      const valueStart = qKey + 5;
+      const valueEnd = text.indexOf('"', valueStart);
+      if (valueEnd < 0) {
+        break;
+      }
+      const word = text.substring(valueStart, valueEnd);
+      if (word.length > 0 && out.indexOf(word) < 0) {
+        out.push(word);
+      }
+      cursor = valueEnd + 1;
+    }
+    return out;
+  }
+  const first = text.indexOf('[');
+  const last = text.lastIndexOf(']');
+  if (first >= 0 && last > first) {
+    const outer = text.substring(first, last + 1);
+    const second = outer.indexOf('[', 1);
+    if (second >= 0) {
+      // 数组形态（bing `["q",["a","b"]]` / google / sogou）：取内层数组。
+      const close = outer.indexOf(']', second + 1);
+      inner = close > second ? outer.substring(second + 1, close) : '';
+    } else {
+      // 平数组形态（baidu `{…,s:["a","b"]}` 且词里无 '['）：外层即词表。
+      inner = outer.substring(1, outer.length - 1);
+    }
+  }
+  if (inner.length === 0) {
+    return out;
+  }
+  const parts = inner.split('","');
+  for (let i = 0; i < parts.length; i++) {
+    let word = parts[i].trim();
+    if (word.startsWith('"')) {
+      word = word.substring(1);
+    }
+    if (word.endsWith('"')) {
+      word = word.substring(0, word.length - 1);
+    }
+    if (word.length > 0 && out.indexOf(word) < 0 && out.length < 8) {
+      out.push(word);
+    }
+  }
+  return out;
+}
+
 // The tab grid: two columns ten vp apart, each card 208 tall of which the
 // title row takes 36. The picture therefore fills TAB_THUMB_HEIGHT_VP of a
 // card (grid width - gap) / 2 wide -- the shape getTabThumbnails is asked to
@@ -101,6 +183,10 @@ const TAB_GRID_GAP_VP: number = 10;
 const TAB_CARD_HEIGHT_VP: number = 208;
 const TAB_CARD_TITLE_VP: number = 36;
 export const TAB_THUMB_HEIGHT_VP: number = TAB_CARD_HEIGHT_VP - TAB_CARD_TITLE_VP;
+// 列表排布时每行的缩略图（宽 × 高，vp）。行高 64，图 64×46 留出行内留白；
+// 请求 getTabThumbnails 时用这两个值算 aspect，一行就正好铺满不裁。
+const TAB_LIST_THUMB_WIDTH_VP: number = 64;
+const TAB_LIST_THUMB_HEIGHT_VP: number = 46;
 // ⋮ 菜单卡片：Lumie 那块是 258 上下、贴着屏幕右侧，左边留出底下网页的宽度。
 const MENU_CARD_WIDTH_VP: number = 258;
 // 长按菜单卡片（v13）：与 ⋮ 卡片同宽同款，锚在按压点旁边。
@@ -120,6 +206,24 @@ interface FindResultSummary {
   matches?: number;
   activeMatch?: number;
   revision?: number;
+}
+
+// 地址栏联想的回包（AuraShell 转存到 'auraAutocomplete'）。done 为 true 表示
+// 该 requestId 推送完毕（可能多次推送）。
+interface AutocompletePayload {
+  requestId: number;
+  items: AutocompleteItem[];
+  done: boolean;
+}
+
+// 下拉刷新（引擎 pullToRefresh 事件转存到 'auraPullRefresh'，见 AuraShell）。
+// 距离单位 vp，阈值语义见 engine ShellServiceTypes.PullToRefreshEvent。
+interface PullRefreshPayload {
+  state: string;
+  threshold?: number;
+  distance?: number;
+  refresh?: boolean;
+  at?: number;
 }
 
 // HarmonyOS 7 沉浸光感：设备能不能渲染系统沉浸材质。走 HDS 探测
@@ -148,12 +252,17 @@ export struct MobileBrowserOverlay {
   @StorageProp('auraTopSafeVp') topSafeVp: number = 0;
   @StorageProp('auraBottomSafeVp') bottomSafeVp: number = 0;
   @Prop @Watch('onBrowserStateChanged') browserState: BrowserStateSnapshot;
+  // 引擎那边**其实正停在自己的新标签页**（导航失败没提交，browserState.url 还
+  // 挂着那个连不上的地址，画面却是原生新标签页 + 外壳已用 HomeSurface 盖住）。
+  // 由 AuraShell 判定后传下来（见 AuraShell.isNewTabPage）；这里据此把顶栏、
+  // 命中区、菜单文案都按「主页」处理，否则会出现「主页 + 一条 github.com 地址栏」。
+  @Prop engineHomeCover: boolean = false;
   // 无痕会话（重启进来的那一种，见 utils/IncognitoSwitch.ets）。
   @Prop incognito: boolean = false;
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
 
   @State private menuVisible: boolean = false;
-  @State private editingAddress: boolean = false;
+  @State @Watch('onEditingAddressChanged') private editingAddress: boolean = false;
   // Fix B/E（点搜索跳一下）：提交地址栏导航后保持编辑态与键盘，等导航 commit
   // 并出首帧后再收起（最后统一回弹顶栏）。实测地址栏提交时"键盘收起动画"
   // （~550ms）与"导航 commit"（提交后 260~420ms）重叠竞争，破坏 Chromium
@@ -184,6 +293,20 @@ export struct MobileBrowserOverlay {
   // The ⋮ menu is a floating card above the dock (Lumie-style), not a
   // sheet; the sheet hosts the tab switcher only.
   @State private menuCardVisible: boolean = false;
+  // 1.0.109：「自定义网址」入口菜单（长按 dock 主页图标弹出，自绘卡片）。
+  @State private homeTileMenuVisible: boolean = false;
+  // 1.0.110：刷新键的「停止」变体——延迟 700ms 出现（见 syncStopVariant）。
+  @State private showStopVariant: boolean = false;
+  private stopVariantTimer: number = -1;
+  // 1.0.111「网址主页」：设置/修改自定义主页网址的表单（自定义网址入口）。
+  @State private homeUrlFormVisible: boolean = false;
+  // 输入框里待添加的那一条（1.0.120 起是「新增」而不是「整体覆盖」）。
+  @State private homeUrlDraft: string = '';
+  // 1.0.120「自定义网址」：已保存的多组网址 + 当前勾选（主页键/冷启动用它）。
+  // 列表只在这里和 ShellUiPrefs 之间流动，AppStorage 里存一份 \n 分隔串供
+  // 设置面板显示条数。
+  @State private homeUrlList: string[] = [];
+  @State private homeUrlActive: string = '';
   // 长按网页元素（链接 / 图片 / 选区）：AuraShell 把 buildContextMenuModel
   // 的结果序列化写进 AppStorage，这里画卡片（v13，取代系统动作面板）。
   // 空串 = 没有菜单；用户选一项或关掉时回 contextMenuAction /
@@ -194,14 +317,24 @@ export struct MobileBrowserOverlay {
   @State private findQuery: string = '';
   @StorageLink('auraFindResult') findResultJson: string = '';
   // Tab switcher card previews, keyed by tab id.
-  @StorageLink('auraTabThumbnails') tabThumbnailsJson: string = '';
-  private tabThumbnails: Map<string, string> = new Map();
+  // 【1.0.89 缩略图不显示】两处都在：① 那边没有 @Watch —— 回包落到
+  // 'auraTabThumbnails' 后没人重新解析，thumbnailFor() 一直读的是**发请求那一刻**
+  // 解析出来的旧 map（首次就是空），图永远画不出来；② 这个 map 原本不是
+  // @State —— 就算解析了也触发不了重绘。必须两个都在，缺一个就是"预览不显示"。
+  @StorageLink('auraTabThumbnails') @Watch('onTabThumbnailsChanged') tabThumbnailsJson: string = '';
+  @State private tabThumbnails: Map<string, string> = new Map();
   // What to ask getTabThumbnails for: the card's width, and the card's width
   // over its picture's height. Measured once the grid has laid itself out, so
   // the first request -- made on the tap that opens the switcher -- falls back
   // to the engine's own 4:3 and is re-asked for as soon as there is a size.
   @State private tabThumbWidthVp: number = 160;
   @State private tabThumbAspect: number = 0;
+  // 缩略图兜底：带 aspect 的请求（新引擎才有这个参数）迟迟不回时，退成不带
+  // aspect 的最简请求再问一次；老引擎（我们现在的 build-34534541 就早于
+  // aspect 那个改动）只能认这一档。
+  private thumbnailRetryTimer: number = 0;
+  // 标签页排布：'grid' 两列卡片 / 'list' 单行列表（preferences 持久化）。
+  @State private tabLayout: string = 'grid';
   // Which full-screen shell page is open ('none' while browsing). The shell's
   // sub-pages are full-screen like Lumie's, not part of the bottom sheet.
   @State private panelPage: string = 'none';
@@ -214,11 +347,32 @@ export struct MobileBrowserOverlay {
   @StorageLink('auraBrowserControlsRatio') controlsRatioRaw: number = 1;
   // “滚动时隐藏底部栏”（设置-外观）：默认开；关掉后 dock 常驻不随滚动收起。
   @StorageLink('auraHideDockOnScroll') hideDockOnScroll: boolean = true;
+  // 「上滑时隐藏状态栏」（设置-外观）：关着时顶栏收起后网页停在状态栏底
+  // （引擎 minTop=topSafe，AuraShell.sendBrowserControls），状态栏那一条由本层
+  // 的常驻垫底显示页面底色（见 build() 与 topBarHideProgress）。
+  @StorageLink('auraHideStatusBarOnScroll') hideStatusBarOnScroll: boolean = false;
+  // 1.0.91 主页风格（'minimal' | 'chrome'）与 Chrome 风格下 dock 位置（'bottom' | 'top'）。
+  @StorageLink('auraHomeStyle') homeStyle: string = 'minimal';
+  @StorageLink('auraDockPosition') dockPosition: string = 'bottom';
+  // 1.0.96：auraRequestMenuOpen 信号随主页右上角菜单按钮一并去除（入口冗余：
+  // 简约底栏 dock / Chrome 风格 dock 均有 ⋮ 菜单槽位）。
   // “滚动时隐藏地址栏”：dockRatio() 用它判断组合（常驻地址栏时 dock 走触摸）。
   @StorageLink('auraHideTopBarOnScroll') hideTopBarOnScroll: boolean = true;
   // 「地址栏常驻 + 收起 dock」组合：引擎比例被锁死，dock 改由 AuraShell 的
   // 触摸观察层驱动（1 = 全显）。见 AuraShell.onDockObserverTouch。
   @StorageLink('auraTouchDockRatio') touchDockRatio: number = 1;
+  // Chrome 底置 dock 的跟手收起系数（触摸驱动；引擎底置无 controlsRatio，见 AuraShell.onChromeBottomDockTouch）。
+  @StorageLink('auraChromeBottomRatio') chromeBottomRatioRaw: number = 1;
+  // 1.0.104 下拉刷新：引擎（Chromium）自己判定「页面已到顶 + 不是内层滚动 +
+  // overscroll-behavior 放行」，也自己 reload，外壳只画指示器 —— 事件由 AuraShell
+  // 转存（见 engine ShellServiceTypes.PullToRefreshEvent）。
+  // 'idle' 无 / 'pull' 手指还在拉（跟手放大）/ 'refreshing' 松手够远了（转圈等 reset）。
+  @StorageLink('auraPullRefresh') @Watch('onPullRefreshChanged') pullRefreshJson: string = '';
+  @State private pullPhase: string = 'idle';
+  @State private pullDistance: number = 0;
+  @State private pullThreshold: number = 64;
+  // 刷新中兜底：引擎理论上会推 reset，漏了也不能一直转圈。
+  private pullIdleTimer: number = 0;
 
   private readonly holdingHandRouter: HoldingHandRouter = new HoldingHandRouter();
   private readonly currentTabCastSession: CurrentTabCastSession = new CurrentTabCastSession();
@@ -231,6 +385,52 @@ export struct MobileBrowserOverlay {
   private readonly dockMaterialActive: boolean = isDockMaterialAvailable();
   // 视口高度（vp），首次布局即上报；dock 条带的响应区以它为底边基准。
   @State private viewportHeightVp: number = 0;
+  // 视口宽度（vp）：面板（二级页）开合动效的位移基准。
+  @State private viewportWidthVp: number = 0;
+  // 面板开合动效（2026-10-10 用户要求补动效）：1 = 就位；0 = 整体停在屏幕
+  // 右侧外。打开先落 0 再由 PanelLayer.onAppear 弹到 1（弹簧回弹）；关闭弹
+  // 回 0、动画收尾后才卸载。
+  @State private panelShift: number = 1;
+  // 面板内二级切换（设置→扩展程序/密码…）的内容层位移方向：±1 = 从右/左
+  // 滑入，0 = 就位。见 switchPanel。
+  @State private panelContentShift: number = 0;
+  // 关闭动画的作废令牌：动画期间再次打开面板时，旧的卸载定时器不再生效。
+  private panelCloseToken: number = 0;
+  // 页面切换柔和过渡帘幕（2026-10-10）：URL 变化（地址栏提交搜索 / 点链接 /
+  // 切标签 / 前进后退）时"横向扫过"—— 从右侧扫入盖上、继续向左扫出（新页
+  // 从右侧揭开，方向感对齐二级页滑入）；主页（新标签页）不扫（见 watcher）。
+  // 帘幕压在引擎上方、chrome 之下 —— 顶栏/dock 全程可见。
+  @State private navVeilShift: number = 1;
+  private lastNavVeilUrl: string = '';
+  private navVeilTimer: number = -1;
+
+  // 1.0.72：加载进度条 —— 参数取自 Lumie v2 反汇编常量（BAR_HEIGHT=2 /
+  // MIN_PROGRESS=0.08 / GROW_MS=200 + EaseOut）。它只有 2vp、不覆盖任何网页
+  // 内容，纯指示，因此**不会延长引擎的绘制空档**；1.0.71 用「帘幕等 loading
+  // 结束再揭开」是覆盖层，盖多久就空白多久（实测把 0.45s 撑成 1.05s），已废弃。
+  private loadBarHeight: number = 2;
+  private loadBarMin: number = 0.08;
+  private loadBarGrowMs: number = 200;
+  // 是否挂载细条（由 loading 驱动；卸载走 if 根节点的淡出 transition）。
+  @State private loadBarShown: boolean = false;
+  // 当前目标进度 0..1（恒 >= loadBarMin，卸载后复位）。
+  @State private loadBarWidth: number = 0.08;
+  // 收尾定时器：灌满 100% 停留一小会儿再淡出卸载（Chrome 同款收尾观感）。
+  private loadBarFadeTimer: number = 0;
+
+  // 地址栏联想（引擎 autocomplete 命令）：编辑地址栏、输入非空文本时，在
+  // 胶囊下方弹建议列表（历史 / 书签 / 搜索 / 打开的标签 / 网址，全部本地
+  // 生成、不出网）。引擎对同一 requestId 流式推多包 —— 只认最新一次请求。
+  @StorageLink('auraAutocomplete') @Watch('onAutocompleteChanged') autocompleteJson: string = '';
+  @State private suggestItems: AutocompleteItem[] = [];
+  // 在线联想词（默认搜索引擎的下拉建议接口，按输入实时拉取）。
+  @State private onlineSuggestWords: string[] = [];
+  @State private suggestVisible: boolean = false;
+  private autocompleteSeq: number = 0;
+  private autocompletePending: number = -1;
+  private addressSuggestText: string = '';
+  private addressSuggestTimer: number = -1;
+  private suggestHttpSeq: number = 0;
 
   private keyboardRecoveryTimers: number[] = [];
   private readonly addressController: TextInputController = new TextInputController();
@@ -255,10 +455,21 @@ export struct MobileBrowserOverlay {
     // The cast session starts when the cast picker opens, not here. HarmonyOS
     // allows one AVSession per ability, and an idle one held from launch left
     // the engine's media session (control center card) unable to exist.
+    // 标签页排布（网格 / 列表），preferences 持久化。
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (context) {
+      ShellUiPrefs.loadTabLayout(context).then((value: string): void => {
+        this.tabLayout = value;
+      });
+    }
   }
 
   aboutToDisappear(): void {
     MobileBackRouter.handler = undefined;
+    if (this.thumbnailRetryTimer !== 0) {
+      clearTimeout(this.thumbnailRetryTimer);
+      this.thumbnailRetryTimer = 0;
+    }
     this.clearKeyboardRecoveryTimers();
     if (this.reboundTimer !== 0) {
       clearTimeout(this.reboundTimer);
@@ -271,6 +482,10 @@ export struct MobileBrowserOverlay {
     if (this.controlsRestoreTimer !== 0) {
       clearTimeout(this.controlsRestoreTimer);
       this.controlsRestoreTimer = 0;
+    }
+    if (this.loadBarFadeTimer !== 0) {
+      clearTimeout(this.loadBarFadeTimer);
+      this.loadBarFadeTimer = 0;
     }
     this.holdingHandRouter.stop();
     this.currentTabCastSession.stop().catch((error: Error) => {
@@ -288,6 +503,11 @@ export struct MobileBrowserOverlay {
       return true;
     }
     if (this.editingAddress) {
+      // 编辑中：联想列表先关（第一下），再一下才退出编辑态。
+      if (this.suggestVisible) {
+        this.hideAddressSuggest();
+        return true;
+      }
       this.clearKeyboardRecoveryTimers();
       this.editingAddress = false;
       return true;
@@ -311,7 +531,7 @@ export struct MobileBrowserOverlay {
     // Back on the home surface there is nothing left of ours to unwind --
     // the gesture ends the app instead of paging further back through
     // history that was left behind when "home" was pressed.
-    if (this.isNewTabUrl(this.browserState.url)) {
+    if (this.isHomeSurface()) {
       return false;
     }
     if (this.browserState.canGoBack) {
@@ -322,6 +542,33 @@ export struct MobileBrowserOverlay {
   }
 
   private onBrowserStateChanged(): void {
+    // 页面切换帘幕：顶层 URL 变化就放一次（地址栏提交 / 点链接 / 切标签 /
+    // 前进后退都算）——把引擎换页那一瞬的底色空档盖成柔和过渡。
+    const navUrl: string = this.browserState.url ?? '';
+    if (navUrl.length > 0) {
+      // 主页（新标签页）不扫帘幕：HomeSurface 有自己的显示/淡入与 homeHold
+      // 机制，再叠一层帘幕就是"回主页闪一下"（真机录屏实测：帘幕盖在主页
+      // 淡入上）。离开主页同样跳过 —— 由 homeHold 捂住到新页面画出来。
+      const goingHome: boolean = this.isNewTabUrl(navUrl);
+      const leavingHome: boolean = this.isNewTabUrl(this.lastNavVeilUrl);
+      if (this.lastNavVeilUrl.length > 0 && navUrl !== this.lastNavVeilUrl) {
+        // URL 真正变了：地址栏联想已无意义（提交 / 点链接 / 切标签都算）。
+        if (this.suggestVisible) {
+          this.hideAddressSuggest();
+        }
+        // 1.0.78：帘幕停用 —— 白色色块横向扫过在真机/录屏中被用户感知为"每切
+        // 一次出一遍白屏"（逐帧实证：白块从右向左推进、左侧露旧页残边）。对齐
+        // Lumie 的"直接切换"体验。playNavVeil 本体与 navVeil 视图保留可随时回
+        // 滚（navVeilShift 恒为 1 = 停在屏外右侧，不可见、不参与命中）。
+        // if (!goingHome && !leavingHome) {
+        //   this.playNavVeil();
+        // }
+      }
+      this.lastNavVeilUrl = navUrl;
+    }
+    // 1.0.72：加载进度条（Lumie v2 同款）——读取引擎真实 loadProgress。它只是
+    // 指示、不覆盖内容，因此既不延长白屏、也不参与切页过渡。
+    this.syncLoadBar();
     // Fix B/E：提交导航后保持编辑态与键盘，等导航 commit（url 变化）并留出
     // 首帧余量（250ms）再收起；loading true→false 与 1.5s 兜底为保险。
     if (this.pendingControlsRebound) {
@@ -342,6 +589,34 @@ export struct MobileBrowserOverlay {
     }
     this.currentTabCastSession.update(this.browserState);
     this.maybeActivatePendingNewTab();
+    // 1.0.110：刷新键「停止」变体的延迟切换（见 syncStopVariant）。
+    this.syncStopVariant(this.browserState.loading);
+  }
+
+  // 1.0.110（用户报「刷新突变变成 X」）：加载一开始就把 ↻ 换成 ✕ 太跳——多数
+  // 页面几百毫秒就加载完，按钮闪一下又变回来。改为：加载持续超过 700ms 才切成
+  // 「停止」，快速加载全程保持 ↻ 不变；慢加载仍可点 ✕ 随时停止。图标变体的读数
+  // 只有这一处（showStopVariant），点击行为始终按真实 loading 判断（见两处刷新钮）。
+  private syncStopVariant(loading: boolean): void {
+    if (loading) {
+      if (this.showStopVariant || this.stopVariantTimer !== -1) {
+        return;
+      }
+      this.stopVariantTimer = setTimeout((): void => {
+        this.stopVariantTimer = -1;
+        if (this.browserState.loading) {
+          this.showStopVariant = true;
+        }
+      }, 700);
+    } else {
+      if (this.stopVariantTimer !== -1) {
+        clearTimeout(this.stopVariantTimer);
+        this.stopVariantTimer = -1;
+      }
+      if (this.showStopVariant) {
+        this.showStopVariant = false;
+      }
+    }
   }
 
   // Fix B/E：提交导航后延迟收起编辑态/键盘并回弹顶栏。理想路径由
@@ -422,12 +697,19 @@ export struct MobileBrowserOverlay {
     }, 500);
   }
 
+  // 回包到了就把 JSON 重新解一遍（1.0.89：这一层以前根本没有 —— 见字段注释）。
+  private onTabThumbnailsChanged(): void {
+    this.parseThumbnails();
+  }
+
   private parseThumbnails(): void {
     try {
       const items: TabThumbnail[] = JSON.parse(this.tabThumbnailsJson) as TabThumbnail[];
       const map: Map<string, string> = new Map();
       for (const item of items) {
-        map.set(item.id, `data:image/png;base64,${item.pngBase64}`);
+        if (item.id && item.id.length > 0 && item.pngBase64 && item.pngBase64.length > 0) {
+          map.set(item.id, `data:image/png;base64,${item.pngBase64}`);
+        }
       }
       this.tabThumbnails = map;
     } catch (error) {
@@ -475,6 +757,24 @@ export struct MobileBrowserOverlay {
         widthVp: this.tabThumbWidthVp
       });
     }
+    // 兜底：2s 后仍一张都没有，就用最简参数（不带 aspect、默认宽度）再问一次。
+    // 老引擎不认 aspect/widthVp 时可能完全不回包——这一档是它唯一能认的。
+    if (this.thumbnailRetryTimer !== 0) {
+      clearTimeout(this.thumbnailRetryTimer);
+    }
+    this.thumbnailRetryTimer = setTimeout((): void => {
+      this.thumbnailRetryTimer = 0;
+      if (this.tabThumbnails.size > 0) {
+        return;
+      }
+      this.requestSeq += 1;
+      this.issueCommand({
+        command: 'getTabThumbnails',
+        requestId: this.requestSeq,
+        ids: ids
+      });
+      console.info(`[aura] tab thumbnails retry: ${ids.length} ids, no aspect`);
+    }, 2000);
   }
 
   // Once the grid has a size, ask for pictures shaped like its cards: a card
@@ -497,6 +797,82 @@ export struct MobileBrowserOverlay {
 
   private closeMenuCard(): void {
     this.menuCardVisible = false;
+  }
+
+  // 1.0.109：请求「自定义网址」——收起入口菜单、打开网址管理表单。
+  // 1.0.111（用户澄清语义）：「网址主页」= 让某个网址成为主页——按下主页键就
+  // 打开这个页面（不是把网址加进主页磁贴）。
+  // 1.0.120：支持多组网址 —— 表单里可以反复添加，勾选中的那一条才是当前主页。
+  private requestAddHomeTile(): void {
+    this.homeTileMenuVisible = false;
+    const list: string[] = ShellUiPrefs.parseUrlList(
+      (AppStorage.get('auraHomeUrls') as string) ?? '');
+    const saved: string = (AppStorage.get('auraHomeUrl') as string) ?? '';
+    this.homeUrlList = list;
+    this.homeUrlActive = ShellUiPrefs.resolveActive(list, saved);
+    this.homeUrlDraft = '';
+    this.homeUrlFormVisible = true;
+  }
+
+  // 1.0.120：追加一条网址（自动补 scheme、去重），并把它设为当前主页。
+  private addHomeUrlEntry(): void {
+    const raw: string = this.homeUrlDraft.trim();
+    if (raw.length === 0) {
+      this.getUIContext().getPromptAction().showToast({ message: '请先输入网址', duration: 1500 });
+      return;
+    }
+    const url: string = normalizeAddress(raw);
+    const next: string[] = [];
+    for (let i = 0; i < this.homeUrlList.length; i++) {
+      if (this.homeUrlList[i] !== url) {
+        next.push(this.homeUrlList[i]);
+      }
+    }
+    next.push(url);
+    this.homeUrlList = next;
+    this.homeUrlActive = url;
+    this.homeUrlDraft = '';
+    this.persistHomeUrlList();
+    this.getUIContext().getPromptAction().showToast({ message: '已添加并设为主页', duration: 1500 });
+  }
+
+  private removeHomeUrlEntry(url: string): void {
+    const next: string[] = [];
+    for (let i = 0; i < this.homeUrlList.length; i++) {
+      if (this.homeUrlList[i] !== url) {
+        next.push(this.homeUrlList[i]);
+      }
+    }
+    this.homeUrlList = next;
+    this.persistHomeUrlList();
+  }
+
+  private selectHomeUrlEntry(url: string): void {
+    if (this.homeUrlActive === url) {
+      return;
+    }
+    this.homeUrlActive = url;
+    this.persistHomeUrlList();
+  }
+
+  // 列表与「当前主页」一起落盘：AppStorage 的两份给设置面板/主页键读，
+  // preferences 的两份给冷启动读。列表空了 = 主页键回内置新标签页。
+  private persistHomeUrlList(): void {
+    const list: string[] = this.homeUrlList;
+    const active: string = ShellUiPrefs.resolveActive(list, this.homeUrlActive);
+    this.homeUrlActive = active;
+    AppStorage.setOrCreate('auraHomeUrls', ShellUiPrefs.joinUrlList(list));
+    AppStorage.setOrCreate('auraHomeUrl', active);
+    const context = this.getUIContext().getHostContext() as common.Context | undefined;
+    if (context) {
+      ShellUiPrefs.saveHomeUrlList(context, list, active);
+    }
+  }
+
+  // 关闭表单：只收起浮层，不再像 1.0.111 那样"保存即覆盖"——增删改在点按
+  // 当下就已经落盘了，这里不用再确认一次。
+  private closeHomeUrlForm(): void {
+    this.homeUrlFormVisible = false;
   }
 
   // ---- 长按菜单（自绘卡片，2026-10-09 v13）----
@@ -686,6 +1062,11 @@ export struct MobileBrowserOverlay {
     }
     .width('100%')
     .height('100%')
+    // 退场动效（1.0.68）：挂 if 分支根节点才能播（子节点退场会被整树原子删除）。
+    .transition(TransitionEffect.asymmetric(
+      TransitionEffect.opacity(1),
+      TransitionEffect.opacity(0).animation({ duration: 300, curve: Curve.Friction })
+    ))
   }
 
   // 卡片本体：贴着按压点弹在网页上，用与顶栏/dock 一致的玻璃。
@@ -754,9 +1135,10 @@ export struct MobileBrowserOverlay {
     .position(this.contextMenuPosition(model))
     .transition(TransitionEffect.asymmetric(
       TransitionEffect.opacity(0)
-        .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 })),
+        .combine(TransitionEffect.scale({ x: 0.9, y: 0.9 })),
       TransitionEffect.opacity(0)
-    ).animation({ duration: 180, curve: Curve.Friction }))
+        .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 }))
+    ).animation({ curve: curves.springMotion(0.3, 0.72) }))
   }
 
   @Builder
@@ -821,25 +1203,738 @@ export struct MobileBrowserOverlay {
     }
   }
 
-  build() {
+  // 1.0.91 Google 风格 dock：主页 / 地址栏胶囊 / 标签页 / 菜单 一行排布，可置于顶或底。
+  // 地址栏胶囊复用顶栏同款编辑/浏览两态（同 id 复用焦点恢复逻辑）；为不与顶栏的
+  // 返回/刷新重复，浏览态只显示锁 + 域名，点按进入编辑。
+  @Builder
+  // Chrome 风格 dock 分发：地址栏在顶=贴顶通宽条带（底沿贴胶囊下沿，1.0.93）；
+  // 在底=悬浮胶囊（左右留白 + 离底，参考 AirA 浏览器，1.0.93）。
+  private GoogleDock() {
+    if (this.chromeDockAtTop()) {
+      this.GoogleDockTop();
+    } else {
+      this.GoogleDockBottom();
+    }
+  }
+
+  // Chrome dock 跟手收起系数（0~1，夹取）。@Builder 体内首行不能写局部变量，
+  // 抽到方法里供 translate 内联调用。
+  private chromeDockRatio(): number {
+    // 1.0.99：顶置回读引擎 controlsRatio（sendBrowserControls chrome 顶置分支
+    // 恢复 top 预留 + minTop=0，引擎原产收起比例，网页同步上顶——传统通栏
+    // 跟手隐藏）；底置引擎把 top 锁死不产 ratio，仍读触摸驱动键
+    // auraChromeBottomRatio（键名带 Bottom 是历史命名，只驱动底置）。
+    const raw: number = this.dockPosition === 'top'
+      ? this.controlsRatioRaw
+      : this.chromeBottomRatioRaw;
+    return Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 1) : 1;
+  }
+
+  // 引擎 ratio 的「收起终点」（收起档的下限）。1.0.128 起随 AuraShell 的 minTop 还原：
+  // 引擎改 shrinkRendererSize=false 后视口恒满高，底部不再因 minTop=topSafe 被扣一截，
+  // 故收起下限回到引擎本意 topSafe/(48+topSafe)（= 引擎 bridge 的收起判据下限，
+  // 见 AuraShell.computeTopBarHiddenForInset）——收起后网页顶边停在状态栏底。
+  // 沉浸档（「上滑时隐藏状态栏」开着，minTop=0）、常显档（锁 1）与无状态栏时仍为 0。
+  // ⚠️ 必须与 AuraShell.sendBrowserControls 的 minTop 成对；不一致 → 条带提前隐入、
+  // 垫层与网页位置错位（topBarHideProgress / dockRatio 都按它归一化）。
+  private topBarRatioFloor(): number {
+    if (!this.hideTopBarOnScroll || this.hideStatusBarOnScroll || this.topSafeVp <= 0) {
+      return 0;
+    }
+    return this.topSafeVp / (TOP_BAR_EXTENT_VP + this.topSafeVp);
+  }
+
+  // 1.0.102：Chrome 风格 dock 的“有效位置”——主页恒在顶部（且只留主页/标签页/
+  // 菜单三个槽位，无地址胶囊）；网页界面才按设置区分顶/底。dock 派发、菜单卡
+  // 对齐、触摸响应区三处都用它，避免主页与设置不一致。
+  private chromeDockAtTop(): boolean {
+    return this.isHomeSurface() || this.dockPosition === 'top';
+  }
+
+  // 顶栏收起“归一化”进度（0=全显，1=全隐）：把引擎 ratio 的 [floor,1] 映射到
+  // [0,1]，顶栏才能在引擎的下限处刚好完全隐入（网页同步停在状态栏底）。
+  // floor=0（设置开着 / 不收起）时与按 1-ratio 的旧行为逐值相同。
+  private topBarHideProgress(): number {
+    // 1.0.108（真机录屏逐帧实测定位）：主页/新标签页没有可滚动内容，引擎不产
+    // 收起比例；点主页或「后退回主页」时，引擎会把导航途中的中间比例留在 ratio
+    // 上——顶置条带于是向上跳约 45vp 并卡在半隐位置、永不回位（用户报「Chrome
+    // 风格地址栏在上，点主页图标会往上跳」；底置位移挂触摸键，不受影响）。
+    // 主页恒视为全展开：无论引擎报什么，条带都停在展开位。
+    if (this.isHomeSurface()) {
+      return 0;
+    }
+    const raw: number = Number.isFinite(this.controlsRatioRaw) ? this.controlsRatioRaw : 1;
+    const r: number = Math.min(Math.max(raw, 0), 1);
+    const floor: number = this.topBarRatioFloor();
+    const span: number = 1 - floor;
+    return span > 0 ? Math.min(Math.max((1 - r) / span, 0), 1) : (1 - r);
+  }
+
+  // 引擎顶部预留区高度（vp）。网页 window 是满屏的，引擎把内容按这个高度整体
+  // 下移让出控件区；下移让出来的那一带露的就是引擎自己的 window 底板
+  // （暗色 ≈#3A3A3A）—— 见 build() 里的动态垫底层。必须与 AuraShell.sendBrowserControls
+  // 实际下发的几何逐模式对齐，否则垫底会盖到网页上：
+  //  · 简约 / Chrome 顶置：top = 条高(48) + 状态栏，预留区 =（48 + 状态栏 + 多铺
+  //    3vp）× 引擎 ratio —— ratio=1 时与条带等高（被条带盖住），=0 时铺满物理顶；
+  //  · Chrome 底置：top 只留状态栏、minTop=0（「上滑时隐藏状态栏」开着时引擎
+  //    允许收到 0）—— 预留区 =（状态栏 + 多铺 2vp）× ratio。1.0.107 起这是该
+  //    形态下**唯一**的顶部垫层（常驻垫底只在开关关着时铺，见 build()）：ratio→0
+  //    与网页铺满同步收为 0——既压住滚动途中的底板，又不留常驻遮挡。
+  private topBarReserveVp(): number {
+    if (this.topSafeVp <= 0) {
+      return 0;
+    }
+    const raw: number = Number.isFinite(this.controlsRatioRaw) ? this.controlsRatioRaw : 1;
+    const ratio: number = Math.min(Math.max(raw, 0), 1);
+    if (this.homeStyle === 'chrome' && !this.chromeDockAtTop()) {
+      // 底置：引擎只留状态栏那一条（AuraShell 底置 top=topSafe）——「上滑时隐藏
+      // 状态栏」开着且收起完成时 ratio→0，网页铺满物理顶，垫底同步收为 0。
+      // 多出的 2vp 随 ratio 一起缩（同顶置多铺 3vp 的手法），压住引擎预留区下沿
+      // 那条 ≈1px 圆整缝，又不会在沉浸态给页顶留一条线。
+      return (this.topSafeVp + 2) * ratio;
+    }
+    return (TOP_BAR_EXTENT_VP + this.topSafeVp + 3) * ratio;
+  }
+
+  // 下拉刷新事件（AuraShell 转存的 JSON）→ 指示器状态机。
+  private onPullRefreshChanged(): void {
+    if (this.pullRefreshJson.length === 0) {
+      return;
+    }
+    let payload: PullRefreshPayload;
+    try {
+      payload = JSON.parse(this.pullRefreshJson) as PullRefreshPayload;
+    } catch (error) {
+      return;
+    }
+    if (this.pullIdleTimer !== 0) {
+      clearTimeout(this.pullIdleTimer);
+      this.pullIdleTimer = 0;
+    }
+    const state: string = payload.state;
+    if (state === 'start') {
+      // threshold = 松手能触发刷新的距离；引擎没给就按 64vp 兜底。
+      const threshold: number = payload.threshold ?? 0;
+      this.pullThreshold = threshold > 8 ? threshold : 64;
+      this.pullDistance = 0;
+      this.pullPhase = 'pull';
+      return;
+    }
+    if (state === 'pull') {
+      this.pullDistance = payload.distance ?? 0;
+      if (this.pullPhase !== 'refreshing') {
+        this.pullPhase = 'pull';
+      }
+      return;
+    }
+    if (state === 'release') {
+      if (payload.refresh === true) {
+        // 松手且够远：引擎自己开始 reload，指示器停在原地转圈，等 reset 收掉。
+        this.pullPhase = 'refreshing';
+        this.pullDistance = this.pullThreshold;
+        this.pullIdleTimer = setTimeout((): void => {
+          this.pullIdleTimer = 0;
+          this.pullPhase = 'idle';
+          this.pullDistance = 0;
+        }, 8000);
+      } else {
+        this.pullPhase = 'idle';
+        this.pullDistance = 0;
+      }
+      return;
+    }
+    // reset（或任何未知状态）：收起。
+    this.pullPhase = 'idle';
+    this.pullDistance = 0;
+  }
+
+  // 下拉进度 0~1（按阈值归一）：指示器的缩放/透明度用它。
+  private pullProgress(): number {
+    if (this.pullPhase === 'refreshing') {
+      return 1;
+    }
+    const threshold: number = this.pullThreshold > 8 ? this.pullThreshold : 64;
+    return Math.min(Math.max(this.pullDistance / threshold, 0), 1);
+  }
+
+  // 指示器落点（vp）：贴在网页顶边（= 引擎预留区下沿）下方一点；下拉中随距离再
+  // 走约一半行程（Chrome 手机版手感），刷新中转圈时停在原地。
+  private pullIndicatorTopVp(): number {
+    const base: number = Math.max(this.topBarReserveVp(), this.topSafeVp) + 10;
+    const travel: number = this.pullPhase === 'refreshing'
+      ? 16
+      : Math.min(this.pullDistance * 0.5, 44);
+    return base + travel;
+  }
+
+  // 下拉刷新指示器：圆底 + 系统转圈（LoadingProgress）。纯指示、不参与命中，
+  // 顶部条带的滑动照常下发到网页。
+  @Builder
+  private PullRefreshIndicator() {
+    Column() {
+      LoadingProgress()
+        .width(26)
+        .height(26)
+        .color($r('app.color.accent_primary'))
+        .scale({ x: 0.6 + 0.4 * this.pullProgress(), y: 0.6 + 0.4 * this.pullProgress() })
+        .opacity(0.35 + 0.65 * this.pullProgress())
+        .animation({ duration: 140, curve: Curve.FastOutSlowIn })
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Center)
+    .position({ x: 0, y: this.pullIndicatorTopVp() })
+    .animation({ duration: 160, curve: Curve.FastOutSlowIn })
+    .hitTestBehavior(HitTestMode.None)
+    // 退场动效挂在 if 分支根节点（挂子节点会被整树原子删除，收尾会闪一下）。
+    .transition(TransitionEffect.asymmetric(
+      TransitionEffect.IDENTITY,
+      TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.FastOutSlowIn })
+    ))
+  }
+
+  // dock 四个槽位（主页 / 地址胶囊 / 标签页 / 菜单），顶/底两种容器共用。
+  @Builder
+  private GoogleDockButtons() {
+    // 主页
+    Button({ type: ButtonType.Circle, stateEffect: false }) {
+      Image($r('app.media.aura_home'))
+        .width(22)
+        .height(22)
+        .fillColor($r('app.color.icon_primary'))
+    }
+    .width(40)
+    .height(40)
+    .backgroundColor(Color.Transparent)
+    .scale(this.roundScale('dockHome'))
+    .onTouch((event: TouchEvent): void => {
+      this.handleRoundTouch(event, 'dockHome');
+    })
+    .accessibilityText('主页')
+    .onClick((): void => {
+      this.issueCommand({ command: 'home' });
+    })
+    // 1.0.109（用户定案）：Chrome 风格主页上，长按左上角主页图标 → 弹出
+    // 「自定义网址」选项。与轻点（回主页）在手势层天然互斥——按住 450ms
+    // 出菜单、轻点即触发 onClick。
+    .gesture(LongPressGesture({ repeat: false, duration: 450 })
+      .onAction((): void => {
+        this.homeTileMenuVisible = true;
+      }))
+
+    // 1.0.102：主页恒在顶部且不放地址胶囊（主页自带搜索框）——只留 主页/标签页/
+    // 菜单 三个槽位；网页界面才显示胶囊并按设置区分顶/底。
+    if (this.isHomeSurface()) {
+      Blank()
+        .layoutWeight(1)
+    } else {
+      // 地址栏胶囊（编辑/浏览两态）
+      this.DockAddressCapsule()
+    }
+
+    // 标签页
+    Button({ type: ButtonType.Circle, stateEffect: false }) {
+      Text(this.browserState.tabCount > 99 ? '99+' : this.browserState.tabCount.toString())
+        .fontSize(10)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.icon_primary'))
+        .textAlign(TextAlign.Center)
+        .width(22)
+        .height(20)
+        .borderRadius(6)
+        .border({ width: 1.8, color: $r('app.color.icon_primary') })
+    }
+    .width(40)
+    .height(40)
+    .backgroundColor(Color.Transparent)
+    .scale(this.roundScale('dockTabs'))
+    .onTouch((event: TouchEvent): void => {
+      this.handleRoundTouch(event, 'dockTabs');
+    })
+    .accessibilityText('标签页')
+    .onClick((): void => {
+      this.requestTabThumbnails();
+      this.menuVisible = true;
+    })
+
+    // 菜单
+    Button({ type: ButtonType.Circle, stateEffect: false }) {
+      Image($r('app.media.aura_more'))
+        .width(22)
+        .height(22)
+        .fillColor($r('app.color.icon_primary'))
+    }
+    .width(40)
+    .height(40)
+    .backgroundColor(Color.Transparent)
+    .scale(this.roundScale('dockMenu'))
+    .onTouch((event: TouchEvent): void => {
+      this.handleRoundTouch(event, 'dockMenu');
+    })
+    .accessibilityText('菜单')
+    .onClick((): void => {
+      this.menuCardVisible = true;
+    })
+  }
+
+  // Chrome 顶置：通宽地址栏条带（1.0.99 回传统几何——用户三图定案「看状态栏、
+  // 网页、地址栏相对位置」：不滚动=状态栏→通宽地址栏→网页；滚动=地址栏整条消失、
+  // 网页顶到状态栏）。构造对齐简约 TopAddressBar：
+  //  · 条带底 = surface_primary 实色（状态栏整条 + 地址栏区连成一条同色带，
+  //    治 1.0.97/1.0.98 反复反馈的「状态栏颜色和页面不一致」）；二级页铺满时
+  //    让位透明（不顶死纱幕）；多铺 3vp 压引擎保留区下沿 ≈9px 缝；
+  //  · 条带内嵌主页/地址胶囊/标签页/菜单四槽位（GoogleDockButtons），地址胶囊
+  //    保持玻璃材质——「Chrome 风格沉浸光感按简约地址栏来」的落点；
+  //  · 整条 Transparent + 按钮 Default：条带区的滑动照常下发到网页。
+  // 1.0.98 曾改成「引擎预留清零 + dock 纯外壳悬浮」的浮胶囊形态，真机反馈否决
+  // （「怎么把悬浮胶囊地址栏还给我改了」）——本条带回退；浮胶囊只留给底置
+  // （AirA 参考，1.0.93 定案，见 GoogleDockBottom）。
+  @Builder
+  private GoogleDockTop() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      // 条带底：不透明主表面色（深 #1D1D1F / 浅 #FFFFFF）。纯装饰、不参与命中。
+      Column()
+        .width('100%')
+        .height(this.topSafeVp + CHROME_DOCK_EXTENT_VP + 3)
+        .backgroundColor(this.panelPage === 'none' ?
+          $r('app.color.surface_primary') : Color.Transparent)
+        .hitTestBehavior(HitTestMode.None)
+
+      Row({ space: 8 }) {
+        this.GoogleDockButtons()
+      }
+      .width('100%')
+      .height(CHROME_DOCK_EXTENT_VP)
+      .padding({ top: 8, left: 16, right: 16 })
+      .position({ x: 0, y: this.topSafeVp })
+    }
+    .width('100%')
+    .height(this.topSafeVp + CHROME_DOCK_EXTENT_VP)
+    // 自身透明、子节点（按钮/地址胶囊）照常拦截——条带区的滑动下发到网页。
+    .hitTestBehavior(HitTestMode.Transparent)
+    // 滚动隐藏：整条上移离屏，行程=整条高（含多铺 3vp）——完全隐入无残留。
+    // 1.0.101：收起进度按引擎下限归一化（见 topBarHideProgress）——「上滑时隐藏
+    // 状态栏」关着时引擎下限=topSafe，直接用 1-ratio 会卡在半隐。
+    // 1.0.102：加 160ms 隐式动画——收起/展开是可见的滑出滑入，不是瞬间跳变。
+    .translate({ y: -(this.topBarHideProgress()) * (this.topSafeVp + CHROME_DOCK_EXTENT_VP + 3) })
+    .animation({ duration: 160, curve: Curve.FastOutSlowIn })
+  }
+
+  // Chrome 底置（1.0.105 按用户两段参考视频重做）：把「现有地址栏的内容」整条搬到
+  // 下面，做成参考里那种通宽平铺条带 ——
+  //   [← 返回] [⋮ 菜单] [🔒 域名（点按=搜索框）] [↻ 刷新·停止] [标签数]
+  // 与旧版的区别：①URL 不再是套在 dock 胶囊里的第二层胶囊（用户定「不要胶囊套胶囊」），
+  // 就是一个 Button 包着的锁+域名，文字在条带里居中；②返回/刷新/菜单直接搬自顶栏
+  // （TopBarContent 同款图标、同款按压弹簧、同款可用性）；③背景先试系统沉浸光感
+  // （见 ChromeBarMaterialPlate），拿不到材质才回退自绘 glass_tint。
+  // 命中：条带容器 Transparent（空白处的滑动照常下发网页），各控件是真 Button
+  // （Default）——旧版 URL 是「裸 Row + onClick」（与 2026-10-10 联想行同型），
+  // 点击会连穿到网页，这就是用户报的「悬浮地址栏点击命令穿透」。
+  // 编辑态：整条换成搜索框（输入 + 关闭），联想卡浮在条带上方（见 AddressSuggestLayer）。
+  @Builder
+  private GoogleDockBottom() {
     Stack() {
+      // 材质板：系统沉浸光感（HdsTabs 底置浮动条是系统唯一真渲染材质的容器路
+      // 径）。它自己按 barBottomMargin 摆位，几何与下面的内容层逐值一致。
+      if (this.dockMaterialActive) {
+        ChromeBarMaterialPlate({
+          barWidthVp: this.chromeBarWidthVp(),
+          barHeightVp: CHROME_DOCK_EXTENT_VP,
+          sideMarginVp: CHROME_DOCK_FLOAT_MARGIN_VP,
+          bottomMarginVp: resolveDockBottomMarginVp(this.bottomSafeVp)
+        })
+      }
+
       Column() {
-        // The home surface (new tab) already carries a search box; the
-        // address bar would duplicate it right above, so it only shows
-        // while browsing actual pages.
-        if (!this.isNewTabUrl(this.browserState.url)) {
-          this.TopAddressBar()
+        Stack({ alignContent: Alignment.TopStart }) {
+          // 自绘兜底底（无材质设备）：与材质板同一几何 —— 左右由外层 padding 给，
+          // 高度就是条带高。
+          if (!this.dockMaterialActive) {
+            Column()
+              .width('100%')
+              .height('100%')
+              .borderRadius(DOCK_BAR_RADIUS_VP)
+              .backgroundColor($r('app.color.glass_tint'))
+              .border({ width: 0.5, color: $r('app.color.divider') })
+              .shadow({ radius: 18, color: $r('app.color.shadow'), offsetY: 6 })
+              .hitTestBehavior(HitTestMode.None)
+          }
+
+          if (this.editingAddress) {
+            Row() {
+              this.ChromeBarAddressEditor()
+            }
+            .width('100%')
+            .height('100%')
+            .padding({ left: 10, right: 10 })
+          } else {
+            // 1.0.107 排布优化（用户：图标和地址排布不均匀）：图标间统一 2vp
+            // 呼吸、左右留白收窄到 8 且左右对称；地址胶囊在剩余宽度里均分并
+            // 自身居中 —— 四个图标视觉等距，域名居中且拿到最大可用宽度。
+            Row({ space: 2 }) {
+              this.ChromeBarIconButton($r('app.media.aura_home'), '主页', true, 'dockHome',
+                (): void => {
+                  this.issueCommand({ command: 'home' });
+                })
+              this.ChromeBarAddress()
+              // 1.0.110：图标变体走 showStopVariant（延迟切换，快速加载不闪 X）；
+              // 点击行为仍按真实 loading 判断。
+              this.ChromeBarIconButton(this.showStopVariant ?
+                $r('app.media.aura_close') : $r('app.media.aura_reload'),
+                this.showStopVariant ? '停止' : '刷新', true, 'dockReload', (): void => {
+                  this.issueCommand({ command: this.browserState.loading ? 'stop' : 'reload' });
+                })
+              this.ChromeBarTabCount()
+              this.ChromeBarIconButton($r('app.media.aura_more'), '菜单', true, 'dockMenu',
+                (): void => {
+                  this.menuCardVisible = true;
+                })
+            }
+            .width('100%')
+            .height('100%')
+            .padding({ left: 8, right: 8 })
+          }
         }
-        this.BottomDock()
+        .width('100%')
+        .height(CHROME_DOCK_EXTENT_VP)
+        // 自身透明：条带空白处的滑动照常下发网页（按钮自身仍是 Default，拦点击）。
+        .hitTestBehavior(HitTestMode.Transparent)
       }
       .width('100%')
       .height('100%')
-      // On the home surface only the dock remains; SpaceBetween with a
-      // single child pins it to the START (top), so pin to END there.
+      .justifyContent(FlexAlign.End)
+      .padding({
+        bottom: resolveDockBottomMarginVp(this.bottomSafeVp),
+        left: CHROME_DOCK_FLOAT_MARGIN_VP,
+        right: CHROME_DOCK_FLOAT_MARGIN_VP
+      })
+      .hitTestBehavior(HitTestMode.Transparent)
+    }
+    .width('100%')
+    .height(CHROME_DOCK_EXTENT_VP + this.bottomSafeVp + CHROME_DOCK_FLOAT_MARGIN_VP)
+    // 滚动隐藏地址栏：ratio→0 时整条 dock 下滑离屏（底置隐藏走触摸驱动，见
+    // AuraShell.onChromeBottomDockTouch / auraChromeBottomRatio）。
+    .translate({ y: (1 - this.chromeDockRatio()) * (CHROME_DOCK_EXTENT_VP + this.bottomSafeVp + CHROME_DOCK_FLOAT_MARGIN_VP) })
+  }
+
+  // 底栏浮动板的宽度 = 视口宽 - 左右留白。布局还没量到时用 display 同步算，
+  // 首帧就有正确宽度，材质不会先塌一下。
+  private chromeBarWidthVp(): number {
+    if (this.viewportWidthVp > 16) {
+      return Math.max(1, this.viewportWidthVp - CHROME_DOCK_FLOAT_MARGIN_VP * 2);
+    }
+    try {
+      const info: display.Display = display.getDefaultDisplaySync();
+      if (info.densityPixels > 0 && info.width > 0) {
+        const vpWidth: number = info.width / info.densityPixels;
+        if (Number.isFinite(vpWidth) && vpWidth > 16) {
+          return Math.max(1, vpWidth - CHROME_DOCK_FLOAT_MARGIN_VP * 2);
+        }
+      }
+    } catch (error) {
+      // 取不到就交给下面的设计宽度兜底。
+    }
+    return 328;
+  }
+
+  // 底栏通用圆钮：真 Button（Default 命中 = 不穿透）+ 手写弹簧按压（同顶栏圆钮）。
+  @Builder
+  private ChromeBarIconButton(icon: Resource, label: string, usable: boolean,
+    key: string, action: () => void) {
+    Button({ type: ButtonType.Circle, stateEffect: false }) {
+      Image(icon)
+        .width(22)
+        .height(22)
+        .fillColor($r('app.color.icon_primary'))
+    }
+    .width(36)
+    .height(36)
+    .backgroundColor(Color.Transparent)
+    .opacity(usable ? 1 : 0.35)
+    .enabled(usable)
+    .scale(this.roundScale(key))
+    .onTouch((event: TouchEvent): void => {
+      this.handleRoundTouch(event, key);
+    })
+    .accessibilityText(label)
+    .hitTestBehavior(HitTestMode.Default)
+    .onClick(action)
+  }
+
+  // 底栏中段：锁 + 域名（整块是一个 Button：阻断点穿；点按进编辑态=搜索框）。
+  // 单行居中，超长省略——对齐参考视频里「域名在条带正中」的观感。
+  @Builder
+  private ChromeBarAddress() {
+    Button({ type: ButtonType.Normal, stateEffect: false }) {
+      Row({ space: 6 }) {
+        if (this.browserState.loading) {
+          LoadingProgress()
+            .width(15)
+            .height(15)
+            .color($r('app.color.accent_primary'))
+        } else {
+          Image($r('app.media.aura_lock'))
+            .width(13)
+            .height(13)
+            .fillColor($r('app.color.icon_secondary'))
+        }
+        Text(this.displayDomain())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .textAlign(TextAlign.Center)
+      }
+      .width('100%')
+      .height(40)
+      .justifyContent(FlexAlign.Center)
+    }
+    .layoutWeight(1)
+    .height(40)
+    .backgroundColor(Color.Transparent)
+    .accessibilityText('地址栏')
+    .hitTestBehavior(HitTestMode.Default)
+    .onClick((): void => this.beginAddressEdit())
+  }
+
+  // 底栏右侧：标签页计数徽标（沿用顶置 dock 那枚方框数字）。
+  @Builder
+  private ChromeBarTabCount() {
+    Button({ type: ButtonType.Circle, stateEffect: false }) {
+      Text(this.browserState.tabCount > 99 ? '99+' : this.browserState.tabCount.toString())
+        .fontSize(10)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.icon_primary'))
+        .textAlign(TextAlign.Center)
+        .width(22)
+        .height(20)
+        .borderRadius(6)
+        .border({ width: 1.8, color: $r('app.color.icon_primary') })
+    }
+    .width(36)
+    .height(36)
+    .backgroundColor(Color.Transparent)
+    .scale(this.roundScale('dockTabs'))
+    .onTouch((event: TouchEvent): void => {
+      this.handleRoundTouch(event, 'dockTabs');
+    })
+    .accessibilityText('标签页')
+    .hitTestBehavior(HitTestMode.Default)
+    .onClick((): void => {
+      this.requestTabThumbnails();
+      this.menuVisible = true;
+    })
+  }
+
+  // 底栏编辑态：搜索框（输入 + 关闭）。与顶栏编辑态同一套行为（草稿、联想、
+  // 键盘回收、提交），只是整条替换掉按钮行。
+  @Builder
+  private ChromeBarAddressEditor() {
+    TextInput({ text: this.addressDraft, placeholder: '搜索或输入网址',
+      controller: this.addressController })
+      .id('mobile_address_input')
+      .layoutWeight(1)
+      .height(40)
+      .fontSize(16)
+      .fontColor($r('app.color.text_primary'))
+      .placeholderColor($r('app.color.text_secondary'))
+      .backgroundColor(Color.Transparent)
+          .padding({ left: 14, right: 10 })
+          .enterKeyType(EnterKeyType.Go)
+          // 1.0.113：恢复「点地址栏即全选整条网址」（1.0.110 曾为修「选中态下第一次
+          // 点外部被吃掉」而删掉，用户要求改回）。SDK 语义：initial state 全选文本。
+          .selectAll(true)
+      .onChange((value: string): void => {
+        this.addressDraft = value;
+        this.scheduleAddressSuggest(value);
+      })
+      .onTextSelectionChange((start: number, end: number): void => {
+        this.addressSelectionStart = start;
+        this.addressSelectionEnd = end;
+      })
+      .onSubmit((): void => {
+        this.submitAddress();
+      })
+    // 1.0.107：关闭编辑态换成「取消」文字按钮（对齐 Lumie），不再用 36vp 圆叉。
+    // 之前它旁边挂着一个系统 PasteButton（读剪贴板）：点它会走系统授权浮层，
+    // 在全屏自绘外壳上把整屏点击拖死（用户报「卡死」），还把旁边的圆叉挤到
+    // 点不动（用户报「叉无效」）。粘贴能力改走输入框自身的长按系统菜单
+    // （原生「粘贴」，无权限、无额外控件）。见 ref/04。
+    Button({ type: ButtonType.Normal, stateEffect: true }) {
+      Text('取消')
+        .fontSize(16)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.accent_primary'))
+    }
+    .width(52)
+    .height(36)
+    .padding(0)
+    .backgroundColor(Color.Transparent)
+    .hitTestBehavior(HitTestMode.Default)
+    .onClick((): void => {
+      this.cancelAddressEdit();
+    })
+  }
+
+  // 取消地址编辑（顶栏/底栏共用）：收起联想、清键盘回收定时器；若刚才提交过
+  // 导航（回弹在途）则延迟交还控件，否则立即交还——两边行为必须一致。
+  private cancelAddressEdit(): void {
+    this.clearKeyboardRecoveryTimers();
+    this.hideAddressSuggest();
+    const navigating: boolean = this.pendingControlsRebound || this.controlsRestoreTimer !== 0;
+    this.cancelControlsRebound();
+    // 先退出编辑态（UI 立即收起搜索面板），再异步交还浏览器控件——避免引擎
+    // 命令滞后或异常时面板卡住、叉点不动。
+    this.editingAddress = false;
+    try {
+      inputMethod.getController().hideTextInput().catch((): void => {});
+    } catch (error) {
+    }
+    if (navigating) {
+      this.restoreControlsSoon();
+    } else {
+      try {
+        this.issueCommand({ command: 'setBrowserControlsState', state: 'both', animate: true });
+      } catch (error) {
+      }
+    }
+  }
+
+  // dock 内地址栏胶囊：浏览态显示锁 + 域名（点按编辑），编辑态显示输入框 + 关闭。
+  @Builder
+  private DockAddressCapsule() {
+    if (this.editingAddress) {
+      Row({ space: 6 }) {
+        TextInput({ text: this.addressDraft, placeholder: '搜索或输入网址',
+          controller: this.addressController })
+          .id('mobile_address_input')
+          .layoutWeight(1)
+          .height(40)
+          .fontSize(16)
+          .fontColor($r('app.color.text_primary'))
+          .placeholderColor($r('app.color.text_secondary'))
+          .backgroundColor(Color.Transparent)
+          .padding({ left: 16, right: 12 })
+          .enterKeyType(EnterKeyType.Go)
+          // 1.0.113：恢复「点地址栏即全选整条网址」（1.0.110 曾删，用户要求改回）。
+          .selectAll(true)
+          .onChange((value: string) => {
+            this.addressDraft = value;
+            this.scheduleAddressSuggest(value);
+          })
+          .onTextSelectionChange((start: number, end: number): void => {
+            this.addressSelectionStart = start;
+            this.addressSelectionEnd = end;
+          })
+          .onSubmit((): void => {
+            this.submitAddress();
+          })
+        // 1.0.107：与另两处编辑态统一为「取消」文字按钮 + cancelAddressEdit()，
+        // 不再三处各写一份内联取消逻辑（Lumie 同款「取消」，命中更稳）。
+        Button({ type: ButtonType.Normal, stateEffect: true }) {
+          Text('取消')
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.accent_primary'))
+        }
+        .width(48)
+        .height(36)
+        .padding(0)
+        .margin({ right: 2 })
+        .backgroundColor(Color.Transparent)
+        .hitTestBehavior(HitTestMode.Default)
+        .onClick((): void => {
+          this.cancelAddressEdit();
+        })
+      }
+      .layoutWeight(1)
+      .height(40)
+      .padding({ left: 8, right: 8 })
+      .borderRadius(20)
+      .backgroundColor($r('app.color.glass_tint'))
+      .border({ width: 0.5, color: $r('app.color.divider') })
+    } else {
+      Row({ space: 6 }) {
+        if (this.browserState.loading) {
+          LoadingProgress()
+            .width(16)
+            .height(16)
+            .color($r('app.color.accent_primary'))
+        } else {
+          Image($r('app.media.aura_lock'))
+            .width(14)
+            .height(14)
+            .fillColor($r('app.color.icon_secondary'))
+        }
+        Text(this.displayDomain())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .textAlign(TextAlign.Start)
+      }
+      .layoutWeight(1)
+      .height(40)
+      .padding({ left: 16, right: 12 })
+      .borderRadius(20)
+      .backgroundColor($r('app.color.glass_tint'))
+      .border({ width: 0.5, color: $r('app.color.divider') })
+      .accessibilityText('地址栏')
+      .onClick((): void => this.beginAddressEdit())
+    }
+  }
+
+  build() {
+    Stack() {
+      // 页面切换帘幕：最底层（引擎之上、chrome 之下）。URL 变化时横向扫过，
+      // 不参与命中（滑动/点击照常下发到网页）。
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor($r('app.color.surface_primary'))
+        .translate({ x: this.navVeilShift * this.panelWidthVp() })
+        .hitTestBehavior(HitTestMode.None)
+
+      // 引擎顶部预留区垫底（1.0.104，用户录屏逐帧实测定位）：网页 window 是满屏的，
+      // 引擎把内容整体下移「控件高度 × ratio」让出控件区，让出来的那一带露的是引擎
+      // 自己的 window 底板（暗色 ≈#3A3A3A）。而外壳条带的位移按**归一下沉进度**跑
+      // （见 topBarHideProgress），比预留区收缩快 —— 两者中途不重合，条带下沿与网页
+      // 顶边之间就露出一条灰带（暗色模式最明显）。这一层按 ratio 原样铺满预留区、
+      // 垫在条带之下：同色（surface_primary），全显时被条带完全盖住，收起途中接管
+      // 那一带，和下面那条固定 0~topSafe 的常驻垫底配合，预留区全程无露底。
+      // 与条带同宽同色、纯装饰 hitTest None：不影响任何命中与手势。
+      if (this.panelPage === 'none' && !this.isHomeSurface() && this.topBarReserveVp() > 0.5) {
+        Column()
+          .width('100%')
+          .height(this.topBarReserveVp())
+          .backgroundColor($r('app.color.surface_primary'))
+          .position({ x: 0, y: 0 })
+          .hitTestBehavior(HitTestMode.None)
+      }
+
+      Column() {
+        if (this.homeStyle === 'chrome') {
+          // 1.0.91 Chrome 风格：地址栏融进 dock，单一浮层条带（顶或底）。
+          this.GoogleDock()
+        } else {
+          // The home surface (new tab) already carries a search box; the
+          // address bar would duplicate it right above, so it only shows
+          // while browsing actual pages.
+          if (!this.isHomeSurface()) {
+            this.TopAddressBar()
+          }
+          this.BottomDock()
+        }
+      }
+      .width('100%')
+      .height('100%')
+      // Chrome 风格按 dock 位置钉到顶或底；简约风格主页只留 dock 钉到尾部。
       // The floating bars carry their own safe-area padding, so this layer
       // carries none of its own.
-      .justifyContent(this.isNewTabUrl(this.browserState.url) ?
-        FlexAlign.End : FlexAlign.SpaceBetween)
+      .justifyContent(this.homeStyle === 'chrome' ?
+        (this.chromeDockAtTop() ? FlexAlign.Start : FlexAlign.End) :
+        (this.isHomeSurface() ? FlexAlign.End : FlexAlign.SpaceBetween))
       .hitTestBehavior(HitTestMode.Transparent)
       .bindSheet($$this.menuVisible, this.MenuSheet, {
         height: SheetSize.LARGE,
@@ -847,6 +1942,46 @@ export struct MobileBrowserOverlay {
         enableOutsideInteractive: false,
         maskColor: Color.Transparent
       })
+
+      // 状态栏常驻垫底（1.0.101/1.0.102，1.0.103 扩到底置）：独立层、不参与任何
+      // translate；绘制在 bars 之后 = 压在条带之上——地址栏收起时「从垫底层下边
+      // 隐入」（上滑部分被它盖住），纯装饰 hitTest None，条带按钮照常可点。
+      // 覆盖 0~topSafe 并多铺 2vp 压缝：垫底边与网页顶边之间有 ≈1px 圆整缝，会
+      // 露引擎 window 底板成一条灰线（暗色模式下尤其明显）。
+      // 何时铺（1.0.107 回退 1.0.106 的「无条件常铺」）：**仅「上滑时隐藏状态
+      // 栏」关着**——此时不落在哪种形态（简约、Chrome 顶置、Chrome 底置），网页
+      // 都停在 topSafe 之下，这条给它做垫底；开着则网页要铺满物理屏幕（沉浸），
+      // 常铺会永远盖住网页顶部一条（用户实测「垫层遮挡、应该没有垫底层」）——
+      // 那一带交给随 ratio 收缩的动态垫层负责（见 topBarReserveVp，ratio→0 时
+      // 同步收为 0，不留任何遮挡）。主页/面板不铺。
+      // 颜色 = 主表面色（浅=白 / 深=#1D1D1F，随应用主题≈随页面明暗）。
+      // 1.0.116：恢复「全形态」铺法（1.0.115 全局停用属误伤）。用户实测：简约与
+      // Chrome 顶置都丢了状态栏垫层，只有 Chrome 底置还有 → 条件回到 1.0.107 的原式：
+      // 仅「上滑时隐藏状态栏」关着时铺（开着时网页沉浸、常铺会盖住网页顶部，用户曾明确否决）。
+      // 说明：简约分支 minTop 已恒为 0（沉浸），此垫层会盖住沉浸页顶部那一条——
+      // 这正是用户要的「状态栏垫层」观感（表面色垫底），与底部裁切修复互不冲突。
+      if (!this.hideStatusBarOnScroll && this.panelPage === 'none' &&
+        !this.isHomeSurface()) {
+        Column()
+          .width('100%')
+          .height(this.topSafeVp + 2)
+          .backgroundColor($r('app.color.surface_primary'))
+          .position({ x: 0, y: 0 })
+          .hitTestBehavior(HitTestMode.None)
+      }
+
+      // 下拉刷新指示器（1.0.104）：引擎判定并 reload，外壳只画这个圆 + 转圈。
+      // 画在 bars 之后 = 压在条带之上（与垫底同层），网页区上半部。
+      if (this.pullPhase !== 'idle' && this.panelPage === 'none' && !this.isHomeSurface()) {
+        this.PullRefreshIndicator()
+      }
+
+      // 地址栏联想列表：挂在 bars 之后（绘制在顶栏之上，不遮 bars 自身），
+      // 全屏捕获层由 responseRegion 的全屏分支保证命中（见 buildChromeTouch
+      // Regions —— 联想在场时整屏归 overlay，顺带挡住网页）。
+      if (this.suggestListActive()) {
+        this.AddressSuggestLayer()
+      }
 
       if (this.panelPage !== 'none') {
         this.PanelLayer()
@@ -862,7 +1997,8 @@ export struct MobileBrowserOverlay {
       // —— 1×1 锚点与 dock 真实锚点 —— 都把整屏点击拖死，系统菜单这条路
       // 在本应用封死，别再试。）
       if (this.menuCardVisible) {
-        Stack({ alignContent: Alignment.BottomEnd }) {
+        Stack({ alignContent: (this.homeStyle === 'chrome' && this.chromeDockAtTop())
+          ? Alignment.TopEnd : Alignment.BottomEnd }) {
           Column()
             .width('100%')
             .height('100%')
@@ -875,6 +2011,21 @@ export struct MobileBrowserOverlay {
         }
         .width('100%')
         .height('100%')
+        // 退场动效（1.0.68）：挂 if 分支根节点才能播（子节点退场会被整树原子删除）。
+        .transition(TransitionEffect.asymmetric(
+          TransitionEffect.opacity(1),
+          TransitionEffect.opacity(0).animation({ duration: 300, curve: Curve.Friction })
+        ))
+      }
+
+      // 1.0.109：「自定义网址」入口菜单（长按 dock 主页图标弹出）。
+      if (this.homeTileMenuVisible) {
+        this.HomeTileMenu()
+      }
+
+      // 1.0.111：「网址主页」设置表单（两个入口共用）。
+      if (this.homeUrlFormVisible) {
+        this.HomeUrlFormOverlay()
       }
 
       // 长按菜单（v13）：贴着按压点弹的自绘卡片；点卡片外 / 按返回收起来。
@@ -885,13 +2036,18 @@ export struct MobileBrowserOverlay {
     }
     .width('100%')
     .height('100%')
-    // 视口高度（vp）：dock 条带的响应区以它为底边基准。首次布局即上报，
-    // 转屏 / 窗口变化时更新。
+    // 视口高度/宽度（vp）：dock 条带的响应区以高度为底边基准；面板开合
+    // 动效以宽度为位移基准。首次布局即上报，转屏 / 窗口变化时更新。
     .onAreaChange((_old: Area, next: Area): void => {
       const measured: number = Number(next.height);
       if (Number.isFinite(measured) && measured > 0 &&
           Math.abs(measured - this.viewportHeightVp) > 0.5) {
         this.viewportHeightVp = measured;
+      }
+      const measuredWidth: number = Number(next.width);
+      if (Number.isFinite(measuredWidth) && measuredWidth > 0 &&
+          Math.abs(measuredWidth - this.viewportWidthVp) > 0.5) {
+        this.viewportWidthVp = measuredWidth;
       }
     })
     // 命中契约（2026-10-09，修复「点 dock / 顶栏按钮穿透到网页」）：
@@ -912,18 +2068,44 @@ export struct MobileBrowserOverlay {
   // 矩形"，因此只会与 Transparent 组合出现（行为与旧实现一致）。
   private buildChromeTouchRegions(): Array<Rectangle> {
     const regions: Array<Rectangle> = [];
-    // 模态层（七页面板 / ⋮ 悬浮菜单卡 / 长按菜单）在场：整屏归它，直接
-    // 全屏响应区，顺带把网页挡在后面（菜单卡点外收起时不再误点页面）。
-    if (this.panelPage !== 'none' || this.menuCardVisible || this.contextMenuJson.length > 0) {
+    // 模态层（七页面板 / ⋮ 悬浮菜单卡 / 长按菜单 / 地址栏联想列表）在场：
+    // 整屏归它，直接全屏响应区，顺带把网页挡在后面（菜单卡/联想列表点外
+    // 收起时不再误点页面）。
+    if (this.panelPage !== 'none' || this.menuCardVisible || this.homeTileMenuVisible ||
+      this.homeUrlFormVisible || this.contextMenuJson.length > 0 || this.suggestListActive()) {
       const full: Rectangle = { x: 0, y: 0, width: '100%', height: '100%' };
       regions.push(full);
       return regions;
     }
-    const ratio: number = Number.isFinite(this.controlsRatioRaw) ?
-      Math.min(Math.max(this.controlsRatioRaw, 0), 1) : 1;
+    // Chrome 风格：整条 dock 占据顶或底，作为唯一可交互条带（不再有独立顶栏）。
+    if (this.homeStyle === 'chrome') {
+      if (this.chromeDockAtTop()) {
+        // 顶置通宽条带：响应区随收起进度收缩（与条带 translate 同一归一化进度，
+        // 见 topBarHideProgress），完全收起时不占区域——收起后那一带照常可点可滑。
+        const shown: number = (1 - this.topBarHideProgress()) *
+          (CHROME_DOCK_EXTENT_VP + 3 + this.topSafeVp);
+        if (shown > 0.5) {
+          regions.push({ x: 0, y: 0, width: '100%', height: shown });
+        }
+      } else if (this.viewportHeightVp > 0) {
+        // 底置是悬浮 dock（离底 floatMargin）：响应区须上移同等留白并含留白高度，
+        // 否则点地址胶囊落在响应区外 → 穿透到网页（1.0.95 修复）。
+        const chromeH: number = CHROME_DOCK_EXTENT_VP + this.bottomSafeVp;
+        regions.push({
+          x: 0,
+          y: this.viewportHeightVp - chromeH - CHROME_DOCK_FLOAT_MARGIN_VP,
+          width: '100%',
+          height: chromeH + CHROME_DOCK_FLOAT_MARGIN_VP
+        });
+      }
+      return regions;
+    }
+
     // 顶栏条带：新标签页没有顶栏，不占（否则首页顶部会出现一条死区）。
-    if (!this.isNewTabUrl(this.browserState.url)) {
-      const topShown: number = ratio * (TOP_BAR_EXTENT_VP + this.topSafeVp);
+    // 1.0.101：按归一化收起进度（见 topBarHideProgress）——「上滑时隐藏状态栏」
+    // 关着时引擎下限=topSafe，直接用 ratio 响应区会卡在半隐。
+    if (!this.isHomeSurface()) {
+      const topShown: number = (1 - this.topBarHideProgress()) * (TOP_BAR_EXTENT_VP + this.topSafeVp);
       if (topShown > 0.5) {
         const top: Rectangle = { x: 0, y: 0, width: '100%', height: topShown };
         regions.push(top);
@@ -949,6 +2131,16 @@ export struct MobileBrowserOverlay {
   // 收起比例（两栏默认跟手同收）。例外：地址栏也设为常驻时引擎比例被锁死
   // （恒 1），dock 改用触摸观察层的位移（AuraShell 维护，1 = 全显）。
   private dockRatio(): number {
+    // 1.0.114（用户实测「简约风格主页，点按主页键，dock 栏闪」）：主页/新标签页
+    // 没有可滚动内容，引擎不产收起比例；点主页（哪怕已经在主页上）都会触发一次
+    // 导航，引擎在导航途中会吐一个「半收起」的中间比例留在 controlsRatioRaw 上
+    // ——与 1.0.108 修顶栏「点主页条带上跳」时是同一个引擎行为。当时只给
+    // topBarHideProgress() 加了主页守卫（见上，主页恒 0），**漏了 dock**：
+    // dock 的 translate 挂在 dockRatio() 上，于是这个中间比例把 dock 往下推一下
+    // 再弹回 = 视觉上的「闪」。主页恒视为 dock 全显（1），与顶栏守卫对称。
+    if (this.isHomeSurface()) {
+      return 1;
+    }
     if (!this.hideDockOnScroll) {
       return 1;
     }
@@ -957,7 +2149,12 @@ export struct MobileBrowserOverlay {
       return Math.min(Math.max(touch, 0), 1);
     }
     const raw: number = Number.isFinite(this.controlsRatioRaw) ? this.controlsRatioRaw : 1;
-    return Math.min(Math.max(raw, 0), 1);
+    const r: number = Math.min(Math.max(raw, 0), 1);
+    // 1.0.101：减去引擎下限（minTop=topSafe 时收起终点是 topSafe/top 而不是 0，
+    // 见 topBarRatioFloor），否则 dock 会停在半隐；floor=0 时与旧行为逐值相同。
+    const floor: number = this.topBarRatioFloor();
+    const span: number = 1 - floor;
+    return span > 0 ? Math.min(Math.max((r - floor) / span, 0), 1) : r;
   }
 
   // 根命中模式：模态层（七页面板 / ⋮ 菜单卡 / 长按菜单）在场 → Default +
@@ -966,8 +2163,15 @@ export struct MobileBrowserOverlay {
   // 修复"手指滑出一段页面才滚"），dock/顶栏的按钮、地址栏等控件自身是
   // Default 子节点，仍正常拦截点击。
   private resolveChromeHitTestMode(): HitTestMode {
+    // 必须与 buildChromeTouchRegions 的模态条件**保持一致**：模态层（面板 /
+    // ⋮ 菜单卡 / 长按菜单 / 地址栏联想列表）在场 = Default + 全屏响应区 =
+    // 整屏阻断网页。联想列表此前漏配（region 全屏但模式仍 Transparent），
+    // 真机实测 2026-10-10：点联想行「abcam」，同一触摸又穿到下方网页、点中
+    // Bing 的「学术」标签并跳页——列表点选/点外收起都会透传。补上即与面板
+    // 同款（面板/菜单证明不穿透的组合）。
     const modal: boolean = this.panelPage !== 'none' ||
-      this.menuCardVisible || this.contextMenuJson.length > 0;
+      this.menuCardVisible || this.contextMenuJson.length > 0 ||
+      this.suggestListActive();
     return modal ? HitTestMode.Default : HitTestMode.Transparent;
   }
 
@@ -999,47 +2203,92 @@ export struct MobileBrowserOverlay {
   // （TOP_BAR_EXTENT_VP + 顶部安全区），页面顶边从条区下沿开始。
   @Builder
   private TopAddressBar() {
-    Row({ space: 8 }) {
-      // Main pill: back chevron + lock + URL + reload, like the reference
-      // browser's single-capsule address bar.
-      Row() {
-        this.TopBarContent()
-      }
-      .layoutWeight(1)
-      .height(44)
-      .borderRadius(22)
-      .backgroundColor($r('app.color.glass_tint'))
-      .border({ width: 0.5, color: $r('app.color.divider') })
-      .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+    Stack({ alignContent: Alignment.TopStart }) {
+      // 条带底：不透明主表面色（深 #1D1D1F / 浅 #FFFFFF）。系统状态栏/导航条
+      // 底色已设为透明（EntryAbility），所以状态栏整条 + 地址栏区显示的就是
+      // 这条带子 —— 一条同色带（此前这里露出的是引擎 top controls 保留区的
+      // 网页底板色 ≈#3C3C3C，与状态栏有色差 —— 就是"胶囊四周一圈灰"）。
+      // 高度比「安全区 + 条高」**多铺 3vp**：引擎保留区的下沿比我们条带底边还要
+      // 低 ≈9px（实测），不补这一段就会在「网页与地址栏交界处」露出网页底色的
+      // 一条亮线。多铺的 3vp 只在顶栏展开时压住页面顶部约 10px；收起时整条随
+      // translate 移出屏幕，无影响。
+      // 必须不透明实色：半透明叠在网页底板上仍偏灰；网页走 SURFACE 独立图层，
+      // 模糊采不到内容（契约 §8），此处要的是"与状态栏同色"而非玻璃。
+      Column()
+        .width('100%')
+        .height(this.topSafeVp + TOP_BAR_EXTENT_VP + 3)
+        // 二级页（书签/历史/设置/扩展…）铺满全屏时，它自己的沉浸玻璃纱幕会
+        // 覆盖状态栏区域 —— 此处必须让位：不透明实色会把纱幕"顶"成一条死
+        // 色带，既没有渐变模糊、又和页面底色对不上（真机反馈）。无面板时
+        // 才画，保证网页页的状态栏条 + 地址栏区连成一条同色带。
+        .backgroundColor(this.panelPage === 'none' ?
+          $r('app.color.surface_primary') : Color.Transparent)
+        // 纯装饰层：完全不参与命中，滑动照常下发到网页。
+        .hitTestBehavior(HitTestMode.None)
 
-      // 右上角圆形「扩展」按钮：点击进入扩展管理页（扫一扫仍保留在首页搜索框内）。
-      if (!this.editingAddress) {
-        Button({ type: ButtonType.Circle, stateEffect: true }) {
-          Image($r('app.media.aura_extensions'))
-            .width(22)
-            .height(22)
-            .fillColor($r('app.color.icon_primary'))
+      Row({ space: 8 }) {
+        // Main pill: back chevron + lock + URL + reload, like the reference
+        // browser's single-capsule address bar.
+        Row() {
+          this.TopBarContent()
         }
-        .width(44)
-        .height(44)
+        .layoutWeight(1)
+        .height(40)
+        .borderRadius(20)
         .backgroundColor($r('app.color.glass_tint'))
         .border({ width: 0.5, color: $r('app.color.divider') })
         .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
-        .scale(this.roundScale('topExtensions'))
-        .onTouch((event: TouchEvent): void => {
-          this.handleRoundTouch(event, 'topExtensions');
-        })
-        .accessibilityText('扩展')
-        .onClick(() => {
-          this.openPanel('extensions');
-        })
+
+        // 顶栏不再放圆钮：地址栏胶囊独占整行（1.0.87 起「扩展」入口移到 ⋮ 菜单，
+        // 与书签/历史/下载/设置同一排 —— 用户定案：顶栏只留地址栏，功能入口收进菜单）。
+      }
+      .width('100%')
+      .padding({ top: this.topSafeVp + 8, left: 16, right: 16 })
+      // 1.0.72 加载进度条：贴在地址栏条带的**下边沿**（chrome 与网页交界的
+      // 那条线），满宽容器 + 自左向右生长的 2vp 细条 —— 形状与位置对齐 Lumie
+      // v2 的 LoadingBar（BAR_HEIGHT=2 / MIN_PROGRESS=0.08 / 200ms EaseOut）。
+      // 为什么不放在胶囊内部：胶囊高 40、自带 20 圆角，2vp 会被背景吃掉看不见。
+      // 为什么不学 1.0.71 用帘幕：帘幕是**覆盖层**，盖多久就空白多久（实测把
+      // ≈0.45s 的绘制空档撑成 ≈1.05s）。这条 2vp 细条不覆盖任何内容，只指示，
+      // 不改变白屏时长 —— 白屏只由引擎网络/渲染决定。
+      if (this.loadBarShown) {
+        Stack({ alignContent: Alignment.Start }) {
+          Row()
+            .width(`${Math.min(Math.max(this.loadBarWidth, this.loadBarMin), 1) * 100}%`)
+            .height(this.loadBarHeight)
+            // 只圆右端：自左向右生长的细条；左端贴着屏幕边。
+            .borderRadius({ topRight: this.loadBarHeight, bottomRight: this.loadBarHeight })
+            .backgroundColor($r('app.color.accent_primary'))
+            // 宽度变化由属性动画接管（同步 Lumie 的 200ms / EaseOut）。
+            .animation({ duration: this.loadBarGrowMs, curve: Curve.EaseOut })
+        }
+        .width('100%')
+        .height(this.loadBarHeight)
+        .clip(true)
+        // 落在「条带 + 多铺 3vp」的真正下沿之上，高度的最后 2vp 就是进度条。
+        .margin({ top: this.topSafeVp + TOP_BAR_EXTENT_VP + 3 - this.loadBarHeight })
+        // 退场动画必须挂在 if 分支根节点：挂子节点会被整子树原子删除，收尾时
+        // 会「瞬间消失闪一下」（血泪 §4）。
+        .transition(TransitionEffect.asymmetric(
+          TransitionEffect.IDENTITY,
+          TransitionEffect.OPACITY.animation({ duration: this.loadBarGrowMs, curve: Curve.EaseOut })
+        ))
+        // 纯指示：不参与命中，顶部滑动照常下发到网页。
+        .hitTestBehavior(HitTestMode.None)
       }
     }
     .width('100%')
-    .padding({ top: this.topSafeVp + 8, left: 16, right: 16 })
-    // 行程必须覆盖"顶部安全区内边距 + 条高"，否则 ratio 到 0 时条底仍卡在安全区
-    // 高度处，露出一条缝（用户看到的"贴边还看得见"）。
-    .translate({ y: -(1 - this.controlsRatioRaw) * (TOP_BAR_EXTENT_VP + this.topSafeVp) })
+    .height(this.topSafeVp + TOP_BAR_EXTENT_VP)
+    // 自身响应 + 不阻塞兄弟/下层（与原来的全宽 Row 同一命中语义），
+    // 保证顶部条区的滑动仍能下发到网页。
+    .hitTestBehavior(HitTestMode.Transparent)
+    // 行程必须覆盖"顶部安全区内边距 + 条高"，否则 ratio 到下限时条底仍卡在安全
+    // 区高度处，露出一条缝（用户看到的"贴边还看得见"）。1.0.101：进度按引擎
+    // 下限归一化（见 topBarHideProgress）——「上滑时隐藏状态栏」关着时引擎
+    // 下限=topSafe，直接用 1-ratio 会卡在半隐。
+    // 1.0.102：加 160ms 隐式动画——收起/展开是可见的滑出滑入，不是瞬间跳变。
+    .translate({ y: -(this.topBarHideProgress()) * (TOP_BAR_EXTENT_VP + this.topSafeVp) })
+    .animation({ duration: 160, curve: Curve.FastOutSlowIn })
   }
 
   @Builder
@@ -1049,16 +2298,18 @@ export struct MobileBrowserOverlay {
           controller: this.addressController })
           .id('mobile_address_input')
           .layoutWeight(1)
-          .height(44)
+          .height(40)
           .fontSize(16)
           .fontColor($r('app.color.text_primary'))
           .placeholderColor($r('app.color.text_secondary'))
           .backgroundColor(Color.Transparent)
           .padding({ left: 16, right: 12 })
           .enterKeyType(EnterKeyType.Go)
+          // 1.0.113：恢复「点地址栏即全选整条网址」（1.0.110 曾删，用户要求改回）。
           .selectAll(true)
           .onChange((value: string) => {
             this.addressDraft = value;
+            this.scheduleAddressSuggest(value);
           })
           .onTextSelectionChange((start: number, end: number): void => {
             this.addressSelectionStart = start;
@@ -1067,43 +2318,23 @@ export struct MobileBrowserOverlay {
           .onSubmit(() => {
             this.submitAddress();
           })
-        Text('粘贴')
-          .fontSize(13)
-          .fontColor($r('app.color.text_primary'))
-          .height(32)
-          .padding({ left: 14, right: 14 })
-          .borderRadius(16)
-          .backgroundColor($r('app.color.surface_secondary'))
-          .margin({ right: 6 })
-          .scale(this.roundScale('addressPaste'))
-          .onTouch((event: TouchEvent): void => {
-            this.handleRoundTouch(event, 'addressPaste');
-          })
-          .onClick((): void => this.pasteAddress())
-        Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.aura_close'))
-            .width(20)
-            .height(20)
-            .fillColor($r('app.color.icon_secondary'))
+        // 1.0.107：与底置编辑态统一——去掉系统 PasteButton（授权浮层拖死整屏
+        // 点击），圆叉换成「取消」文字按钮（Lumie 同款，命中稳定）；取消逻辑
+        // 汇流到 cancelAddressEdit()（含键盘收回与异常隔离）。
+        Button({ type: ButtonType.Normal, stateEffect: true }) {
+          Text('取消')
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.accent_primary'))
         }
-        .width(36)
+        .width(52)
         .height(36)
+        .padding(0)
         .margin({ right: 5 })
         .backgroundColor(Color.Transparent)
-        .accessibilityText('取消编辑')
-        .onClick(() => {
-          this.clearKeyboardRecoveryTimers();
-          // Fix F：若刚才提交过导航（回弹在途），'both' 也延迟交还，
-          // 避免打断引擎的旧画面保持；普通取消则立即交还。
-          const navigating: boolean = this.pendingControlsRebound ||
-            this.controlsRestoreTimer !== 0;
-          this.cancelControlsRebound();
-          this.editingAddress = false;
-          if (navigating) {
-            this.restoreControlsSoon();
-          } else {
-            this.issueCommand({ command: 'setBrowserControlsState', state: 'both', animate: true });
-          }
+        .hitTestBehavior(HitTestMode.Default)
+        .onClick((): void => {
+          this.cancelAddressEdit();
         })
       } else {
         // Back chevron inside the bar, dimmed when there is nowhere to go.
@@ -1160,14 +2391,14 @@ export struct MobileBrowserOverlay {
           .width('100%')
         }
         .layoutWeight(1)
-        .height(44)
+        .height(40)
         .padding({ left: 6, right: 6 })
         .backgroundColor(Color.Transparent)
         .accessibilityText('地址栏')
         .onClick(() => this.beginAddressEdit())
 
         Button({ type: ButtonType.Circle, stateEffect: true }) {
-          Image(this.browserState.loading ?
+          Image(this.showStopVariant ?
             $r('app.media.aura_close') : $r('app.media.aura_reload'))
             .width(20)
             .height(20)
@@ -1181,11 +2412,147 @@ export struct MobileBrowserOverlay {
         .onTouch((event: TouchEvent): void => {
           this.handleRoundTouch(event, 'barReload');
         })
-        .accessibilityText(this.browserState.loading ? '停止' : '刷新')
+        .accessibilityText(this.showStopVariant ? '停止' : '刷新')
         .onClick(() => {
           this.issueCommand({ command: this.browserState.loading ? 'stop' : 'reload' });
         })
       }
+  }
+
+  // ---- 地址栏联想列表 ----
+
+  // 全屏捕获层（点列表外收起联想、保持编辑态与键盘）+ 紧贴胶囊下沿的建议
+  // 卡。卡片走 menu_glass 实底（网页 SURFACE 上方模糊采不到，契约 §8），
+  // 与 ⋮ 卡/长按卡同一家族。挂在 build() 主 Stack、bars 之后（绘制在其上）。
+  // 联想列表是浮在「条带」旁边还是上方，由 dock 位置决定（1.0.105）。
+  private suggestAboveBottomBar(): boolean {
+    return this.homeStyle === 'chrome' && !this.chromeDockAtTop() && !this.isHomeSurface();
+  }
+
+  // 底置条带上沿的 y（vp）——联想卡贴它的上方、捕获层也画到它为止。
+  // 抽成方法：@Builder 体内不能写局部变量（ArkTS 红线，见 ref/04）。
+  private suggestBarTopVp(): number {
+    const total: number = CHROME_DOCK_EXTENT_VP + this.bottomSafeVp + CHROME_DOCK_FLOAT_MARGIN_VP;
+    return this.viewportHeightVp > total ? this.viewportHeightVp - total : 0;
+  }
+
+  @Builder
+  private AddressSuggestLayer() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      if (this.suggestAboveBottomBar() && this.suggestBarTopVp() > 0) {
+        // 地址栏在下：列表浮在**条带上方**。此前它固定贴在顶栏下沿 —— 底置时
+        // 卡片跑到屏幕最上边（还常被状态栏/溢出屏幕裁掉），就是用户报的
+        // 「联想在最上边还溢出屏幕」。捕获层只盖到条带上沿：条带本体仍可点。
+        Column()
+          .width('100%')
+          .height(this.suggestBarTopVp())
+          .position({ x: 0, y: 0 })
+          .backgroundColor(Color.Transparent)
+          .onClick(() => {
+            this.hideAddressSuggest();
+          })
+
+        Column() {
+          this.SuggestCard()
+        }
+        .width('100%')
+        .height(this.suggestBarTopVp())
+        .justifyContent(FlexAlign.End)
+        .padding({ left: 16, right: 16, bottom: 6 })
+      } else {
+        // 捕获层从顶栏下沿才开始：点地址栏本体（改光标/取消）不受影响，
+        // 点列表外任意处才收起联想（保持编辑态与键盘）。
+        Column()
+          .width('100%')
+          .height('100%')
+          .position({ x: 0, y: this.topSafeVp + TOP_BAR_EXTENT_VP })
+          .backgroundColor(Color.Transparent)
+          .onClick(() => {
+            this.hideAddressSuggest();
+          })
+
+        Row() {
+          this.SuggestCard()
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16 })
+        // 贴在胶囊下沿：安全区 + 条高(48) + 6 间隙。
+        .position({ x: 0, y: this.topSafeVp + TOP_BAR_EXTENT_VP + 6 })
+      }
+    }
+    .width('100%')
+    .height('100%')
+    // 快进快出：键盘弹起动画期间不抢戏；退场（点外收起/提交）略慢于进场。
+    .transition(TransitionEffect.asymmetric(
+      TransitionEffect.opacity(0).animation({ duration: 120, curve: Curve.Friction }),
+      TransitionEffect.opacity(0).animation({ duration: 160, curve: Curve.Friction })
+    ))
+  }
+
+  // 联想卡本体（顶置贴下沿 / 底置贴上沿两处共用同一张卡）。
+  @Builder
+  private SuggestCard() {
+    Column() {
+      ForEach(this.suggestRows(), (item: AutocompleteItem, index: number) => {
+        this.AddressSuggestRow(item, index)
+      }, (item: AutocompleteItem, index: number): string =>
+        `${index}|${item.type}|${item.url}|${item.title}`)
+    }
+    .width('100%')
+    .borderRadius(16)
+    .backgroundColor($r('app.color.menu_glass'))
+    .shadow({ radius: 24, color: $r('app.color.shadow'), offsetY: 8 })
+    .clip(true)
+  }
+
+  @Builder
+  private AddressSuggestRow(item: AutocompleteItem, index: number) {
+    Column() {
+      Row({ space: 12 }) {
+        Image(this.suggestIcon(item.type))
+          .width(20)
+          .height(20)
+          .fillColor($r('app.color.icon_secondary'))
+        Column({ space: 1 }) {
+          Text(item.title.length > 0 ? item.title : item.url)
+            .fontSize(15)
+            .fontColor($r('app.color.text_primary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+          if (item.description.length > 0) {
+            Text(item.description)
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .width('100%')
+          }
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+      }
+      .width('100%')
+      .height(item.description.length > 0 ? 54 : 46)
+      .padding({ left: 16, right: 16 })
+      .onClick((): void => {
+        this.applyAddressSuggestion(item);
+      })
+      // 1.0.107：长按联想项 = 复制该条网址（写剪贴板无需权限）+ toast。补上
+      // 用户要的「带出来的网址按压激活复制」；「粘贴」走输入框自身的长按
+      // 系统菜单。手势与 onClick 并存：轻点跳转、长按复制，互不干扰。
+      .gesture(LongPressGesture({ repeat: false, duration: 450 })
+        .onAction((): void => {
+          this.copySuggestText(item);
+        }))
+
+      if (index < this.suggestRows().length - 1) {
+        Divider()
+          .color($r('app.color.divider'))
+          .margin({ left: 48 })
+      }
+    }
+    .width('100%')
   }
 
   // 底部 dock：一块悬浮玻璃横条——左右各留 16vp、完整圆角，网页从它后面
@@ -1400,6 +2767,10 @@ export struct MobileBrowserOverlay {
   @Builder
   private PanelLayer() {
     Column() {
+      // 面板内容层：二级切换（设置→扩展程序/密码…）的方向性滑入只作用在这一层，
+      // 只搬内容、不搬整屏 —— 切换途中不会露出底下的浏览器。见 switchPanel。
+      // （内部 if/else 链保持原缩进，避免大范围重排。）
+      Column() {
       if (this.panelPage === 'bookmarks') {
         BookmarksPanel({
           currentUrl: this.browserState.url,
@@ -1456,7 +2827,7 @@ export struct MobileBrowserOverlay {
             this.issueCommand(command);
           },
           onBack: (): void => {
-            this.panelPage = 'settings';
+            this.switchPanel('settings', false);
           },
           onClose: (): void => {
             this.closePanel();
@@ -1468,7 +2839,7 @@ export struct MobileBrowserOverlay {
             this.issueCommand(command);
           },
           onBack: (): void => {
-            this.panelPage = 'settings';
+            this.switchPanel('settings', false);
           },
           onClose: (): void => {
             this.closePanel();
@@ -1483,14 +2854,25 @@ export struct MobileBrowserOverlay {
             this.closePanel();
           },
           onOpenExtensions: (): void => {
-            this.extensionsFromSettings = true;
-            this.panelPage = 'extensions';
+            this.openExtensionsPanel(true);
           },
           onOpenSitePermissions: (): void => {
-            this.panelPage = 'sitepermissions';
+            this.switchPanel('sitepermissions', true);
           },
           onOpenPasswords: (): void => {
-            this.panelPage = 'passwords';
+            this.switchPanel('passwords', true);
+          },
+          onOpenHomeLayout: (): void => {
+            // 先收起设置面板，再经信号打开主页布局弹层（HomeSurface 在主页时才挂载）。
+            this.closePanel();
+            AppStorage.set('auraOpenHomeLayout',
+              ((AppStorage.get('auraOpenHomeLayout') as number) ?? 0) + 1);
+          },
+          onAddHomeTile: (): void => {
+            // 1.0.111：设置-主页设置右上角入口——收起面板后弹出网址设置表单
+            // （overlay 层，就地弹）；1.0.120 起该表单可管理多组网址。
+            this.closePanel();
+            this.requestAddHomeTile();
           }
         })
       } else if (this.panelPage === 'extensions') {
@@ -1502,7 +2884,7 @@ export struct MobileBrowserOverlay {
           onBack: (): void => {
             if (this.extensionsFromSettings) {
               this.extensionsFromSettings = false;
-              this.panelPage = 'settings';
+              this.switchPanel('settings', false);
             } else {
               this.closePanel();
             }
@@ -1512,6 +2894,11 @@ export struct MobileBrowserOverlay {
           }
         })
       }
+      }
+      .width('100%')
+      .height('100%')
+      .translate({ x: this.panelContentShift * 0.22 * this.panelWidthVp() })
+      .opacity(1 - Math.abs(this.panelContentShift) * 0.65)
     }
     .width('100%')
     .height('100%')
@@ -1520,131 +2907,67 @@ export struct MobileBrowserOverlay {
     // 会把面板整体下压一个状态栏高度、顶部露出一条、底部多出一条空区
     // （真机反馈「顶部没到顶、底部多一块区域」的根源）。
     .backgroundColor($r('app.color.page_background'))
-    // 面板开合动画：右侧滑入 + 淡入，关闭淡出（欠阻尼弹簧，鸿蒙回弹手感）。
-    .transition(TransitionEffect.asymmetric(
-      TransitionEffect.translate({ x: 140 }).combine(TransitionEffect.opacity(0)),
-      TransitionEffect.opacity(0)
-    ).animation({ duration: 360, curve: curves.springMotion(0.34, 0.86) }))
-    // Motion: a shell page slides in from the right and fades back out, so
-    // opening and closing a page reads as navigation.
-    .transition(TransitionEffect.asymmetric(
-      TransitionEffect.opacity(0)
-        .combine(TransitionEffect.translate({ x: '16%' })),
-      TransitionEffect.opacity(0)
-    ).animation({ duration: 240, curve: Curve.Friction }))
+    // 面板开合动效（2026-10-10）：整屏从右侧滑入/滑出，弹簧曲线带轻微回弹。
+    // 位移基准 = 视口宽度（vp）；挂载首帧一定先以"屏外"位置渲染（panelShift=0
+    // 与 panelPage 同帧生效），再由 onAppear 里起动画 —— 不会闪一帧在屏幕内。
+    // 注：此前这里挂了两条 .transition()（后者覆盖前者）+ 百分比位移，真机上
+    // 打开/关闭都没有可见动画 —— 改为显式 animateTo 驱动。
+    .translate({ x: (1 - this.panelShift) * this.panelWidthVp() })
+    .onAppear((): void => {
+      animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
+        this.panelShift = 1;
+      });
+    })
   }
 
   @Builder
   private TabsView() {
     Column() {
-      Row() {
+      Row({ space: 2 }) {
         Text(`${this.browserState.tabCount} 个标签`)
           .fontSize(20)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
         Blank()
+        // 排布切换：网格 / 列表（preferences 持久化，切完按新尺寸重取缩略图）。
+        Button({ type: ButtonType.Circle, stateEffect: false }) {
+          Image(this.tabLayout === 'list' ?
+            $r('app.media.aura_view_grid') : $r('app.media.aura_view_list'))
+            .width(20)
+            .height(20)
+            .fillColor($r('app.color.icon_primary'))
+        }
+        .width(36)
+        .height(36)
+        .backgroundColor(Color.Transparent)
+        .accessibilityText(this.tabLayout === 'list' ? '换成网格' : '换成列表')
+        .onClick((): void => {
+          this.toggleTabLayout();
+        })
+        // 全部删除：留一个新的标签页（见 confirmCloseAllTabs）。
+        Button({ type: ButtonType.Circle, stateEffect: false }) {
+          Image($r('app.media.aura_trash'))
+            .width(20)
+            .height(20)
+            .fillColor($r('app.color.icon_primary'))
+        }
+        .width(36)
+        .height(36)
+        .backgroundColor(Color.Transparent)
+        .accessibilityText('关闭全部标签页')
+        .onClick((): void => {
+          this.confirmCloseAllTabs();
+        })
       }
       .width('100%')
       .height(52)
 
-      Grid() {
-        ForEach(this.browserState.tabs, (tab: BrowserTabState) => {
-          GridItem() {
-            Column() {
-              Row() {
-                Text(tab.title && tab.title.length > 0 ? tab.title : '新标签页')
-                  .maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                  .fontSize(13)
-                  .fontWeight(tab.active ? FontWeight.Medium : FontWeight.Regular)
-                  .fontColor(tab.active ?
-                    $r('app.color.accent_primary') : $r('app.color.text_primary'))
-                  .layoutWeight(1)
-                Button({ type: ButtonType.Circle }) {
-                  Image($r('app.media.chromium_close'))
-                    .width(16)
-                    .height(16)
-                    .fillColor($r('app.color.icon_secondary'))
-                }
-                .width(30)
-                .height(30)
-                .backgroundColor(Color.Transparent)
-                .accessibilityText('关闭标签页')
-                .onClick(() => {
-                  this.issueCommand({ command: 'closeTab', index: tab.index });
-                })
-              }
-              .width('100%')
-              .height(36)
-              .padding({ left: 10, right: 4 })
-
-              Stack() {
-                if (this.thumbnailFor(tab).length > 0) {
-                  Image(this.thumbnailFor(tab))
-                    .objectFit(ImageFit.Cover)
-                    // 已休眠的标签留着上一次的缩略图，压暗表示页面已不在内存里。
-                    .opacity(tab.discarded === true ? 0.4 : 1)
-                } else {
-                  // 没抓到快照（后台标签被回收等）：别把整条 URL 糊上来，
-                  // 用页面标题占位更可读。
-                  Text(tab.title.length > 0 ? tab.title : this.shortUrl(tab.url))
-                    .fontSize(13)
-                    .fontColor($r('app.color.text_secondary'))
-                    .textAlign(TextAlign.Center)
-                    .maxLines(3)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .padding(10)
-                }
-                // 引擎为省内存丢弃了这个标签（或从上次会话恢复后还没打开过）：
-                // 标题、图标、前进后退记录都还在，点开时自动重新加载。契约
-                // 要求显示为加载中而不是空白，所以盖一层"已休眠"。
-                if (tab.discarded === true) {
-                  Column({ space: 2 }) {
-                    Text('已休眠')
-                      .fontSize(12)
-                      .fontWeight(FontWeight.Medium)
-                      .fontColor($r('app.color.text_secondary'))
-                    Text('点击重新加载')
-                      .fontSize(10)
-                      .fontColor($r('app.color.text_secondary'))
-                  }
-                  .width('100%')
-                  .height('100%')
-                  .justifyContent(FlexAlign.Center)
-                  .backgroundColor($r('app.color.surface_primary'))
-                  .opacity(0.88)
-                }
-              }
-              .width('100%')
-              .layoutWeight(1)
-              .backgroundColor($r('app.color.surface_secondary'))
-            }
-            .width('100%')
-            .height(208)
-            .clip(true)
-            .borderRadius(14)
-            .border({
-              width: tab.active ? 2 : 0.5,
-              color: tab.active ? $r('app.color.accent_primary') : $r('app.color.divider')
-            })
-            .backgroundColor($r('app.color.surface_primary'))
-            .onClick(() => {
-              // Switch first, then dismiss: the reader expects to land on
-              // the page they tapped, with the sheet gone.
-              this.issueCommand({ command: 'activateTab', index: tab.index });
-              this.closeMenuSheet();
-            })
-          }
-        }, (tab: BrowserTabState): string => tab.index.toString())
+      if (this.tabLayout === 'list') {
+        this.TabList()
+      } else {
+        this.TabGrid()
       }
-      .columnsTemplate('1fr 1fr')
-      .columnsGap(10)
-      .rowsGap(10)
-      .width('100%')
-      .layoutWeight(1)
-      .onAreaChange((_oldArea: Area, newArea: Area): void => {
-        this.measureTabGrid(newArea);
-      })
+
 
       Row({ space: 10 }) {
         Button('新建标签页')
@@ -1697,10 +3020,485 @@ export struct MobileBrowserOverlay {
     .backgroundColor(Color.Transparent)
   }
 
+  // 网格排布：两列卡片，缩略图按卡片形状取（见 measureTabGrid）。
+  @Builder
+  private TabGrid() {
+    Grid() {
+      ForEach(this.browserState.tabs, (tab: BrowserTabState) => {
+        GridItem() {
+          Column() {
+            Row() {
+              Text(tab.title && tab.title.length > 0 ? tab.title : '新标签页')
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .fontSize(13)
+                .fontWeight(tab.active ? FontWeight.Medium : FontWeight.Regular)
+                .fontColor(tab.active ?
+                  $r('app.color.accent_primary') : $r('app.color.text_primary'))
+                .layoutWeight(1)
+              Button({ type: ButtonType.Circle }) {
+                Image($r('app.media.chromium_close'))
+                  .width(16)
+                  .height(16)
+                  .fillColor($r('app.color.icon_secondary'))
+              }
+              .width(30)
+              .height(30)
+              .backgroundColor(Color.Transparent)
+              .accessibilityText('关闭标签页')
+              .onClick(() => {
+                this.issueCommand({ command: 'closeTab', index: tab.index });
+              })
+            }
+            .width('100%')
+            .height(36)
+            .padding({ left: 10, right: 4 })
+
+            Stack() {
+              if (this.thumbnailFor(tab).length > 0) {
+                Image(this.thumbnailFor(tab))
+                  // 1.0.89：以前没有尺寸，Image 按图片固有像素大小画（在
+                  // Stack 里既不对齐也可能画成 0），显式铺满卡片 + Cover。
+                  .width('100%')
+                  .height('100%')
+                  .objectFit(ImageFit.Cover)
+                  // 已休眠的标签留着上一次的缩略图，压暗表示页面已不在内存里。
+                  .opacity(tab.discarded === true ? 0.4 : 1)
+              } else {
+                // 没抓到快照（后台标签被回收等）：别把整条 URL 糊上来，
+                // 用页面标题占位更可读。
+                Text(tab.title.length > 0 ? tab.title : this.shortUrl(tab.url))
+                  .fontSize(13)
+                  .fontColor($r('app.color.text_secondary'))
+                  .textAlign(TextAlign.Center)
+                  .maxLines(3)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .padding(10)
+              }
+              // 引擎为省内存丢弃了这个标签（或从上次会话恢复后还没打开过）：
+              // 标题、图标、前进后退记录都还在，点开时自动重新加载。契约
+              // 要求显示为加载中而不是空白，所以盖一层"已休眠"。
+              if (tab.discarded === true) {
+                Column({ space: 2 }) {
+                  Text('已休眠')
+                    .fontSize(12)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor($r('app.color.text_secondary'))
+                  Text('点击重新加载')
+                    .fontSize(10)
+                    .fontColor($r('app.color.text_secondary'))
+                }
+                .width('100%')
+                .height('100%')
+                .justifyContent(FlexAlign.Center)
+                .backgroundColor($r('app.color.surface_primary'))
+                .opacity(0.88)
+              }
+            }
+            .width('100%')
+            .layoutWeight(1)
+            .backgroundColor($r('app.color.surface_secondary'))
+          }
+          .width('100%')
+          .height(208)
+          .clip(true)
+          .borderRadius(14)
+          .border({
+            width: tab.active ? 2 : 0.5,
+            color: tab.active ? $r('app.color.accent_primary') : $r('app.color.divider')
+          })
+          .backgroundColor($r('app.color.surface_primary'))
+          .onClick(() => {
+            // Switch first, then dismiss: the reader expects to land on
+            // the page they tapped, with the sheet gone.
+            this.issueCommand({ command: 'activateTab', index: tab.index });
+            this.closeMenuSheet();
+          })
+        }
+      }, (tab: BrowserTabState): string => tab.index.toString())
+    }
+    .columnsTemplate('1fr 1fr')
+    .columnsGap(10)
+    .rowsGap(10)
+    .width('100%')
+    .layoutWeight(1)
+    .onAreaChange((_oldArea: Area, newArea: Area): void => {
+      this.measureTabGrid(newArea);
+    })
+  }
+
+  // 列表排布：一行一个标签 —— 左 64×46 缩略图、中间标题 + 网址、右边关闭钮。
+  // 缩略图请求尺寸与行内图一致（见 toggleTabLayout）。
+  @Builder
+  private TabList() {
+    Scroll() {
+      Column({ space: 8 }) {
+        ForEach(this.browserState.tabs, (tab: BrowserTabState) => {
+          this.TabListRow(tab)
+        }, (tab: BrowserTabState): string => tab.index.toString())
+      }
+      .width('100%')
+    }
+    .width('100%')
+    .layoutWeight(1)
+    // 与面板列表同一条手感：列表回弹显式打开（见 §4 面板动效三件套）。
+    .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+  }
+
+  @Builder
+  private TabListRow(tab: BrowserTabState) {
+    Row({ space: 10 }) {
+      Stack() {
+        if (this.thumbnailFor(tab).length > 0) {
+          Image(this.thumbnailFor(tab))
+            .width('100%')
+            .height('100%')
+            .objectFit(ImageFit.Cover)
+            // 已休眠的标签留着上一次的缩略图，压暗表示页面已不在内存里。
+            .opacity(tab.discarded === true ? 0.4 : 1)
+            .draggable(false)
+        } else {
+          Text(tab.title.length > 0 ? tab.title.substring(0, 1).toUpperCase() : '?')
+            .fontSize(15)
+            .fontColor($r('app.color.text_secondary'))
+        }
+      }
+      .width(TAB_LIST_THUMB_WIDTH_VP)
+      .height(TAB_LIST_THUMB_HEIGHT_VP)
+      .borderRadius(8)
+      .backgroundColor($r('app.color.surface_secondary'))
+      .clip(true)
+
+      Column({ space: 2 }) {
+        Text(tab.title && tab.title.length > 0 ? tab.title : '新标签页')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .fontSize(14)
+          .fontWeight(tab.active ? FontWeight.Medium : FontWeight.Regular)
+          .fontColor(tab.active ?
+            $r('app.color.accent_primary') : $r('app.color.text_primary'))
+          .width('100%')
+          .textAlign(TextAlign.Start)
+        // 引擎丢了这个标签（省内存 / 恢复后还没打开过）：点开时自动重新加载。
+        Text(tab.discarded === true ? '已休眠 · 点击重新加载' : this.shortUrl(tab.url))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .fontSize(11)
+          .fontColor($r('app.color.text_secondary'))
+          .width('100%')
+          .textAlign(TextAlign.Start)
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+
+      Button({ type: ButtonType.Circle, stateEffect: false }) {
+        Image($r('app.media.chromium_close'))
+          .width(16)
+          .height(16)
+          .fillColor($r('app.color.icon_secondary'))
+      }
+      .width(30)
+      .height(30)
+      .backgroundColor(Color.Transparent)
+      .accessibilityText('关闭标签页')
+      .onClick((): void => {
+        this.issueCommand({ command: 'closeTab', index: tab.index });
+      })
+    }
+    .width('100%')
+    .height(64)
+    .padding({ left: 10, right: 4 })
+    .borderRadius(12)
+    .border({
+      width: tab.active ? 2 : 0.5,
+      color: tab.active ? $r('app.color.accent_primary') : $r('app.color.divider')
+    })
+    .backgroundColor($r('app.color.surface_primary'))
+    .onClick((): void => {
+      this.issueCommand({ command: 'activateTab', index: tab.index });
+      this.closeMenuSheet();
+    })
+  }
+
+  // 网格 / 列表切换：写完偏好就按新的图大小重取缩略图（同一份回包按 id 存，
+  // 换了尺寸必须重新问一次，否则列表里是网格尺寸的图、反之亦然）。
+  private toggleTabLayout(): void {
+    const next: string = this.tabLayout === 'list' ? 'grid' : 'list';
+    this.tabLayout = next;
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (context) {
+      ShellUiPrefs.saveTabLayout(context, next);
+    }
+    if (next === 'list') {
+      this.tabThumbWidthVp = TAB_LIST_THUMB_WIDTH_VP;
+      this.tabThumbAspect = TAB_LIST_THUMB_WIDTH_VP / TAB_LIST_THUMB_HEIGHT_VP;
+    } else {
+      // 网格：把 aspect 归零，等 onAreaChange 量出卡片宽度再定（measureTabGrid）。
+      this.tabThumbAspect = 0;
+      this.tabThumbWidthVp = 160;
+    }
+    this.requestTabThumbnails();
+  }
+
+  // 全部删除：留一个新的标签页。关掉最后一个标签页会把窗口（连应用）一起
+  // 关掉，所以先留索引 0、把它送回主页，再从后往前关其余的 —— 逆序关，索引
+  // 不会因为前面的删除而错位。
+  private confirmCloseAllTabs(): void {
+    const count: number = this.browserState.tabCount;
+    if (count <= 0) {
+      return;
+    }
+    this.getUIContext().getPromptAction().showDialog({
+      title: '关闭全部标签页',
+      message: `将关闭 ${count} 个标签页，并留下一个新的标签页。`,
+      buttons: [
+        { text: '取消', color: '#5F6368' },
+        { text: '关闭', color: '#E24B4A' }
+      ]
+    }).then((result: promptAction.ShowDialogSuccessResponse): void => {
+      if (result.index !== 1) {
+        return;
+      }
+      this.closeAllTabs(count);
+    }).catch((error: Error): void => {
+      console.error('Failed to show close-all dialog:', error);
+    });
+  }
+
+  private closeAllTabs(count: number): void {
+    this.issueCommand({ command: 'activateTab', index: 0 });
+    this.issueCommand({ command: 'home' });
+    for (let index: number = count - 1; index >= 1; index -= 1) {
+      this.issueCommand({ command: 'closeTab', index: index });
+    }
+    this.closeMenuSheet();
+  }
+
   // ⋮ 菜单：Lumie 那块悬浮卡片的样子。不铺遮罩（只留一层透明点击层收卡片），
   // 卡片贴在 dock 上方、靠右；第一行是"域名 · 连接安全"，然后是页面操作，
   // 再一组是无痕与桌面版，最后一行四个入口。**主页上没有页面可操作，页面类
   // 的项一律不出现**，只剩无痕与入口行。每一项点完立即关卡片。
+  // 1.0.111：「网址主页」设置表单——填一个网址，此后按主页键就打开这个页面
+  // （用户定案的语义；不是"加书签到主页磁贴"）。骨架抄 BookmarkFormOverlay
+  // （menu_glass 卡片 + 遮罩 + 弹层动画）；留空保存 = 恢复内置主页。
+  // 1.0.120「自定义网址」：多组网址管理表单（设置-主页设置右上角 / 长按 dock
+  // 主页图标两个入口共用）。增删改在点按当下即落盘，不再有「保存」这一步。
+  @Builder
+  private HomeUrlFormOverlay() {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor($r('app.color.modal_scrim'))
+        .transition(TransitionEffect.asymmetric(
+          TransitionEffect.opacity(0).animation({ duration: 260, curve: Curve.Friction }),
+          TransitionEffect.opacity(0).animation({ duration: 380, curve: Curve.Friction })
+        ))
+        .onClick((): void => {
+          this.closeHomeUrlForm();
+        })
+
+      Row() {
+        Column({ space: 14 }) {
+          Text('自定义网址')
+            .fontSize(17)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .width('100%')
+          Text('可以添加多组网址；打勾的那一条就是主页，按主页键和冷启动都打开它。')
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+
+          // 新增一行：输入 + 添加。回车或点「添加」都行，反复添加即可攒成列表。
+          Row({ space: 10 }) {
+            TextInput({ text: this.homeUrlDraft, placeholder: 'https://…' })
+              .layoutWeight(1)
+              .height(46)
+              .fontSize(15)
+              .fontColor($r('app.color.text_primary'))
+              .placeholderColor($r('app.color.text_secondary'))
+              .backgroundColor($r('app.color.surface_secondary'))
+              .borderRadius(12)
+              .onChange((value: string): void => {
+                this.homeUrlDraft = value;
+              })
+              .onSubmit((): void => {
+                this.addHomeUrlEntry();
+              })
+            Row() {
+              Text('添加')
+                .fontSize(15)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.on_accent'))
+                .maxLines(1)
+            }
+            .justifyContent(FlexAlign.Center)
+            .width(74)
+            .height(46)
+            .borderRadius(12)
+            .backgroundColor($r('app.color.accent_primary'))
+            .onClick((): void => {
+              this.addHomeUrlEntry();
+            })
+          }
+          .width('100%')
+
+          if (this.homeUrlList.length === 0) {
+            Text('还没有网址。添加后点一下就能把它设为主页。')
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+              .padding({ top: 6, bottom: 6 })
+          } else {
+            Scroll() {
+              Column({ space: 8 }) {
+                ForEach(this.homeUrlList, (item: string): void => {
+                  this.HomeUrlEntryRow(item, item === this.homeUrlActive);
+                }, (item: string): string => {
+                  // 键里并入勾选态：ForEach 键不变会复用旧组件，只改 active
+                  // 时对勾不会跟着走（1.0.104 的同一个坑）。
+                  return `${item}|${item === this.homeUrlActive ? '1' : '0'}`;
+                })
+              }
+              .width('100%')
+            }
+            .width('100%')
+            .constraintSize({ maxHeight: 234 })
+            .scrollBar(BarState.Off)
+            .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+          }
+
+          Row() {
+            Text('完成')
+              .fontSize(15)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_primary'))
+          }
+          .justifyContent(FlexAlign.Center)
+          .width('100%')
+          .height(44)
+          .borderRadius(12)
+          .backgroundColor($r('app.color.surface_secondary'))
+          .onClick((): void => {
+            this.closeHomeUrlForm();
+          })
+        }
+        .width('100%')
+        .padding(20)
+        .borderRadius(22)
+        .backgroundColor($r('app.color.menu_glass'))
+        .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
+        .transition(TransitionEffect.asymmetric(
+          TransitionEffect.opacity(0)
+            .combine(TransitionEffect.scale({ x: 0.92, y: 0.92 }))
+            .animation({ curve: curves.springMotion(0.3, 0.75) }),
+          TransitionEffect.opacity(0)
+            .combine(TransitionEffect.scale({ x: 0.95, y: 0.95 }))
+            .animation({ duration: 320, curve: Curve.FastOutSlowIn })
+        ))
+      }
+      .padding({ left: 24, right: 24 })
+      .width('100%')
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  // 一行网址：左半区点按 = 设为当前主页（打勾），右侧垃圾桶 = 删除。
+  // 两个可点区是兄弟节点，不做嵌套 onClick —— 嵌套时内层点击会不会被外层
+  // 一起收走有版本差异，分开摆最稳。
+  @Builder
+  private HomeUrlEntryRow(url: string, active: boolean) {
+    Row({ space: 10 }) {
+      Row({ space: 10 }) {
+        if (active) {
+          Image($r('app.media.aura_check'))
+            .width(18)
+            .height(18)
+            .flexShrink(0)
+            .fillColor($r('app.color.accent_primary'))
+        } else {
+          Column()
+            .width(18)
+            .height(18)
+            .flexShrink(0)
+            .borderRadius(9)
+            .border({ width: 1.5, color: $r('app.color.divider') })
+        }
+        Text(url)
+          .fontSize(14)
+          .fontColor(active ? $r('app.color.accent_primary') : $r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+      }
+      .layoutWeight(1)
+      .onClick((): void => {
+        this.selectHomeUrlEntry(url);
+      })
+
+      Row() {
+        Image($r('app.media.aura_trash'))
+          .width(18)
+          .height(18)
+          .fillColor($r('app.color.text_secondary'))
+      }
+      .width(32)
+      .height(32)
+      .flexShrink(0)
+      .justifyContent(FlexAlign.Center)
+      .onClick((): void => {
+        this.removeHomeUrlEntry(url);
+      })
+    }
+    .width('100%')
+    .padding({ left: 12, right: 6, top: 8, bottom: 8 })
+    .borderRadius(12)
+    .backgroundColor($r('app.color.surface_secondary'))
+  }
+
+  // 1.0.109：「自定义网址」入口菜单——长按 dock 主页图标弹出的小卡片。
+  // 自绘（menu_glass，与 ⋮ 卡同一家族：系统 bindMenu 会拖死整屏点击，本应用
+  // 封死）；点卡片外任意处收起。模态在场时整屏归 overlay（见
+  // buildChromeTouchRegions 的模态分支），点外不误触网页。
+  @Builder
+  private HomeTileMenu() {
+    Stack({ alignContent: (this.homeStyle === 'chrome' && this.chromeDockAtTop())
+      ? Alignment.TopStart : Alignment.BottomStart }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(Color.Transparent)
+        .onClick((): void => {
+          this.homeTileMenuVisible = false;
+        })
+
+      Column() {
+        this.MenuItem($r('app.media.aura_globe'), '自定义网址', '', (): void => {
+          this.requestAddHomeTile();
+        })
+      }
+      .width(MENU_CARD_WIDTH_VP)
+      .borderRadius(22)
+      .backgroundColor($r('app.color.menu_glass'))
+      .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
+      // 贴条带下沿（顶置）/ 上沿（底置），左对齐——菜单锚在主页图标附近。
+      .margin(this.homeStyle === 'chrome' && this.chromeDockAtTop()
+        ? { left: 16, top: CHROME_DOCK_EXTENT_VP + this.topSafeVp + 8 }
+        : { left: 16, bottom: 82 + this.bottomSafeVp })
+      .transition(TransitionEffect.asymmetric(
+        TransitionEffect.opacity(0)
+          .combine(TransitionEffect.translate({ y: 16 }))
+          .combine(TransitionEffect.scale({ x: 0.92, y: 0.92 })),
+        TransitionEffect.opacity(0)
+          .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 }))
+      ).animation({ curve: curves.springMotion(0.3, 0.72) }))
+    }
+    .width('100%')
+    .height('100%')
+  }
+
   @Builder
   private MenuCard() {
     Column() {
@@ -1760,7 +3558,9 @@ export struct MobileBrowserOverlay {
 
       this.MenuSeparator()
 
-      Row({ space: 8 }) {
+      // 五个面板入口等宽平铺（1.0.87：扩展从顶栏搬到这里 —— 顶栏只留地址栏）。
+      // 卡片内宽 258-2*8-4*6 = 218vp → 每格 ≈43vp，22 图标 + 12sp 文字放得下。
+      Row({ space: 6 }) {
         this.PanelEntryButton('书签', $r('app.media.chromium_bookmark'), (): void => {
           this.openPanel('bookmarks');
         })
@@ -1770,12 +3570,15 @@ export struct MobileBrowserOverlay {
         this.PanelEntryButton('下载', $r('app.media.chromium_download'), (): void => {
           this.openPanel('downloads');
         })
+        this.PanelEntryButton('扩展', $r('app.media.aura_extensions'), (): void => {
+          this.openExtensionsPanel(false);
+        })
         this.PanelEntryButton('设置', $r('app.media.chromium_settings'), (): void => {
           this.openPanel('settings');
         })
       }
       .width('100%')
-      .padding({ left: 10, right: 10, top: 10, bottom: 12 })
+      .padding({ left: 8, right: 8, top: 10, bottom: 12 })
     }
     .width(MENU_CARD_WIDTH_VP)
     .borderRadius(22)
@@ -1786,13 +3589,17 @@ export struct MobileBrowserOverlay {
     // 网页上方的浮层一律自绘（底色 menu_glass + 圆角/阴影/出入场动画）。
     .backgroundColor($r('app.color.menu_glass'))
     .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
-    .margin({ right: 14, bottom: 82 + this.bottomSafeVp })
+    // Chrome 顶置/主页：菜单卡贴在顶部 dock 之下（靠上）；其余（Chrome 底置 / 简约）贴底。
+    .margin(this.homeStyle === 'chrome' && this.chromeDockAtTop()
+      ? { right: 14, top: CHROME_DOCK_EXTENT_VP + this.topSafeVp + 8 }
+      : { right: 14, bottom: 82 + this.bottomSafeVp })
     .transition(TransitionEffect.asymmetric(
       TransitionEffect.opacity(0)
-        .combine(TransitionEffect.translate({ y: 24 }))
-        .combine(TransitionEffect.scale({ x: 0.97, y: 0.97 })),
+        .combine(TransitionEffect.translate({ y: 20 }))
+        .combine(TransitionEffect.scale({ x: 0.9, y: 0.9 })),
       TransitionEffect.opacity(0)
-    ).animation({ duration: 200, curve: Curve.Friction }))
+        .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 }))
+    ).animation({ curve: curves.springMotion(0.3, 0.72) }))
   }
 
   // 第一行：连接状态。锁形图标 + 域名 + " · 连接安全/不安全"，与 Lumie 一致。
@@ -1829,7 +3636,7 @@ export struct MobileBrowserOverlay {
   }
 
   private isHomeSurface(): boolean {
-    return this.isNewTabUrl(this.browserState.url);
+    return this.engineHomeCover || this.isNewTabUrl(this.browserState.url);
   }
 
   private menuDomainText(): string {
@@ -2128,17 +3935,146 @@ export struct MobileBrowserOverlay {
     }
   }
 
+  private panelWidthVp(): number {
+    return this.viewportWidthVp > 0 ? this.viewportWidthVp : 360;
+  }
+
+  // 打开扩展面板。
+  //
+  // 1.0.124：**这里不再拦网页上下文** —— 打开列表只是查看/管理已装扩展
+  // （启停、详情、卸载、从文件安装），不依赖当前标签页是不是网页。
+  // 「先打开一个网页」那条提示属于**点开某个具体扩展、它要弹 popup 时**
+  // （脚本猫这类），已挪到 ExtensionPanel.runExtension() 里。
+  //
+  // 历史（别再退回去）：1.0.123 曾把守卫放在这里，只放行设置入口、仍拦 dock
+  // 入口 —— 但 dock 入口打开的也是同一块列表面板，同样不需要网页上下文，
+  // 于是出现「点 dock 扩展提示先开网页、点设置扩展却能开」的分裂。守卫的
+  // 位置错了，不是守卫的松紧错了。
+  private openExtensionsPanel(fromSettings: boolean): void {
+    this.extensionsFromSettings = fromSettings;
+    if (fromSettings) {
+      this.switchPanel('extensions', true);
+    } else {
+      this.openPanel('extensions');
+    }
+  }
+
   private openPanel(page: string): void {
     this.menuVisible = false;
     this.menuCardVisible = false;
     this.sheetPage = 'tabs';
     this.extensionsFromSettings = false;
+    // 面板开合动效：先落到"屏外右侧"，让挂载首帧就渲染在屏外，再由 PanelLayer
+    // 的 onAppear 起弹簧动画滑入 —— 既不会闪一帧，也不受首帧重布局影响。
+    const wasOpen: boolean = this.panelPage !== 'none';
+    this.panelCloseToken++;
+    this.panelShift = 0;
+    this.panelContentShift = 0;
     this.panelPage = page;
+    if (wasOpen) {
+      // 面板已在场（关闭动画收尾前又点开）：onAppear 不会再触发，这里补一次。
+      setTimeout((): void => {
+        animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
+          this.panelShift = 1;
+        });
+      }, 32);
+    }
   }
 
   private closePanel(): void {
-    this.panelPage = 'none';
     this.extensionsFromSettings = false;
+    // 关闭动效：滑出到右侧**之后**才卸载（动画期间内容保留在场）。
+    const token: number = ++this.panelCloseToken;
+    animateTo({ curve: curves.springMotion(0.32, 0.92) }, (): void => {
+      this.panelShift = 0;
+    });
+    setTimeout((): void => {
+      if (token === this.panelCloseToken) {
+        this.panelPage = 'none';
+        this.panelShift = 1;
+        this.panelContentShift = 0;
+      }
+    }, 420);
+  }
+
+  // 面板内二级切换（设置→扩展程序/网站权限/密码、扩展→设置返回…）：内容层
+  // 按方向滑入（forward=true 从右侧，false 从左侧）+ 轻淡入，250ms 弹簧收尾。
+  private switchPanel(page: string, forward: boolean): void {
+    if (this.panelPage === 'none') {
+      this.openPanel(page);
+      return;
+    }
+    if (this.panelPage === page) {
+      return;
+    }
+    this.panelContentShift = forward ? 1 : -1;
+    this.panelPage = page;
+    setTimeout((): void => {
+      animateTo({ curve: curves.springMotion(0.34, 0.9) }, (): void => {
+        this.panelContentShift = 0;
+      });
+    }, 32);
+  }
+
+  // 页面切换："横向扫过"帘幕（1.0.67，替代纯淡入淡出）—— 从右侧扫入盖上、
+  // 立即继续向左扫出（新页从右侧揭开），一次 ≈430ms；in-flight 内不重复触发。
+  // 起始值 1（屏外右）在上一轮收尾时已复位并渲染，animateTo 从已渲染值出发。
+  // 页面切换帘幕（1.0.67 起）：地址栏提交搜索 / 点链接 / 切标签 / 前进后退都会
+  // 触发。
+  // 1.0.72：恢复「固定时长扫过」。1.0.71 曾改成「等本次导航 loading 结束再揭
+  // 开」，真机实测反而更差 —— 帘幕是**覆盖层**，盖多久就空白多久，把原本
+  // ≈0.45s 的引擎绘制空档撑成 ≈1.05s（6 次采样均值）。加载提示改由
+  // LoadingBar 承担：它不覆盖内容，只指示，不延长任何东西。
+  private playNavVeil(): void {
+    if (this.navVeilTimer !== -1) {
+      return;
+    }
+    animateTo({ duration: 150, curve: Curve.Friction }, (): void => {
+      this.navVeilShift = 0;
+    });
+    this.navVeilTimer = setTimeout((): void => {
+      animateTo({ duration: 270, curve: Curve.Friction }, (): void => {
+        this.navVeilShift = -1;
+      });
+      setTimeout((): void => {
+        // 复位到屏外右侧（此刻不可见），供下次扫入。
+        this.navVeilShift = 1;
+        this.navVeilTimer = -1;
+      }, 290);
+    }, 160);
+  }
+
+  // 1.0.72：根据引擎 loading / loadProgress 驱动 2vp 加载细条。
+  // 引擎契约（NativeContext）：loadProgress 为 0..1，空闲时恒为 1。
+  private syncLoadBar(): void {
+    const loading: boolean = this.browserState.loading === true;
+    if (loading) {
+      if (this.loadBarFadeTimer !== 0) {
+        clearTimeout(this.loadBarFadeTimer);
+        this.loadBarFadeTimer = 0;
+      }
+      if (!this.loadBarShown) {
+        // 先以最小可见宽度挂载：首次渲染不会触发属性动画，后续变化才动。
+        this.loadBarWidth = this.loadBarMin;
+        this.loadBarShown = true;
+      }
+      const raw: number = this.browserState.loadProgress ?? 0;
+      // 未真正结束前不露满格（封顶 0.92），收尾那一下才灌到 100%。
+      this.loadBarWidth = Math.min(Math.max(raw, this.loadBarMin), 0.92);
+      return;
+    }
+    if (!this.loadBarShown) {
+      return;
+    }
+    // 加载结束：灌满 → 稍作停留 → 卸载（淡出由 if 根节点 transition 负责）。
+    this.loadBarWidth = 1;
+    if (this.loadBarFadeTimer === 0) {
+      this.loadBarFadeTimer = setTimeout((): void => {
+        this.loadBarFadeTimer = 0;
+        this.loadBarShown = false;
+        this.loadBarWidth = this.loadBarMin;
+      }, 180);
+    }
   }
 
   private displayDomain(): string {
@@ -2159,16 +4095,23 @@ export struct MobileBrowserOverlay {
     return url.replace(/^https?:\/\//, '');
   }
 
+  // 注：「当前标签页是不是真网页」的判据 1.0.124 已挪到
+  // ExtensionPanel.isWebPageUrl() —— 那里才是需要它的地方（点开某个扩展要弹
+  // popup 时）。打开扩展列表面板本身不需要网页上下文，这里不再判。
+
   private isNewTabUrl(url: string): boolean {
     return url.startsWith('chrome://newtab') ||
       url.startsWith('chrome://new-tab-page') ||
-      url.startsWith('chrome://new-tab-page-third-party');
+      url.startsWith('chrome://new-tab-page-third-party') ||
+      // 与 AuraShell.isNewTabUrl 同一份判据（引擎换 URL 写法时两边一起改）。
+      url.startsWith('chrome-native://newtab');
   }
 
   private beginAddressEdit(): void {
     // 如果有待定的导航后回弹，重新编辑时取消它，避免旧定时器把正在
     // 编辑的地址栏切回浏览态。
     this.cancelControlsRebound();
+    this.hideAddressSuggest();
     this.addressEditEpoch += 1;
     this.addressDraft = this.browserState.url.startsWith('chrome://') ? '' : this.browserState.url;
     this.addressSelectionStart = 0;
@@ -2178,52 +4121,41 @@ export struct MobileBrowserOverlay {
     // Pin both bars while the keyboard is up (SHELL_CONTRACT.md, "手机：滚动
     // 时收起地址栏和 dock", step 5).
     this.issueCommand({ command: 'setBrowserControlsState', state: 'shown', animate: true });
-    [0, 80, 220, 450].forEach((delay: number): void => {
+    // 首帧聚焦（键盘弹出）。全选由三处 TextInput 的 .selectAll(true) 提供
+    // （1.0.113 改回，即 1.0.90 的原机制）；这里不再用 setTextSelection 二次设选区——
+    // 两条路同时设会多弹一次选中菜单，也会盖掉属性态。取消只收起编辑、还原网址，
+    // 与选中态无关。若真机出现「选中态下点 dock 按钮第一次没反应」（1.0.110 的老问题），
+    // 正解是改「首字符替换整条」（不保留常驻选区），而不是再删全选。
+    this.keyboardRecoveryTimers.push(setTimeout((): void => {
+      if (!this.editingAddress) {
+        return;
+      }
+      try {
+        this.getUIContext().getFocusController().requestFocus('mobile_address_input');
+        inputMethod.getController().showTextInput().catch((error: Error): void => {
+          console.error('Failed to show the address keyboard:', error);
+        });
+      } catch (error) {
+      }
+    }, 0));
+    // 后续定时器只补聚焦（键盘偶发不弹出时兜底），不再动选区，免得用户已输入
+    // 又被全选覆盖。
+    [80, 220, 450].forEach((delay: number): void => {
       this.keyboardRecoveryTimers.push(setTimeout((): void => {
         if (!this.editingAddress) {
           return;
         }
         try {
           this.getUIContext().getFocusController().requestFocus('mobile_address_input');
-          inputMethod.getController().showTextInput().catch((error: Error): void => {
-            console.error('Failed to show the address keyboard:', error);
-          });
         } catch (error) {
         }
       }, delay));
     });
   }
 
-  private pasteAddress(): void {
-    this.clearKeyboardRecoveryTimers();
-    const epoch = this.addressEditEpoch;
-    const original = this.addressDraft;
-    const activation = this.browserState.activationEpoch;
-    const tabId = this.browserState.tabs[this.browserState.activeTabIndex]?.id;
-    const pageUrl = this.browserState.url;
-    const start = Math.max(0, Math.min(this.addressSelectionStart, original.length));
-    const end = Math.max(start, Math.min(this.addressSelectionEnd, original.length));
-    showSystemPasteDialog(this.getUIContext(), (text: string): void => {
-      if (!this.editingAddress || this.addressEditEpoch !== epoch ||
-        this.addressDraft !== original || this.browserState.activationEpoch !== activation ||
-        this.browserState.tabs[this.browserState.activeTabIndex]?.id !== tabId ||
-        this.browserState.url !== pageUrl) {
-        return;
-      }
-      this.addressDraft = original.substring(0, start) + text + original.substring(end);
-      this.addressSelectionStart = start + text.length;
-      this.addressSelectionEnd = this.addressSelectionStart;
-      this.keyboardRecoveryTimers.push(setTimeout((): void => {
-        if (this.editingAddress && this.addressEditEpoch === epoch) {
-          this.getUIContext().getFocusController().requestFocus('mobile_address_input');
-          this.addressController.caretPosition(this.addressSelectionEnd);
-        }
-      }, 0));
-    }, (): void => {});
-  }
-
   private submitAddress(): void {
     this.clearKeyboardRecoveryTimers();
+    this.hideAddressSuggest();
     const target = normalizeAddress(this.addressDraft);
     if (target.length > 0) {
       this.issueCommand({ command: 'navigate', url: target });
@@ -2239,9 +4171,275 @@ export struct MobileBrowserOverlay {
     }
   }
 
+  // ---- 地址栏联想 ----
+
+  // 输入变化：轻防抖（130ms）后向引擎要联想（本地自动补全，回包流式）。
+  // 非空即让列表可见（先落一条「搜索」兜底行），引擎结果到了再补齐。
+  private scheduleAddressSuggest(text: string): void {
+    if (this.addressSuggestTimer !== -1) {
+      clearTimeout(this.addressSuggestTimer);
+      this.addressSuggestTimer = -1;
+    }
+    const query = text.trim();
+    if (query.length === 0) {
+      this.hideAddressSuggest();
+      return;
+    }
+    this.suggestVisible = true;
+    if (query === this.addressSuggestText) {
+      return;
+    }
+    this.addressSuggestText = query;
+    this.suggestItems = [];
+    this.onlineSuggestWords = [];
+    this.autocompletePending = -1;
+    this.addressSuggestTimer = setTimeout((): void => {
+      this.addressSuggestTimer = -1;
+      if (!this.editingAddress) {
+        return;
+      }
+      // 本地自动补全（历史/书签/打开标签/网址，引擎侧完成）。
+      this.autocompleteSeq += 1;
+      this.autocompletePending = this.autocompleteSeq;
+      this.issueCommand({
+        command: 'autocomplete',
+        requestId: this.autocompleteSeq,
+        text: query
+      });
+      // 在线联想词（仅搜索型输入；URL 型输入不该发给搜索引擎）。
+      this.fetchOnlineSuggest(query);
+    }, 130);
+  }
+
+  // 收起联想（提交 / 取消编辑 / 点列表外 / 页面已跳走）。
+  private hideAddressSuggest(): void {
+    if (this.addressSuggestTimer !== -1) {
+      clearTimeout(this.addressSuggestTimer);
+      this.addressSuggestTimer = -1;
+    }
+    this.autocompletePending = -1;
+    this.suggestHttpSeq += 1;
+    this.addressSuggestText = '';
+    this.suggestItems = [];
+    this.onlineSuggestWords = [];
+    this.suggestVisible = false;
+  }
+
+  // 引擎回包：只认最新 requestId（旧包丢弃）；同 id 的多包照单全收（流式）。
+  private onAutocompleteChanged(): void {
+    if (this.autocompleteJson.length === 0) {
+      return;
+    }
+    try {
+      const payload = JSON.parse(this.autocompleteJson) as AutocompletePayload;
+      if (payload.requestId !== this.autocompletePending) {
+        return;
+      }
+      // 归一化字段（引擎侧可选字段落空时保证渲染层拿到的是字符串）。
+      const normalized: AutocompleteItem[] = [];
+      for (const parsed of payload.items ?? []) {
+        normalized.push({
+          type: parsed.type,
+          title: typeof parsed.title === 'string' ? parsed.title : '',
+          url: typeof parsed.url === 'string' ? parsed.url : '',
+          description: typeof parsed.description === 'string' ? parsed.description : ''
+        } as AutocompleteItem);
+      }
+      this.suggestItems = normalized;
+    } catch (error) {
+    }
+  }
+
+  // 列表是否真的该显示：在"联想模式"、有输入、有行（搜索行/在线词/本地项）。
+  // URL 型输入在引擎给不出匹配时不弹（不显示空卡）。
+  private suggestListActive(): boolean {
+    return this.suggestVisible && this.editingAddress &&
+      this.addressSuggestText.length > 0 && this.suggestRows().length > 0;
+  }
+
+  // 「像在搜词」而非「像网址」——决定是否发在线联想 + 加首行「搜索」。
+  // 与 normalizeAddress 的判定同规则：带 scheme = 网址；含空格或无点 = 搜词。
+  private looksLikeUrl(text: string): boolean {
+    const input = text.trim();
+    if (input.length === 0) {
+      return false;
+    }
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(input)) {
+      return true;
+    }
+    if (/\s/.test(input) || !input.includes('.')) {
+      return false;
+    }
+    return true;
+  }
+
+  private searchSuggestRow(word: string): AutocompleteItem {
+    return {
+      type: 'search',
+      title: word === this.addressSuggestText ? `搜索 “${word}”` : word,
+      url: searchUrlFor(word),
+      description: ''
+    } as AutocompleteItem;
+  }
+
+  // 列表内容（自上而下）：
+  //   1. 「搜索 “输入”」—— 搜索型输入的第一动作，永远在首行；
+  //   2. 在线联想词（默认引擎建议接口，最多 5 条）；
+  //   3. 引擎本地补全（历史/书签/打开标签/网址；引擎给的 search 类目跳过，
+  //      与首行重复）。
+  // 总行数 ≤ 8，键盘弹起时列表不会越过半屏。
+  private suggestRows(): AutocompleteItem[] {
+    const rows: AutocompleteItem[] = [];
+    const query = this.addressSuggestText;
+    const searchLike = !this.looksLikeUrl(query);
+    if (searchLike && query.length > 0) {
+      rows.push(this.searchSuggestRow(query));
+    }
+    if (searchLike) {
+      for (const word of this.onlineSuggestWords) {
+        if (rows.length >= 8) {
+          break;
+        }
+        // 百度/搜狗常在首位回显查询词 —— 与首行「搜索」重复，跳过。
+        if (word === query) {
+          continue;
+        }
+        rows.push(this.searchSuggestRow(word));
+      }
+    }
+    const localCap = searchLike ? 3 : 6;
+    let local = 0;
+    for (const item of this.suggestItems) {
+      if (item.type === 'search') {
+        continue;
+      }
+      if (local >= localCap || rows.length >= 8) {
+        break;
+      }
+      rows.push(item);
+      local += 1;
+    }
+    return rows;
+  }
+
+  // 在线联想词：按默认搜索引擎选建议接口（失败静默——列表仍有本地行兜底）。
+  private onlineSuggestEndpoint(query: string): string {
+    const template = String(AppStorage.get('auraSearchUrlTemplate') ?? '');
+    const encoded = encodeURIComponent(query);
+    if (template.includes('baidu')) {
+      return `https://suggestion.baidu.com/su?wd=${encoded}&ie=utf-8&oe=utf-8&cb=aura`;
+    }
+    if (template.includes('bing')) {
+      return `https://api.bing.com/osjson.aspx?query=${encoded}`;
+    }
+    if (template.includes('google')) {
+      return `https://suggestqueries.google.com/complete/search?client=firefox&q=${encoded}`;
+    }
+    if (template.includes('sogou')) {
+      return `https://sugg.sogou.com/sugg/ajaj_json.jsp?key=${encoded}&type=web&ori=yes&pr=web`;
+    }
+    return '';
+  }
+
+  private fetchOnlineSuggest(query: string): void {
+    if (this.looksLikeUrl(query)) {
+      return;
+    }
+    const endpoint = this.onlineSuggestEndpoint(query);
+    if (endpoint.length === 0) {
+      return;
+    }
+    this.suggestHttpSeq += 1;
+    const seq = this.suggestHttpSeq;
+    http.createHttp().request(endpoint, {
+      method: http.RequestMethod.GET,
+      connectTimeout: 4000,
+      readTimeout: 4000
+    }).then((response: http.HttpResponse): void => {
+      // 过期回包（已继续输入 / 已离开编辑 / 已收起列表）直接丢弃。
+      if (seq !== this.suggestHttpSeq || query !== this.addressSuggestText ||
+        !this.editingAddress || !this.suggestVisible) {
+        return;
+      }
+      this.onlineSuggestWords = parseSuggestionWords(String(response.result ?? ''));
+    }).catch((error: Error): void => {
+      if (seq === this.suggestHttpSeq) {
+        this.onlineSuggestWords = [];
+      }
+    });
+  }
+
+  private suggestIcon(type: string): Resource {
+    if (type === 'search') {
+      return $r('app.media.aura_search');
+    }
+    if (type === 'bookmark') {
+      return $r('app.media.aura_bookmark');
+    }
+    if (type === 'history') {
+      return $r('app.media.aura_clock');
+    }
+    if (type === 'openTab') {
+      return $r('app.media.aura_window');
+    }
+    return $r('app.media.aura_globe');
+  }
+
+  // 点选联想：直接导航（引擎回包的 url 已是绝对地址），节奏与 submitAddress
+  // 的"两拍"一致 —— 立即收起地址栏回浏览态，页面切换留给引擎。
+  private applyAddressSuggestion(item: AutocompleteItem): void {
+    this.hideAddressSuggest();
+    this.clearKeyboardRecoveryTimers();
+    const target = item.url.length > 0 ? item.url : normalizeAddress(item.title);
+    if (target.length === 0) {
+      return;
+    }
+    this.addressDraft = target;
+    this.issueCommand({ command: 'navigate', url: target });
+    this.editingAddress = false;
+    this.reboundControlsAfterPaint();
+  }
+
   private clearKeyboardRecoveryTimers(): void {
     this.keyboardRecoveryTimers.forEach((timer: number): void => clearTimeout(timer));
     this.keyboardRecoveryTimers = [];
+  }
+
+  // 退出地址栏编辑时，把输入法交还系统。编辑期间外壳会主动 requestFocus +
+  // showTextInput（beginAddressEdit 里的键盘恢复），若退出时不主动收起，输入法
+  // 客户端会停在外壳的地址栏输入框上，之后点网页内的输入框可能弹不出键盘
+  // （真机反馈：Bing 里第一次能弹出，用过一次地址栏之后就弹不出）。
+  private onEditingAddressChanged(): void {
+    // 同步给外壳：编辑态下浏览器控件是被钉住的（beginAddressEdit 发 shown），
+    // AuraShell 的「上滑兜底收顶栏」必须让位，否则会把正在输入的地址栏收掉。
+    AppStorage.setOrCreate('auraAddressEditing', this.editingAddress);
+    if (this.editingAddress) {
+      return;
+    }
+    this.clearKeyboardRecoveryTimers();
+    try {
+      inputMethod.getController().hideTextInput().catch((error: Error): void => {
+        console.warn('Failed to hide the address keyboard: %{public}s', JSON.stringify(error));
+      });
+    } catch (error) {
+    }
+  }
+
+  // 长按联想项：把该条网址写进系统剪贴板（写操作不需要任何权限）+ toast。
+  // 空网址退回标题；两者都空则忽略。
+  private copySuggestText(item: AutocompleteItem): void {
+    const text: string = item.url.length > 0 ? item.url : item.title;
+    if (text.length === 0) {
+      return;
+    }
+    try {
+      const data: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
+      pasteboard.getSystemPasteboard().setData(data).then((): void => {
+        this.getUIContext().getPromptAction().showToast({ message: '已复制网址', duration: 1500 });
+      }).catch((): void => {
+      });
+    } catch (error) {
+    }
   }
 
   private issueCommand(command: BrowserCommandPayload): void {
@@ -2470,6 +4668,89 @@ struct DockMaterialPlate {
       // The fade region: from the bar down past the home-indicator strip to
       // the layer's bottom edge (= the screen edge). maskHeight = bar +
       // bottom margin, mirroring Lumie's dockMaskHeight.
+      gradientMask: {
+        maskColor: $r('app.color.dock_mask'),
+        maskHeight: this.barHeightVp + this.bottomMarginVp
+      }
+    };
+    return style;
+  }
+}
+
+// Chrome 底置条带的系统沉浸光感底板（1.0.105）。
+//
+// 为什么还要一个 HdsTabs：HarmonyOS 7 收紧了第三方调用沉浸光感的范围，普通
+// Column/Row 挂材质是「静默失效」（材质接管了 backgroundColor 却不画 → 整块
+// 透明）。系统真正会渲染材质的容器只有几类，我们能用的是「横向 Tabs +
+// barPosition = End 的底部浮动 TabBar」——简约 dock 走的就是这条（见
+// DockMaterialPlate）。
+//
+// 与 DockMaterialPlate 的区别：本组件**只做底板**，五个页签项是空的（内容为
+// 透明占位），真正的按钮/地址栏由 Chrome 底置条带自己叠在上面 —— 因为参考
+// 布局是「左右各两枚小钮 + 中间域名」的不对称排布，Tabs 的固定均分排不下。
+// 两条必须守住的实测教训（见上方 DockMaterialPlate 注释）：
+//   ① barWidth 必须显式给，且每个页签项要有固有宽度，否则两条测量路径都会塌；
+//   ② 三个开关同时给（barOverlap true + vertical false + barPosition End）
+//      材质才会出现；gradientMask 必须显式设，否则遮罩按「组件高 + 32vp」
+//      往上溢出一大块。
+// hitTest None：纯底板，命中一律穿透（按压光效由我们自己的按钮负责，见
+// ChromeBarIconButton 的手写弹簧）。
+@Component
+struct ChromeBarMaterialPlate {
+  @Prop barWidthVp: number = 328;
+  @Prop barHeightVp: number = 48;
+  @Prop sideMarginVp: number = 12;
+  @Prop bottomMarginVp: number = 0;
+
+  private readonly slots: string[] = ['a', 'b', 'c', 'd', 'e'];
+
+  build() {
+    HdsTabs({ barPosition: BarPosition.End, index: 0 }) {
+      ForEach(this.slots, (slot: string): void => {
+        TabContent() {
+          // 页面本体在 WebWindow 里；TabContent 只是 tab 的存在凭据。
+          Column()
+            .width('100%')
+            .height('100%')
+        }
+        .tabBar(this.EmptySlot(slot))
+      }, (slot: string): string => slot)
+    }
+    .vertical(false)
+    .scrollable(false)
+    .barMode(BarMode.Fixed)
+    .barOverlap(true)
+    .animationDuration(0)
+    .barHeight(this.barHeightVp)
+    .barFloatingStyle(this.resolveFloatingStyle())
+    .width('100%')
+    .height('100%')
+    .hitTestBehavior(HitTestMode.None)
+  }
+
+  // 空槽位：只要固有宽度（防塌缩），不画任何东西。
+  @Builder
+  private EmptySlot(slot: string) {
+    Column()
+      .width(DOCK_SLOT_WIDTH_VP)
+      .height('100%')
+      .accessibilityText(slot)
+  }
+
+  private resolveFloatingStyle(): HdsTabsFloatingStyle {
+    const width: number = Math.max(1, this.barWidthVp);
+    const style: HdsTabsFloatingStyle = {
+      barSideMargin: this.sideMarginVp,
+      barBottomMargin: this.bottomMarginVp,
+      barWidth: {
+        smallWidth: width,
+        mediumWidth: width,
+        largeWidth: width
+      },
+      systemMaterialEffect: {
+        materialType: hdsMaterial.MaterialType.ADAPTIVE,
+        materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+      },
       gradientMask: {
         maskColor: $r('app.color.dock_mask'),
         maskHeight: this.barHeightVp + this.bottomMarginVp

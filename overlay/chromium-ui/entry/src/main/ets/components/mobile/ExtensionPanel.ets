@@ -170,11 +170,29 @@ export struct ExtensionPanel {
     if (!item.userEnabled) {
       return;
     }
+    // 1.0.124：扩展的 popup 由原生画在**网页层**（脚本猫这类点一下就弹面板的
+    // 扩展正是如此）。当前标签页不是真网页时——新标签页被外壳主页层盖着、
+    // chrome:// 页也没地方锚——弹出来的面板根本看不见，点了像没反应。
+    // 这时明确告诉用户先开个网页，而不是静默失败。
+    // 注意这条守卫**只管点扩展项**：设置里打开扩展列表（管理/启停/详情）不
+    // 依赖当前标签页，不该被拦（1.0.123 把守卫挂在"打开面板"上就误伤了它）。
+    if (!this.isWebPageUrl(this.currentUrl)) {
+      this.getUIContext().getPromptAction().showToast({
+        message: '先打开一个网页，再打开扩展面板',
+        duration: 3000
+      });
+      return;
+    }
     // The extension's popup panel is drawn by native in the web layer --
     // under this full-screen page. Dismiss the page so the popup is
     // visible; reopen the extensions page to see list changes.
     this.onClose();
     this.onCommand({ command: 'runExtensionAction', id: item.id });
+  }
+
+  // 与外壳同一个判据：只有 http(s) 才算能让原生 popup 落地的真网页。
+  private isWebPageUrl(url: string): boolean {
+    return url.startsWith('http://') || url.startsWith('https://');
   }
 
   private toggleExtension(item: ExtensionActionItem, enabled: boolean): void {
@@ -465,6 +483,7 @@ export struct ExtensionPanel {
       }
       .layoutWeight(1)
       .scrollBar(BarState.Off)
+      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
       // Scroll centers content shorter than the viewport by default (the
       // universal `align` attribute defaults to Alignment.Center), which
       // showed up as a big gap under the header. Pin it to the top.
@@ -591,6 +610,7 @@ export struct ExtensionPanel {
       }
       .layoutWeight(1)
       .scrollBar(BarState.Off)
+      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
       // Scroll centers content shorter than the viewport by default (the
       // universal `align` attribute defaults to Alignment.Center), which
       // showed up as a big gap under the header. Pin it to the top.

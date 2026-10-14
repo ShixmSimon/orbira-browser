@@ -13,7 +13,7 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { userAuth } from '@kit.UserAuthenticationKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
-import { promptAction } from '@kit.ArkUI';
+import { promptAction, curves } from '@kit.ArkUI';
 import { MoreMenuDialog, MoreMenuItemSpec } from './MoreMenuDialog';
 import {
   BrowserCommandPayload,
@@ -871,10 +871,11 @@ export struct PasswordsPanel {
           .width('100%')
           // 大标题带：滚动内容穿过「密码」大标题时逐渐虚化（见 GlassPage 文件头）。
           // 选择态末尾留白写在滚动内容里（不是视口），列表铺满全高无死区。
-          .padding({ top: glassHeaderInsetVp(), bottom: this.selectMode && this.view === 'list' ? (56 + glassBottomInsetVp()) : 0 })
+          .padding({ top: glassHeaderInsetVp(), bottom: this.selectMode && this.view === 'list' ? (50 + glassBottomInsetVp()) : 0 })
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .align(Alignment.TopStart)
       }
 
@@ -1188,6 +1189,7 @@ export struct PasswordsPanel {
     }
     .layoutWeight(1)
     .scrollBar(BarState.Off)
+    .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
     .align(Alignment.TopStart)
   }
 
@@ -1277,6 +1279,11 @@ export struct PasswordsPanel {
           .width('100%')
           .height('100%')
           .backgroundColor($r('app.color.modal_scrim'))
+          // 遮罩柔和淡入淡出（1.0.66/67）：进入 260ms、退出 380ms（此前退出过快）。
+          .transition(TransitionEffect.asymmetric(
+            TransitionEffect.opacity(0).animation({ duration: 260, curve: Curve.Friction }),
+            TransitionEffect.opacity(0).animation({ duration: 380, curve: Curve.Friction })
+          ))
           .onClick(() => {
             this.importDialogVisible = false;
           })
@@ -1351,12 +1358,27 @@ export struct PasswordsPanel {
         .borderRadius(22)
         .backgroundColor($r('app.color.menu_glass'))
         .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
+        // 卡片入场/退场动效（1.0.67）：此前只有遮罩有过渡、卡片本体瞬跳。
+        .transition(TransitionEffect.asymmetric(
+          TransitionEffect.opacity(0)
+            .combine(TransitionEffect.scale({ x: 0.92, y: 0.92 }))
+            .animation({ curve: curves.springMotion(0.3, 0.75) }),
+          TransitionEffect.opacity(0)
+            .combine(TransitionEffect.scale({ x: 0.95, y: 0.95 }))
+            .animation({ duration: 320, curve: Curve.FastOutSlowIn })
+        ))
         }
         .padding({ left: 44, right: 44 })
         .width('100%')
       }
       .width('100%')
       .height('100%')
+      // 退场动效（1.0.68）：过渡必须挂在 if 分支根节点上 —— 挂子节点时进场
+      // 能播、退场被整棵子树原子删除（真机："背景缓慢变暗，取消瞬间变亮"）。
+      .transition(TransitionEffect.asymmetric(
+        TransitionEffect.opacity(1),
+        TransitionEffect.opacity(0).animation({ duration: 340, curve: Curve.Friction })
+      ))
     }
   }
 
@@ -1381,9 +1403,9 @@ export struct PasswordsPanel {
                 .fontSize(14)
                 .fontColor($r('app.color.accent_primary'))
             }
-            .height(42)
+            .height(36)
             .padding({ left: 16, right: 16 })
-            .borderRadius(21)
+            .borderRadius(18)
             .onClick(() => {
               this.selectAllPwd();
             })
@@ -1398,9 +1420,9 @@ export struct PasswordsPanel {
                   .fontSize(14)
                   .fontColor($r('app.color.danger'))
               }
-              .height(42)
+              .height(36)
               .padding({ left: 16, right: 16 })
-              .borderRadius(21)
+              .borderRadius(18)
               .onClick(() => {
                 this.batchRemovePwd();
               })
@@ -1411,6 +1433,7 @@ export struct PasswordsPanel {
         }
         .scrollable(ScrollDirection.Horizontal)
         .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .constraintSize({ maxWidth: '100%' })
         .clip(true)
         .backgroundColor($r('app.color.float_bar_bg'))

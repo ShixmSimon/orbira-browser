@@ -10,12 +10,13 @@
  * （转存 'auraPanelEvent'）后重拉当前层。
  * ⚠️ 不要用 getBookmarksForSync/applyBookmarks（版本 4）：当前引擎 HAR 的
  * bookmarkApiVersion 还没实现它们，命令会被吞、页面永远"加载中"（实测）。
- * 标题栏 + = 新建文件夹；⋯ 菜单 = 手动添加书签（预填当前页）/导入/导出。
+ * 标题栏 + = 添加书签 / 新建文件夹（两选项）；⋯ 菜单 = 导入/导出/多选。
  */
 import { common } from '@kit.AbilityKit';
-import { display, promptAction } from '@kit.ArkUI';
+import { display, promptAction, curves } from '@kit.ArkUI';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { BookmarkNode, BrowserCommandPayload } from 'engine';
+import { HomePrefs } from '../../utils/appearance/HomePrefs';
 import { displayUrl, pickAndStageImportFile, saveExportedFile, deleteStagedFile } from './PanelBridge';
 import { AuraSectionLabel } from './LumieKit';
 import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
@@ -60,6 +61,9 @@ export struct BookmarksPanel {
   @StorageLink('auraPanelBookmarks') @Watch('onRecentChanged') bookmarksJson: string = '';
   @StorageLink('auraPanelBookmarkIo') @Watch('onIoPayload') bookmarkIoJson: string = '';
   @StorageLink('auraPanelEvent') @Watch('onPanelEvent') panelEventJson: string = '';
+  // 主页书签（「首页」文件夹）id：主页发现后写进 AppStorage；根级置顶行用它
+  // 直接跳进该文件夹（HomeSurface 的磁贴数据源）。
+  @StorageLink('auraHomeFolderId') homeFolderId: string = '';
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
   onBack: () => void = (): void => {};
   onClose: () => void = (): void => {};
@@ -134,6 +138,8 @@ export struct BookmarksPanel {
 
   // ⋯ 菜单项（原地 mutate，让「多选」按需出现）。
   private moreItems: MoreMenuItemSpec[] = [];
+  // + 按钮菜单项：添加书签 / 新建文件夹（原「手动添加书签」从 ⋯ 移到了这里）。
+  private plusItems: MoreMenuItemSpec[] = [];
 
   private listScroller: Scroller = new Scroller();
 
@@ -145,6 +151,16 @@ export struct BookmarksPanel {
     // 就闪加载中」——已有缓存数据时静默重拉，只有真正首次无数据才走 loading。
     this.hydrateFromCache();
     this.onRecentChanged();
+    // 「首页」文件夹 id：主页发现后会写进 AppStorage；书签页可能先于主页打开
+    // （进程重启后），从 prefs 捞一次兜底，捞到就补上根级置顶行。
+    if (this.homeFolderId.length === 0) {
+      const host = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+      HomePrefs.loadFolderId(host).then((id: string): void => {
+        if (id.length > 0 && this.homeFolderId.length === 0) {
+          this.homeFolderId = id;
+        }
+      });
+    }
     this.loadLayer('');
   }
 
@@ -882,13 +898,6 @@ export struct BookmarksPanel {
     this.moreItems.length = 0;
     this.moreItems.push(
       {
-        icon: $r('app.media.aura_plus'),
-        label: '手动添加书签',
-        action: (): void => {
-          this.openForm('addBookmark');
-        }
-      },
-      {
         icon: $r('app.media.aura_import'),
         label: '导入书签',
         action: (): void => {
@@ -913,9 +922,44 @@ export struct BookmarksPanel {
     this.moreMenuDialog.open();
   }
 
+  // + 按钮：两种操作（添加书签 / 新建文件夹）。原「手动添加书签」从 ⋯ 菜单
+  // 移到这里，让 + 既管书签也管文件夹（用户要求）。
+  private showPlusSheet(): void {
+    this.plusItems.length = 0;
+    this.plusItems.push(
+      {
+        icon: $r('app.media.aura_bookmark'),
+        label: '添加书签',
+        action: (): void => {
+          this.openForm('addBookmark');
+        }
+      },
+      {
+        icon: $r('app.media.aura_folder'),
+        label: '新建文件夹',
+        action: (): void => {
+          this.openForm('addFolder');
+        }
+      }
+    );
+    this.plusMenuDialog.open();
+  }
+
   private moreMenuDialog: CustomDialogController = new CustomDialogController({
     builder: MoreMenuDialog({
       items: this.moreItems
+    }),
+    autoCancel: true,
+    customStyle: true,
+    maskColor: Color.Transparent,
+    alignment: DialogAlignment.TopEnd,
+    offset: { dx: -12, dy: glassTopSafeVp() + 62 }
+  });
+
+  // + 按钮的两选项菜单（添加书签 / 新建文件夹），与 ⋯ 菜单共用 MoreMenuDialog 样式。
+  private plusMenuDialog: CustomDialogController = new CustomDialogController({
+    builder: MoreMenuDialog({
+      items: this.plusItems
     }),
     autoCancel: true,
     customStyle: true,
@@ -1018,6 +1062,56 @@ export struct BookmarksPanel {
         this.menuPressY = event.touches[0].windowY;
       }
     })
+  }
+
+  // 根级置顶「首页」入口：直接跳进主页书签文件夹（HomeSurface 磁贴数据源）。
+  // 不进选择模式（跳转入口不参与批量勾选），样式与 FolderRow 完全同族。
+  @Builder
+  private HomeFolderRow() {
+    Column() {
+      Row({ space: 12 }) {
+        Column() {
+          Image($r('app.media.aura_home'))
+            .width(20)
+            .height(20)
+            .fillColor($r('app.color.text_primary'))
+        }
+        .width(38)
+        .height(38)
+        .borderRadius(10)
+        .backgroundColor($r('app.color.surface_secondary'))
+        .justifyContent(FlexAlign.Center)
+
+        Column({ space: 2 }) {
+          Text('首页')
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .width('100%')
+          Text('这里的书签会显示在主页')
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+
+        Image($r('app.media.aura_chevron'))
+          .width(16)
+          .height(16)
+          .fillColor($r('app.color.icon_secondary'))
+      }
+      .width('100%')
+      .constraintSize({ minHeight: 60 })
+      .padding({ left: 16, right: 12, top: 8, bottom: 8 })
+      .onClick(() => {
+        this.navStack.push(this.currentFolderId);
+        this.currentFolderId = this.homeFolderId;
+        this.loadLayer(this.homeFolderId);
+      })
+    }
+    .width('100%')
   }
 
   @Builder
@@ -1208,6 +1302,11 @@ export struct BookmarksPanel {
           .width('100%')
           .height('100%')
           .backgroundColor($r('app.color.modal_scrim'))
+          // 遮罩柔和淡入淡出（1.0.66/67）：进入 260ms、退出 380ms（此前退出过快）。
+          .transition(TransitionEffect.asymmetric(
+            TransitionEffect.opacity(0).animation({ duration: 260, curve: Curve.Friction }),
+            TransitionEffect.opacity(0).animation({ duration: 380, curve: Curve.Friction })
+          ))
           .onClick(() => {
             this.cancelForm();
           })
@@ -1294,12 +1393,28 @@ export struct BookmarksPanel {
         .borderRadius(22)
         .backgroundColor($r('app.color.menu_glass'))
         .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
+        // 卡片入场/退场动效（1.0.67）：此前只有遮罩有过渡、卡片本体瞬跳 ——
+        // 「新建/编辑」弹窗开和关都"很快"。进入用弹簧弹出、退出 320ms 柔和收起。
+        .transition(TransitionEffect.asymmetric(
+          TransitionEffect.opacity(0)
+            .combine(TransitionEffect.scale({ x: 0.92, y: 0.92 }))
+            .animation({ curve: curves.springMotion(0.3, 0.75) }),
+          TransitionEffect.opacity(0)
+            .combine(TransitionEffect.scale({ x: 0.95, y: 0.95 }))
+            .animation({ duration: 320, curve: Curve.FastOutSlowIn })
+        ))
         }
         .padding({ left: 44, right: 44 })
         .width('100%')
       }
       .width('100%')
       .height('100%')
+      // 退场动效（1.0.68）：过渡必须挂在 if 分支根节点上 —— 挂子节点时进场
+      // 能播、退场被整棵子树原子删除（真机："取消时瞬间变亮闪一下"）。
+      .transition(TransitionEffect.asymmetric(
+        TransitionEffect.opacity(1),
+        TransitionEffect.opacity(0).animation({ duration: 340, curve: Curve.Friction })
+      ))
     }
   }
 
@@ -1312,6 +1427,11 @@ export struct BookmarksPanel {
           .width('100%')
           .height('100%')
           .backgroundColor($r('app.color.modal_scrim'))
+          // 遮罩柔和淡入淡出（1.0.66/67）：同 FormDialog（进入 260ms / 退出 380ms）。
+          .transition(TransitionEffect.asymmetric(
+            TransitionEffect.opacity(0).animation({ duration: 260, curve: Curve.Friction }),
+            TransitionEffect.opacity(0).animation({ duration: 380, curve: Curve.Friction })
+          ))
           .onClick(() => {
             this.pickerVisible = false;
           })
@@ -1355,6 +1475,7 @@ export struct BookmarksPanel {
           }
           .constraintSize({ maxHeight: 380 })
           .scrollBar(BarState.Off)
+          .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
           .width('100%')
         }
         .width('100%')
@@ -1362,12 +1483,26 @@ export struct BookmarksPanel {
         .borderRadius(22)
         .backgroundColor($r('app.color.menu_glass'))
         .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
+        // 卡片入场/退场动效（1.0.67）：同 FormDialog（「移动到」选择器）。
+        .transition(TransitionEffect.asymmetric(
+          TransitionEffect.opacity(0)
+            .combine(TransitionEffect.scale({ x: 0.92, y: 0.92 }))
+            .animation({ curve: curves.springMotion(0.3, 0.75) }),
+          TransitionEffect.opacity(0)
+            .combine(TransitionEffect.scale({ x: 0.95, y: 0.95 }))
+            .animation({ duration: 320, curve: Curve.FastOutSlowIn })
+        ))
         }
         .padding({ left: 44, right: 44 })
         .width('100%')
       }
       .width('100%')
       .height('100%')
+      // 退场动效（1.0.68）：同 FormDialog（挂根节点）。
+      .transition(TransitionEffect.asymmetric(
+        TransitionEffect.opacity(1),
+        TransitionEffect.opacity(0).animation({ duration: 340, curve: Curve.Friction })
+      ))
     }
   }
 
@@ -1377,6 +1512,9 @@ export struct BookmarksPanel {
   // 于是只有一个「全选」时就是一小颗药丸，四周/下方都露出列表与页面底色，
   // 不会被拉成横贯屏幕的白色长条（用户反馈「和长」「有遮罩」）。
   // 选中后出现「删除 / 移动」，药丸随之变长；极端宽字符靠横向 Scroll 兜底。
+  // 药丸高 36 / 圆角 18（1.0.69：用户反馈「全选胶囊高度很大」，42→36 与
+  // 整体控件尺度统一：粘贴 32 / 取消 36 / 地址胶囊 40；容器仍 5vp 衬距，
+  // 46 总高配 23 圆角恰为整圆胶囊）。列表底部留白随之为 50。
   @Builder
   private BatchActionBar() {
     if (this.selectMode) {
@@ -1392,9 +1530,9 @@ export struct BookmarksPanel {
                 .fontSize(14)
                 .fontColor($r('app.color.accent_primary'))
             }
-            .height(42)
+            .height(36)
             .padding({ left: 16, right: 16 })
-            .borderRadius(21)
+            .borderRadius(18)
             .onClick(() => {
               this.selectAllVisible();
             })
@@ -1409,9 +1547,9 @@ export struct BookmarksPanel {
                   .fontSize(14)
                   .fontColor($r('app.color.danger'))
               }
-              .height(42)
+              .height(36)
               .padding({ left: 16, right: 16 })
-              .borderRadius(21)
+              .borderRadius(18)
               .onClick(() => {
                 this.batchRemove();
               })
@@ -1425,9 +1563,9 @@ export struct BookmarksPanel {
                   .fontSize(14)
                   .fontColor($r('app.color.accent_primary'))
               }
-              .height(42)
+              .height(36)
               .padding({ left: 16, right: 16 })
-              .borderRadius(21)
+              .borderRadius(18)
               .onClick(() => {
                 this.batchMove();
               })
@@ -1438,6 +1576,7 @@ export struct BookmarksPanel {
         }
         .scrollable(ScrollDirection.Horizontal)
         .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .constraintSize({ maxWidth: '100%' })
         .clip(true)
         .backgroundColor($r('app.color.float_bar_bg'))
@@ -1475,10 +1614,10 @@ export struct BookmarksPanel {
             {
               content: {
                 icon: $r('app.media.aura_plus'),
-                label: '新建文件夹',
+                label: '添加',
                 isEnabled: true,
                 action: (): void => {
-                  this.openForm('addFolder');
+                  this.showPlusSheet();
                 }
               }
             },
@@ -1536,9 +1675,12 @@ export struct BookmarksPanel {
             .margin({ top: 40 })
         }
         Column() {
+          // 键值带上标题/网址：ForEach 键值不变会直接复用旧组件（item builder
+          // 不重跑），改名/改网址保存后行内文案就不会刷新（同 HomeSurface 磁贴
+          // 的「已保存未生效」根因）。
           ForEach(this.searchResults, (node: BookmarkNode, index: number) => {
             this.BookmarkRow(node, index, this.searchResults.length)
-          }, (node: BookmarkNode): string => node.id)
+          }, (node: BookmarkNode): string => `s|${node.id}|${node.title}|${node.url ?? ''}`)
         }
         .width('100%')
         .borderRadius(16)
@@ -1548,11 +1690,12 @@ export struct BookmarksPanel {
         .width('100%')
         // 末尾留白写在「滚动内容」里而不是视口上：列表铺满全高、不留死区，
         // 最后一行也能滚到悬浮药丸之上（见 BatchActionBar 注释）。
-        .padding({ bottom: this.selectMode ? (56 + glassBottomInsetVp()) : 0 })
+        .padding({ bottom: this.selectMode ? (50 + glassBottomInsetVp()) : 0 })
         }
         .layoutWeight(1)
         .padding({ top: 12 })
         .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .align(Alignment.TopStart)
       } else if (this.loading) {
         Text('加载中…')
@@ -1570,26 +1713,33 @@ export struct BookmarksPanel {
               Text('这个文件夹是空的')
                 .fontSize(15)
                 .fontColor($r('app.color.text_secondary'))
-              Text('右上角 + 可以在这里新建文件夹，⋯ 菜单添加书签')
+              Text('右上角 + 可以添加书签或新建文件夹')
                 .fontSize(13)
                 .fontColor($r('app.color.text_secondary'))
             }
             .width('100%')
             .margin({ top: 60 })
           } else {
+          // 根级置顶：主页书签（「首页」文件夹）入口 —— 主页磁贴显示的就是这里
+          // 的书签；文件夹由主页在手机书签根下自动创建维护。选择模式不出（这条
+          // 是跳转入口，不参与批量勾选）。
+          if (this.currentFolderId.length === 0 && !this.selectMode && this.homeFolderId.length > 0) {
+            this.HomeFolderRow()
+          }
           // 当前层：根级 = 三个根文件夹；子层 = 该文件夹内容（文件夹在前）。
           ForEach(this.currentNodes, (node: BookmarkNode, index: number) => {
             if (node.type === 'folder') {
               this.FolderRow(node)
             }
-          }, (node: BookmarkNode): string => `f|${node.id}#${node.childCount ?? 0}`)
+          }, (node: BookmarkNode): string =>
+            `f|${node.id}#${node.childCount ?? 0}|${node.title}`)
 
           if (this.currentFolderId.length === 0 && this.recentNodes.length > 0) {
             AuraSectionLabel({ text: '最近添加' })
             Column() {
               ForEach(this.recentNodes, (node: BookmarkNode, index: number) => {
                 this.BookmarkRow(node, index, this.recentNodes.length)
-              }, (node: BookmarkNode): string => `r|${node.id}`)
+              }, (node: BookmarkNode): string => `r|${node.id}|${node.title}|${node.url ?? ''}`)
             }
             .width('100%')
             .borderRadius(16)
@@ -1601,7 +1751,7 @@ export struct BookmarksPanel {
                 if (node.type !== 'folder') {
                   this.BookmarkRow(node, index, this.currentNodes.length)
                 }
-              }, (node: BookmarkNode): string => `u|${node.id}`)
+              }, (node: BookmarkNode): string => `u|${node.id}|${node.title}|${node.url ?? ''}`)
             }
             .width('100%')
             .borderRadius(16)
@@ -1612,11 +1762,12 @@ export struct BookmarksPanel {
         }
         .width('100%')
         // 同上：底部占位进内容，视口保持全高。
-        .padding({ bottom: this.selectMode ? (56 + glassBottomInsetVp()) : 0 })
+        .padding({ bottom: this.selectMode ? (50 + glassBottomInsetVp()) : 0 })
         }
         .layoutWeight(1)
         .padding({ top: 12 })
         .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .align(Alignment.TopStart)
       }
 

@@ -71,11 +71,23 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
+// Only the outcomes worth interrupting someone for. Progress updates land every
+// second, so they stay on the default slot, which HarmonyOS keeps silent in the
+// notification centre; these three go out on the service-information slot, which
+// carries the high level: lock screen, sound and vibration.
+function shouldAlert(item: DownloadItem): boolean {
+  return item.state === 'completed' || item.state === 'failed' || item.dangerous;
+}
+
 export class DownloadNotifier {
   private readonly context: common.UIAbilityContext;
   // Keyed by download id: when progress was last published, and in which state.
   private readonly lastPublish: Map<string, number> = new Map();
   private readonly lastState: Map<string, string> = new Map();
+  // Whether the last notification for this download was an alerting one, so the
+  // silent progress notification can be withdrawn before the alerting one is
+  // published: a slot cannot be changed in place.
+  private readonly lastAlert: Map<string, boolean> = new Map();
   private templateSupported: boolean | undefined = undefined;
   // Publishing is asynchronous (permission and template checks first), so
   // publishes are chained: otherwise a slow "downloading" notification could
@@ -102,6 +114,13 @@ export class DownloadNotifier {
     }
     this.lastState.set(item.id, item.state);
     this.lastPublish.set(item.id, now);
+    const alert = shouldAlert(item);
+    if (alert && this.lastAlert.get(item.id) !== true) {
+      // A slot cannot be changed in place, so the silent progress notification
+      // comes down before the alerting outcome goes up under the same id.
+      this.enqueue(() => notificationManager.cancel(id, LABEL));
+    }
+    this.lastAlert.set(item.id, alert);
     this.enqueue(() => this.publish(id, item));
   }
 
@@ -114,6 +133,7 @@ export class DownloadNotifier {
   private forget(downloadId: string): void {
     this.lastPublish.delete(downloadId);
     this.lastState.delete(downloadId);
+    this.lastAlert.delete(downloadId);
   }
 
   private async publish(id: number, item: DownloadItem): Promise<void> {
@@ -148,6 +168,12 @@ export class DownloadNotifier {
       tapDismissed: item.state === 'completed',
       wantAgent: await this.tapAgent(id, item)
     };
+    // Outcomes ride the service-information slot: lock screen, sound and
+    // vibration. Progress keeps the default slot, which HarmonyOS leaves silent
+    // in the notification centre.
+    if (shouldAlert(item)) {
+      request.notificationSlotType = notificationManager.SlotType.SERVICE_INFORMATION;
+    }
     // Set only when present: publish() rejects an explicit undefined (401).
     if (template) {
       request.template = template;

@@ -100,8 +100,17 @@ export struct HistoryPanel {
   }
 
   private onPanelEvent(): void {
-    // historyChanged: reload.
-    this.reload();
+    // 只响应历史变化事件，避免书签/偏好等无关面板事件也触发历史重查与引擎往返。
+    if (this.panelEventJson.length === 0) {
+      return;
+    }
+    try {
+      const payload = JSON.parse(this.panelEventJson) as { kind?: string };
+      if (String(payload.kind ?? '') === 'historyChanged') {
+        this.reload();
+      }
+    } catch (error) {
+    }
   }
 
   private openItem(item: HistoryItem): void {
@@ -347,9 +356,9 @@ export struct HistoryPanel {
                 .fontSize(14)
                 .fontColor($r('app.color.accent_primary'))
             }
-            .height(42)
+            .height(36)
             .padding({ left: 16, right: 16 })
-            .borderRadius(21)
+            .borderRadius(18)
             .onClick(() => {
               this.selectAllHistory();
             })
@@ -364,9 +373,9 @@ export struct HistoryPanel {
                   .fontSize(14)
                   .fontColor($r('app.color.danger'))
               }
-              .height(42)
+              .height(36)
               .padding({ left: 16, right: 16 })
-              .borderRadius(21)
+              .borderRadius(18)
               .onClick(() => {
                 this.batchRemoveHistory();
               })
@@ -377,6 +386,7 @@ export struct HistoryPanel {
         }
         .scrollable(ScrollDirection.Horizontal)
         .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .constraintSize({ maxWidth: '100%' })
         .clip(true)
         .backgroundColor($r('app.color.float_bar_bg'))
@@ -497,10 +507,11 @@ export struct HistoryPanel {
           .width('100%')
           // 大标题带：滚动内容穿过「历史」大标题时逐渐虚化（见 GlassPage 文件头）。
           // 选择态末尾留白写在滚动内容里（不是视口），列表铺满全高无死区。
-          .padding({ top: glassHeaderInsetVp(), bottom: this.selectMode ? (56 + glassBottomInsetVp()) : 0 })
+          .padding({ top: glassHeaderInsetVp(), bottom: this.selectMode ? (50 + glassBottomInsetVp()) : 0 })
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .align(Alignment.TopStart)
       }
 

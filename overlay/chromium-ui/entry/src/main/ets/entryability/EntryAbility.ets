@@ -18,6 +18,7 @@ import {
 } from '../utils/profile/BrowserProfileService';
 import { AppearanceSettings, ColorModeSetting } from '../utils/appearance/AppearanceSettings';
 import { IncognitoSwitch } from '../utils/IncognitoSwitch';
+import { ShellUiPrefs } from '../utils/appearance/ShellUiPrefs';
 
 const DOMAIN = 0x0000;
 const AURA_INCOGNITO_KEY = 'auraIncognito';
@@ -184,11 +185,13 @@ export default class EntryAbility extends UIAbility {
     }
     this.startupWant = want;
     this.applyIncognitoWant(want);
-    const startUrl = CrossDeviceEntryAdapter.resolveLaunchUrl(want);
-    AppStorage.setOrCreate('auraStartUrl', startUrl);
-    if (this.mainWindow) {
-      this.refreshRouting('newWant');
-    }
+    // 1.0.119：无链接的再次拉起按「启动页」设置决定打开网址主页还是内置启动页。
+    this.resolveStartupUrl(want).then((startUrl: string): void => {
+      AppStorage.setOrCreate('auraStartUrl', startUrl);
+      if (this.mainWindow) {
+        this.refreshRouting('newWant');
+      }
+    });
   }
 
   // Reads the incognito flag off the launch want and parks it where the UI
@@ -204,33 +207,64 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, 'AuraShell', 'Incognito launch: %{public}s', incognito ? 'true' : 'false');
   }
 
+  // 1.0.119「启动页」：决定本次启动打开的 URL。
+  // - 若启动 want 携带真实网址（分享/点击链接/跨设备续接），一律尊重该网址，不套用启动页设置；
+  // - 否则（普通冷启动 / 无链接的再次拉起），按「启动页」设置决定：
+  //   'homeUrl' 且已设置网址主页 → 打开网址主页；其余 → 内置启动页(CHROMIUM_HOME_URL)。
+  // prefs 为异步读取，故返回 Promise。读取失败时安全回退内置启动页。
+  private async resolveStartupUrl(want: Want | undefined): Promise<string> {
+    const resolved = CrossDeviceEntryAdapter.resolveLaunchUrl(want);
+    if (resolved !== CHROMIUM_HOME_URL) {
+      return resolved;
+    }
+    try {
+      const startupPage = await ShellUiPrefs.loadStartupPage(this.context);
+      if (startupPage === 'homeUrl') {
+        const homeUrl = await ShellUiPrefs.loadHomeUrl(this.context);
+        if (homeUrl && homeUrl.length > 0) {
+          return homeUrl;
+        }
+        // 1.0.120：单个值缺失时用多组网址列表的第一条兜底（旧版本数据 / 只
+        // 写了列表没写活动项的情况）。
+        const list: string[] = await ShellUiPrefs.loadHomeUrls(this.context);
+        if (list.length > 0) {
+          return list[0];
+        }
+      }
+    } catch (error) {
+      hilog.error(DOMAIN, 'AuraShell', 'Failed to read startup page pref: %{public}s', JSON.stringify(error));
+    }
+    return CHROMIUM_HOME_URL;
+  }
+
   onWindowStageCreate(windowStage: window.WindowStage): void {
     const uiPath = UIManager.loadUI();
-    const startUrl = CrossDeviceEntryAdapter.resolveLaunchUrl(this.startupWant ?? undefined);
+    // 1.0.119：启动 URL 依赖异步读取「启动页」偏好，先拿到再装载 UI，避免首帧用错 URL。
+    this.resolveStartupUrl(this.startupWant ?? undefined).then((startUrl: string): void => {
+      AppStorage.setOrCreate('auraStartUrl', startUrl);
+      AppStorage.setOrCreate('auraRoutingRevision', 0);
+      AppStorage.setOrCreate('auraRouting', '');
+      AppStorage.setOrCreate('auraStartupConfig',
+        UIManager.serializeAuraStartupConfig(startUrl, undefined, undefined, this.lastColorScheme));
+      AppStorage.setOrCreate(AURA_SURFACE_READY_KEY, false);
 
-    AppStorage.setOrCreate('auraStartUrl', startUrl);
-    AppStorage.setOrCreate('auraRoutingRevision', 0);
-    AppStorage.setOrCreate('auraRouting', '');
-    AppStorage.setOrCreate('auraStartupConfig',
-      UIManager.serializeAuraStartupConfig(startUrl, undefined, undefined, this.lastColorScheme));
-    AppStorage.setOrCreate(AURA_SURFACE_READY_KEY, false);
+      windowStage.loadContent(uiPath, (err) => {
+        if (err && err.code) {
+          hilog.error(DOMAIN, 'AuraShell', 'Failed to load UI content: %{public}s', JSON.stringify(err));
+          return;
+        }
+        hilog.info(DOMAIN, 'AuraShell', 'Loaded UI content: %{public}s', uiPath);
+      });
 
-    windowStage.loadContent(uiPath, (err) => {
-      if (err && err.code) {
-        hilog.error(DOMAIN, 'AuraShell', 'Failed to load UI content: %{public}s', JSON.stringify(err));
-        return;
-      }
-      hilog.info(DOMAIN, 'AuraShell', 'Loaded UI content: %{public}s', uiPath);
-    });
-
-    windowStage.getMainWindow().then((win: window.Window) => {
-      this.mainWindow = win;
-      this.lastFoldStatus = DeviceRoutingPolicy.getFoldStatus();
-      this.configureChromiumOwnedFrame(win);
-      this.refreshRouting('initial', this.lastFoldStatus);
-      this.registerRuntimeObservers(win);
-    }).catch((error: Error) => {
-      hilog.error(DOMAIN, 'AuraShell', 'Failed to get main window: %{public}s', JSON.stringify(error));
+      windowStage.getMainWindow().then((win: window.Window) => {
+        this.mainWindow = win;
+        this.lastFoldStatus = DeviceRoutingPolicy.getFoldStatus();
+        this.configureChromiumOwnedFrame(win);
+        this.refreshRouting('initial', this.lastFoldStatus);
+        this.registerRuntimeObservers(win);
+      }).catch((error: Error) => {
+        hilog.error(DOMAIN, 'AuraShell', 'Failed to get main window: %{public}s', JSON.stringify(error));
+      });
     });
   }
 
@@ -475,6 +509,34 @@ export default class EntryAbility extends UIAbility {
       win.setWindowBackgroundColor(this.lastColorScheme === 'dark' ? '#1D1D1F' : '#FFFFFF');
     } catch (error) {
       hilog.warn(DOMAIN, 'AuraShell', 'Window background color update is unavailable: %{public}s', JSON.stringify(error));
+    }
+
+    // 系统状态栏/导航条只保留图标（颜色随主题），**底色必须透明**：这两条区域
+    // 的底色由 shell 自己绘制（网页页 = 顶栏条带 surface_primary；二级页 = 页面
+    // 自己的沉浸玻璃纱幕）。曾经把状态栏底色刷成 #1D1D1F/#FFFFFF —— 等于在应用
+    // 之上盖了一条不透明色带：网页顶栏看似"同色"了，但二级页（设置/关于…）顶部
+    // 的渐变模糊被整条盖死、还和页面底色对不上（真机反馈：状态栏颜色和设置页
+    // 不一样、渐变模糊没了）。透明后两边都自然，各页面自己决定观感。
+    try {
+      if (this.lastColorScheme === 'dark') {
+        win.setWindowSystemBarProperties({
+          statusBarColor: '#00000000',
+          statusBarContentColor: '#FFFFFF',
+          navigationBarColor: '#00000000',
+          navigationBarContentColor: '#FFFFFF',
+          isStatusBarLightIcon: true,
+        });
+      } else {
+        win.setWindowSystemBarProperties({
+          statusBarColor: '#00000000',
+          statusBarContentColor: '#000000',
+          navigationBarColor: '#00000000',
+          navigationBarContentColor: '#000000',
+          isStatusBarLightIcon: false,
+        });
+      }
+    } catch (error) {
+      hilog.warn(DOMAIN, 'AuraShell', 'System bar properties update is unavailable: %{public}s', JSON.stringify(error));
     }
 
     if (routing.windowPolicy === WindowPolicy.FULLSCREEN) {

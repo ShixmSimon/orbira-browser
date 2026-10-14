@@ -23,9 +23,9 @@
         "name": "EntryAbility",
         "srcEntry": "./ets/entryability/EntryAbility.ets",
         "description": "$string:EntryAbility_desc",
-        "icon": "$media:chromium_hmos_layered_image",
+        "icon": "$media:layered_image",
         "label": "$string:EntryAbility_label",
-        "startWindowIcon": "$media:chromium_hmos_start_icon",
+        "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
         "backgroundModes": [
@@ -73,9 +73,9 @@
         "name": "PWASmallAppExperience",
         "srcEntry": "./ets/pwaability/PWASmallAppExperience.ets",
         "description": "$string:EntryAbility_desc",
-        "icon": "$media:chromium_hmos_layered_image",
+        "icon": "$media:layered_image",
         "label": "$string:EntryAbility_label",
-        "startWindowIcon": "$media:chromium_hmos_start_icon",
+        "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
         "exported": false,
         "supportWindowMode": [

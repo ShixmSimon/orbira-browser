@@ -10,6 +10,23 @@ const KEY_HIDE_STATUS_BAR = 'hideStatusBarOnScroll';
 const KEY_HIDE_TOP_BAR = 'hideTopBarOnScroll';
 const KEY_HIDE_DOCK = 'hideDockOnScroll';
 const KEY_EXTERNAL_APP_LINKS = 'externalAppLinks';
+// 标签页切换页的排布：'grid'（两列卡片 + 缩略图）或 'list'（单行列表）。
+const KEY_TAB_LAYOUT = 'tabLayout';
+// 主页风格：'minimal'（保留原主页布局 + 顶部地址栏/状态栏）或
+// 'chrome'（地址栏融进 dock 工具栏，无独立顶栏）。默认 'minimal'。
+const KEY_HOME_STYLE = 'homeStyle';
+// Chrome 风格下 dock 的位置：'bottom'（默认，底部）或 'top'（顶部）。
+const KEY_DOCK_POSITION = 'dockPosition';
+// 1.0.111「网址主页」：用户设置的自定义主页网址（空 = 用内置新标签页）。
+// 1.0.120 起它是「网址列表」里当前勾选的那一个，仍单独存一份 —— 主页键、
+// 冷启动都用它，不必再去解析列表。
+const KEY_HOME_URL = 'homeUrl';
+// 1.0.119「启动页」：冷启动默认打开『网址主页』还是『内置启动页』。
+const KEY_STARTUP_PAGE = 'startupPage';
+// 1.0.120「自定义网址」：可保存多组网址，每行一个（\n 分隔）。
+// 不用 JSON —— URL 里不可能出现换行，一行一条最省事，也免去 ArkTS 侧的
+// JSON 反序列化类型体操。
+const KEY_HOME_URLS = 'homeUrls';
 
 export class ShellUiPrefs {
   static async loadHideStatusBar(context: common.Context): Promise<boolean> {
@@ -84,5 +101,165 @@ export class ShellUiPrefs {
       await store.flush();
     } catch (error) {
     }
+  }
+
+  // 标签页排布。只认 'list'，其余一律按 'grid'（写脏值时不至于画不出来）。
+  static async loadTabLayout(context: common.Context): Promise<string> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      const value = await store.get(KEY_TAB_LAYOUT, 'grid');
+      return value === 'list' ? 'list' : 'grid';
+    } catch (error) {
+      return 'grid';
+    }
+  }
+
+  static async saveTabLayout(context: common.Context, value: string): Promise<void> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      await store.put(KEY_TAB_LAYOUT, value === 'list' ? 'list' : 'grid');
+      await store.flush();
+    } catch (error) {
+    }
+  }
+
+  // 主页风格。只认 'chrome'，其余一律回退 'minimal'（写脏值不至于画出不认识的主页）。
+  static async loadHomeStyle(context: common.Context): Promise<string> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      const value = await store.get(KEY_HOME_STYLE, 'minimal');
+      return value === 'chrome' ? 'chrome' : 'minimal';
+    } catch (error) {
+      return 'minimal';
+    }
+  }
+
+  static async saveHomeStyle(context: common.Context, value: string): Promise<void> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      await store.put(KEY_HOME_STYLE, value === 'chrome' ? 'chrome' : 'minimal');
+      await store.flush();
+    } catch (error) {
+    }
+  }
+
+  // Chrome 风格下 dock 位置。只认 'top'，其余一律回退 'bottom'。
+  static async loadDockPosition(context: common.Context): Promise<string> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      const value = await store.get(KEY_DOCK_POSITION, 'bottom');
+      return value === 'top' ? 'top' : 'bottom';
+    } catch (error) {
+      return 'bottom';
+    }
+  }
+
+  static async saveDockPosition(context: common.Context, value: string): Promise<void> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      await store.put(KEY_DOCK_POSITION, value === 'top' ? 'top' : 'bottom');
+      await store.flush();
+    } catch (error) {
+    }
+  }
+
+  // 1.0.111「网址主页」：自定义主页网址。空串 = 未设置（主页键回内置新标签页）。
+  static async loadHomeUrl(context: common.Context): Promise<string> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      const value = await store.get(KEY_HOME_URL, '');
+      return typeof value === 'string' ? value : '';
+    } catch (error) {
+      return '';
+    }
+  }
+
+  static async saveHomeUrl(context: common.Context, value: string): Promise<void> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      await store.put(KEY_HOME_URL, value);
+      await store.flush();
+    } catch (error) {
+    }
+  }
+
+  // 1.0.119「启动页」：冷启动默认打开『网址主页』(auraHomeUrl) 还是『内置启动页』
+  // (chrome://newtab)。'homeUrl' = 打开设置的网址主页（未设置则回退内置）；
+  // 'builtin' = 内置新标签页。默认 'builtin'。
+  static async loadStartupPage(context: common.Context): Promise<string> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      const value = await store.get(KEY_STARTUP_PAGE, 'builtin');
+      return value === 'homeUrl' ? 'homeUrl' : 'builtin';
+    } catch (error) {
+      return 'builtin';
+    }
+  }
+
+  static async saveStartupPage(context: common.Context, value: string): Promise<void> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      await store.put(KEY_STARTUP_PAGE, value === 'homeUrl' ? 'homeUrl' : 'builtin');
+      await store.flush();
+    } catch (error) {
+    }
+  }
+
+  // 1.0.120「自定义网址」：多组网址列表。存的是 \n 分隔的一行一条；
+  // 解析时逐行 trim、丢空行、去重（顺序保留）。
+  static parseUrlList(raw: string): string[] {
+    const out: string[] = [];
+    if (!raw || raw.length === 0) {
+      return out;
+    }
+    const lines: string[] = raw.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const item: string = lines[i].trim();
+      if (item.length > 0 && out.indexOf(item) < 0) {
+        out.push(item);
+      }
+    }
+    return out;
+  }
+
+  static joinUrlList(list: string[]): string {
+    return list.join('\n');
+  }
+
+  static async loadHomeUrls(context: common.Context): Promise<string[]> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      const raw = await store.get(KEY_HOME_URLS, '');
+      const list: string[] = ShellUiPrefs.parseUrlList(typeof raw === 'string' ? raw : '');
+      if (list.length > 0) {
+        return list;
+      }
+      // 1.0.120 向后兼容：1.0.111~1.0.119 只存了单个 homeUrl，列表为空时
+      // 用它兜底，用户升上来不会看到「一个网址都没有」。
+      const single = await store.get(KEY_HOME_URL, '');
+      return ShellUiPrefs.parseUrlList(typeof single === 'string' ? single : '');
+    } catch (error) {
+      return [];
+    }
+  }
+
+  // 列表与「当前勾选」一起写：勾选项必须落在列表内，否则回落到第一条。
+  static async saveHomeUrlList(context: common.Context, list: string[], active: string): Promise<void> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      const resolved: string = ShellUiPrefs.resolveActive(list, active);
+      await store.put(KEY_HOME_URLS, ShellUiPrefs.joinUrlList(list));
+      await store.put(KEY_HOME_URL, resolved);
+      await store.flush();
+    } catch (error) {
+    }
+  }
+
+  // 勾选项归一：在列表内则用它，否则用第一条，列表为空则空串。
+  static resolveActive(list: string[], active: string): string {
+    if (active && active.length > 0 && list.indexOf(active) >= 0) {
+      return active;
+    }
+    return list.length > 0 ? list[0] : '';
   }
 }
