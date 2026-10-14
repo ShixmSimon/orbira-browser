@@ -53,6 +53,16 @@ git -C "${chromium_src}" apply \
   "${project_root}/patches/ohos-skia-output-format-diagnostics.patch"
 git -C "${chromium_src}" apply \
   "${project_root}/patches/ohos-vulkan-sdr-output.patch"
+# Paint-holding fixes (A = transparent Init background / cold-start white
+# flash, B = finite navigation-gap deadline / black-gutter flash). Applied here
+# so a standalone apply-adapter also carries them; the incremental list skips
+# them idempotently when already present.
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-paint-hold-a.patch"
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-paint-hold-b.patch"
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-bottom-crop.patch"
 while read -r deps_path deps_patch; do
   [[ -z "${deps_path}" || "${deps_path}" == \#* ]] && continue
   git -C "${chromium_src}/${deps_path}" apply --binary \

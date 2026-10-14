@@ -234,6 +234,11 @@ else
   apply_incremental_patch "${repo_root}/patches/ohos-camera-frame-layout.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-camera-lifecycle.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-camera-timeline.patch"
+  # Paint-holding fixes: A = transparent Init background (cold-start/new-tab
+  # white flash), B = finite navigation-gap deadline (black-gutter flash).
+  apply_incremental_patch "${repo_root}/patches/ohos-paint-hold-a.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-paint-hold-b.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-bottom-crop.patch"
   # An early updater revision inserted deps inside the base protection hunk.
   # Back that dependent patch out before checking/upgrading its prerequisite.
   if ! git -C "$src" apply -C0 --reverse --check \
