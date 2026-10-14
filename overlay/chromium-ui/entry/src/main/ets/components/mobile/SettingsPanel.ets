@@ -528,16 +528,13 @@ export struct SettingsPanel {
     }
   }
 
-  // 关于页「项目主页」等外链：交给系统按 http(s) 唤起默认处理（浏览器/本应用）。
+  // 关于页「项目主页」等外链：在浏览器自身的新标签页打开。原先走
+  // context.openLink，当本应用是系统默认浏览器时会应用内自唤起而静默失败
+  // （hideFailureTipDialog 把错误吞掉），表现就是「点了没反应」。改为经引擎开新标签，
+  // 与系统默认浏览器是谁无关；随后收起设置面板让新标签可见。
   private openExternalLink(url: string): void {
-    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
-    if (context === undefined) {
-      return;
-    }
-    try {
-      context.openLink(url, { appLinkingOnly: false, hideFailureTipDialog: true });
-    } catch (error) {
-    }
+    this.onCommand({ command: 'newTab', url: url, background: false });
+    this.onBack();
   }
 
   private onPanelEvent(): void {

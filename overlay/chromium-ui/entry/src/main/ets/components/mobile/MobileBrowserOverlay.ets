@@ -538,7 +538,10 @@ export struct MobileBrowserOverlay {
       this.issueCommand({ command: 'back' });
       return true;
     }
-    return false;
+    // 非主页、且无可后退历史（外部拉起的网页、或单页浏览到根部）：回到主页而非退出
+    // 应用。原先这里直接 return false 会把浏览器整个关掉，侧滑体验与预期不符。
+    this.issueCommand({ command: 'home' });
+    return true;
   }
 
   private onBrowserStateChanged(): void {
