@@ -146,6 +146,9 @@ export interface AuraStartupConfig {
   // Which of ANGLE's backends draws. Unset or 'gles' is ANGLE on
   // HarmonyOS's own EGL/GLES, which is what a device should use; 'vulkan'
   // is for measuring Vulkan against it. Read once, at startup.
+  // 1.0.144: this carries the "Vulkan 渲染加速" setting. It is the only path
+  // that reaches the GPU process: the engine turns it into --use-angle=, and
+  // "use-angle" is on the GPU process switch allowlist.
   angleBackend?: 'gles' | 'vulkan';
   // Where the GPU runs. Unset or 'in-process' keeps it in the browser
   // process; 'separate' gives it a process of its own on a tablet or 2in1,
@@ -187,10 +190,9 @@ export interface AuraStartupConfig {
   windowRole?: 'browser' | 'pwa';
   targetWidget?: number;
   pwaAppId?: string;
-  // 1.0.143：用户可控的 Vulkan 渲染后端开关透传给引擎 NAPI。默认不传（走 GLES）；
-  // 关闭 Vulkan 时外壳注入 { key: 'ohos-disable-vulkan' }，引擎据此回退 GLES，
-  // 解决部分机型（如 Pura80）滑动掉帧。字段名与引擎 NAPI 读取的 additionalSwitches
-  // 完全一致，无需改 NAPI。每项 = 一条命令行开关，无 value 时为纯开关。
+  // 附加命令行开关。注意：GPU 进程的命令行是从浏览器进程按白名单拷过去的
+  // (content/browser/gpu/gpu_process_host.cc 的 kSwitchNames)，白名单外的键
+  // 在 GPU 进程读不到，闸门再严也是空转。
   additionalSwitches?: AuraCommandLineSwitch[];
 }
 
@@ -282,9 +284,17 @@ export class DeviceRoutingPolicy {
       jitless: false,
       fullscreenRequested: routing.fullscreenRequested
     };
-    // 1.0.143「Vulkan 渲染加速」：默认关（vulkanEnabled=false）→ 注入
-    // --ohos-disable-vulkan，引擎回退到 GLES，规避部分机型滑动掉帧；开启则
-    // 不注入，引擎走上游 ANGLE Vulkan 路径。开关启动时读取一次，改完需重启。
+    // 1.0.144「Vulkan 渲染加速」：默认关 → ANGLE 走 HarmonyOS 自带的 EGL/GLES，
+    // 规避部分机型（如 Pura80）滑动掉帧；开启则让 ANGLE 走 Vulkan。启动时读取
+    // 一次，改完需重启。
+    //
+    // 走 angleBackend 而不是 additionalSwitches：GPU 进程的命令行是从浏览器
+    // 进程按白名单拷过去的（content/browser/gpu/gpu_process_host.cc 的
+    // kSwitchNames），自定义键进不去，闸门读不到就等于空转。1.0.143 就是踩了
+    // 这个坑——包里能查到字符串，但开关拨了没反应。
+    config.angleBackend = vulkanEnabled ? 'vulkan' : 'gles';
+    // 顺带拦住 GPU 进程的原生 Vulkan（skiaBackend 那条路）。手机上它本来不启用
+    // （要 gpuProcess='separate'），留着做保险，等那条路真启用时不会失控。
     if (!vulkanEnabled) {
       // ArkTS rejects array literals of object literals
       // (arkts-no-noninferrable-arr-literals / arkts-no-untyped-obj-literals),
