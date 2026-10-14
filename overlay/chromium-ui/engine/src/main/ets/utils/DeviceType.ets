@@ -93,6 +93,14 @@ export type ShellSurface =
   // Permission questions; the shell gets sitePermissionRequested.
   | 'permissionPrompt';
 
+// 1.0.143: one extra command-line switch handed to the engine at startup.
+// ArkTS has no object-literal types (arkts-no-obj-literals-as-types), so the
+// shape has to be a declared interface rather than written inline.
+export interface AuraCommandLineSwitch {
+  key: string;
+  value?: string;
+}
+
 export interface AuraStartupConfig {
   startUrl: string;
   uiProfile: 'phone' | 'tablet' | 'pc';
@@ -183,10 +191,16 @@ export interface AuraStartupConfig {
   // 关闭 Vulkan 时外壳注入 { key: 'ohos-disable-vulkan' }，引擎据此回退 GLES，
   // 解决部分机型（如 Pura80）滑动掉帧。字段名与引擎 NAPI 读取的 additionalSwitches
   // 完全一致，无需改 NAPI。每项 = 一条命令行开关，无 value 时为纯开关。
-  additionalSwitches?: { key: string; value?: string }[];
+  additionalSwitches?: AuraCommandLineSwitch[];
 }
 
 export const CHROMIUM_HOME_URL: string = 'chrome://newtab/';
+
+// 1.0.143: the switch the engine's GPU process looks for. Present, it keeps
+// ANGLE on EGL/GLES and never asks for Vulkan; absent, the engine follows its
+// own (upstream) Vulkan path. Must match IsOhosPhoneVulkanEnabled() in
+// overlay/ui/ozone/platform/ohos/ohos_phone_gpu_channel.cc.
+export const OHOS_DISABLE_VULKAN_SWITCH: string = 'ohos-disable-vulkan';
 
 const TV_MARKET_KEYWORDS: string[] = [
   'MATETV',
@@ -272,7 +286,12 @@ export class DeviceRoutingPolicy {
     // --ohos-disable-vulkan，引擎回退到 GLES，规避部分机型滑动掉帧；开启则
     // 不注入，引擎走上游 ANGLE Vulkan 路径。开关启动时读取一次，改完需重启。
     if (!vulkanEnabled) {
-      config.additionalSwitches = [{ key: 'ohos-disable-vulkan' }];
+      // ArkTS rejects array literals of object literals
+      // (arkts-no-noninferrable-arr-literals / arkts-no-untyped-obj-literals),
+      // so both the element and the array are typed up front.
+      const disableVulkan: AuraCommandLineSwitch = { key: OHOS_DISABLE_VULKAN_SWITCH };
+      const switches: AuraCommandLineSwitch[] = [disableVulkan];
+      config.additionalSwitches = switches;
     }
     return config;
   }
