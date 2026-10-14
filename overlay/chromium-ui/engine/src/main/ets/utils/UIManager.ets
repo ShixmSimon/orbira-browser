@@ -42,10 +42,11 @@ export class UIManager {
     windowState?: WindowStateSnapshot,
     foldStatusOverride?: number,
     colorScheme: 'light' | 'dark' = 'light',
-    vulkanEnabled: boolean = false
+    vulkanEnabled: boolean = false,
+    webgpuEnabled: boolean = false
   ): AuraStartupConfig {
     return DeviceRoutingPolicy.createAuraStartupConfig(
-      startUrl, windowState, foldStatusOverride, colorScheme, vulkanEnabled);
+      startUrl, windowState, foldStatusOverride, colorScheme, vulkanEnabled, webgpuEnabled);
   }
 
   static serializeAuraStartupConfig(
@@ -53,9 +54,10 @@ export class UIManager {
     windowState?: WindowStateSnapshot,
     foldStatusOverride?: number,
     colorScheme: 'light' | 'dark' = 'light',
-    vulkanEnabled: boolean = false
+    vulkanEnabled: boolean = false,
+    webgpuEnabled: boolean = false
   ): string {
     return JSON.stringify(UIManager.buildAuraStartupConfig(
-      startUrl, windowState, foldStatusOverride, colorScheme, vulkanEnabled));
+      startUrl, windowState, foldStatusOverride, colorScheme, vulkanEnabled, webgpuEnabled));
   }
 }

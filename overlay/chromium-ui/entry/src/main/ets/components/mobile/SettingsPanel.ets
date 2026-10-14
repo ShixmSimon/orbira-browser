@@ -146,6 +146,9 @@ const SETTINGS_ENTRIES: SettingsEntry[] = [
   { id: 'vulkanEnabled', title: 'Vulkan 渲染加速', subtitle: '实验性：开启后部分机型可能滑动掉帧，建议保持关闭；改动需重启生效',
     keywords: ['vulkan', 'gpu', '渲染', '加速', '掉帧', '卡顿', 'gles', '性能', 'skia'],
     section: '高级', kind: 'toggle' },
+  { id: 'webgpuEnabled', title: 'WebGPU 加速', subtitle: '实验性：开启后网页可用 GPU 计算/渲染（navigator.gpu）；改动需重启生效',
+    keywords: ['webgpu', 'gpu', '渲染', '加速', 'vulkan', 'd3d', 'compute', '计算', '图形'],
+    section: '高级', kind: 'toggle' },
 
   { id: 'about', title: '关于 Orbira', subtitle: '版本、内核与开源协议',
     keywords: ['about', '关于', '版本', 'version', '星轨', '开源', '简介', '项目', '主页', 'github', 'chromium-hmos'], section: '关于', kind: 'page' }
@@ -225,6 +228,9 @@ export struct SettingsPanel {
   // 1.0.143「Vulkan 渲染加速」：默认 false=走 GLES（规避部分机型滑动掉帧）；
   // 开启则引擎走 ANGLE Vulkan 后端。启动时读取一次，改动需重启生效。
   @StorageLink('auraVulkanEnabled') vulkanEnabled: boolean = false;
+  // 1.0.146「WebGPU 加速」：默认 false。开启后页面可用 navigator.gpu。
+  // 与 ANGLE 后端（gles/vulkan）互不干扰，外壳注入命令行即开，改动需重启生效。
+  @StorageLink('auraWebGpuEnabled') webgpuEnabled: boolean = false;
   private requestSeq: number = 0;
   private retryTimer: number = -1;
 
@@ -270,6 +276,10 @@ export struct SettingsPanel {
       // 这里在用户打开设置页时刷新为最新）。
       ShellUiPrefs.loadVulkanEnabled(ctx).then((value: boolean): void => {
         AppStorage.setOrCreate('auraVulkanEnabled', value);
+      });
+      // 1.0.146：WebGPU 开关同上，从持久化读回最新值。
+      ShellUiPrefs.loadWebGpuEnabled(ctx).then((value: boolean): void => {
+        AppStorage.setOrCreate('auraWebGpuEnabled', value);
       });
     }
     // One retry in case the first round was sent before the engine answered.
@@ -695,6 +705,10 @@ export struct SettingsPanel {
     if (entry.id === 'vulkanEnabled') {
       return this.vulkanEnabled;
     }
+    // 1.0.146：WebGPU 开关同属外壳侧偏好。
+    if (entry.id === 'webgpuEnabled') {
+      return this.webgpuEnabled;
+    }
     return this.prefValue(entry.id as ShellPrefKey);
   }
 
@@ -737,6 +751,15 @@ export struct SettingsPanel {
       }
       return;
     }
+    // 1.0.146：WebGPU 开关同理。外壳注入命令行即开，无需重编。
+    if (entry.id === 'webgpuEnabled') {
+      this.webgpuEnabled = value;
+      AppStorage.setOrCreate('auraWebGpuEnabled', value);
+      if (context) {
+        ShellUiPrefs.saveWebGpuEnabled(context, value);
+      }
+      return;
+    }
     this.setPref(entry.id as ShellPrefKey, value);
   }
 
@@ -745,7 +768,7 @@ export struct SettingsPanel {
     if (entry.kind === 'toggle' || entry.kind === 'externalToggle' ||
       (entry.kind === 'page' && (entry.id === 'hideStatusBarOnScroll' ||
         entry.id === 'hideTopBarOnScroll' || entry.id === 'hideDockOnScroll')) ||
-      entry.id === 'vulkanEnabled') {
+      entry.id === 'vulkanEnabled' || entry.id === 'webgpuEnabled') {
       this.toggleEntry(entry, !this.entryValue(entry));
       return;
     }
@@ -1217,6 +1240,21 @@ export struct SettingsPanel {
                 const context = this.getUIContext().getHostContext() as common.Context | undefined;
                 if (context) {
                   ShellUiPrefs.saveVulkanEnabled(context, on);
+                }
+              })
+            this.CardDivider()
+            // 1.0.146「WebGPU 加速」：外壳侧偏好，不走引擎 prefs。外壳注入
+            // --enable-unsafe-webgpu 即开（引擎侧 Dawn/WebGPU 已编入），与 ANGLE 后端互
+            // 不干扰。默认关（稳定性/兼容性考虑）。图标用立方体，区别于 Vulkan 的芯片。
+            // 启动时读取一次，改动需重启生效。
+            this.ShellToggleRow($r('app.media.aura_webgpu'), 'WebGPU 加速',
+              '实验性：开启后网页可用 GPU 计算/渲染（navigator.gpu）；改动需重启应用后生效',
+              this.webgpuEnabled, (on: boolean): void => {
+                this.webgpuEnabled = on;
+                AppStorage.setOrCreate('auraWebGpuEnabled', on);
+                const context = this.getUIContext().getHostContext() as common.Context | undefined;
+                if (context) {
+                  ShellUiPrefs.saveWebGpuEnabled(context, on);
                 }
               })
           }

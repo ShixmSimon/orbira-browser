@@ -31,6 +31,10 @@ const KEY_HOME_URLS = 'homeUrls';
 // （如 Pura80）滑动掉帧；开启则引擎走 ANGLE Vulkan 后端。开关在启动时读取一次，
 // 改动需重启应用才能生效。
 const KEY_VULKAN_ENABLED = 'vulkanEnabled';
+// 1.0.146「WebGPU 加速」开关。默认关（false）。开启后页面可用 navigator.gpu，
+// 走引擎已编入的 Dawn/WebGPU（ohos-dawn-webgpu.patch）。外壳注入命令行即开，
+// 无需重编；与 ANGLE 后端（gles/vulkan）互不干扰。改动需重启应用才能生效。
+const KEY_WEBGPU_ENABLED = 'webgpuEnabled';
 
 export class ShellUiPrefs {
   static async loadHideStatusBar(context: common.Context): Promise<boolean> {
@@ -281,6 +285,25 @@ export class ShellUiPrefs {
     try {
       const store = await preferences.getPreferences(context, STORE_NAME);
       await store.put(KEY_VULKAN_ENABLED, value);
+      await store.flush();
+    } catch (error) {
+    }
+  }
+
+  // 1.0.146「WebGPU 加速」：默认关（稳定性/兼容性考虑）。开关在启动时读取一次。
+  static async loadWebGpuEnabled(context: common.Context): Promise<boolean> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      return Boolean(await store.get(KEY_WEBGPU_ENABLED, false));
+    } catch (error) {
+      return false;
+    }
+  }
+
+  static async saveWebGpuEnabled(context: common.Context, value: boolean): Promise<void> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      await store.put(KEY_WEBGPU_ENABLED, value);
       await store.flush();
     } catch (error) {
     }

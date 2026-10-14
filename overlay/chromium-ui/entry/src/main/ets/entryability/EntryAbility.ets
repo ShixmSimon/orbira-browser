@@ -29,6 +29,8 @@ const AURA_THEME_FONT_REVISION_KEY = 'auraThemeFontRevision';
 const AURA_COLOR_SCHEME_KEY = 'auraColorScheme';
 // 1.0.143「Vulkan 渲染加速」：启动时读取一次的 GPU 后端开关（默认 false=GLES）。
 const AURA_VULKAN_ENABLED_KEY = 'auraVulkanEnabled';
+// 1.0.146「WebGPU 加速」：启动时读取一次的开关（默认 false）。
+const AURA_WEBGPU_ENABLED_KEY = 'auraWebGpuEnabled';
 const AURA_ONBOARDING_READY_KEY = 'auraOnboardingReady';
 const AURA_ONBOARDING_COMPLETE_KEY = 'auraOnboardingComplete';
 const AURA_PROFILE_ID_KEY = 'auraProfileId';
@@ -99,6 +101,8 @@ export default class EntryAbility extends UIAbility {
     // 1.0.143：Vulkan 开关默认关（GLES，规避部分机型滑动掉帧）。冷启动真正读到
     // 的值在 onWindowStageCreate 里从 preferences 读取后再覆盖此默认值。
     AppStorage.setOrCreate(AURA_VULKAN_ENABLED_KEY, false);
+    // 1.0.146：WebGPU 开关默认关。冷启动真正读到的值在 onWindowStageCreate 里覆盖。
+    AppStorage.setOrCreate(AURA_WEBGPU_ENABLED_KEY, false);
     AppStorage.setOrCreate(AURA_ONBOARDING_READY_KEY, false);
     AppStorage.setOrCreate(AURA_ONBOARDING_COMPLETE_KEY, false);
     AppStorage.setOrCreate(AURA_PROFILE_ID_KEY, 'local');
@@ -251,15 +255,26 @@ export default class EntryAbility extends UIAbility {
       AppStorage.setOrCreate('auraRouting', '');
       // 1.0.143：Vulkan 开关必须在引擎启动配置序列化「之前」读出来——引擎只在启动
       // 时读一次配置，晚了就得等下次冷启动。这里与 startUrl 一并异步拿到再序列化。
+      // 1.0.146：WebGPU 开关同理，与 Vulkan 一并读取、一并序列化进启动配置。
       ShellUiPrefs.loadVulkanEnabled(this.context).then((vulkanEnabled: boolean): void => {
-        AppStorage.setOrCreate(AURA_VULKAN_ENABLED_KEY, vulkanEnabled);
-        AppStorage.setOrCreate('auraStartupConfig',
-          UIManager.serializeAuraStartupConfig(startUrl, undefined, undefined, this.lastColorScheme, vulkanEnabled));
-        AppStorage.setOrCreate(AURA_SURFACE_READY_KEY, false);
+        ShellUiPrefs.loadWebGpuEnabled(this.context).then((webgpuEnabled: boolean): void => {
+          AppStorage.setOrCreate(AURA_VULKAN_ENABLED_KEY, vulkanEnabled);
+          AppStorage.setOrCreate(AURA_WEBGPU_ENABLED_KEY, webgpuEnabled);
+          AppStorage.setOrCreate('auraStartupConfig',
+            UIManager.serializeAuraStartupConfig(startUrl, undefined, undefined, this.lastColorScheme, vulkanEnabled, webgpuEnabled));
+          AppStorage.setOrCreate(AURA_SURFACE_READY_KEY, false);
+        }).catch((innerError: Error): void => {
+          hilog.error(DOMAIN, 'AuraShell', 'Failed to read webgpu pref: %{public}s', JSON.stringify(innerError));
+          AppStorage.setOrCreate(AURA_VULKAN_ENABLED_KEY, vulkanEnabled);
+          AppStorage.setOrCreate(AURA_WEBGPU_ENABLED_KEY, false);
+          AppStorage.setOrCreate('auraStartupConfig',
+            UIManager.serializeAuraStartupConfig(startUrl, undefined, undefined, this.lastColorScheme, vulkanEnabled, false));
+          AppStorage.setOrCreate(AURA_SURFACE_READY_KEY, false);
+        });
       }).catch((error: Error): void => {
         hilog.error(DOMAIN, 'AuraShell', 'Failed to read vulkan pref: %{public}s', JSON.stringify(error));
         AppStorage.setOrCreate('auraStartupConfig',
-          UIManager.serializeAuraStartupConfig(startUrl, undefined, undefined, this.lastColorScheme, false));
+          UIManager.serializeAuraStartupConfig(startUrl, undefined, undefined, this.lastColorScheme, false, false));
         AppStorage.setOrCreate(AURA_SURFACE_READY_KEY, false);
       });
 
@@ -413,12 +428,13 @@ export default class EntryAbility extends UIAbility {
     const routing = UIManager.getRouting(windowState, foldStatus);
     const startUrl = (AppStorage.get('auraStartUrl') as string) || CHROMIUM_HOME_URL;
     const vulkanEnabled = Boolean(AppStorage.get(AURA_VULKAN_ENABLED_KEY) ?? false);
+    const webgpuEnabled = Boolean(AppStorage.get(AURA_WEBGPU_ENABLED_KEY) ?? false);
     const routingSignature = `${DeviceRoutingPolicy.buildRoutingSignature(routing)}|${this.lastColorScheme}`;
 
     this.applyWindowPolicy(this.mainWindow, routing);
     AppStorage.setOrCreate('auraRouting', JSON.stringify(routing));
     AppStorage.setOrCreate('auraStartupConfig',
-      UIManager.serializeAuraStartupConfig(startUrl, windowState, foldStatus, this.lastColorScheme, vulkanEnabled));
+      UIManager.serializeAuraStartupConfig(startUrl, windowState, foldStatus, this.lastColorScheme, vulkanEnabled, webgpuEnabled));
 
     if (routingSignature !== this.lastRoutingSignature) {
       this.lastRoutingSignature = routingSignature;

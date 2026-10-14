@@ -261,7 +261,8 @@ export class DeviceRoutingPolicy {
     windowState?: WindowStateSnapshot,
     foldStatusOverride?: number,
     colorScheme: 'light' | 'dark' = 'light',
-    vulkanEnabled: boolean = false
+    vulkanEnabled: boolean = false,
+    webgpuEnabled: boolean = false
   ): AuraStartupConfig {
     const routing = DeviceRoutingPolicy.resolve(windowState, foldStatusOverride);
     const config: AuraStartupConfig = {
@@ -293,15 +294,24 @@ export class DeviceRoutingPolicy {
     // kSwitchNames），自定义键进不去，闸门读不到就等于空转。1.0.143 就是踩了
     // 这个坑——包里能查到字符串，但开关拨了没反应。
     config.angleBackend = vulkanEnabled ? 'vulkan' : 'gles';
+    // 1.0.146「WebGPU 加速」：外壳注入 --enable-unsafe-webgpu 即开，无需重编。
+    // 引擎侧 Dawn/WebGPU 已编进当前 .so（patches/ohos-dawn-webgpu.patch），WebGPU
+    // 走 Dawn 自带的 Vulkan（libvulkan.so），与 ANGLE 后端（gles/vulkan 那条）互不干扰。
+    // 它进 additionalSwitches 而非白名单键：手机是 in-process-gpu，
+    // gpu_preferences.enable_unsafe_webgpu 走 mojo 传到 GPU 侧，外壳注入即可生效。
+    const extraSwitches: AuraCommandLineSwitch[] = [];
     // 顺带拦住 GPU 进程的原生 Vulkan（skiaBackend 那条路）。手机上它本来不启用
     // （要 gpuProcess='separate'），留着做保险，等那条路真启用时不会失控。
     if (!vulkanEnabled) {
-      // ArkTS rejects array literals of object literals
-      // (arkts-no-noninferrable-arr-literals / arkts-no-untyped-obj-literals),
-      // so both the element and the array are typed up front.
       const disableVulkan: AuraCommandLineSwitch = { key: OHOS_DISABLE_VULKAN_SWITCH };
-      const switches: AuraCommandLineSwitch[] = [disableVulkan];
-      config.additionalSwitches = switches;
+      extraSwitches.push(disableVulkan);
+    }
+    if (webgpuEnabled) {
+      const enableWebGpu: AuraCommandLineSwitch = { key: 'enable-unsafe-webgpu' };
+      extraSwitches.push(enableWebGpu);
+    }
+    if (extraSwitches.length > 0) {
+      config.additionalSwitches = extraSwitches;
     }
     return config;
   }
