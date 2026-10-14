@@ -745,7 +745,7 @@ Chromium 首次访问时重新抓。这是一直如此，不是偶尔。
 偏好键（只接受这些）：`blockThirdPartyCookies`、`doNotTrack`、`safeBrowsing`（`'off' | 'standard' | 'enhanced'`）、`preloadPages`、`popupsBlocked`、`javascriptEnabled`、`textScale`、`autofillAddresses`、`autofillCards`、`downloadAskWhereToSave`、`passwordVault`、`forceDarkWebContents`(网页强制深色,已打开的标签页立即生效)。
 
 - `textScale` 是 50–200 的百分比。桌面版 Chromium 没有只放大文字的设置，所以这里改的是网页的默认缩放比例，整页一起放大。网页实际的默认缩放还要乘上系统字体大小（设置 > 显示 > 字体大小，`Configuration.fontSizeScale`，限制在 0.8–2.0），由引擎 HAR 的 `fontscale` 服务自动跟随，外壳不用处理；`textScale` 读出来的仍是外壳设的值，不含系统字体部分。自己设过缩放的网站保持自己的比例。`--disable-features=OhosFollowSystemFontSize` 可关闭跟随。
-- 这个版本没有配置 Google API 密钥，`safeBrowsing` 开关能保存，但实际上很可能不起作用，设置页不要承诺有安全浏览保护。
+- `urlProtectionApiVersion>=1` 将 `safeBrowsing` 映射为独立 OHOS 防钓鱼总开关，见下方“防钓鱼”。新配置默认关闭、来源 local；已有 standard/enhanced 不视为云查询同意。旧版/没有该能力字段时不能承诺安全浏览保护。新版使用原子配置接口切换来源；legacy `setPref` 仍作用于普通 Profile，且不会授予云查询权限。
 - 没有 `passwordFillRequiresAuth`（已去掉）：把已保存的密码填进网页总要验证身份，和查看、复制、编辑、导出一样，没有开关。设备上没有锁屏也没有录入生物特征时没有东西可以拿来验证，照常填充。
 - `passwordVault` 默认关。打开后由系统密码保险箱填充和保存网页密码：点登录框时内核直接调起保险箱（每个表单问一次），用户选的账号由内核填进网页；登录成功后保险箱询问是否保存，同时 Chromium 不弹提示、悄悄存一份，关掉开关后照常可用。打开期间 Chromium 自己的填充建议、自动填充和强密码提示都不出现。保险箱调用由外壳用 `registerShellSystemService('passwordvault', …)` 实现（`autoFillManager` 的 ViewData 接口要 API 26，引擎 HAR 按 API 20 编译）。保险箱要求设备设了锁屏密码，外壳只在可用时让开关可点。
 
@@ -753,6 +753,85 @@ Chromium 首次访问时重新抓。这是一直如此，不是偶尔。
 - `fill {url, kind: 'login' | 'signup', focus: 'username' | 'password'}` → `{username, password}`（用户选中的账号）或 `{}`（没有账号、用户取消、应用进了后台）。用 `requestAutoFill`，`triggerType` 必须是 `AUTO_REQUEST`（`MANUAL_REQUEST` 会列出保险箱里全部账号），`pageUrl` 填 `url`（保险箱按它的域名匹配）。同一时间只能有一个请求。
 - `save {url, username, password}` → `{}`。用 `requestAutoSave`，保险箱自己问用户。
 - 密码只在内存里经过：不记日志、不落盘、不进界面状态。
+
+**防钓鱼（`urlProtectionApiVersion` 2）**
+
+本节描述已实现的内核/HAR 接口，尚未完成真机验收。`getAboutInfo` 返回 `urlProtectionApiVersion:2`：兼容 v1 配置与状态，新增签名规则更新。该字段不代表华为已开通或本地库已安装。旧内核缺少该字段时不支持以下命令；v1 不支持手动更新。桥消息的 `protocolVersion` 仍为 1。
+
+| 命令 | 参数 | 回包 |
+| --- | --- | --- |
+| `getUrlProtectionState` | `requestId` | `urlProtectionState`，直接携带状态字段与 requestId |
+| `setUrlProtectionConfig` | `requestId, contextId, expectedRevision, enabled, provider, cloudConsent` | `urlProtectionConfigResult {requestId, ok, reason, ...实际状态}`，整组原子应用 |
+| `updateUrlProtectionRules`（v2） | `requestId, contextId, expectedRevision` | `urlProtectionRulesUpdateResult {requestId, ok, reason, ...实际状态}`，ok 只表示启动/复用更新任务 |
+
+provider 为 `local|huawei|both`；enabled/cloudConsent 为 bool。contextId 从当前窗口状态取得，expectedRevision 为读到的 policyRevision。配置失败原因为 `invalid_context|stale_policy|invalid_request|managed`，失败不会部分应用。同一 Profile 的窗口通过 `urlProtectionStateChanged` 收到完整状态。
+
+设置提供四项：**华为 / 本地 / 同时 / 关闭**。前三项分别原子提交 `enabled:true` 配合 `provider:huawei|local|both`；关闭提交 `enabled:false` 并保留 provider。选择华为或同时不代替用户的云查询授权。设置显示以成功回包为准，版本冲突后重新读状态；不提供拦截/警告行为切换。
+
+状态字段：`protocolVersion:1, contextId, policyRevision, enabled, provider, cloudConsent, incognito, huaweiStatus, huaweiReason, localStatus, rulesVersion, rulesUpdatedAt, rulesExpiresAt, rulesUpdateSupported`。时间为 UTC Unix 毫秒，未知 -1；版本未知为空。
+
+- 华为状态：`disabled|consent_required|unverified|available|unavailable`；available 仅反映最近调用结果。huaweiReason 为固定原因码，不含 SDK 原始消息。
+- 本地状态：`disabled|missing|loading|invalid|expired|ready`，仅在有效期内使用 ready 规则；打开设置应重新查询时间状态。
+- v2 新增 `rulesUpdateStatus:initializing|not_configured|invalid_config|disabled|idle|updating|backoff`、`rulesUpdateReason`、`rulesLastCheck/LastSuccess/NextCheck`（UTC Unix 毫秒，未知 -1）、`rulesSequence`、`rulesSource:none|package|download`。更新状态属于原始 Profile 共享的公共规则管理器；当前 Profile 是否使用本地规则仍按 enabled/provider 判断。
+- `rulesUpdateSupported` 仅在应用包提供有效可信配置时为 true；当前未提供生产端点/公钥，默认 false，不展示可用在线更新入口。更新失败保留有效旧库，过期库停止匹配。
+- 默认保护关闭、来源 local，不把旧 standard/enhanced 自动迁移成已开启保护。普通 Profile 的启用/来源持久化，无痕变更只在会话内；云同意均仅在当前 Profile 会话内有效，外壳重启后根据自己的同意记录重新确认。
+- 切换会取消旧检查、清除旧缓存和一次继续例外，已提交页面不会自动重载；单来源不可用不自动启用另一来源。
+
+手动更新验证 contextId/revision，且调用 Profile 必须启用 local/both。固定失败原因包括 `invalid_context|stale_policy|disabled|unavailable|initializing|not_configured|invalid_config|rate_limited`。进行中的任务会合并，`already_updating` 也返回 ok；最终结果从 `urlProtectionStateChanged` 读取。请求不接受分发 URL、公钥或规则内容。配置/缓存/下载/验签由内核管理，详见 [规则更新交接](OHOS_PHISHING_RULE_UPDATES.md)。
+
+外壳在第一个 WebWindow 前注册 `registerShellSystemService('urlcheck', () => coordinator)`。HAR 导出 `UrlCheckCoordinator`、`UrlThreatExecutor`、`UrlThreatAuthorization`、`UrlCheckOptions` 及 SDK 返回类型，一个应用共用一个 coordinator：
+
+- executor 的 `check(url)` 调用 `safetyDetect.checkUrlThreat({urls:[url]})`，返回 `{results:[{url,threat}]}`；不从地址栏补回完整 URL。
+- authorization 的 `isAllowed(contextId,incognito)` 检查外壳真实同意；内核传来的 cloudConsent 不代替它。
+- options 为 `supported, originPathVerified, maxConcurrent`。originPathVerified 在官方裁剪 URL 兼容性未确认前保持 false，并发依据实际配额。
+- 撤销同意立即 `coordinator.revokeContext(contextId)`，再提交内核配置。应用服务结束时 `dispose()`，普通窗口关闭不销毁全应用 coordinator。
+
+| 桥方法（内核调用，HAR coordinator 实现） | 参数 / 行为 |
+| --- | --- |
+| `configure` | 配置成功后发送完整状态，建立按 contextId 隔离的策略镜像 |
+| `check` | `{protocolVersion:1, requestId:string, contextId, policyRevision, url, queryMode:'origin_path', timeoutMs}`，预算 1–1500 ms |
+| `cancel` | `{protocolVersion:1, contextId, policyRevision, requestId:string}`，逻辑取消；真实 SDK 并发槽等 SDK 完成再释放 |
+| `closeContext` | `{protocolVersion:1, contextId, policyRevision}`，Profile 销毁后清理上下文 |
+| `capabilities` | 声明支持/配置/queryModes，不发送网络探测 |
+
+check 返回 `{protocolVersion:1, requestId, contextId, policyRevision, verdict, reason, checkedUrl, elapsedMs, sdkCode}`。verdict 为 `no_match|phishing|malware|other|unknown`；官方 0/1/2/3 分别对应前四项，失败、错配、缺项、未知枚举均为 unknown。参数失败时 checkedUrl 可以为空，不能把失败当 no_match。
+
+当前华为送检子集为 ASCII 公网 DNS 名与筛选后的 scheme/host/port/path，不含 query/userinfo/fragment；coordinator 保守拒绝 IP 字面量、编码及疑似 token 路径。split-DNS 公网形状内网域名不能完整识别，正式上线前需评估。本地精确匹配保留 path/query/fragment。
+
+包内规则通过 `scripts/build-phishing-rules.py` 从固定版本活跃数据生成；打包时设置 `PHISHING_RULES_FILE`，校验后复制为 `chromium/ohos_phishing_rules.json`，加入 runtime.version，由 WebWindow 解包。在线配置通过 `PHISHING_UPDATE_CONFIG_FILE` 打包，更新用 Ed25519 验签并原子写入 Profile 公共规则缓存。没有数据报告 missing，不携带假测试规则；没有可信配置时不联网更新。
+
+详见 [外壳计划书](OHOS_SAFE_BROWSING_SHELL_PLAN.md)。本轮不包含广告过滤；广告开关/白名单不能改变防钓鱼来源配置。
+
+**本地规则来源（`ruleSourcesApiVersion` 1）**
+
+在既有华为/本地/同时/关闭之下管理本地来源。新增 `getProtectionRuleSources`、`addProtectionRuleSource`、`updateProtectionRuleSource`、`removeProtectionRuleSource`、`refreshProtectionRuleSource`；回包 `protectionRuleSources` / `protectionRuleSourceResult`，失效通知 `protectionRuleSourcesChanged`。写入校验 contextId 和 **sourcesRevision**（作为 expectedRevision），不是全局 policyRevision；无痕只读。HAR 导出来源条目、回包和失效事件类型。
+
+推荐目录含 HaGeZi TIF Mini / PhishDestroy，默认不安装、不启用。自定义仅支持 HTTPS 文本 domains（host_exact/host_suffix）或 urls（url_exact），不支持 Adblock/hosts/正则。推荐与自定义均标注 user_https、signed=false，不能冒用产品签名信任；原签名更新命令继续独立工作。单源上限 16 MiB/50 万输入条目，最多 8 源，订阅总索引最多 100 万哈希；超限或格式错误拒绝整次更新并保留有效旧库。公共/私有注册后缀条目被拒收并以 rejectedCount/warning 显式报告，外壳不能把其数量算进有效条数。
+
+至少一个启用订阅或产品签名库有效时 localStatus=ready，其余错误在每源状态显示；原 rulesVersion/时间仍只描述产品签名库。综合威胁订阅命中为 other，但会由内核拦截；华为 OTHERS 既有处理不变。站点详情增加 matchedSourceIds、ruleType；未知上游验证时间为 -1，fetchedAt 不代表上游重新验证。准确字段、错误码、生命周期和外壳接入要求见 [规则来源契约](OHOS_PROTECTION_RULE_SOURCES.md)。
+
+**地址栏站点防护（`siteProtectionApiVersion` 1，开发中）**
+
+与全局 `urlProtectionApiVersion` 分开探测。HAR 已导出 `SiteProtectionStateEvent`、`SiteProtectionChangedEvent` 和全局 `UrlProtectionStateEvent`，命令参数已并入 `BrowserCommandPayload`，回包继续通过 `WebWindow.onRuntimeEvent` / `shellEvent<T>()` 读取。
+
+| 命令 | 参数 | 回包 |
+| --- | --- | --- |
+| `getSiteProtectionState` | `requestId, tabId` | `siteProtectionState` |
+| `setSiteProtectionEnabled` | `requestId, contextId, tabId, navigationId, origin, expectedRevision, siteEnabled` | `siteProtectionConfigResult` |
+
+两类回包带 `ok, reason, requestId` 和实际全局防护状态；有当前标签时还带 `tabId, navigationId, origin, revision, siteEnabled, canOverride, verdict, checkedAt`。tabId 为现有标签 ID 字符串；navigationId 为原生导航 ID 字符串，不能转为 JS number，同址刷新和同文档导航也会改变。revision 与 policyRevision 相同。origin 是 Chromium 序列化的 origin，省略默认端口，不含路径、query 或片段。
+
+verdict 为 `unchecked|checking|no_match|phishing|malware|other|unknown|skipped`，checkedAt 为 UTC Unix 毫秒，无结果时 0。仅查询内存状态，不触发 SDK。风险页返回实际被阻止目标的 origin；中间重定向有风险时可能与最终导航地址不同。未被当前观察器记录的历史文档没有 navigationId，canOverride=false，下一次导航后建立身份。
+
+仅处理发送命令窗口的当前活动标签。写入必须使用读取时的完整原生身份、origin 和 revision；切换标签、同址刷新或策略变化都会使旧写入失败。原因码为 `invalid_tab|invalid_context|stale_navigation|stale_policy|invalid_request|invalid_origin|disabled_or_managed|exception_limit`。失败时返回实际快照（没有活动标签则没有站点字段），外壳必须先判断 ok，不能把旧 UI 状态当成功回包。
+
+siteEnabled=false 按 scheme/host/effective port 精确跳过该站点的两个防钓鱼来源，不包含子域名，不改变 HTTPS/证书检查。普通 Profile 最多保存 1000 个站点例外；无痕不继承普通例外，只在自己的会话内保留。全局关闭或受管理时不能改变站点例外。重新开启删除例外；两种写入均取消旧等待、清除缓存及一次继续例外、增加策略版本并重判待决导航。授权、来源切换和本站重新开启后，符合检测条件的已提交 HTTP(S) 页面自动补查，无需刷新网页；期间显示 checking，完成后更新 verdict/checkedAt。关闭时为 skipped。错误页、原生警告页和不可检测地址不自动补查，不能将它们的 unchecked 当作安全。
+
+同文档导航仅在提交后更新身份。完整 URL（含 query/fragment）和策略版本均未变化时保留已完成判定及原 checkedAt；URL 变化则重新检测，不能仅按 origin 复用。旧文档的 History API 不会覆盖待决网络导航的身份，网络导航取消后恢复旧文档并按需补查。补查沿用 1500ms 有界预算与现有授权/隐私规则，旧页面或旧策略的迟到结果会被丢弃。命中危险结果时转到原生警告页，不重新发送网页请求或自动重放 POST；这类提交后警告不提供“仍要访问”。详情及验收见 [站点结果生命周期](OHOS_SITE_VERDICT_LIFECYCLE.md)。
+
+`siteProtectionStateChanged` 只广播全局状态及 `tabId, navigationId`，不带 origin 或检测 URL。外壳仅在匹配当前原生窗口/Profile/标签时重新读取；全局 `urlProtectionStateChanged`（包括规则状态）也使面板失效。回包处理器按 requestId 关联，还须核对 contextId、tabId、navigationId 和 revision，迟到结果不能仅凭同 origin 复用。
+
+外壳适配器在窗口的 runtime event router 接收上述事件，在导航/切换标签/同址刷新时撤销旧面板操作，窗口销毁时清理回包等待和订阅。读写使用有界等待；超时写入可能已经生效，需重新读状态。此处提供内核协议与 HAR 类型，Lumi 自己的 `SiteProtectionBackend` 注入由外壳工程完成，内核不会修改其 UI 或事件路由。
 
 **密码**
 
@@ -1104,15 +1183,23 @@ XComponent({
 动时读一次,改了要重启应用。`chrome://flags` 里的对应开关会被这个启动参数盖掉,
 不起作用。
 
+OHOS ANGLE Vulkan 默认关闭 MSRTSS（直接渲染到单采样纹理）优化，按设备能力使用
+已有多采样兼容路径。用于规避 Pad 上 TextureVk 格式能力查询失败后持续花屏的问题；
+该实验后端仍需设备回归。外壳无需新增配置，诊断和验收见
+[ANGLE Vulkan 多重采样兼容说明](OHOS_ANGLE_VULKAN_MSRT.md)。
+
 ### 独立 GPU 进程(测试中)
 
 启动配置里的 `gpuProcess?: 'in-process' | 'separate'` 决定 GPU 放在哪。不填或
 `'in-process'` 是现在的做法,GPU 在浏览器进程里;`'separate'` 在平板和 2in1 上
-给 GPU 单独开一个进程,GPU 出错时只会影响这个进程,不会连带浏览器。手机不能创建
-子进程,传了也会忽略,hilog 里记一行 `AuraShell ignored gpuProcess separate`。
+给 GPU 单独开一个进程,GPU 出错时只会影响这个进程,不会连带浏览器。手机默认路径不支持
+官方子进程,传了也会忽略,hilog 里记一行 `AuraShell ignored gpuProcess separate`。
+手机 fork 实验开启后可显式选择 `gpuProcess: 'separate'`，使用独立 GPU 的 GL
+离屏读回和宿主呈现兼容层（实验中）。不填写仍为进程内 GPU。该模式暂不支持
+ANGLE/Skia Vulkan、NativePixmap 互操作；具体限制和验收见 [手机 fork](OHOS_PHONE_FORK.md)。
 
 **Skia 走 Vulkan(测试中)。** `skiaBackend?: 'gl' | 'vulkan'`,不填是 GL。只在
-`gpuProcess: 'separate'` 时有效,进程内 GPU 时忽略,hilog 里记一行
+官方子进程路径的 `gpuProcess: 'separate'` 时有效,进程内 GPU 和手机 fork 时忽略,hilog 里记一行
 `AuraShell ignored skiaBackend vulkan`。Vulkan 起不来时 Chromium 自己退回 GL,不会黑
 屏;GPU 进程启动时的 `OHOS GPU child Vulkan probe` 几行日志说明卡在哪一步(加载器、
 实例扩展、实例、物理设备、交换链支持),Chromium 自己的步骤看 `OHOS Vulkan:` 开头的
@@ -1121,6 +1208,20 @@ XComponent({
 所有窗口走的是同一条通道,但还没有逐一验证(主窗口之外:无痕、拖出的标签、画中
 画、PWA、弹出菜单);GPU 进程崩溃重启和 `gpuContextLost`/`gpuFallback` 事件也还没
 接。只在测试版里打开。
+
+### 手机 fork 子进程（默认关闭的实验）
+
+启动配置 `experimentalPhoneFork?: boolean` 默认 `false`。设为 `true` 后，手机/折叠屏
+尝试通过提前创建的 fork 服务运行 renderer/utility，GPU 默认保持进程内，显式
+`gpuProcess='separate'` 可测试 GL 兼容呈现。任一进程模式改变需要结束应用进程再冷启动；
+窗口变化时重新生成配置须保留同一配置。不支持 headless、
+显式 single-process 或 isolated renderers。此路径同 UID、没有安全沙箱。Chromium 154
+已在真机跑通网页与 renderer JIT，但有间歇性 renderer 未连接即退出，稳定性验收
+未全通过，属于默认关闭的实验能力。Lumie 的产品约定为所有包默认手机单进程，
+保留 `lumie://flags` 手动入口（由外壳实现，上架许可另行确认）。切换必须弹出
+重启确认；取消不保存，点击“重启应用”后才尝试应用，失败回滚旧设置。
+不得将待重启的配置刷新进当前内核。详细事务流程、接入和验证步骤见
+[手机 fork 子进程实验](OHOS_PHONE_FORK.md)。
 
 ### 怎么自查
 
@@ -1159,7 +1260,7 @@ HAR 的 `module.json5` 声明了 13 项权限(包括 WebAuthn 用到的 `ACCESS_
 | 限制 | 说明 |
 |---|---|
 | 一个进程只能有一个浏览器 `WebWindow` | 同一个进程里只能初始化一次 Chromium。多窗口(PWA)通过 `onAuxiliaryWindowState` 的 `pwa` 角色另开窗口。 |
-| 手机上是单进程模式 | 手机上网页和浏览器在同一个进程里(`--single-process`)。平板和 2in1 是多进程。 |
+| 手机上默认是单进程模式 | 手机上网页和浏览器默认在同一个进程里(`--single-process`)。平板和 2in1 是多进程。可显式开启默认关闭的 `experimentalPhoneFork` 实验，验证范围见第 8 节。 |
 | 远程调试端口始终打开 | 非 headless 模式下,引擎监听 `127.0.0.1:9222`。**发布正式版之前必须关闭**,目前还没有开关。 |
 | JIT 取决于启动环境 | 构建包含 JIT 编译器，启动时探测能否映射可执行内存：能则启用（平板、2in1、调试签名的手机包），不能则用解释器（手机正式包，JS 简单循环约慢 5 倍），启动配置也可以要求 jitless。本次启动状态看 `aboutInfo.jitEnabled`。解释器模式下 WebAssembly 由 DrumBrake 解释器执行，能用但比 JIT 慢。 |
 | SURFACE 模式下的旋转未验证 | 手机横竖屏、平板和折叠屏的展开折叠,还需要在真机上确认。 |

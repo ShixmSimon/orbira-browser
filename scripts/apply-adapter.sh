@@ -35,11 +35,31 @@ done <"${deps_patch_root}/series"
 
 git -C "${chromium_src}" apply --binary \
   "${project_root}/patches/chromium-154-harmonyos.patch"
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-url-protection.patch"
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-url-protection-updates.patch"
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-rule-sources.patch"
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-phone-fork.patch"
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-phone-gpu-shared-output.patch"
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-ime-explicit-keyboard-request.patch"
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-phone-skia-vulkan.patch"
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-skia-output-format-diagnostics.patch"
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-vulkan-sdr-output.patch"
 while read -r deps_path deps_patch; do
   [[ -z "${deps_path}" || "${deps_path}" == \#* ]] && continue
   git -C "${chromium_src}/${deps_path}" apply --binary \
     "${deps_patch_root}/${deps_patch}"
 done <"${deps_patch_root}/series"
+git -C "${chromium_src}/third_party/angle" apply \
+  "${project_root}/patches/ohos-angle-vulkan-msrt.patch"
 rsync -a "${project_root}/overlay/" "${chromium_src}/"
 
 deps_root="$(dirname "${chromium_src}")/deps_code/webview"

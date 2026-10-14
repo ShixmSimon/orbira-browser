@@ -478,6 +478,19 @@ export struct WebWindow {
           `${runtimeDir}/${fileName}`
         );
       }
+      // A signed application may carry an optional public phishing snapshot.
+      // Remove the previous version when the new package omits it; otherwise
+      // an old extracted file could silently survive an app upgrade.
+      const rawFiles = hostContext.resourceManager.getRawFileListSync('chromium');
+      for (const rulesName of ['ohos_phishing_rules.json', 'ohos_phishing_updates.json']) {
+        const rulesPath = `${runtimeDir}/${rulesName}`;
+        if (rawFiles.some((name: string): boolean =>
+          name === rulesName || name === `chromium/${rulesName}`)) {
+          this.extractRawFile(hostContext, `chromium/${rulesName}`, rulesPath);
+        } else if (fileIo.accessSync(rulesPath)) {
+          fileIo.unlinkSync(rulesPath);
+        }
+      }
       this.writeFile(markerPath, runtimeVersion);
     }
 

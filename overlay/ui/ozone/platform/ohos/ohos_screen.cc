@@ -5,6 +5,8 @@
 
 #include <string>
 
+#include "base/command_line.h"
+#include "base/process/fork_server_ohos.h"
 #include "components/viz/common/resources/shared_image_format.h"
 #include "ui/gfx/display_color_spaces.h"
 
@@ -16,6 +18,7 @@
 #include "base/synchronization/lock.h"
 #include "base/task/single_thread_task_runner.h"
 #include "ui/ozone/platform/ohos/ohos_native_window_registry.h"
+#include "ui/ozone/platform/ohos/ohos_phone_gpu_channel.h"
 
 namespace ui {
 
@@ -41,8 +44,16 @@ constexpr gfx::Size kOhosPrimaryDisplaySize(1920, 1080);
 // with alpha stays RGBA_8888: two bits of alpha is not enough to round a
 // popup's corners, and the factory keeps those windows 8-bit.
 gfx::DisplayColorSpaces ReadDisplayColorSpaces() {
-  const bool hdr = OhosDisplaySupportsHdr();
   gfx::DisplayColorSpaces color_spaces(gfx::ColorSpace::CreateSRGB());
+  if (OhosRequiresSdrOutput()) {
+    // Both the native Vulkan swapchain and phone shared buffers use 8-bit
+    // sRGB. Keep display negotiation consistent with the actual target,
+    // including any GL fallback during the same browser session.
+    LOG(WARNING) << "OHOS display: session output is RGBA8 sRGB; "
+                    "HDR content is tone-mapped";
+    return color_spaces;
+  }
+  const bool hdr = OhosDisplaySupportsHdr();
   if (!hdr) {
     return color_spaces;
   }
@@ -97,6 +108,15 @@ DisplayChangeRelay& GetDisplayChangeRelay() {
 
 }  // namespace
 
+bool OhosRequiresSdrOutput() {
+  const auto* command_line = base::CommandLine::ForCurrentProcess();
+  return command_line->HasSwitch("ohos-sdr-output") ||
+         command_line->GetSwitchValueASCII("use-vulkan") == "native" ||
+         IsOhosPhoneGpuChild() ||
+         (command_line->HasSwitch(base::internal::kOhosPhoneFork) &&
+          !command_line->HasSwitch("in-process-gpu"));
+}
+
 bool OhosDisplaySupportsHdr() {
   NativeDisplayManager_DisplayInfo* info = nullptr;
   if (OH_NativeDisplayManager_CreateDisplayById(0, &info) !=
@@ -123,9 +143,8 @@ bool OhosDisplaySupportsHdr() {
   static base::NoDestructor<std::string> last_said;
   const std::string said =
       "panel HDR formats [" + formats + " ], " +
-      (hdr ? "HDR content is output as Rec. 2020 PQ, opaque windows in "
-             "RGBA_1010102"
-           : "HDR content is tone-mapped to sRGB");
+      (hdr ? "HDR panel; output depends on the rendering surface"
+           : "SDR panel");
   base::AutoLock hold(*lock);
   if (*last_said != said) {
     *last_said = said;

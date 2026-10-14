@@ -582,6 +582,9 @@ export interface AboutInfoEvent extends ShellServiceEvent {
   requestId: number;
   chromiumVersion: string;
   engineCommit: string;
+  urlProtectionApiVersion?: number;
+  siteProtectionApiVersion?: number;
+  ruleSourcesApiVersion?: number;
   userAgent: string;
   // Which bookmark commands this engine understands: 1 is the original set,
   // 2 adds insertion positions, bookmarkOpResult, childCount, rootType, the
@@ -604,6 +607,106 @@ export interface AboutInfoEvent extends ShellServiceEvent {
 export interface FaviconsEvent extends ShellServiceEvent {
   requestId: number;
   items: FaviconImage[];
+}
+
+export interface UrlProtectionStateEvent extends ShellServiceEvent {
+  protocolVersion: number;
+  contextId: string;
+  policyRevision: number;
+  enabled: boolean;
+  provider: 'local' | 'huawei' | 'both';
+  cloudConsent: boolean;
+  huaweiStatus: string;
+  huaweiReason: string;
+  localStatus: string;
+  rulesVersion: string;
+  rulesUpdatedAt: number;
+  rulesExpiresAt: number;
+  rulesUpdateSupported: boolean;
+  // urlProtectionApiVersion >= 2; public rules only, never browsing history.
+  rulesUpdateStatus?: string;
+  rulesUpdateReason?: string;
+  rulesLastCheck?: number;
+  rulesLastSuccess?: number;
+  rulesNextCheck?: number;
+  rulesSequence?: number;
+  rulesSource?: string;
+  requestId?: number;
+  ok?: boolean;
+  reason?: string;
+}
+
+export interface SiteProtectionStateEvent extends UrlProtectionStateEvent {
+  // Present on successful reads/writes. Failed reads may have no active tab.
+  tabId?: string;
+  navigationId?: string;
+  origin?: string;
+  revision?: number;
+  siteEnabled?: boolean;
+  canOverride?: boolean;
+  verdict?: 'unchecked' | 'checking' | 'no_match' | 'phishing' | 'malware' |
+    'other' | 'unknown' | 'skipped';
+  checkedAt?: number;
+  matchedSourceIds?: string[];
+  ruleType?: string;
+}
+
+export interface ProtectionRuleSource {
+  sourceId: string;
+  name: string;
+  url: string;
+  format: 'domains' | 'urls';
+  ruleType: 'host_exact' | 'host_suffix' | 'url_exact';
+  enabled: boolean;
+  kind: 'recommended' | 'custom';
+  trust: 'user_https';
+  signed: boolean;
+  recommendationId: string;
+  license: string;
+  attribution: string;
+  licenseUrl: string;
+  revision?: number;
+  status?: string;
+  available?: boolean;
+  ruleCount?: number;
+  inputCount?: number;
+  rejectedCount?: number;
+  warning?: string;
+  indexBytes?: number;
+  sourceUpdatedAt?: number;
+  fetchedAt?: number;
+  expiresAt?: number;
+  lastCheck?: number;
+  nextUpdate?: number;
+  error?: string;
+}
+
+export interface ProtectionRuleSourcesEvent extends ShellServiceEvent {
+  requestId: number;
+  contextId: string;
+  sourcesRevision: number;
+  ready: boolean;
+  readOnly: boolean;
+  localSourcesAvailable: boolean;
+  sources: ProtectionRuleSource[];
+  recommendations: ProtectionRuleSource[];
+  maxSources: number;
+  maxRecordsPerSource: number;
+  maxTotalRecords: number;
+  ok: boolean;
+  reason: string;
+}
+
+export interface ProtectionRuleSourcesChangedEvent extends ShellServiceEvent {
+  contextId: string;
+  policyRevision: number;
+  sourcesRevision: number;
+}
+
+// An invalidation event, not a result snapshot: re-read the active tab.
+export interface SiteProtectionChangedEvent extends UrlProtectionStateEvent {
+  tabId: string;
+  navigationId: string;
 }
 
 // Reads a runtime event as the interface its `event` name says it is.

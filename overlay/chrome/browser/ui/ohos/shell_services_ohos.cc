@@ -11,6 +11,9 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "chrome/browser/ui/ohos/aura_shell_runtime_bridge.h"
+#include "chrome/browser/ohos/url_protection/url_protection.h"
+#include "chrome/browser/ohos/url_protection/navigation_throttle.h"
+#include "chrome/browser/ohos/url_protection/rule_sources.h"
 #include "chrome/browser/ui/ohos/shell_downloads_ohos.h"
 #include "chrome/browser/ui/ohos/shell_password_cleanup_ohos.h"
 #include "url/gurl.h"
@@ -31,6 +34,16 @@ struct ShellServiceCommand {
 };
 
 constexpr ShellServiceCommand kShellServiceCommands[] = {
+    {"getProtectionRuleSources", &url_protection::HandleRuleSourcesCommand},
+    {"addProtectionRuleSource", &url_protection::HandleRuleSourcesCommand},
+    {"updateProtectionRuleSource", &url_protection::HandleRuleSourcesCommand},
+    {"removeProtectionRuleSource", &url_protection::HandleRuleSourcesCommand},
+    {"refreshProtectionRuleSource", &url_protection::HandleRuleSourcesCommand},
+    {"getUrlProtectionState", &url_protection::HandleCommand},
+    {"setUrlProtectionConfig", &url_protection::HandleCommand},
+    {"updateUrlProtectionRules", &url_protection::HandleCommand},
+    {"getSiteProtectionState", &url_protection::HandleSiteCommand},
+    {"setSiteProtectionEnabled", &url_protection::HandleSiteCommand},
     // Bookmarks.
     {"getBookmarks", &HandleBookmarksCommand},
     {"searchBookmarks", &HandleBookmarksCommand},
