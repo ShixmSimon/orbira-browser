@@ -143,7 +143,7 @@ const SETTINGS_ENTRIES: SettingsEntry[] = [
     keywords: ['javascript', 'js', '脚本'], section: '高级', kind: 'toggle' },
   { id: 'preloadPages', title: '预加载网页', subtitle: '',
     keywords: ['preload', '预加载', '预读', '加速'], section: '高级', kind: 'toggle' },
-  { id: 'vulkanEnabled', title: 'Vulkan 渲染加速', subtitle: '关闭走 GLES，可解决部分机型滑动掉帧；改动需重启生效',
+  { id: 'vulkanEnabled', title: 'Vulkan 渲染加速', subtitle: '实验性：开启后部分机型可能滑动掉帧，建议保持关闭；改动需重启生效',
     keywords: ['vulkan', 'gpu', '渲染', '加速', '掉帧', '卡顿', 'gles', '性能', 'skia'],
     section: '高级', kind: 'toggle' },
 
@@ -1204,10 +1204,13 @@ export struct SettingsPanel {
             this.CardDivider()
             this.ToggleRow($r('app.media.aura_bolt'), '预加载网页', 'preloadPages')
             this.CardDivider()
-            // 1.0.143「Vulkan 渲染加速」：外壳侧偏好，不走引擎 prefs。关闭走 GLES，
-            // 可解决部分机型（如 Pura80）滑动掉帧；启动时读取一次，改动需重启生效。
-            this.ShellToggleRow($r('app.media.aura_bolt'), 'Vulkan 渲染加速',
-              '关闭走 GLES，可解决部分机型滑动掉帧；改动需重启应用后生效',
+            // 1.0.144「Vulkan 渲染加速」：外壳侧偏好，不走引擎 prefs。经 angleBackend
+            // 切换 ANGLE 后端：关 = gles-egl（默认，稳），开 = vulkan（实验性，实测
+            // Pura80 上会掉帧，且与上游 patch 自述的 Mate70 数据吻合）。保留它是为了让
+            // 用户能自己对比，而不是因为它更快 —— 故文案明确提示风险。
+            // 启动时读取一次，改动需重启生效。
+            this.ShellToggleRow($r('app.media.aura_gpu'), 'Vulkan 渲染加速',
+              '实验性：开启后部分机型可能滑动掉帧，建议保持关闭；改动需重启应用后生效',
               this.vulkanEnabled, (on: boolean): void => {
                 this.vulkanEnabled = on;
                 AppStorage.setOrCreate('auraVulkanEnabled', on);
