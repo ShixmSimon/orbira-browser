@@ -1289,6 +1289,18 @@ struct AuraShell {
                 //（见 homeReturnCover 注释）。
                 this.beginHomeReturnCover();
               }
+              // 1.0.142：从内置主页（引擎原生新标签页）的地址栏提交一个网址时，
+              // 导航未提交前引擎会停在原生新标签页（满屏磁贴、地址栏显示"X 正在加载"），
+              // 直到失败页提交才切走 —— 即用户报的"先闪磁贴页再出错误页"。离开主页去真
+              // 网址时铺 navCover 同色底顶住，加载中（含失败）一直盖着，目标页/错误页首帧
+              // 提交再淡出，与主页键去自定义网址同一套覆盖机制。仅在当前就在主页时补防，
+              // 普通网页间跳转不动（保留 Fix F 旧页 ghost 行为）。
+              if (command.command === 'navigate') {
+                const navUrl: string = command.url ?? '';
+                if (navUrl.length > 0 && !isNewTabUrl(navUrl) && this.isNewTabPage()) {
+                  this.armNavCover(navUrl);
+                }
+              }
               this.executeBrowserCommand(command);
             }
           })

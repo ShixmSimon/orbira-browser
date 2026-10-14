@@ -57,6 +57,30 @@ const CLEAR_RANGES: RangeRow[] = [
 // action the settings page does not offer yet.
 const CLEAR_TYPES: BrowsingDataType[] = ['history', 'cookies', 'cache', 'siteSettings', 'formData', 'downloads'];
 
+// 1.0.142：「法律许可」页内联文本。应用自身按 Chromium BSD 3-Clause 发布
+// （复制自仓库 LICENSE，与上游一致）；Apache-2.0 / MIT / MPL / LGPL 等是捆绑进
+// 来的第三方组件各自携带的许可，只在此页简述并指向完整清单，不粘贴全文。
+const APP_LICENSE_TEXT: string = `Copyright 2015 The Chromium Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+  * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+  * Neither the name of Google LLC nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.`;
+
+const THIRD_PARTY_LICENSE_NOTE: string = `本应用基于 Chromium 150.0.7871.114 构建。除应用自身采用上述 BSD 3-Clause 许可外，所捆绑的第三方组件按其各自许可发布，主要包括：
+
+· WebView / 引擎封装层：Apache License 2.0
+· FFmpeg（静态链接）：BSD-2-Clause、BSD-3-Clause、ISC、LGPL-2.1+，以及 MIT 组件
+· Blink / WebKit 相关文件：BSD、LGPL-2、LGPL-2.1
+· Hunspell：MPL-1.1
+· Symphonia（Rust 音频库）：MPL-2.0
+· 可选的威胁情报列表：HaGeZi DNS Blocklists（GPL-3.0）、PhishDestroy Destroylist（MIT，© 2019 PhishDestroy）
+
+上述组件的完整许可文本与署名见仓库中的 licenses/THIRD_PARTY_LICENSES.html。`;
+
 interface PrefToggleItem {
   key: ShellPrefKey;
   label: string;
@@ -152,6 +176,8 @@ export struct SettingsPanel {
   private enginesScroller: Scroller = new Scroller();
   private filteredScroller: Scroller = new Scroller();
   private aboutScroller: Scroller = new Scroller();
+  // 1.0.142：「法律许可」子页滚动容器。
+  private legalScroller: Scroller = new Scroller();
   // 1.0.104：四个二级页（深色模式 / 主页设置 / 网页缩放 / 清除浏览数据）此前
   // 要么根本没有滚动容器、要么没挂回弹，滑动到位后没有回弹动画。各自给一个
   // Scroller（同时交给 GlassPage 的 bindToScrollable 绑官方渐变模糊）。
@@ -772,6 +798,9 @@ export struct SettingsPanel {
     }
     if (this.page === 'about') {
       return '关于';
+    }
+    if (this.page === 'legal') {
+      return '法律许可';
     }
     if (this.page === 'home') {
       return '主页设置';
@@ -1672,10 +1701,8 @@ export struct SettingsPanel {
             this.CardDivider()
             this.InfoRow('内核版本', this.chromiumVersion.length > 0 ? `Chromium ${this.chromiumVersion}` : '—')
             this.CardDivider()
-            this.InfoRow('开源协议', 'MIT / BSD-3')
-            this.CardDivider()
-            this.InfoLinkRow('项目主页', 'chromium-hmos', (): void => {
-              this.openExternalLink('https://github.com/miramira8295/chromium-hmos');
+            this.InfoLinkRow('法律许可', 'BSD-3-Clause', (): void => {
+              this.switchPage('legal', true);
             })
           }
           .width('100%')
@@ -1705,6 +1732,69 @@ export struct SettingsPanel {
         }
         .width('100%')
         // 1.0.122：同 HomeStyleView —— 内缩放滚动内容上，别压在外层（会丢顶部渐变模糊）。
+        .padding({ top: glassHeaderInsetVp() })
+      }
+      .layoutWeight(1)
+      .scrollBar(BarState.Off)
+      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+      .align(Alignment.TopStart)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  // 1.0.142：「法律许可」子页。应用自身许可（BSD 3-Clause 全文）+ 版权声明 +
+  // 第三方组件许可简述。文本来自仓库 LICENSE / OPEN_SOURCE_NOTICES.md，与上游一致。
+  @Builder
+  private LegalSectionTitle(title: string) {
+    Text(title)
+      .fontSize(15)
+      .fontWeight(FontWeight.Bold)
+      .fontColor($r('app.color.text_primary'))
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 22, bottom: 10 })
+  }
+
+  @Builder
+  private LegalView() {
+    Column() {
+      Scroll(this.legalScroller) {
+        Column() {
+          this.LegalSectionTitle('版权声明')
+          Text('Orbira 星轨浏览器（基于 Chromium 的鸿蒙浏览器）\n' +
+            'Copyright © 2015 The Chromium Authors. All rights reserved.\n' +
+            '基于 Chromium 150.0.7871.114 构建。')
+            .fontSize(13)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+            .lineHeight(22)
+            .padding({ left: 16, right: 16 })
+            .textAlign(TextAlign.Start)
+
+          this.CardDivider()
+
+          this.LegalSectionTitle('应用程序许可（BSD 3-Clause）')
+          Text(APP_LICENSE_TEXT)
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+            .lineHeight(20)
+            .padding({ left: 16, right: 16 })
+            .textAlign(TextAlign.Start)
+
+          this.CardDivider()
+
+          this.LegalSectionTitle('第三方组件许可')
+          Text(THIRD_PARTY_LICENSE_NOTE)
+            .fontSize(13)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+            .lineHeight(22)
+            .padding({ left: 16, right: 16 })
+            .textAlign(TextAlign.Start)
+        }
+        .width('100%')
+        // 1.0.122：内容内缩放，别压外层（会丢顶部渐变模糊）。
         .padding({ top: glassHeaderInsetVp() })
       }
       .layoutWeight(1)
@@ -2137,6 +2227,15 @@ export struct SettingsPanel {
         .width('100%')
         .height('100%')
         .visibility(this.page === 'about' ? Visibility.Visible : Visibility.None)
+        .translate({ x: this.pageShift * 72 })
+        .opacity(1 - Math.abs(this.pageShift) * 0.6)
+
+        Column() {
+          this.LegalView()
+        }
+        .width('100%')
+        .height('100%')
+        .visibility(this.page === 'legal' ? Visibility.Visible : Visibility.None)
         .translate({ x: this.pageShift * 72 })
         .opacity(1 - Math.abs(this.pageShift) * 0.6)
 
