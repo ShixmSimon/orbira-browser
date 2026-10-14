@@ -14,6 +14,7 @@ import { SearchEnginesPrefs } from '../../utils/appearance/SearchEnginesPrefs';
 import { HuaweiAccountInfo } from '../../utils/account/HuaweiAccountService';
 import { HuaweiAccountView } from './AccountPanel';
 import { AuraNavIconRow, AuraSectionLabel } from './LumieKit';
+import { searchTemplateForSite } from './ShellUtils';
 import { curves } from '@kit.ArkUI';
 import {
   BrowsingDataType,
@@ -414,17 +415,26 @@ export struct SettingsPanel {
     }
   }
 
-  // 从「添加」弹层确认新增自定义搜索引擎（URL 必须含 {searchTerms}）。
+  // 从「添加」弹层确认新增自定义搜索引擎。网址支持三种填法：
+  //   ① 只填域名，如 www.baidu.com / baidu.com —— 内置表推导（百度/必应/谷歌等）；
+  //   ② 带 {searchTerms} 的完整模板 —— 直接用；
+  //   ③ Chrome 桌面风格的 %s —— 归一成 {searchTerms} 后用。
+  // 推导/归一结果回显到输入框，让用户看见最终存的到底是什么。
   private async confirmAddEngine(): Promise<void> {
     const name = this.newEngineName.trim();
-    const url = this.newEngineUrl.trim();
+    const rawUrl = this.newEngineUrl.trim();
+    const resolved = searchTemplateForSite(rawUrl);
+    const url = resolved.template;
+    if (url !== rawUrl) {
+      this.newEngineUrl = url;
+    }
     if (name.length === 0 || url.length === 0) {
       this.getUIContext().getPromptAction().showToast({ message: '请填写名称和搜索网址', duration: 1500 });
       return;
     }
     if (!url.includes('{searchTerms}')) {
       this.getUIContext().getPromptAction()
-        .showToast({ message: '搜索网址必须包含 {searchTerms}', duration: 2200 });
+        .showToast({ message: '搜索网址需包含 {searchTerms} 或 %s，或只填域名如 baidu.com', duration: 2600 });
       return;
     }
     const id = `custom:${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
@@ -445,7 +455,11 @@ export struct SettingsPanel {
     this.showAddEngine = false;
     this.applyMergedEngines();
     this.getUIContext().getPromptAction()
-      .showToast({ message: '已添加，可在列表中选择为默认', duration: 1800 });
+      .showToast({
+        message: resolved.exact ? '已添加，可在列表中选择为默认'
+          : '已按通用 /search?q= 规则生成，若不正确可删除后重填',
+        duration: resolved.exact ? 1800 : 2600
+      });
   }
 
   // 选中即生效、停留本页（与深色模式 / 网页缩放一致）：乐观地把对勾立刻挪到当前项，
@@ -1416,7 +1430,7 @@ export struct SettingsPanel {
           this.newEngineName = v;
         })
 
-      TextInput({ placeholder: '搜索网址，需含 {searchTerms}', text: this.newEngineUrl })
+      TextInput({ placeholder: '域名如 baidu.com，或含 {searchTerms} 的网址', text: this.newEngineUrl })
         .width('100%')
         .height(44)
         .backgroundColor($r('app.color.surface_secondary'))
@@ -1424,6 +1438,11 @@ export struct SettingsPanel {
         .onChange((v: string): void => {
           this.newEngineUrl = v;
         })
+
+      Text('填域名即可自动生成（如 baidu.com）；完整网址的占位符用 {searchTerms} 或 %s')
+        .fontSize(11)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
 
       Row({ space: 12 }) {
         Button('取消', { type: ButtonType.Normal })

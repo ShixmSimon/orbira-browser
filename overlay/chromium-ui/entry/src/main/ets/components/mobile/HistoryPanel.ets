@@ -17,6 +17,10 @@ interface HistoryGroup {
   items: HistoryItem[];
 }
 
+interface PanelEventPayload {
+  kind?: string;
+}
+
 // 按天分组；queryHistory 结果已按时间倒序。
 function groupHistory(items: HistoryItem[]): HistoryGroup[] {
   const groups: HistoryGroup[] = [];
@@ -105,7 +109,7 @@ export struct HistoryPanel {
       return;
     }
     try {
-      const payload = JSON.parse(this.panelEventJson) as { kind?: string };
+      const payload = JSON.parse(this.panelEventJson) as PanelEventPayload;
       if (String(payload.kind ?? '') === 'historyChanged') {
         this.reload();
       }
