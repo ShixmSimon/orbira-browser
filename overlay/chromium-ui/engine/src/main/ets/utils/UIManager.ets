@@ -41,19 +41,21 @@ export class UIManager {
     startUrl: string,
     windowState?: WindowStateSnapshot,
     foldStatusOverride?: number,
-    colorScheme: 'light' | 'dark' = 'light'
+    colorScheme: 'light' | 'dark' = 'light',
+    vulkanEnabled: boolean = false
   ): AuraStartupConfig {
     return DeviceRoutingPolicy.createAuraStartupConfig(
-      startUrl, windowState, foldStatusOverride, colorScheme);
+      startUrl, windowState, foldStatusOverride, colorScheme, vulkanEnabled);
   }
 
   static serializeAuraStartupConfig(
     startUrl: string,
     windowState?: WindowStateSnapshot,
     foldStatusOverride?: number,
-    colorScheme: 'light' | 'dark' = 'light'
+    colorScheme: 'light' | 'dark' = 'light',
+    vulkanEnabled: boolean = false
   ): string {
     return JSON.stringify(UIManager.buildAuraStartupConfig(
-      startUrl, windowState, foldStatusOverride, colorScheme));
+      startUrl, windowState, foldStatusOverride, colorScheme, vulkanEnabled));
   }
 }

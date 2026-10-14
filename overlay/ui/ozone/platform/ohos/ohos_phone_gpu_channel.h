@@ -20,6 +20,12 @@ base::ProcessId LaunchOhosPhoneGpuChild(
 bool OhosPhoneGpuHasPresented();
 // Phone GPU only. A failed Vulkan generation stays on GL until app restart.
 bool AllowOhosPhoneVulkan();
+// Phone GPU only. True only when the phone GPU child is up AND the user has
+// not turned Vulkan off from settings (--ohos-disable-vulkan). This is the
+// single gate for creating the phone Vulkan output device / implementation;
+// IsOhosPhoneGpuChild() alone is no longer enough once a settings toggle
+// exists that can disable Vulkan to work around frame drops on some phones.
+bool IsOhosPhoneVulkanEnabled();
 void ReportOhosPhoneVulkanFailure();
 bool AcquireOhosPhoneGpuBuffer(phone_gpu::Frame frame,
                                phone_gpu::SharedMessage* response);

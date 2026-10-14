@@ -143,6 +143,9 @@ const SETTINGS_ENTRIES: SettingsEntry[] = [
     keywords: ['javascript', 'js', '脚本'], section: '高级', kind: 'toggle' },
   { id: 'preloadPages', title: '预加载网页', subtitle: '',
     keywords: ['preload', '预加载', '预读', '加速'], section: '高级', kind: 'toggle' },
+  { id: 'vulkanEnabled', title: 'Vulkan 渲染加速', subtitle: '关闭走 GLES，可解决部分机型滑动掉帧；改动需重启生效',
+    keywords: ['vulkan', 'gpu', '渲染', '加速', '掉帧', '卡顿', 'gles', '性能', 'skia'],
+    section: '高级', kind: 'toggle' },
 
   { id: 'about', title: '关于 Orbira', subtitle: '版本、内核与开源协议',
     keywords: ['about', '关于', '版本', 'version', '星轨', '开源', '简介', '项目', '主页', 'github', 'chromium-hmos'], section: '关于', kind: 'page' }
@@ -219,6 +222,9 @@ export struct SettingsPanel {
   // 存字符串而不是数组——ArkTS 里 @StorageLink 换数组要整份新建才不会漏刷新，
   // 字符串最省心，解析一次即可。
   @StorageLink('auraHomeUrls') homeUrlsRaw: string = '';
+  // 1.0.143「Vulkan 渲染加速」：默认 false=走 GLES（规避部分机型滑动掉帧）；
+  // 开启则引擎走 ANGLE Vulkan 后端。启动时读取一次，改动需重启生效。
+  @StorageLink('auraVulkanEnabled') vulkanEnabled: boolean = false;
   private requestSeq: number = 0;
   private retryTimer: number = -1;
 
@@ -259,6 +265,11 @@ export struct SettingsPanel {
         if (AppStorage.get('auraHomeUrl') === '' && list.length > 0) {
           AppStorage.setOrCreate('auraHomeUrl', list[0]);
         }
+      });
+      // 1.0.143：Vulkan 开关从持久化读回（EntryAbility 启动时已写入默认值，
+      // 这里在用户打开设置页时刷新为最新）。
+      ShellUiPrefs.loadVulkanEnabled(ctx).then((value: boolean): void => {
+        AppStorage.setOrCreate('auraVulkanEnabled', value);
       });
     }
     // One retry in case the first round was sent before the engine answered.
@@ -680,6 +691,10 @@ export struct SettingsPanel {
     if (entry.id === 'hideDockOnScroll') {
       return this.hideDockOnScroll;
     }
+    // 1.0.143：Vulkan 开关是外壳侧偏好，不走引擎 prefs。
+    if (entry.id === 'vulkanEnabled') {
+      return this.vulkanEnabled;
+    }
     return this.prefValue(entry.id as ShellPrefKey);
   }
 
@@ -713,6 +728,15 @@ export struct SettingsPanel {
       }
       return;
     }
+    // 1.0.143：Vulkan 开关持久化到 ShellUiPrefs + AppStorage（重启后由引擎启动配置读取）。
+    if (entry.id === 'vulkanEnabled') {
+      this.vulkanEnabled = value;
+      AppStorage.setOrCreate('auraVulkanEnabled', value);
+      if (context) {
+        ShellUiPrefs.saveVulkanEnabled(context, value);
+      }
+      return;
+    }
     this.setPref(entry.id as ShellPrefKey, value);
   }
 
@@ -720,7 +744,8 @@ export struct SettingsPanel {
   private openEntry(entry: SettingsEntry): void {
     if (entry.kind === 'toggle' || entry.kind === 'externalToggle' ||
       (entry.kind === 'page' && (entry.id === 'hideStatusBarOnScroll' ||
-        entry.id === 'hideTopBarOnScroll' || entry.id === 'hideDockOnScroll'))) {
+        entry.id === 'hideTopBarOnScroll' || entry.id === 'hideDockOnScroll')) ||
+      entry.id === 'vulkanEnabled') {
       this.toggleEntry(entry, !this.entryValue(entry));
       return;
     }
@@ -937,7 +962,7 @@ export struct SettingsPanel {
 
       if (entry.kind === 'toggle' || entry.kind === 'externalToggle' ||
         entry.id === 'hideStatusBarOnScroll' || entry.id === 'hideTopBarOnScroll' ||
-        entry.id === 'hideDockOnScroll') {
+        entry.id === 'hideDockOnScroll' || entry.id === 'vulkanEnabled') {
         Toggle({ type: ToggleType.Switch, isOn: this.entryValue(entry) })
           .onChange((isOn: boolean): void => {
             this.toggleEntry(entry, isOn);
@@ -1178,6 +1203,19 @@ export struct SettingsPanel {
             this.ToggleRow($r('app.media.aura_code'), '启用 JavaScript', 'javascriptEnabled')
             this.CardDivider()
             this.ToggleRow($r('app.media.aura_bolt'), '预加载网页', 'preloadPages')
+            this.CardDivider()
+            // 1.0.143「Vulkan 渲染加速」：外壳侧偏好，不走引擎 prefs。关闭走 GLES，
+            // 可解决部分机型（如 Pura80）滑动掉帧；启动时读取一次，改动需重启生效。
+            this.ShellToggleRow($r('app.media.aura_bolt'), 'Vulkan 渲染加速',
+              '关闭走 GLES，可解决部分机型滑动掉帧；改动需重启应用后生效',
+              this.vulkanEnabled, (on: boolean): void => {
+                this.vulkanEnabled = on;
+                AppStorage.setOrCreate('auraVulkanEnabled', on);
+                const context = this.getUIContext().getHostContext() as common.Context | undefined;
+                if (context) {
+                  ShellUiPrefs.saveVulkanEnabled(context, on);
+                }
+              })
           }
           .width('100%')
           .padding({ left: 0, right: 0, top: 2, bottom: 2 })

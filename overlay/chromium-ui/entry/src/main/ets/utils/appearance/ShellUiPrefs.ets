@@ -27,6 +27,10 @@ const KEY_STARTUP_PAGE = 'startupPage';
 // 不用 JSON —— URL 里不可能出现换行，一行一条最省事，也免去 ArkTS 侧的
 // JSON 反序列化类型体操。
 const KEY_HOME_URLS = 'homeUrls';
+// 1.0.143「Vulkan 渲染加速」开关。默认关（false → 走 GLES），以规避部分机型
+// （如 Pura80）滑动掉帧；开启则引擎走 ANGLE Vulkan 后端。开关在启动时读取一次，
+// 改动需重启应用才能生效。
+const KEY_VULKAN_ENABLED = 'vulkanEnabled';
 
 export class ShellUiPrefs {
   static async loadHideStatusBar(context: common.Context): Promise<boolean> {
@@ -261,5 +265,24 @@ export class ShellUiPrefs {
       return active;
     }
     return list.length > 0 ? list[0] : '';
+  }
+
+  // 1.0.143「Vulkan 渲染加速」：默认关（走 GLES，规避部分机型滑动掉帧）。
+  static async loadVulkanEnabled(context: common.Context): Promise<boolean> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      return Boolean(await store.get(KEY_VULKAN_ENABLED, false));
+    } catch (error) {
+      return false;
+    }
+  }
+
+  static async saveVulkanEnabled(context: common.Context, value: boolean): Promise<void> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      await store.put(KEY_VULKAN_ENABLED, value);
+      await store.flush();
+    } catch (error) {
+    }
   }
 }

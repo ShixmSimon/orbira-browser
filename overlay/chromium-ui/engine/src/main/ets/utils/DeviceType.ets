@@ -179,6 +179,11 @@ export interface AuraStartupConfig {
   windowRole?: 'browser' | 'pwa';
   targetWidget?: number;
   pwaAppId?: string;
+  // 1.0.143：用户可控的 Vulkan 渲染后端开关透传给引擎 NAPI。默认不传（走 GLES）；
+  // 关闭 Vulkan 时外壳注入 { key: 'ohos-disable-vulkan' }，引擎据此回退 GLES，
+  // 解决部分机型（如 Pura80）滑动掉帧。字段名与引擎 NAPI 读取的 additionalSwitches
+  // 完全一致，无需改 NAPI。每项 = 一条命令行开关，无 value 时为纯开关。
+  additionalSwitches?: { key: string; value?: string }[];
 }
 
 export const CHROMIUM_HOME_URL: string = 'chrome://newtab/';
@@ -239,10 +244,11 @@ export class DeviceRoutingPolicy {
     startUrl: string,
     windowState?: WindowStateSnapshot,
     foldStatusOverride?: number,
-    colorScheme: 'light' | 'dark' = 'light'
+    colorScheme: 'light' | 'dark' = 'light',
+    vulkanEnabled: boolean = false
   ): AuraStartupConfig {
     const routing = DeviceRoutingPolicy.resolve(windowState, foldStatusOverride);
-    return {
+    const config: AuraStartupConfig = {
       startUrl: startUrl && startUrl.trim().length > 0 ? startUrl : CHROMIUM_HOME_URL,
       uiProfile: routing.uiProfile,
       uiFamily: routing.uiFamily,
@@ -262,6 +268,13 @@ export class DeviceRoutingPolicy {
       jitless: false,
       fullscreenRequested: routing.fullscreenRequested
     };
+    // 1.0.143「Vulkan 渲染加速」：默认关（vulkanEnabled=false）→ 注入
+    // --ohos-disable-vulkan，引擎回退到 GLES，规避部分机型滑动掉帧；开启则
+    // 不注入，引擎走上游 ANGLE Vulkan 路径。开关启动时读取一次，改完需重启。
+    if (!vulkanEnabled) {
+      config.additionalSwitches = [{ key: 'ohos-disable-vulkan' }];
+    }
+    return config;
   }
 
   static buildRoutingSignature(routing: DeviceRouting): string {
