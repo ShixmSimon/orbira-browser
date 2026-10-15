@@ -2901,7 +2901,7 @@ export struct MobileBrowserOverlay {
       .width('100%')
       .height('100%')
       // 1.0.153：二级切换与「菜单里打开面板」对齐——位移 = 整屏宽、弹簧
-      // springMotion(0.48, 0.84)，与 openPanel 的 panelShift 同一套参数。
+      // springMotion(0.34, 0.84)，与 openPanel 的 panelShift 同一套参数。
       // 此前 0.22 → 0.62 屏宽都仍偏小，用户反馈"幅度很小、没和菜单对齐"。
       // 淡出只留 0.2 保一点层次（菜单打开是纯位移，不带淡入）。
       // 注：中途露出的是本层底下的 page_background（面板底色），不是浏览器。
@@ -2920,14 +2920,15 @@ export struct MobileBrowserOverlay {
     // 与 panelPage 同帧生效），再由 onAppear 里起动画 —— 不会闪一帧在屏幕内。
     // 注：此前这里挂了两条 .transition()（后者覆盖前者）+ 百分比位移，真机上
     // 打开/关闭都没有可见动画 —— 改为显式 animateTo 驱动。
-    // 1.0.155：response 0.34 -> 0.48，向「鸿蒙 7 层级转场（Navigation 默认
-    // push-pop transition）」的从容感靠拢（官方默认 response=0.55）。
     // ⚠️ 阻尼 0.84 不要动：全屏转场过冲会越过屏幕边界露底板 ——
     // 0.84 过冲 2.8vp 不可见，0.70 → 16.6vp 露底，0.55 → 45.5vp 严重露底。
     // 宁可慢，不要弹。回弹只用于按压反馈 / 滑动过界（详见 ref/04 §3.1）。
+    // 1.0.155 曾把 response 提到 0.48 求「更从容」，真机反馈不合适，1.0.156
+    // 已回退 0.34 —— 开源 Aira 的页面转场常量也是 0.34/0.84，这个值没问题，
+    // 手感差异来自机制（手写位移 vs 官方转场），不来自快慢。
     .translate({ x: (1 - this.panelShift) * this.panelWidthVp() })
     .onAppear((): void => {
-      animateTo({ curve: curves.springMotion(0.48, 0.84) }, (): void => {
+      animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
         this.panelShift = 1;
       });
     })
@@ -3987,7 +3988,7 @@ export struct MobileBrowserOverlay {
     if (wasOpen) {
       // 面板已在场（关闭动画收尾前又点开）：onAppear 不会再触发，这里补一次。
       setTimeout((): void => {
-        animateTo({ curve: curves.springMotion(0.48, 0.84) }, (): void => {
+        animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
           this.panelShift = 1;
         });
       }, 32);
@@ -4023,8 +4024,8 @@ export struct MobileBrowserOverlay {
     this.panelContentShift = forward ? 1 : -1;
     this.panelPage = page;
     setTimeout((): void => {
-      // 与 openPanel 的 panelShift 同一条弹簧（0.48 / 0.84），观感一致。
-      animateTo({ curve: curves.springMotion(0.48, 0.84) }, (): void => {
+      // 与 openPanel 的 panelShift 同一条弹簧（0.34 / 0.84），观感一致。
+      animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
         this.panelContentShift = 0;
       });
     }, 32);

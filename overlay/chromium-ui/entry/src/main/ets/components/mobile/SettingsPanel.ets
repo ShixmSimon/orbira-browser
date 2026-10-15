@@ -884,8 +884,8 @@ export struct SettingsPanel {
     this.pageShift = forward ? 1 : -1;
     this.page = target;
     setTimeout((): void => {
-      // 与 openPanel 的 panelShift 同一条弹簧（0.48 / 0.84），观感一致。
-      animateTo({ curve: curves.springMotion(0.48, 0.84) }, (): void => {
+      // 与 openPanel 的 panelShift 同一条弹簧（0.34 / 0.84），观感一致。
+      animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
         this.pageShift = 0;
       });
     }, 32);
