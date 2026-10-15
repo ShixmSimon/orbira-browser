@@ -96,6 +96,11 @@ export struct ExtensionPanel {
   private enabledSnapshot: Record<string, boolean> = {};
   private requestSeq: number = 0;
   private retryTimer: number = -1;
+  // 图标迟到兜底：引擎启停扩展后 iconPngBase64 异步重生成，常晚于回包到达，
+  // 若不补拉图标会卡在空态（装机反馈：开发者模式开关后要退出重进才见图标）。
+  // 带次数上限防死循环。
+  private iconCatchupTimer: number = -1;
+  private iconRetryCount: number = 0;
 
   aboutToAppear(): void {
     // Seed from storage first: a @StorageLink does not fire @Watch for its
@@ -119,6 +124,36 @@ export struct ExtensionPanel {
       clearTimeout(this.retryTimer);
       this.retryTimer = -1;
     }
+    if (this.iconCatchupTimer !== -1) {
+      clearTimeout(this.iconCatchupTimer);
+      this.iconCatchupTimer = -1;
+    }
+  }
+
+  // 启用的扩展若图标仍为空，说明引擎侧图标还没重生成完 → 稍后补拉一次。
+  // 有图标进来即清零计数；连续补拉仍无图标（扩展本身就没有图标）则停手。
+  private scheduleIconCatchup(): void {
+    let missing = false;
+    this.items.forEach((entry: ExtensionActionItem): void => {
+      if (entry.userEnabled && entry.iconPngBase64.length === 0) {
+        missing = true;
+      }
+    });
+    if (!missing) {
+      this.iconRetryCount = 0;
+      return;
+    }
+    this.iconRetryCount += 1;
+    if (this.iconRetryCount > 5) {
+      return;
+    }
+    if (this.iconCatchupTimer !== -1) {
+      clearTimeout(this.iconCatchupTimer);
+    }
+    this.iconCatchupTimer = setTimeout((): void => {
+      this.iconCatchupTimer = -1;
+      this.reload();
+    }, 700);
   }
 
   private reload(): void {
@@ -132,6 +167,7 @@ export struct ExtensionPanel {
     }
     try {
       this.items = JSON.parse(this.extensionsJson) as ExtensionActionItem[];
+      this.scheduleIconCatchup();
     } catch (error) {
     }
   }
@@ -789,6 +825,9 @@ export struct ExtensionPanel {
     }
     .width('100%')
     .height('100%')
+    // 1.0.157c：改自持 HdsNavigation 后，列表自身补回左右留白
+    //（原 GlassPage 时代由 body 外层 Column 提供）。
+    .padding({ left: 16, right: 16 })
   }
 
   @Builder
