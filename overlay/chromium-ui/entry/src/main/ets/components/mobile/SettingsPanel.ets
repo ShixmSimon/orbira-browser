@@ -8,14 +8,21 @@ import { common } from '@kit.AbilityKit';
 import bundleManager from '@ohos.bundle.bundleManager';
 import deviceInfo from '@ohos.deviceInfo';
 import { AppearanceSettings, ColorModeSetting } from '../../utils/appearance/AppearanceSettings';
-import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp } from './GlassPage';
+import { glassBottomInsetVp, glassHeaderInsetVp } from './GlassPage';
+import {
+  HdsNavigation,
+  HdsNavigationTitleMode,
+  HdsNavDestination,
+  HdsNavDestinationTitleMode,
+  hdsMaterial,
+  ScrollEffectType
+} from '@kit.UIDesignKit';
 import { ShellUiPrefs } from '../../utils/appearance/ShellUiPrefs';
 import { SearchEnginesPrefs } from '../../utils/appearance/SearchEnginesPrefs';
 import { HuaweiAccountInfo } from '../../utils/account/HuaweiAccountService';
 import { HuaweiAccountView } from './AccountPanel';
 import { AuraNavIconRow, AuraSectionLabel } from './AuraKit';
 import { searchTemplateForSite } from './ShellUtils';
-import { curves } from '@kit.ArkUI';
 import {
   BrowsingDataType,
   BrowsingDataTimeRange,
@@ -172,12 +179,11 @@ export struct SettingsPanel {
   // 再由信号在 HomeSurface 上打开添加表单。
   onAddHomeTile: () => void = (): void => {};
 
-  @State private page: string = 'main';
-  // 子页切换动效（1.0.66）：±1 = 内容层从右/左滑入，0 = 就位。见 switchPage。
-  @State private pageShift: number = 0;
-  // 1.0.152：子页横滑的位移基准（面板宽，vp）。原先写死 72vp（≈屏宽 20%）
-  // 太短，观感是"抖一下"而不是"滑入+回弹"（装机反馈）。量不到时兜底 360。
-  @State private viewportWidthVp: number = 0;
+  // 1.0.159：改用真 Navigation 路由栈（同 ExtensionPanel 1.0.157 套路）——
+  // 二级页作为 NavDestination 推入，系统走原生 push-pop 转场（干净减速、
+  // 零过冲、无回弹）。主面板是 Navigation 内容、常驻挂载：返回时其滚动
+  // 位置天然保留，不必再靠「常驻挂载 + Visibility + 手写位移」那套。
+  private pathStack: NavPathStack = new NavPathStack();
   // 设置检索：常驻搜索框，输入即就地过滤设置项（不单独开搜索页）。
   @State private searchText: string = '';
   // 渐变模糊滚动效果按官方要求 bindToScrollable。
@@ -189,7 +195,7 @@ export struct SettingsPanel {
   private legalScroller: Scroller = new Scroller();
   // 1.0.104：四个二级页（深色模式 / 主页设置 / 网页缩放 / 清除浏览数据）此前
   // 要么根本没有滚动容器、要么没挂回弹，滑动到位后没有回弹动画。各自给一个
-  // Scroller（同时交给 GlassPage 的 bindToScrollable 绑官方渐变模糊）。
+  // Scroller（交给 Navigation/NavDestination 的 bindToScrollable 绑官方渐变模糊）。
   private appearanceScroller: Scroller = new Scroller();
   private homeScroller: Scroller = new Scroller();
   private zoomScroller: Scroller = new Scroller();
@@ -607,7 +613,7 @@ export struct SettingsPanel {
             }
           }
         });
-        this.switchPage('main', false);
+        this.popPage();
       }
     } catch (error) {
     }
@@ -797,7 +803,7 @@ export struct SettingsPanel {
   // 从搜索结果进入二级页：清掉搜索词，落到对应二级页（返回后显示完整设置）。
   private openSubPage(target: string): void {
     this.searchText = '';
-    this.switchPage(target, true);
+    this.pushPage(target);
   }
 
   private chooseColorMode(mode: ColorModeSetting): void {
@@ -828,67 +834,71 @@ export struct SettingsPanel {
     });
   }
 
-  // 标题栏（含圆形玻璃返回钮）交给 GlassPage —— 它把标题栏放进 Navigation，
-  // 落进 HarmonyOS 7 之后沉浸光感仍然生效的「Navigation 标题栏」区域；
-  // 自己画一条 Row 挂材质是拿不到的（还会把圆钮变成全透明）。
-  private titleText(): string {
-    if (this.page === 'clear') {
+  // 二级页标题按路由名取（name = pushPathByName 传入的路由名）。
+  private subPageTitle(name: string): string {
+    if (name === 'clear') {
       return '清除浏览数据';
     }
-    if (this.page === 'engines') {
+    if (name === 'engines') {
       return '搜索引擎';
     }
-    if (this.page === 'appearance') {
+    if (name === 'appearance') {
       return '深色模式';
     }
-    if (this.page === 'zoom') {
+    if (name === 'zoom') {
       return '网页缩放';
     }
-    if (this.page === 'account') {
+    if (name === 'account') {
       return '华为账号';
     }
-    if (this.page === 'about') {
+    if (name === 'about') {
       return '关于';
     }
-    if (this.page === 'legal') {
+    if (name === 'legal') {
       return '法律许可';
     }
-    if (this.page === 'home') {
+    if (name === 'home') {
       return '主页设置';
     }
     return '设置';
   }
 
-  // 返回：二级页回主面板，主面板才真的退出设置。
-  private handleTitleBack(): void {
-    if (this.page === 'main') {
-      this.onBack();
-    } else {
-      this.switchPage('main', false);
+  // 二级页滚动容器：绑官方渐变模糊滚动效果（各页自己的 Scroller）。
+  private subPageScrollers(name: string): Scroller[] {
+    if (name === 'clear') {
+      return [this.clearScroller];
+    }
+    if (name === 'engines') {
+      return [this.enginesScroller];
+    }
+    if (name === 'appearance') {
+      return [this.appearanceScroller];
+    }
+    if (name === 'zoom') {
+      return [this.zoomScroller];
+    }
+    if (name === 'about') {
+      return [this.aboutScroller];
+    }
+    if (name === 'legal') {
+      return [this.legalScroller];
+    }
+    if (name === 'home') {
+      return [this.homeScroller];
+    }
+    return [];
+  }
+
+  // 返回：栈里有二级页就 pop（系统自动反向转场）；栈空 = 已在主面板，真正退出设置。
+  private popPage(): void {
+    if (this.pathStack.size() > 0) {
+      this.pathStack.pop();
     }
   }
 
-  // 子页切换动效（1.0.66）：内容层按方向滑入（forward=true 从右侧，false 从
-  // 左侧）+ 轻淡入；各子页常驻挂载，滚动位置照旧保留。首帧先以位移态
-  // 渲染，下一拍再 animateTo 回到 0（否则同帧设置会动画不生效）。
-  private subPageShiftVp(): number {
-    // 1.0.153：与「菜单里打开面板」对齐——整屏宽位移（同 openPanel 的
-    // panelShift）。0.62 屏宽仍被反馈"幅度很小"。
-    return this.viewportWidthVp > 16 ? this.viewportWidthVp : 360;
-  }
-
-  private switchPage(target: string, forward: boolean): void {
-    if (this.page === target) {
-      return;
-    }
-    this.pageShift = forward ? 1 : -1;
-    this.page = target;
-    setTimeout((): void => {
-      // 与 openPanel 的 panelShift 同一条弹簧（0.34 / 0.84），观感一致。
-      animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
-        this.pageShift = 0;
-      });
-    }, 32);
+  // 推入二级页。转场由系统 push-pop 默认接管，不再手写位移/淡出。
+  private pushPage(target: string): void {
+    this.pathStack.pushPathByName(target, '');
   }
 
   @Builder
@@ -1029,7 +1039,7 @@ export struct SettingsPanel {
           //     subtitle: this.accountSubtitle(),
           //     showDivider: false,
           //     onTap: (): void => {
-          //       this.page = 'account';
+          //       this.pushPage('account');
           //     }
           //   })
           // }
@@ -1046,7 +1056,7 @@ export struct SettingsPanel {
               label: '搜索引擎',
               value: this.defaultEngineLabel(),
               onTap: (): void => {
-                this.switchPage('engines', true);
+                this.pushPage('engines');
               }
             })
             this.CardDivider()
@@ -1072,7 +1082,7 @@ export struct SettingsPanel {
               label: '深色模式',
               value: this.colorModeLabel(),
               onTap: (): void => {
-                this.switchPage('appearance', true);
+                this.pushPage('appearance');
               }
             })
             this.CardDivider()
@@ -1082,7 +1092,7 @@ export struct SettingsPanel {
               label: '主页设置',
               value: this.homeStyle === 'chrome' ? 'Chrome 风格' : '简约风格',
               onTap: (): void => {
-                this.switchPage('home', true);
+                this.pushPage('home');
               }
             })
             if (this.homeStyle === 'chrome') {
@@ -1157,7 +1167,7 @@ export struct SettingsPanel {
               label: '网页缩放',
               value: `${this.textScalePercent}%`,
               onTap: (): void => {
-                this.switchPage('zoom', true);
+                this.pushPage('zoom');
               }
             })
             this.CardDivider()
@@ -1211,7 +1221,7 @@ export struct SettingsPanel {
               value: '',
               danger: true,
               onTap: (): void => {
-                this.switchPage('clear', true);
+                this.pushPage('clear');
               }
             })
           }
@@ -1281,7 +1291,7 @@ export struct SettingsPanel {
               label: '关于 Orbira',
               value: '',
               onTap: (): void => {
-                this.switchPage('about', true);
+                this.pushPage('about');
               }
             })
           }
@@ -1791,7 +1801,7 @@ export struct SettingsPanel {
             this.InfoRow('内核版本', this.chromiumVersion.length > 0 ? `Chromium ${this.chromiumVersion}` : '—')
             this.CardDivider()
             this.InfoLinkRow('法律许可', 'BSD-3-Clause', (): void => {
-              this.switchPage('legal', true);
+              this.pushPage('legal');
             })
           }
           .width('100%')
@@ -2214,140 +2224,140 @@ export struct SettingsPanel {
       })
   }
 
-  build() {
-    GlassPage({
-      title: this.titleText(),
-      scrollers: [this.mainScroller, this.enginesScroller, this.filteredScroller, this.aboutScroller,
-        this.appearanceScroller, this.homeScroller, this.zoomScroller, this.clearScroller],
-      // 1.0.109：「主页设置」子页右上角 = 自定义网址主页（添加的网址成为主页，
-      // 按下主页键就打开它）。走 HDS 标题栏的菜单槽 —— 与
-      // 书签/历史面板右上角动作同一位置、同一沉浸观感；其它子页空数组不显示。
-      // 1.0.110：非「主页设置」页传 undefined（而非空数组）——空数组会被 HDS
-      // 当作"有菜单但零项"，首次渲染（page='main'）就把 menu 槽塌成不可用，
-      // 切到主页设置时右上角按钮出不来（用户实测"右上角没有东西"；书签/历史
-      // 的既有用法从不传空数组）。
-      // 1.0.120：改名「自定义网址」，并且支持保存多组网址（列表 + 勾选当前
-      // 用于启动/主页键的那一条）。
-      menus: this.page === 'home'
-        ? {
-          value: [
-            {
-              content: {
-                icon: $r('app.media.aura_globe'),
-                label: '自定义网址',
-                action: (): void => {
-                  // 1.0.111：「网址主页」= 设置自定义主页网址（按主页键打开它），
-                  // 表单在 overlay 层就地弹出——不再先回主页（旧语义是"加磁贴"，
-                  // 已纠正）。
-                  this.onAddHomeTile();
+  // 二级页统一由这一个 destination builder 承载（1.0.159 真路由栈）：内容、
+  // 标题、右上角菜单、滚动绑定都按路由名分流。name = pushPathByName 传入的路由名。
+  @Builder
+  private buildSubPageDestination(name: string, _param: Object): void {
+    HdsNavDestination() {
+      Column() {
+        if (name === 'clear') {
+          this.ClearView()
+        } else if (name === 'engines') {
+          this.EnginesView()
+        } else if (name === 'appearance') {
+          this.AppearanceView()
+        } else if (name === 'zoom') {
+          this.ZoomView()
+        } else if (name === 'account') {
+          HuaweiAccountView()
+        } else if (name === 'about') {
+          this.AboutView()
+        } else if (name === 'legal') {
+          this.LegalView()
+        } else if (name === 'home') {
+          this.HomeStyleView()
+        }
+      }
+      .width('100%')
+      .height('100%')
+      .padding({ left: 16, right: 16 })
+    }
+    .width('100%')
+    .height('100%')
+    .titleBar({
+      content: {
+        title: { mainTitle: this.subPageTitle(name) },
+        backIcon: {
+          icon: $r('app.media.aura_back'),
+          isEnabled: true,
+          action: (): void => {
+            this.popPage();
+          }
+        },
+        // 1.0.120：「主页设置」右上角 = 自定义网址主页（支持多组网址）。
+        // 非该页传 undefined（而非空数组——空数组会被 HDS 当作"有菜单但零项"）。
+        menu: name === 'home'
+          ? {
+            value: [
+              {
+                content: {
+                  icon: $r('app.media.aura_globe'),
+                  label: '自定义网址',
+                  action: (): void => {
+                    this.onAddHomeTile();
+                  }
                 }
               }
-            }
-          ]
+            ]
+          }
+          : undefined
+      },
+      style: {
+        // 官方渐变模糊滚动效果 + 沉浸光感材质（与主面板标题栏同一套）。
+        scrollEffectOpts: {
+          enableScrollEffect: true,
+          scrollEffectType: ScrollEffectType.GRADIENT_BLUR
+        },
+        systemMaterialEffect: {
+          materialType: hdsMaterial.MaterialType.ADAPTIVE,
+          materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
         }
-        : undefined,
-      onBack: (): void => {
-        this.handleTitleBack();
-      }
-    }) {
-      // 主面板和所有二级页**常驻挂载**，用可见性切换 —— 原来的 if/else 换分支
-      // 会销毁重建，从二级页返回时主面板 Scroll 归零（真机反馈：返回后回到设置
-      // 最顶端）。Visibility.None 保留组件实例，各页滚动位置原样留住。
-      Stack() {
+      },
+      avoidLayoutSafeArea: true,
+      enableComponentSafeArea: false
+    })
+    .titleMode(HdsNavDestinationTitleMode.MINI)
+    .hideBackButton(false)
+    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+    .bindToScrollable(this.subPageScrollers(name))
+    .backgroundColor($r('app.color.page_background'))
+    .onBackPressed((): boolean => {
+      this.popPage();
+      return true;
+    })
+  }
+
+  build() {
+    // 1.0.159：面板自己持有 HdsNavigation + NavPathStack（与 ExtensionPanel
+    // 1.0.157 同套路）。主面板是 Navigation 内容、常驻挂载 —— 二级页返回时
+    // 主列表滚动位置天然保留；二级页作为 NavDestination 推入，系统默认走
+    // 原生鸿蒙层级转场（干净减速、零过冲、无回弹），无需任何转场配置。
+    HdsNavigation(this.pathStack) {
+      Stack({ alignContent: Alignment.TopStart }) {
         Column() {
           this.MainView()
         }
         .width('100%')
         .height('100%')
-        .visibility(this.page === 'main' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.2)
-
-        Column() {
-          this.ClearView()
-        }
-        .width('100%')
-        .height('100%')
-        .visibility(this.page === 'clear' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.2)
-
-        Column() {
-          this.EnginesView()
-        }
-        .width('100%')
-        .height('100%')
-        .visibility(this.page === 'engines' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.2)
-
-        Column() {
-          this.AppearanceView()
-        }
-        .width('100%')
-        .height('100%')
-        .visibility(this.page === 'appearance' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.2)
-
-        Column() {
-          this.ZoomView()
-        }
-        .width('100%')
-        .height('100%')
-        .visibility(this.page === 'zoom' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.2)
-
-        Column() {
-          // 标题栏由本页统一提供（设置的所有二级页共用一条 Navigation 标题栏），
-          // 所以 AccountPanel 自己不再画 Header。
-          HuaweiAccountView()
-        }
-        .width('100%')
-        .height('100%')
-        .visibility(this.page === 'account' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.2)
-
-        Column() {
-          this.AboutView()
-        }
-        .width('100%')
-        .height('100%')
-        .visibility(this.page === 'about' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.2)
-
-        Column() {
-          this.LegalView()
-        }
-        .width('100%')
-        .height('100%')
-        .visibility(this.page === 'legal' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.2)
-
-        Column() {
-          this.HomeStyleView()
-        }
-        .width('100%')
-        .height('100%')
-        .visibility(this.page === 'home' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.2)
       }
       .width('100%')
       .height('100%')
       .padding({ left: 16, right: 16 })
-      // 量一次面板宽，给子页横滑当位移基准（1.0.152）。
-      .onAreaChange((oldValue: Area, newValue: Area): void => {
-        const measuredWidth: number = Number(newValue.width);
-        if (measuredWidth > 16 && Math.abs(measuredWidth - this.viewportWidthVp) > 0.5) {
-          this.viewportWidthVp = measuredWidth;
-        }
-      })
     }
+    .titleBar({
+      content: {
+        title: { mainTitle: '设置' },
+        backIcon: {
+          icon: $r('app.media.aura_back'),
+          isEnabled: true,
+          action: (): void => {
+            this.onBack();
+          }
+        },
+        menu: undefined
+      },
+      style: {
+        scrollEffectOpts: {
+          enableScrollEffect: true,
+          scrollEffectType: ScrollEffectType.GRADIENT_BLUR
+        },
+        systemMaterialEffect: {
+          materialType: hdsMaterial.MaterialType.ADAPTIVE,
+          materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+        }
+      },
+      avoidLayoutSafeArea: true,
+      enableComponentSafeArea: false
+    })
+    .titleMode(HdsNavigationTitleMode.MINI)
+    .hideBackButton(false)
+    .mode(NavigationMode.Stack)
+    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+    .bindToScrollable([this.mainScroller, this.filteredScroller])
+    .backgroundColor($r('app.color.page_background'))
+    .navDestination(this.buildSubPageDestination)
+    .width('100%')
+    .height('100%')
   }
 }
 
