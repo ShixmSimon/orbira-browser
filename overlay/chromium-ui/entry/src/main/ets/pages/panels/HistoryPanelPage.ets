@@ -9,14 +9,18 @@ import { HistoryPanel } from '../../components/mobile/HistoryPanel';
 @Component
 struct HistoryPanelPage {
   build() {
-    HistoryPanel({
-      onCommand: BrowserCommandBus.dispatch,
-      onBack: (): void => {
-        router.back();
-      },
-      onClose: (): void => {
-        router.back();
-      }
-    })
+    Stack() {
+      HistoryPanel({
+        onCommand: BrowserCommandBus.dispatch,
+        onBack: (): void => {
+          router.back();
+        },
+        onClose: (): void => {
+          router.back();
+        }
+      })
+    }
+    .width('100%')
+    .height('100%')
   }
 }
