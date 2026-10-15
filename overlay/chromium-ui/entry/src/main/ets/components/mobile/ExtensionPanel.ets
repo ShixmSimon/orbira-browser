@@ -5,7 +5,6 @@
  * （AuraShell 转存到 'auraPanelExtensions' / 'auraPanelExtensionDetails'）；
  * 变更类事件的回音通过 'auraPanelEvent' 的 kind 过滤。
  */
-import { curves } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
 import { BrowserCommandPayload, ExtensionActionItem, ExtensionDetailsEvent, ExtensionSiteAccess } from 'engine';
@@ -80,10 +79,10 @@ export struct ExtensionPanel {
   // 状态永远以引擎为准——setDeveloperMode 成功后引擎会回 developerMode 事件。
   @State private developerMode: boolean = false;
   @State private developerModeAvailable: boolean = true;
-  // 1.0.156：官方转场方向（Aira 同源写法）。'forward' = 进详情（新页从 END
-  // 侧滑入），'backward' = 回列表（旧页从 START 侧滑入）。TransitionEffect
-  // 只在组件增删时触发，本页是 if/else 换分支，满足条件。
-  @State private navigationDirection: 'forward' | 'backward' = 'forward';
+  // 1.0.157：真 Navigation 路由栈（GlassPage 内嵌原生 Navigation+NavPathStack）。
+  // 列表为 home route，详情为 navDestination('detail')，系统自动走鸿蒙7层级转场。
+  @State private pathStack: NavPathStack = new NavPathStack();
+  @State private pageTitle: string = '扩展程序';
   // 开发者模式总闸的快照：关闭总闸那一刻各扩展的开关状态（id -> 原开关值），
   // 用于重新打开总闸时逐个恢复。非 UI 状态，用普通字段（改动不必触发刷新）。
   private enabledSnapshot: Record<string, boolean> = {};
@@ -153,6 +152,10 @@ export struct ExtensionPanel {
       if (details.error === 'notFound') {
         this.detailMissing = true;
         this.page = 'list';
+        this.pageTitle = '扩展程序';
+        if (this.pathStack.size() > 1) {
+          this.pathStack.pop();
+        }
         this.reload();
         return;
       }
@@ -328,19 +331,37 @@ export struct ExtensionPanel {
     this.detailAuthor = item.author ?? '';
     this.detailUserScriptsAvailable = false;
     this.detailUserScriptsAllowed = false;
-    // 1.0.156：改用官方转场原语 TransitionEffect.move(TransitionEdge.END)，
-    // 不再手写「先落屏外 + animateTo 滑回」。这里是 if/else 换分支（组件真增删），
-    // 满足 transition 的触发条件 —— 与设置面板的常驻挂载不同，本页无滚动位置顾虑。
-    this.navigationDirection = 'forward';
+    // 1.0.157：改用真 Navigation 路由栈（GlassPage 内嵌原生 Navigation+NavPathStack）。
+    // 详情作为 navDestination('detail') 推入，系统自动走鸿蒙7层级转场（干净减速、零过冲）。
     this.page = 'detail';
+    this.pageTitle = item.name;
+    this.pathStack.pushPathByName('detail', item.id);
     this.requestSeq += 1;
     this.onCommand({ command: 'getExtensionDetails', requestId: this.requestSeq, id: item.id });
   }
 
-  // 详情 → 列表：往左滑出（forward=false 的反向）。
+  // 详情 → 列表：pop 路由栈回到列表（系统自动反向转场）。
   private closeDetail(): void {
-    this.navigationDirection = 'backward';
     this.page = 'list';
+    this.pageTitle = '扩展程序';
+    if (this.pathStack.size() > 1) {
+      this.pathStack.pop();
+    }
+  }
+
+  // navDestination('detail') 的内容构建器（原生 NavDestination，系统转场）。
+  @Builder
+  private buildDetailDestination(name: string, param: Object): void {
+    NavDestination() {
+      this.DetailView()
+    }
+    .width('100%')
+    .height('100%')
+    .hideTitleBar(true)
+    .onBackPressed((): boolean => {
+      this.closeDetail();
+      return true;
+    })
   }
 
   private setSiteAccess(mode: ExtensionSiteAccess): void {
@@ -951,58 +972,35 @@ export struct ExtensionPanel {
   private listScroller: Scroller = new Scroller();
   private detailScroller: Scroller = new Scroller();
 
-  // 官方层级转场（1.0.156，对齐 Aira BrowserSiteInfoSheet 的写法）：
-  // forward  = 新页从 END（右侧）滑入
-  // backward = 旧页从 START（左侧）滑入
-  // 参数沿用 0.34 / 0.84 —— Aira 的页面转场常量就是这一组，阻尼 0.84 保证
-  // 全屏转场不过冲（过冲会越过屏幕边界露底板，详见 ref/04 §3.1）。
-  private resolvePageTransition(): TransitionEffect {
-    if (this.navigationDirection === 'backward') {
-      return TransitionEffect.move(TransitionEdge.START)
-        .animation({ curve: curves.springMotion(0.34, 0.84) });
-    }
-    return TransitionEffect.move(TransitionEdge.END)
-      .animation({ curve: curves.springMotion(0.34, 0.84) });
-  }
-
   build() {
     GlassPage({
-      title: this.page === 'detail' ? this.detailName : '扩展程序',
+      title: this.pageTitle,
       scrollers: [this.listScroller, this.detailScroller],
       // 开发者模式开关进标题栏右侧（桌面 chrome://extensions 同款位置）。
       titleBarAction: (): void => this.DeveloperModeToggle(),
+      // 返回优先 pop 路由栈；栈只剩列表时才关整个面板。
       onBack: (): void => {
-        if (this.page === 'detail') {
+        if (this.pathStack.size() > 1) {
           this.closeDetail();
         } else {
           this.onBack();
         }
       }
     }) {
-    Column() {
-      if (this.page === 'detail') {
-        // 1.0.156：官方层级转场（Aira 同款）。TransitionEffect.move 是 ArkUI
-        // 的「整屏滑入」原语 —— 位移距离由系统按组件实际尺寸算，不用我们手算
-        // 屏宽，也不会出现 1.0.153 那样"幅度偏小"的问题。
-        Column() {
-          this.DetailView()
-        }
-        .width('100%')
-        .height('100%')
-        .transition(this.resolvePageTransition())
-      } else {
-        Column() {
+      Column() {
+        Navigation(this.pathStack) {
           this.ListView()
         }
         .width('100%')
         .height('100%')
-        .transition(this.resolvePageTransition())
+        .mode(NavigationMode.Stack)
+        .hideNavBar(true)
+        .hideTitleBar(true)
+        .navDestination(this.buildDetailDestination)
       }
-    }
-    .width('100%')
-    .height('100%')
-    .padding({ left: 16, right: 16 })
-
+      .width('100%')
+      .height('100%')
+      .padding({ left: 16, right: 16 })
     }
   }
 }
