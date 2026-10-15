@@ -2900,11 +2900,13 @@ export struct MobileBrowserOverlay {
       }
       .width('100%')
       .height('100%')
-      // 1.0.152：二级切换的滑入幅度由 0.22 屏宽放大到 0.62 屏宽、淡出由
-      // 0.65 减到 0.35 —— 原值太小，观感是"淡入"而不是"从右侧滑入"，
-      // 用户反馈「设置里打开扩展程序没有回弹，菜单里有」。
-      .translate({ x: this.panelContentShift * 0.62 * this.panelWidthVp() })
-      .opacity(1 - Math.abs(this.panelContentShift) * 0.35)
+      // 1.0.153：二级切换与「菜单里打开面板」对齐——位移 = 整屏宽、弹簧
+      // springMotion(0.34, 0.84)，与 openPanel 的 panelShift 同一套参数。
+      // 此前 0.22 → 0.62 屏宽都仍偏小，用户反馈"幅度很小、没和菜单对齐"。
+      // 淡出只留 0.2 保一点层次（菜单打开是纯位移，不带淡入）。
+      // 注：中途露出的是本层底下的 page_background（面板底色），不是浏览器。
+      .translate({ x: this.panelContentShift * this.panelWidthVp() })
+      .opacity(1 - Math.abs(this.panelContentShift) * 0.2)
     }
     .width('100%')
     .height('100%')
@@ -4016,7 +4018,8 @@ export struct MobileBrowserOverlay {
     this.panelContentShift = forward ? 1 : -1;
     this.panelPage = page;
     setTimeout((): void => {
-      animateTo({ curve: curves.springMotion(0.34, 0.9) }, (): void => {
+      // 与 openPanel 的 panelShift 同一条弹簧（0.34 / 0.84），观感一致。
+      animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
         this.panelContentShift = 0;
       });
     }, 32);

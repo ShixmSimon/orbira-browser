@@ -872,7 +872,9 @@ export struct SettingsPanel {
   // 左侧）+ 轻淡入；各子页常驻挂载，滚动位置照旧保留。首帧先以位移态
   // 渲染，下一拍再 animateTo 回到 0（否则同帧设置会动画不生效）。
   private subPageShiftVp(): number {
-    return this.viewportWidthVp > 16 ? this.viewportWidthVp * 0.62 : 240;
+    // 1.0.153：与「菜单里打开面板」对齐——整屏宽位移（同 openPanel 的
+    // panelShift）。0.62 屏宽仍被反馈"幅度很小"。
+    return this.viewportWidthVp > 16 ? this.viewportWidthVp : 360;
   }
 
   private switchPage(target: string, forward: boolean): void {
@@ -882,7 +884,8 @@ export struct SettingsPanel {
     this.pageShift = forward ? 1 : -1;
     this.page = target;
     setTimeout((): void => {
-      animateTo({ curve: curves.springMotion(0.34, 0.9) }, (): void => {
+      // 与 openPanel 的 panelShift 同一条弹簧（0.34 / 0.84），观感一致。
+      animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
         this.pageShift = 0;
       });
     }, 32);
@@ -2258,7 +2261,7 @@ export struct SettingsPanel {
         .height('100%')
         .visibility(this.page === 'main' ? Visibility.Visible : Visibility.None)
         .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.6)
+        .opacity(1 - Math.abs(this.pageShift) * 0.2)
 
         Column() {
           this.ClearView()
@@ -2267,7 +2270,7 @@ export struct SettingsPanel {
         .height('100%')
         .visibility(this.page === 'clear' ? Visibility.Visible : Visibility.None)
         .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.6)
+        .opacity(1 - Math.abs(this.pageShift) * 0.2)
 
         Column() {
           this.EnginesView()
@@ -2276,7 +2279,7 @@ export struct SettingsPanel {
         .height('100%')
         .visibility(this.page === 'engines' ? Visibility.Visible : Visibility.None)
         .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.6)
+        .opacity(1 - Math.abs(this.pageShift) * 0.2)
 
         Column() {
           this.AppearanceView()
@@ -2285,7 +2288,7 @@ export struct SettingsPanel {
         .height('100%')
         .visibility(this.page === 'appearance' ? Visibility.Visible : Visibility.None)
         .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.6)
+        .opacity(1 - Math.abs(this.pageShift) * 0.2)
 
         Column() {
           this.ZoomView()
@@ -2294,7 +2297,7 @@ export struct SettingsPanel {
         .height('100%')
         .visibility(this.page === 'zoom' ? Visibility.Visible : Visibility.None)
         .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.6)
+        .opacity(1 - Math.abs(this.pageShift) * 0.2)
 
         Column() {
           // 标题栏由本页统一提供（设置的所有二级页共用一条 Navigation 标题栏），
@@ -2305,7 +2308,7 @@ export struct SettingsPanel {
         .height('100%')
         .visibility(this.page === 'account' ? Visibility.Visible : Visibility.None)
         .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.6)
+        .opacity(1 - Math.abs(this.pageShift) * 0.2)
 
         Column() {
           this.AboutView()
@@ -2314,7 +2317,7 @@ export struct SettingsPanel {
         .height('100%')
         .visibility(this.page === 'about' ? Visibility.Visible : Visibility.None)
         .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.6)
+        .opacity(1 - Math.abs(this.pageShift) * 0.2)
 
         Column() {
           this.LegalView()
@@ -2323,7 +2326,7 @@ export struct SettingsPanel {
         .height('100%')
         .visibility(this.page === 'legal' ? Visibility.Visible : Visibility.None)
         .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.6)
+        .opacity(1 - Math.abs(this.pageShift) * 0.2)
 
         Column() {
           this.HomeStyleView()
@@ -2332,7 +2335,7 @@ export struct SettingsPanel {
         .height('100%')
         .visibility(this.page === 'home' ? Visibility.Visible : Visibility.None)
         .translate({ x: this.pageShift * this.subPageShiftVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.6)
+        .opacity(1 - Math.abs(this.pageShift) * 0.2)
       }
       .width('100%')
       .height('100%')

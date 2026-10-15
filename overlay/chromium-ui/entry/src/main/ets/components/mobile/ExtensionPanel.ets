@@ -335,7 +335,7 @@ export struct ExtensionPanel {
     this.pageShift = 1;
     this.page = 'detail';
     setTimeout((): void => {
-      animateTo({ curve: curves.springMotion(0.34, 0.9) }, (): void => {
+      animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
         this.pageShift = 0;
       });
     }, 32);
@@ -347,7 +347,7 @@ export struct ExtensionPanel {
   private closeDetail(): void {
     this.pageShift = -1;
     setTimeout((): void => {
-      animateTo({ curve: curves.springMotion(0.34, 0.9) }, (): void => {
+      animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
         this.pageShift = 0;
       });
       this.page = 'list';
@@ -982,7 +982,7 @@ export struct ExtensionPanel {
         .width('100%')
         .height('100%')
         .translate({ x: this.pageShift * this.pageWidthVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.6)
+        .opacity(1 - Math.abs(this.pageShift) * 0.2)
       } else {
         Column() {
           this.ListView()
@@ -990,7 +990,7 @@ export struct ExtensionPanel {
         .width('100%')
         .height('100%')
         .translate({ x: this.pageShift * this.pageWidthVp() })
-        .opacity(1 - Math.abs(this.pageShift) * 0.6)
+        .opacity(1 - Math.abs(this.pageShift) * 0.2)
       }
     }
     .width('100%')
