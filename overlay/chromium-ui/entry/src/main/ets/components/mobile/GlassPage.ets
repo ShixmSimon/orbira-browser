@@ -25,6 +25,7 @@ import {
   HdsNavigation,
   HdsNavigationMenuContentOptions,
   HdsNavigationTitleMode,
+  NavDestinationBuilder,
   ScrollEffectType
 } from '@kit.UIDesignKit';
 import {
@@ -186,10 +187,17 @@ export struct GlassPage {
    *    （HDS 官方样例同款写法）。
    */
   titleBarAction?: CustomBuilder;
+  /**
+   * 可选：子页路由栈。传入后本页 `HdsNavigation` 成为路由器，子页经
+   * `navDestinationBuilder` 注册，系统走原生鸿蒙7层级转场（干净减速、零过冲、无回弹）。
+   * 不传则保持单页（书签/密码等面板原行为完全不变）。
+   */
+  pathStack?: NavPathStack;
+  navDestinationBuilder?: NavDestinationBuilder;
   @BuilderParam body: () => void;
 
   build() {
-    HdsNavigation() {
+    HdsNavigation(this.pathStack ?? new NavPathStack()) {
       Stack({ alignContent: Alignment.TopStart }) {
         Column() {
           this.body()
@@ -238,6 +246,12 @@ export struct GlassPage {
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
     .bindToScrollable(this.scrollers)
     .backgroundColor($r('app.color.page_background'))
+    // 子页路由：navDestination 始终注册；无 pathStack 时不会被 push，safeBuilder 永不触发。
+    .navDestination((name: string, param: Object): void => {
+      if (this.navDestinationBuilder !== undefined) {
+        this.navDestinationBuilder(name, param);
+      }
+    })
     .width('100%')
     .height('100%')
   }

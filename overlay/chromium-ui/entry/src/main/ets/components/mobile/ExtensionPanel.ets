@@ -350,6 +350,7 @@ export struct ExtensionPanel {
   }
 
   // navDestination('detail') 的内容构建器（原生 NavDestination，系统转场）。
+  // 不 hideTitleBar —— 复用 GlassPage 的 HDS 标题栏（标题随 this.pageTitle 显示扩展名）。
   @Builder
   private buildDetailDestination(name: string, param: Object): void {
     NavDestination() {
@@ -357,7 +358,6 @@ export struct ExtensionPanel {
     }
     .width('100%')
     .height('100%')
-    .hideTitleBar(true)
     .onBackPressed((): boolean => {
       this.closeDetail();
       return true;
@@ -985,18 +985,15 @@ export struct ExtensionPanel {
         } else {
           this.onBack();
         }
-      }
+      },
+      // 1.0.157：玻璃外壳自身 HdsNavigation 承载子页路由，系统走原生鸿蒙7层级转场
+      //（干净减速、零过冲、无回弹）。详情作为 navDestination 推入，列表页在底层保持
+      // 挂载，返回时自动恢复滚动位置（无需常驻挂载伪红线）。
+      pathStack: this.pathStack,
+      navDestinationBuilder: this.buildDetailDestination
     }) {
       Column() {
-        Navigation(this.pathStack) {
-          this.ListView()
-        }
-        .width('100%')
-        .height('100%')
-        .mode(NavigationMode.Stack)
-        .hideNavBar(true)
-        .hideTitleBar(true)
-        .navDestination(this.buildDetailDestination)
+        this.ListView()
       }
       .width('100%')
       .height('100%')
