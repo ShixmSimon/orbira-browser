@@ -504,6 +504,15 @@ export struct ExtensionPanel {
     this.onClose();
   }
 
+  // 重新载入：Chromium 的 reloadExtension —— 重新读取扩展文件并重启它
+  // （chrome://extensions 卡片上的刷新按钮；改完未打包扩展的代码后回到干净状态）。
+  private reloadExtension(): void {
+    if (this.detailId.length === 0) {
+      return;
+    }
+    this.onCommand({ command: 'reloadExtension', id: this.detailId });
+  }
+
   private confirmUninstall(): void {
     AlertDialog.show({
       title: '卸载扩展',
@@ -1034,6 +1043,45 @@ export struct ExtensionPanel {
                 .margin({ top: 8 })
             }
 
+            // 重新载入：Chromium 扩展卡片的刷新按钮（reloadExtension）——
+            // 重新读取扩展文件并重启它，改完未打包扩展的代码后回到干净状态。
+            Column() {
+              Row({ space: 12 }) {
+                Image($r('app.media.chromium_reload'))
+                  .width(22)
+                  .height(22)
+                  .fillColor($r('app.color.icon_primary'))
+
+                Column({ space: 3 }) {
+                  Text('重新载入')
+                    .fontSize(16)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor($r('app.color.text_primary'))
+                  Text('重新读取扩展文件并重启')
+                    .fontSize(12)
+                    .fontColor($r('app.color.text_secondary'))
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+
+                Image($r('app.media.aura_chevron'))
+                  .width(16)
+                  .height(16)
+                  .fillColor($r('app.color.icon_secondary'))
+                  .opacity(0.65)
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 10, bottom: 10 })
+              .onClick(() => {
+                this.reloadExtension();
+              })
+            }
+            .width('100%')
+            .borderRadius(16)
+            .backgroundColor($r('app.color.card_background'))
+            .clip(true)
+            .margin({ top: 26 })
+
             Button('卸载扩展')
               .width('100%')
               .height(46)
@@ -1041,7 +1089,7 @@ export struct ExtensionPanel {
               .fontColor($r('app.color.danger'))
               .backgroundColor($r('app.color.card_background'))
               .borderRadius(16)
-              .margin({ top: 26 })
+              .margin({ top: 12 })
               .onClick(() => {
                 this.confirmUninstall();
               })

@@ -227,6 +227,31 @@ void SetEnabled(gfx::AcceleratedWidget widget,
   Notify(profile, "extensionActionsChanged");
 }
 
+// --- reloadExtension. -----------------------------------------------------
+
+// Chromium's own reload, chrome://extensions' refresh button: the
+// extension's files are read again and it starts over -- how a reader gets
+// back to a clean state after editing an unpacked extension's files.
+void Reload(gfx::AcceleratedWidget widget,
+            Profile* profile,
+            const base::DictValue& command) {
+  const std::string* id = command.FindString("id");
+  const Extension* extension = id ? FindExtension(profile, *id) : nullptr;
+  if (!id || !extension) {
+    DispatchFailed(widget, "reloadExtension", id ? *id : "", "notFound");
+    return;
+  }
+  const extensions::ManagementPolicy* policy =
+      extensions::ExtensionSystem::Get(profile)->management_policy();
+  std::u16string error;
+  if (!policy->UserMayModifySettings(extension, &error)) {
+    DispatchFailed(widget, "reloadExtension", *id, "notAllowed", error);
+    return;
+  }
+  extensions::ExtensionRegistrar::Get(profile)->ReloadExtension(*id);
+  Notify(profile, "extensionActionsChanged");
+}
+
 // --- uninstallExtension. --------------------------------------------------
 
 // Chromium's own confirmation, as the extensions page shows it. Owns the
@@ -733,6 +758,8 @@ bool HandleShellExtensionCommand(std::string_view name,
     SetDeveloperMode(widget, profile, command);
   } else if (name == "loadUnpackedExtension") {
     LoadUnpacked(widget, profile, command);
+  } else if (name == "reloadExtension") {
+    Reload(widget, profile, command);
   } else {
     return false;
   }

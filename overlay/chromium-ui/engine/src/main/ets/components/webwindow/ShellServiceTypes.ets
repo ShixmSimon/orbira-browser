@@ -324,9 +324,9 @@ export interface DeveloperModeEvent extends ShellServiceEvent {
 
 export type ExtensionSiteAccess = 'onClick' | 'specificSites' | 'allSites';
 
-// A setExtensionEnabled, uninstallExtension, setExtensionSiteAccess or
-// openExtensionOptions that could not be carried out. A cancelled uninstall
-// is not one.
+// A setExtensionEnabled, uninstallExtension, reloadExtension,
+// setExtensionSiteAccess or openExtensionOptions that could not be carried
+// out. A cancelled uninstall is not one.
 export interface ExtensionCommandFailedEvent extends ShellServiceEvent {
   command: string;
   id: string;
