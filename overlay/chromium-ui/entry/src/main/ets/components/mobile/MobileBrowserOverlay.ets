@@ -2929,17 +2929,17 @@ export struct MobileBrowserOverlay {
   }
 
   // 位移：当前页 = 内容层位移（±1 → 0）；转场中的旧页 = parallax。前进
-  // （push）：新页整屏宽滑入、旧页左移 25% 屏宽并变暗；后退（pop）：旧页
-  // 整屏右移出让、新页只做 25% parallax 揭示——模仿原生层级转场。
+  // （push）：新页整屏宽滑入、旧页左移 30% 屏宽；后退（pop）：旧页
+  // 整屏右移出让、新页只做 30% parallax 揭示——模仿原生层级转场。
   private panelSlotShiftX(page: string): number {
     const width: number = this.panelWidthVp();
     const progress: number = Math.abs(this.panelContentShift);
     if (this.panelPage === page) {
-      return this.panelContentShift * width * (this.panelSwitchForward ? 1 : 0.25);
+      return this.panelContentShift * width * (this.panelSwitchForward ? 1 : 0.30);
     }
     if (this.outgoingPage === page) {
       return this.panelSwitchForward
-        ? (progress - 1) * 0.25 * width
+        ? (progress - 1) * 0.30 * width
         : (1 - progress) * width;
     }
     return 0;
@@ -4065,7 +4065,7 @@ export struct MobileBrowserOverlay {
       return;
     }
     // 1.0.161：面板已在场（菜单内再点别的面板入口）时改走 push 式转场——
-    // 新页整屏右滑入、旧页左移 25% parallax，与扩展详情页原生层级转场一致；
+    // 新页整屏右滑入、旧页左移 30% parallax，与扩展详情页原生层级转场一致；
     // 不再把整层 PanelLayer 重新右滑入场（旧页会瞬移屏外再滑回，观感割裂）。
     if (this.panelPage !== 'none') {
       this.switchPanel(page, true);
