@@ -335,7 +335,7 @@ export struct ExtensionPanel {
     this.pageShift = 1;
     this.page = 'detail';
     setTimeout((): void => {
-      animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
+      animateTo({ curve: curves.springMotion(0.48, 0.84) }, (): void => {
         this.pageShift = 0;
       });
     }, 32);
@@ -347,7 +347,7 @@ export struct ExtensionPanel {
   private closeDetail(): void {
     this.pageShift = -1;
     setTimeout((): void => {
-      animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
+      animateTo({ curve: curves.springMotion(0.48, 0.84) }, (): void => {
         this.pageShift = 0;
       });
       this.page = 'list';
