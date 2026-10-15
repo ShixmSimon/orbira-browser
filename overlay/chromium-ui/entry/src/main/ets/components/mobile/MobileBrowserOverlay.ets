@@ -2900,8 +2900,11 @@ export struct MobileBrowserOverlay {
       }
       .width('100%')
       .height('100%')
-      .translate({ x: this.panelContentShift * 0.22 * this.panelWidthVp() })
-      .opacity(1 - Math.abs(this.panelContentShift) * 0.65)
+      // 1.0.152：二级切换的滑入幅度由 0.22 屏宽放大到 0.62 屏宽、淡出由
+      // 0.65 减到 0.35 —— 原值太小，观感是"淡入"而不是"从右侧滑入"，
+      // 用户反馈「设置里打开扩展程序没有回弹，菜单里有」。
+      .translate({ x: this.panelContentShift * 0.62 * this.panelWidthVp() })
+      .opacity(1 - Math.abs(this.panelContentShift) * 0.35)
     }
     .width('100%')
     .height('100%')

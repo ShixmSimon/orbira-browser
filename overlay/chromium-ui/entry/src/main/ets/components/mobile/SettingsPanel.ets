@@ -175,6 +175,9 @@ export struct SettingsPanel {
   @State private page: string = 'main';
   // 子页切换动效（1.0.66）：±1 = 内容层从右/左滑入，0 = 就位。见 switchPage。
   @State private pageShift: number = 0;
+  // 1.0.152：子页横滑的位移基准（面板宽，vp）。原先写死 72vp（≈屏宽 20%）
+  // 太短，观感是"抖一下"而不是"滑入+回弹"（装机反馈）。量不到时兜底 360。
+  @State private viewportWidthVp: number = 0;
   // 设置检索：常驻搜索框，输入即就地过滤设置项（不单独开搜索页）。
   @State private searchText: string = '';
   // 渐变模糊滚动效果按官方要求 bindToScrollable。
@@ -866,8 +869,12 @@ export struct SettingsPanel {
   }
 
   // 子页切换动效（1.0.66）：内容层按方向滑入（forward=true 从右侧，false 从
-  // 左侧，72vp）+ 轻淡入；各子页常驻挂载，滚动位置照旧保留。首帧先以位移态
+  // 左侧）+ 轻淡入；各子页常驻挂载，滚动位置照旧保留。首帧先以位移态
   // 渲染，下一拍再 animateTo 回到 0（否则同帧设置会动画不生效）。
+  private subPageShiftVp(): number {
+    return this.viewportWidthVp > 16 ? this.viewportWidthVp * 0.62 : 240;
+  }
+
   private switchPage(target: string, forward: boolean): void {
     if (this.page === target) {
       return;
@@ -2250,7 +2257,7 @@ export struct SettingsPanel {
         .width('100%')
         .height('100%')
         .visibility(this.page === 'main' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * 72 })
+        .translate({ x: this.pageShift * this.subPageShiftVp() })
         .opacity(1 - Math.abs(this.pageShift) * 0.6)
 
         Column() {
@@ -2259,7 +2266,7 @@ export struct SettingsPanel {
         .width('100%')
         .height('100%')
         .visibility(this.page === 'clear' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * 72 })
+        .translate({ x: this.pageShift * this.subPageShiftVp() })
         .opacity(1 - Math.abs(this.pageShift) * 0.6)
 
         Column() {
@@ -2268,7 +2275,7 @@ export struct SettingsPanel {
         .width('100%')
         .height('100%')
         .visibility(this.page === 'engines' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * 72 })
+        .translate({ x: this.pageShift * this.subPageShiftVp() })
         .opacity(1 - Math.abs(this.pageShift) * 0.6)
 
         Column() {
@@ -2277,7 +2284,7 @@ export struct SettingsPanel {
         .width('100%')
         .height('100%')
         .visibility(this.page === 'appearance' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * 72 })
+        .translate({ x: this.pageShift * this.subPageShiftVp() })
         .opacity(1 - Math.abs(this.pageShift) * 0.6)
 
         Column() {
@@ -2286,7 +2293,7 @@ export struct SettingsPanel {
         .width('100%')
         .height('100%')
         .visibility(this.page === 'zoom' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * 72 })
+        .translate({ x: this.pageShift * this.subPageShiftVp() })
         .opacity(1 - Math.abs(this.pageShift) * 0.6)
 
         Column() {
@@ -2297,7 +2304,7 @@ export struct SettingsPanel {
         .width('100%')
         .height('100%')
         .visibility(this.page === 'account' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * 72 })
+        .translate({ x: this.pageShift * this.subPageShiftVp() })
         .opacity(1 - Math.abs(this.pageShift) * 0.6)
 
         Column() {
@@ -2306,7 +2313,7 @@ export struct SettingsPanel {
         .width('100%')
         .height('100%')
         .visibility(this.page === 'about' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * 72 })
+        .translate({ x: this.pageShift * this.subPageShiftVp() })
         .opacity(1 - Math.abs(this.pageShift) * 0.6)
 
         Column() {
@@ -2315,7 +2322,7 @@ export struct SettingsPanel {
         .width('100%')
         .height('100%')
         .visibility(this.page === 'legal' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * 72 })
+        .translate({ x: this.pageShift * this.subPageShiftVp() })
         .opacity(1 - Math.abs(this.pageShift) * 0.6)
 
         Column() {
@@ -2324,12 +2331,19 @@ export struct SettingsPanel {
         .width('100%')
         .height('100%')
         .visibility(this.page === 'home' ? Visibility.Visible : Visibility.None)
-        .translate({ x: this.pageShift * 72 })
+        .translate({ x: this.pageShift * this.subPageShiftVp() })
         .opacity(1 - Math.abs(this.pageShift) * 0.6)
       }
       .width('100%')
       .height('100%')
       .padding({ left: 16, right: 16 })
+      // 量一次面板宽，给子页横滑当位移基准（1.0.152）。
+      .onAreaChange((oldValue: Area, newValue: Area): void => {
+        const measuredWidth: number = Number(newValue.width);
+        if (measuredWidth > 16 && Math.abs(measuredWidth - this.viewportWidthVp) > 0.5) {
+          this.viewportWidthVp = measuredWidth;
+        }
+      })
     }
   }
 }

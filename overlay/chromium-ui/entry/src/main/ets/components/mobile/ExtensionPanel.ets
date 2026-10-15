@@ -5,6 +5,7 @@
  * （AuraShell 转存到 'auraPanelExtensions' / 'auraPanelExtensionDetails'）；
  * 变更类事件的回音通过 'auraPanelEvent' 的 kind 过滤。
  */
+import { curves } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
 import { BrowserCommandPayload, ExtensionActionItem, ExtensionDetailsEvent, ExtensionSiteAccess } from 'engine';
@@ -79,6 +80,11 @@ export struct ExtensionPanel {
   // 状态永远以引擎为准——setDeveloperMode 成功后引擎会回 developerMode 事件。
   @State private developerMode: boolean = false;
   @State private developerModeAvailable: boolean = true;
+  // 列表 ↔ 详情的横向滑入（1.0.152）：+1 = 详情从右侧进来，-1 = 列表从左侧
+  // 回来，0 = 就位。animateTo + 弹簧曲线驱动（见 openDetail 注释）。
+  @State private pageShift: number = 0;
+  // 位移基准 = 面板宽（vp）。测量不到时给个手机常见值兜底。
+  @State private viewportWidthVp: number = 0;
   // 开发者模式总闸的快照：关闭总闸那一刻各扩展的开关状态（id -> 原开关值），
   // 用于重新打开总闸时逐个恢复。非 UI 状态，用普通字段（改动不必触发刷新）。
   private enabledSnapshot: Record<string, boolean> = {};
@@ -323,9 +329,29 @@ export struct ExtensionPanel {
     this.detailAuthor = item.author ?? '';
     this.detailUserScriptsAvailable = false;
     this.detailUserScriptsAllowed = false;
+    // 与设置面板的二级页同款开法：先落到"屏外右侧"渲染一帧，下一拍再由
+    // animateTo 弹簧滑回 0 —— 见 openDetail/closeDetail 的注释（.transition()
+    // 在这台真机上不产生可见动画，openPanel 早踩过同一个坑）。
+    this.pageShift = 1;
     this.page = 'detail';
+    setTimeout((): void => {
+      animateTo({ curve: curves.springMotion(0.34, 0.9) }, (): void => {
+        this.pageShift = 0;
+      });
+    }, 32);
     this.requestSeq += 1;
     this.onCommand({ command: 'getExtensionDetails', requestId: this.requestSeq, id: item.id });
+  }
+
+  // 详情 → 列表：往左滑出（forward=false 的反向）。
+  private closeDetail(): void {
+    this.pageShift = -1;
+    setTimeout((): void => {
+      animateTo({ curve: curves.springMotion(0.34, 0.9) }, (): void => {
+        this.pageShift = 0;
+      });
+      this.page = 'list';
+    }, 32);
   }
 
   private setSiteAccess(mode: ExtensionSiteAccess): void {
@@ -925,6 +951,11 @@ export struct ExtensionPanel {
   private listScroller: Scroller = new Scroller();
   private detailScroller: Scroller = new Scroller();
 
+  // 位移基准 = 面板实际宽（vp），量不到时按常见手机宽兜底（360）。
+  private pageWidthVp(): number {
+    return this.viewportWidthVp > 16 ? this.viewportWidthVp : 360;
+  }
+
   build() {
     GlassPage({
       title: this.page === 'detail' ? this.detailName : '扩展程序',
@@ -933,7 +964,7 @@ export struct ExtensionPanel {
       titleBarAction: (): void => this.DeveloperModeToggle(),
       onBack: (): void => {
         if (this.page === 'detail') {
-          this.page = 'list';
+          this.closeDetail();
         } else {
           this.onBack();
         }
@@ -941,37 +972,37 @@ export struct ExtensionPanel {
     }) {
     Column() {
       if (this.page === 'detail') {
-        // 点"i"进详情要有过渡（装机反馈：无动画像闪变）。详情是二级页：
-        // 进入时从右推入 + 淡入，离开时淡出让位；列表原地淡入淡出。
+        // 点"i"进详情要有过渡（装机反馈：无动画像闪变）。位移由 pageShift
+        // 驱动、animateTo 起弹簧 —— 与设置面板二级页同一套机制。
+        // ⚠️ 别改用 .transition()：真机上不产生可见动画（openPanel 注释里
+        // 记过这个坑，1.0.149 用 .transition() 就是没生效）。
         Column() {
           this.DetailView()
         }
         .width('100%')
         .height('100%')
-        .transition(TransitionEffect.asymmetric(
-          TransitionEffect.translate({ x: '42%' })
-            .combine(TransitionEffect.OPACITY)
-            .animation({ duration: 260, curve: Curve.Friction }),
-          TransitionEffect.OPACITY
-            .animation({ duration: 200, curve: Curve.EaseOut })
-        ))
+        .translate({ x: this.pageShift * this.pageWidthVp() })
+        .opacity(1 - Math.abs(this.pageShift) * 0.6)
       } else {
         Column() {
           this.ListView()
         }
         .width('100%')
         .height('100%')
-        .transition(TransitionEffect.asymmetric(
-          TransitionEffect.OPACITY
-            .animation({ duration: 200, curve: Curve.EaseOut }),
-          TransitionEffect.OPACITY
-            .animation({ duration: 160, curve: Curve.EaseOut })
-        ))
+        .translate({ x: this.pageShift * this.pageWidthVp() })
+        .opacity(1 - Math.abs(this.pageShift) * 0.6)
       }
     }
     .width('100%')
     .height('100%')
     .padding({ left: 16, right: 16 })
+    // 量一次面板宽，给二级页横滑当位移基准。
+    .onAreaChange((oldValue: Area, newValue: Area): void => {
+      const measuredWidth: number = Number(newValue.width);
+      if (measuredWidth > 16 && Math.abs(measuredWidth - this.viewportWidthVp) > 0.5) {
+        this.viewportWidthVp = measuredWidth;
+      }
+    })
 
     }
   }
