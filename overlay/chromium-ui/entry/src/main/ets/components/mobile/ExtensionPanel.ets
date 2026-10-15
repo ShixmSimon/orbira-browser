@@ -213,10 +213,13 @@ export struct ExtensionPanel {
     // 1.0.124：扩展的 popup 由原生画在**网页层**（脚本猫这类点一下就弹面板的
     // 扩展正是如此）。当前标签页不是真网页时——新标签页被外壳主页层盖着、
     // chrome:// 页也没地方锚——弹出来的面板根本看不见，点了像没反应。
-    // 这时明确告诉用户先开个网页，而不是静默失败。
-    // 注意这条守卫**只管点扩展项**：设置里打开扩展列表（管理/启停/详情）不
-    // 依赖当前标签页，不该被拦（1.0.123 把守卫挂在"打开面板"上就误伤了它）。
-    if (!this.isWebPageUrl(this.currentUrl)) {
+    // 1.0.148：守卫收窄到**真有 popup 的扩展**（item.hasPopup，引擎按
+    // action.default_popup 下发）。没有 popup 的（调姬助手这类点按打开
+    // options 页或直接开网页）不依赖网页上下文，放行——否则从主页点
+    // 它们也会被「先打开网页」误拦。
+    // 注意这条守卫只管点扩展项：设置里打开扩展列表（管理/启停/详情）不
+    // 依赖当前标签页，不该被拦。
+    if (item.hasPopup && !this.isWebPageUrl(this.currentUrl)) {
       this.getUIContext().getPromptAction().showToast({
         message: '先打开一个网页，再打开扩展面板',
         duration: 3000
@@ -266,66 +269,6 @@ export struct ExtensionPanel {
     // 不本地改状态：引擎 setDeveloperMode 成功后会把新值回成 developerMode
     // 事件，开关以引擎为准（企业策略可能把写入立刻收回，那时得显示收回后的）。
     this.onCommand({ command: 'setDeveloperMode', enabled: enabled });
-  }
-
-  // 加载未打包：选一个含 manifest.json 的目录。目录 URI 只有临时读权限、
-  // 原生引擎也读不了 content://，所以先把整棵树拷进沙箱再交给引擎。
-  private async loadUnpackedFromFolder(): Promise<void> {
-    if (this.installing) {
-      return;
-    }
-    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
-    if (!context) {
-      return;
-    }
-    let pickedUri = '';
-    try {
-      const options = new picker.DocumentSelectOptions();
-      options.maxSelectNumber = 1;
-      options.selectMode = picker.DocumentSelectMode.FOLDER;
-      const uris: string[] = await new picker.DocumentViewPicker(context).select(options);
-      if (uris.length === 0) {
-        return;
-      }
-      pickedUri = uris[0];
-    } catch (error) {
-      this.getUIContext().getPromptAction().showToast({
-        message: '这个系统不支持选择目录，可改用 .zip 安装',
-        duration: 3000
-      });
-      return;
-    }
-    this.installing = true;
-    this.getUIContext().getPromptAction().showToast({
-      message: '正在读取扩展目录…',
-      duration: 3000
-    });
-    try {
-      // recursion 一次给出所有文件的相对路径（以 / 开头），逐个拷进沙箱。
-      const destRoot = `${context.filesDir}/unpacked-${Date.now()}`;
-      const relatives: string[] = await fs.listFile(pickedUri, { recursion: true });
-      for (const relative of relatives) {
-        const destPath = destRoot + relative;
-        const parent = destPath.substring(0, destPath.lastIndexOf('/'));
-        fs.mkdirSync(parent, true);
-        const source = fs.openSync(pickedUri + relative, fs.OpenMode.READ_ONLY);
-        try {
-          fs.copyFileSync(source.fd, destPath);
-        } finally {
-          fs.closeSync(source);
-        }
-      }
-      // 开发者模式是引擎侧加载未打包的前提，开关在标题栏；这里不需要再判，
-      // 引擎会以 developerModeOff 拒绝并弹出提示。
-      this.onCommand({ command: 'loadUnpackedExtension', path: destRoot });
-    } catch (error) {
-      this.installing = false;
-      console.error('Extension load unpacked failed:', JSON.stringify(error));
-      this.getUIContext().getPromptAction().showToast({
-        message: '读取目录失败，可改用 .zip 安装',
-        duration: 3000
-      });
-    }
   }
 
   private openMoreSettings(): void {
@@ -408,7 +351,12 @@ export struct ExtensionPanel {
   // 状态永远以引擎为准：拨动只发命令，回音由 developerMode 事件带回来。
   @Builder
   private DeveloperModeToggle() {
+    // Blank 在前 + width('100%')：HDS 的 stackBuilder 是标题行上的覆盖槽，
+    // 容器默认 left-aligned，开关会紧贴标题文字（真机反馈"和标题重叠"）。
+    // 占满槽宽再用弹性空位把开关推到最右，才是桌面 chrome://extensions
+    // 的同款位置。
     Row({ space: 8 }) {
+      Blank()
       Text('开发者模式')
         .fontSize(13)
         .fontColor($r('app.color.text_secondary'))
@@ -419,6 +367,7 @@ export struct ExtensionPanel {
           this.setDeveloperMode(isOn);
         })
     }
+    .width('100%')
     .height('100%')
     .justifyContent(FlexAlign.Center)
     .padding({ right: 4 })
@@ -540,16 +489,10 @@ export struct ExtensionPanel {
 
           Column() {
             Row({ space: 12 }) {
-              Text('+')
-                .fontSize(20)
-                .fontWeight(FontWeight.Medium)
-                .fontColor($r('app.color.text_primary'))
-                .textAlign(TextAlign.Center)
-                .width(40)
-                .height(40)
-                .borderRadius(10)
-                .backgroundColor($r('app.color.surface_secondary'))
-                .border({ width: 1, color: $r('app.color.icon_secondary') })
+              Image($r('app.media.aura_import'))
+                .width(22)
+                .height(22)
+                .fillColor($r('app.color.icon_primary'))
 
               Column({ space: 3 }) {
                 Text(this.installing ? '正在安装…' : '从文件安装')
@@ -580,44 +523,15 @@ export struct ExtensionPanel {
           .backgroundColor($r('app.color.card_background'))
           .clip(true)
 
-          // 加载未打包：桌面 chrome://extensions 的同款入口，放在「从文件
-          // 安装」下边。选目录 → 整棵树拷进沙箱 → 引擎 UnpackedInstaller。
-          Column() {
-            Row({ space: 12 }) {
-              Image($r('app.media.aura_folder'))
-                .width(22)
-                .height(22)
-                .fillColor($r('app.color.icon_primary'))
-
-              Column({ space: 3 }) {
-                Text('加载未打包')
-                  .fontSize(16)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor($r('app.color.text_primary'))
-                Text('选择含 manifest.json 的扩展目录')
-                  .fontSize(12)
-                  .fontColor($r('app.color.text_secondary'))
-              }
-              .alignItems(HorizontalAlign.Start)
-              .layoutWeight(1)
-
-              Image($r('app.media.aura_chevron'))
-                .width(16)
-                .height(16)
-                .fillColor($r('app.color.icon_secondary'))
-                .opacity(0.65)
-            }
+          // 「加载未打包」去向：1.0.147 装机反馈——zip 安装已覆盖分发场景，
+          // 调试用目录加载走「完整扩展页」里的桌面版入口（那里本来就有），
+          // 原生页不再单列一行。引擎侧 loadUnpackedExtension 命令保留，
+          // 完整扩展页照常可用。
+          Text('更多')
+            .fontSize(13)
+            .fontColor($r('app.color.text_secondary'))
             .width('100%')
-            .padding({ left: 16, right: 16, top: 10, bottom: 10 })
-            .onClick(() => {
-              this.loadUnpackedFromFolder();
-            })
-          }
-          .width('100%')
-          .borderRadius(16)
-          .backgroundColor($r('app.color.card_background'))
-          .clip(true)
-          .margin({ top: 12 })
+            .margin({ top: 20, bottom: 10 })
 
           Column() {
             Row({ space: 12 }) {
@@ -649,7 +563,7 @@ export struct ExtensionPanel {
           .clip(true)
           .margin({ top: 12 })
 
-          Text('点按扩展打开它的面板或设置；点"i"管理网站访问和移除。扩展能读取和更改你访问的网页，只安装你信任的扩展。')
+          Text('点按扩展打开它的面板或设置；点"i"查看详情，权限、网站访问和卸载都在里边。扩展能读取和更改你访问的网页，只安装你信任的扩展。')
             .fontSize(12)
             .fontColor($r('app.color.text_secondary'))
             .width('100%')
