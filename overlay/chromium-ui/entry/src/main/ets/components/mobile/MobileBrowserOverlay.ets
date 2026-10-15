@@ -3034,7 +3034,7 @@ export struct MobileBrowserOverlay {
           if (this.panelPage === 'none' || this.panelDragging || this.panelInnerNavActive) {
             return;
           }
-          const startX: number = event.fingerList[0].x;
+          const startX: number = event.startX;
           if (startX > 32) {
             return;
           }
