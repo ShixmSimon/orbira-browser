@@ -28,11 +28,7 @@ import {
   parseContextMenuModel,
   shellCopyTextFor
 } from './ContextMenuSheet';
-import { ExtensionPanel } from './ExtensionPanel';
 import { MobileBackRouter } from './MobileBackRouter';
-import { PasswordsPanel } from './PasswordsPanel';
-import { SettingsPanel } from './SettingsPanel';
-import { SitePermissionsPanel } from './SitePermissionsPanel';
 import { normalizeAddress, searchUrlFor } from './ShellUtils';
 import { ShellUiPrefs } from '../../utils/appearance/ShellUiPrefs';
 import { IncognitoSwitch, SavedTab } from '../../utils/IncognitoSwitch';
@@ -361,6 +357,9 @@ export struct MobileBrowserOverlay {
   @StorageLink('auraTouchDockRatio') touchDockRatio: number = 1;
   // Chrome 底置 dock 的跟手收起系数（触摸驱动；引擎底置无 controlsRatio，见 AuraShell.onChromeBottomDockTouch）。
   @StorageLink('auraChromeBottomRatio') chromeBottomRatioRaw: number = 1;
+  // A' 面板页化（Phase 3）：路由页（设置页「添加主页网址」）经此信号请求 overlay
+  // 弹出网址管理表单——路由页与浏览器壳不在同一组件树，用 AppStorage 计数器桥接。
+  @StorageLink('auraRequestAddHomeTile') @Watch('onRequestAddHomeTile') requestAddHomeTileSignal: number = 0;
   // 1.0.104 下拉刷新：引擎（Chromium）自己判定「页面已到顶 + 不是内层滚动 +
   // overscroll-behavior 放行」，也自己 reload，外壳只画指示器 —— 事件由 AuraShell
   // 转存（见 engine ShellServiceTypes.PullToRefreshEvent）。
@@ -817,6 +816,11 @@ export struct MobileBrowserOverlay {
 
   private closeMenuCard(): void {
     this.menuCardVisible = false;
+  }
+
+  // A' 面板页化（Phase 3）：路由页信号 → 打开网址管理表单。
+  private onRequestAddHomeTile(): void {
+    this.requestAddHomeTile();
   }
 
   // 1.0.109：请求「自定义网址」——收起入口菜单、打开网址管理表单。
@@ -2790,91 +2794,8 @@ export struct MobileBrowserOverlay {
   @Builder
   private PanelSlot(page: string) {
     Column() {
-      if (page === 'passwords') {
-        PasswordsPanel({
-          onCommand: (command: BrowserCommandPayload): void => {
-            this.issueCommand(command);
-          },
-          onBack: (): void => {
-            this.switchPanel('settings', false);
-          },
-          onClose: (): void => {
-            this.closePanel();
-          },
-          onInnerNavChange: (active: boolean): void => {
-            this.panelInnerNavActive = active;
-          }
-        })
-      } else if (page === 'sitepermissions') {
-        SitePermissionsPanel({
-          onCommand: (command: BrowserCommandPayload): void => {
-            this.issueCommand(command);
-          },
-          onBack: (): void => {
-            this.switchPanel('settings', false);
-          },
-          onClose: (): void => {
-            this.closePanel();
-          },
-          onInnerNavChange: (active: boolean): void => {
-            this.panelInnerNavActive = active;
-          }
-        })
-      } else if (page === 'settings') {
-        SettingsPanel({
-          onCommand: (command: BrowserCommandPayload): void => {
-            this.issueCommand(command);
-          },
-          onBack: (): void => {
-            this.closePanel();
-          },
-          onInnerNavChange: (active: boolean): void => {
-            this.panelInnerNavActive = active;
-          },
-          onOpenExtensions: (): void => {
-            this.openExtensionsPanel(true);
-          },
-          onOpenSitePermissions: (): void => {
-            this.switchPanel('sitepermissions', true);
-          },
-          onOpenPasswords: (): void => {
-            this.switchPanel('passwords', true);
-          },
-          onOpenHomeLayout: (): void => {
-            // 先收起设置面板，再经信号打开主页布局弹层（HomeSurface 在主页时才挂载）。
-            this.closePanel();
-            AppStorage.set('auraOpenHomeLayout',
-              ((AppStorage.get('auraOpenHomeLayout') as number) ?? 0) + 1);
-          },
-          onAddHomeTile: (): void => {
-            // 1.0.111：设置-主页设置右上角入口——收起面板后弹出网址设置表单
-            // （overlay 层，就地弹）；1.0.120 起该表单可管理多组网址。
-            this.closePanel();
-            this.requestAddHomeTile();
-          }
-        })
-      } else if (page === 'extensions') {
-        ExtensionPanel({
-          currentUrl: this.browserState.url,
-          onCommand: (command: BrowserCommandPayload): void => {
-            this.issueCommand(command);
-          },
-          onBack: (): void => {
-            if (this.extensionsFromSettings) {
-              this.extensionsFromSettings = false;
-              this.switchPanel('settings', false);
-            } else {
-              this.closePanel();
-            }
-          },
-          onClose: (): void => {
-            this.closePanel();
-          },
-          onInnerNavChange: (active: boolean): void => {
-            this.panelInnerNavActive = active;
-          }
-        })
-      }
+      // A' 面板页化（Phase 3 完成）：全部面板已迁为独立路由页，
+      // 本槽位已无面板可渲染（整套 machinery 留待 Phase 4 拆除）。
     }
     .width('100%')
     .height('100%')
@@ -2934,18 +2855,7 @@ export struct MobileBrowserOverlay {
       // 不卸载：parallax 移出 + 变暗、新页滑入，模仿原生 push-pop。
       // 槽位逻辑（可见性/位移/变暗/层级）见 PanelSlot。
       Stack({ alignContent: Alignment.TopStart }) {
-        if (this.pageMounted('passwords')) {
-          this.PanelSlot('passwords')
-        }
-        if (this.pageMounted('sitepermissions')) {
-          this.PanelSlot('sitepermissions')
-        }
-        if (this.pageMounted('settings')) {
-          this.PanelSlot('settings')
-        }
-        if (this.pageMounted('extensions')) {
-          this.PanelSlot('extensions')
-        }
+        // A' 面板页化（Phase 3 完成）：全部面板已迁为独立路由页（Phase 4 拆除本层）。
       }
       .width('100%')
       .height('100%')
@@ -3668,10 +3578,10 @@ export struct MobileBrowserOverlay {
           this.openDownloadsPanel();
         })
         this.PanelEntryButton('扩展', $r('app.media.aura_extensions'), (): void => {
-          this.openExtensionsPanel(false);
+          this.openExtensionPanelPage();
         })
         this.PanelEntryButton('设置', $r('app.media.chromium_settings'), (): void => {
-          this.openPanel('settings');
+          this.openSettingsPanelPage();
         })
       }
       .width('100%')
@@ -4047,13 +3957,24 @@ export struct MobileBrowserOverlay {
   // 入口 —— 但 dock 入口打开的也是同一块列表面板，同样不需要网页上下文，
   // 于是出现「点 dock 扩展提示先开网页、点设置扩展却能开」的分裂。守卫的
   // 位置错了，不是守卫的松紧错了。
-  private openExtensionsPanel(fromSettings: boolean): void {
-    this.extensionsFromSettings = fromSettings;
-    if (fromSettings) {
-      this.switchPanel('extensions', true);
-    } else {
-      this.openPanel('extensions');
-    }
+  // A' 面板页化（Phase 3）：扩展程序改为独立路由页（系统栈自动区分来源：
+  // 菜单进入返回回浏览器、设置进入返回回设置页），不再需要 extensionsFromSettings。
+  private openExtensionPanelPage(): void {
+    this.menuVisible = false;
+    this.menuCardVisible = false;
+    this.sheetPage = 'tabs';
+    router.pushUrl({ url: 'pages/panels/ExtensionPanelPage' }).catch((error: Error): void => {
+      console.error('openExtensionPanelPage pushUrl failed:', error);
+    });
+  }
+
+  private openSettingsPanelPage(): void {
+    this.menuVisible = false;
+    this.menuCardVisible = false;
+    this.sheetPage = 'tabs';
+    router.pushUrl({ url: 'pages/panels/SettingsPanelPage' }).catch((error: Error): void => {
+      console.error('openSettingsPanelPage pushUrl failed:', error);
+    });
   }
 
   // A' 面板页化（试点）：历史改为独立路由页。先收起菜单，再 router.pushUrl

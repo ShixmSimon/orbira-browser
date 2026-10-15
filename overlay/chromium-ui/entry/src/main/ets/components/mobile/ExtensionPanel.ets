@@ -66,7 +66,8 @@ export struct ExtensionPanel {
   // The active tab's URL when the page opened: the native install-confirm
   // dialog renders in the tab's web layer, and a new-tab page is covered by
   // the shell's home surface -- the tab must be parked elsewhere first.
-  currentUrl: string = '';
+  // A' 面板页化（Phase 3）：改由 AppStorage 读取（overlay onBrowserStateChanged 已同步）。
+  @StorageLink('auraCurrentUrl') currentUrl: string = '';
 
   @State private items: ExtensionActionItem[] = [];
   @State private page: string = 'list';

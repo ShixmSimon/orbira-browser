@@ -5,6 +5,10 @@
     "pages/panels/HistoryPanelPage",
     "pages/panels/BookmarksPanelPage",
     "pages/panels/DownloadsPanelPage",
-    "pages/panels/RecentPanelPage"
+    "pages/panels/RecentPanelPage",
+    "pages/panels/SettingsPanelPage",
+    "pages/panels/ExtensionPanelPage",
+    "pages/panels/PasswordsPanelPage",
+    "pages/panels/SitePermissionsPanelPage"
   ]
 }
