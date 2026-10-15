@@ -250,6 +250,13 @@ export struct ExtensionPanel {
         this.requestSeq += 1;
         this.onCommand({ command: 'getExtensionDetails', requestId: this.requestSeq, id: this.detailId });
       }
+    } else if (kind === 'extensionReloadReceived') {
+      // 引擎回执：命令确实到达了 native（重载随后异步进行，是否真正落地由
+      // 随后的 extensionActionsChanged 确认）。这条不出现 = 命令没送达引擎。
+      this.getUIContext().getPromptAction().showToast({
+        message: '引擎已收到重载请求',
+        duration: 1500
+      });
     } else if (kind === 'extensionInstallFailed') {
       this.installing = false;
       const reason = String(payload.reason ?? '');

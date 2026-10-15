@@ -241,13 +241,12 @@ void Reload(gfx::AcceleratedWidget widget,
     DispatchFailed(widget, "reloadExtension", id ? *id : "", "notFound");
     return;
   }
-  const extensions::ManagementPolicy* policy =
-      extensions::ExtensionSystem::Get(profile)->management_policy();
-  std::u16string error;
-  if (!policy->UserMayModifySettings(extension, &error)) {
-    DispatchFailed(widget, "reloadExtension", *id, "notAllowed", error);
-    return;
-  }
+  // Chromium 自己的扩展页 reload（DeveloperPrivateReloadFunction）只检查扩展
+  // 是否存在，不套 setExtensionEnabled 那套 UserMayModifySettings 校验：
+  // 重载并不改变启用状态，被那道校验拦住是错的。
+  // 收到即回执：重载是异步的，先让外壳确认命令确实到了引擎（是否真正落地
+  // 由随后的 extensionActionsChanged 再确认一次）。
+  Notify(profile, "extensionReloadReceived");
   extensions::ExtensionRegistrar::Get(profile)->ReloadExtension(*id);
   Notify(profile, "extensionActionsChanged");
 }

@@ -1828,6 +1828,13 @@ struct AuraShell {
         JSON.stringify({ kind: 'extensionActionsChanged', revision: Date.now() }));
       return;
     }
+    // 扩展「重新载入」的收到回执：引擎重载是异步的，这条只证明命令到达了
+    // native，是否落地看随后的 extensionActionsChanged。
+    if (event.event === 'extensionReloadReceived') {
+      AppStorage.setOrCreate('auraPanelEvent',
+        JSON.stringify({ kind: 'extensionReloadReceived', revision: Date.now() }));
+      return;
+    }
     if (event.event === 'developerMode') {
       // 扩展页标题栏的「开发者模式」开关：引擎 profile pref 的回音。
       // 存 AppStorage 供 ExtensionPanel 读；setDeveloperMode 成功后引擎
