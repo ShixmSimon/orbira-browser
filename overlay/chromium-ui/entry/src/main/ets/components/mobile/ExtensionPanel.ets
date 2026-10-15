@@ -8,7 +8,15 @@
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
 import { BrowserCommandPayload, ExtensionActionItem, ExtensionDetailsEvent, ExtensionSiteAccess } from 'engine';
-import { GlassPage, glassHeaderInsetVp } from './GlassPage';
+import { glassHeaderInsetVp } from './GlassPage';
+import {
+  HdsNavigation,
+  HdsNavigationTitleMode,
+  HdsNavDestination,
+  HdsNavDestinationTitleMode,
+  hdsMaterial,
+  ScrollEffectType
+} from '@kit.UIDesignKit';
 
 // extensionInstallFailed 没有官方接口，按契约字段从事件上取。
 interface ExtensionNoticePayload {
@@ -340,24 +348,60 @@ export struct ExtensionPanel {
     this.onCommand({ command: 'getExtensionDetails', requestId: this.requestSeq, id: item.id });
   }
 
-  // 详情 → 列表：pop 路由栈回到列表（系统自动反向转场）。
+  // 详情 → 列表：pop 路由栈回到列表（系统自动反向转场，原生无回弹）。
   private closeDetail(): void {
     this.page = 'list';
     this.pageTitle = '扩展程序';
-    if (this.pathStack.size() > 1) {
+    if (this.pathStack.size() > 0) {
       this.pathStack.pop();
     }
   }
 
-  // navDestination('detail') 的内容构建器（原生 NavDestination，系统转场）。
-  // 不 hideTitleBar —— 复用 GlassPage 的 HDS 标题栏（标题随 this.pageTitle 显示扩展名）。
+  // navDestination('detail') 的内容构建器：必须作为本组件成员 @Builder 直接被
+  // HdsNavigation.navDestination 引用（编译器静态内联）—— 经 prop/箭头中转会
+  // 导致 builder UI 不组装 → 白屏。子页用 HdsNavDestination 并带自己的 HDS
+  // 标题栏（avoidLayoutSafeArea 处理状态栏避让），系统走原生鸿蒙层级转场。
   @Builder
-  private buildDetailDestination(name: string, param: Object): void {
-    NavDestination() {
-      this.DetailView()
+  private buildDetailDestination(_name: string, _param: Object): void {
+    HdsNavDestination() {
+      Column() {
+        this.DetailView()
+      }
+      .width('100%')
+      .height('100%')
+      .padding({ left: 16, right: 16 })
     }
     .width('100%')
     .height('100%')
+    .titleBar({
+      content: {
+        title: { mainTitle: this.detailName },
+        backIcon: {
+          icon: $r('app.media.aura_back'),
+          isEnabled: true,
+          action: (): void => {
+            this.closeDetail();
+          }
+        }
+      },
+      style: {
+        scrollEffectOpts: {
+          enableScrollEffect: true,
+          scrollEffectType: ScrollEffectType.GRADIENT_BLUR
+        },
+        systemMaterialEffect: {
+          materialType: hdsMaterial.MaterialType.ADAPTIVE,
+          materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+        }
+      },
+      avoidLayoutSafeArea: true,
+      enableComponentSafeArea: false
+    })
+    .titleMode(HdsNavDestinationTitleMode.MINI)
+    .hideBackButton(false)
+    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+    .bindToScrollable([this.detailScroller])
+    .backgroundColor($r('app.color.page_background'))
     .onBackPressed((): boolean => {
       this.closeDetail();
       return true;
@@ -973,31 +1017,55 @@ export struct ExtensionPanel {
   private detailScroller: Scroller = new Scroller();
 
   build() {
-    GlassPage({
-      title: this.pageTitle,
-      scrollers: [this.listScroller, this.detailScroller],
-      // 开发者模式开关进标题栏右侧（桌面 chrome://extensions 同款位置）。
-      titleBarAction: (): void => this.DeveloperModeToggle(),
-      // 返回优先 pop 路由栈；栈只剩列表时才关整个面板。
-      onBack: (): void => {
-        if (this.pathStack.size() > 1) {
-          this.closeDetail();
-        } else {
-          this.onBack();
+    // 1.0.157：面板自己持有 HdsNavigation + NavPathStack，详情页经由 navDestination
+    // 直接引用本组件成员 buildDetailDestination 推入 —— 系统默认走原生鸿蒙7层级转场
+    // （干净减速、零过冲、无回弹，与 Aira 一致，无需任何额外转场配置）。
+    // 列表页在底层保持挂载，返回时自动恢复滚动位置。
+    HdsNavigation(this.pathStack) {
+      Stack({ alignContent: Alignment.TopStart }) {
+        Column() {
+          this.ListView()
         }
-      },
-      // 1.0.157：玻璃外壳自身 HdsNavigation 承载子页路由，系统走原生鸿蒙7层级转场
-      //（干净减速、零过冲、无回弹）。详情作为 navDestination 推入，列表页在底层保持
-      // 挂载，返回时自动恢复滚动位置（无需常驻挂载伪红线）。
-      pathStack: this.pathStack,
-      navDestinationBuilder: this.buildDetailDestination
-    }) {
-      Column() {
-        this.ListView()
+        .width('100%')
+        .height('100%')
       }
       .width('100%')
       .height('100%')
-      .padding({ left: 16, right: 16 })
     }
+    .titleBar({
+      content: {
+        title: { mainTitle: '扩展程序' },
+        backIcon: {
+          icon: $r('app.media.aura_back'),
+          isEnabled: true,
+          action: (): void => {
+            this.onBack();
+          }
+        },
+        menu: undefined,
+        stackBuilder: (): void => this.DeveloperModeToggle()
+      },
+      style: {
+        scrollEffectOpts: {
+          enableScrollEffect: true,
+          scrollEffectType: ScrollEffectType.GRADIENT_BLUR
+        },
+        systemMaterialEffect: {
+          materialType: hdsMaterial.MaterialType.ADAPTIVE,
+          materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+        }
+      },
+      avoidLayoutSafeArea: true,
+      enableComponentSafeArea: false
+    })
+    .titleMode(HdsNavigationTitleMode.MINI)
+    .hideBackButton(false)
+    .mode(NavigationMode.Stack)
+    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+    .bindToScrollable([this.listScroller])
+    .backgroundColor($r('app.color.page_background'))
+    .navDestination(this.buildDetailDestination)
+    .width('100%')
+    .height('100%')
   }
 }
