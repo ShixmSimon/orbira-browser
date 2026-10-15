@@ -663,9 +663,9 @@ export struct ExtensionPanel {
           .clip(true)
 
           // 「加载未打包」去向：1.0.147 装机反馈——zip 安装已覆盖分发场景，
-          // 调试用目录加载走「完整扩展页」里的桌面版入口（那里本来就有），
+          // 调试用目录加载走「原生扩展页」里的桌面版入口（那里本来就有），
           // 原生页不再单列一行。引擎侧 loadUnpackedExtension 命令保留，
-          // 完整扩展页照常可用。
+          // 原生扩展页照常可用。
           Text('更多')
             .fontSize(13)
             .fontColor($r('app.color.text_secondary'))
@@ -674,17 +674,27 @@ export struct ExtensionPanel {
 
           Column() {
             Row({ space: 12 }) {
-              // 外跳箭头而非齿轮：这一行打开的是完整桌面扩展页（跳出去），
+              // 外跳箭头而非齿轮：这一行打开的是内核自带扩展管理界面（跳出去），
               // 齿轮是「设置项」的语义，放这儿词不达意（装机反馈）。
               Image($r('app.media.aura_open_in_new'))
                 .width(22)
                 .height(22)
                 .fillColor($r('app.color.icon_primary'))
-              Text('完整扩展页')
-                .fontSize(16)
-                .fontWeight(FontWeight.Medium)
-                .fontColor($r('app.color.text_primary'))
-              Blank()
+
+              // 1.0.154：主标题改「原生扩展页」，副标题说明它就是内核自带界面，
+              // 与「从文件安装」同一行式（主 16 / 副 12）保持视觉一致。
+              Column({ space: 3 }) {
+                Text('原生扩展页')
+                  .fontSize(16)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor($r('app.color.text_primary'))
+                Text('打开 Chromium 内核扩展管理界面')
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_secondary'))
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
               Image($r('app.media.aura_chevron'))
                 .width(16)
                 .height(16)
@@ -692,8 +702,9 @@ export struct ExtensionPanel {
                 .opacity(0.65)
             }
             .width('100%')
-            .height(56)
-            .padding({ left: 16, right: 16 })
+            // 双行文案（主 16 + 副 12）：不写死 56，用上下 padding 撑开，
+            // 与「从文件安装」一致的留白节奏，避免副标题被裁。
+            .padding({ left: 16, right: 16, top: 10, bottom: 10 })
             .onClick(() => {
               this.openMoreSettings();
             })
