@@ -217,6 +217,9 @@ export interface BrowserRuntimeEvent {
     'recentlyClosed' | 'recentlyClosedChanged' | 'extensionActions' |
     'recentBookmarks' |
     'extensionActionsChanged' | 'developerMode' |
+    // 扩展「重新载入」的收到回执：引擎重载是异步的，先回执、再由
+    // extensionActionsChanged 报告是否真正落地。
+    'extensionReloadReceived' |
     'sitePermissionCancelled' |
     'browserControlsRatio' | 'findResult' | 'pageText' |
     'contextMenuRequested' | 'externalUrlRequested' | 'popupBlocked' |
