@@ -6,7 +6,15 @@
  */
 import { BrowserCommandPayload, SiteSetting, SiteSettingType, SiteSettingValue } from 'engine';
 import { displayUrl } from './PanelBridge';
-import { GlassPage, glassHeaderInsetVp } from './GlassPage';
+import { glassHeaderInsetVp } from './GlassPage';
+import {
+  HdsNavigation,
+  HdsNavigationTitleMode,
+  HdsNavDestination,
+  HdsNavDestinationTitleMode,
+  hdsMaterial,
+  ScrollEffectType
+} from '@kit.UIDesignKit';
 
 interface SiteSettingsPayload {
   requestId?: number;
@@ -64,6 +72,10 @@ export struct SitePermissionsPanel {
   onClose: () => void = (): void => {};
 
   @State private page: string = 'list';
+  // 1.0.160：详情页走真路由栈（NavPathStack + HdsNavDestination），列表是
+  // Navigation 内容常驻挂载 —— 详情返回时滚动位置天然保留，转场走系统原生
+  // push-pop（同 SettingsPanel 1.0.159）。
+  private pathStack: NavPathStack = new NavPathStack();
   // 渐变模糊滚动效果按官方要求 bindToScrollable：列表与详情各一个。
   private listScroller: Scroller = new Scroller();
   private detailScroller: Scroller = new Scroller();
@@ -143,11 +155,15 @@ export struct SitePermissionsPanel {
     this.detailOrigin = origin;
     this.detailItems = [];
     this.page = 'detail';
+    this.pathStack.pushPathByName('detail', origin);
     this.refreshDetail();
   }
 
   private backToList(): void {
     this.page = 'list';
+    if (this.pathStack.size() > 0) {
+      this.pathStack.pop();
+    }
     this.reloadList();
   }
 
@@ -203,33 +219,14 @@ export struct SitePermissionsPanel {
     return count;
   }
 
-  // 标题栏（含圆形玻璃返回钮）交给 GlassPage：标题栏要落在 Navigation 标题栏
-  // 区域，HarmonyOS 7 之后沉浸光感才在自绘圆钮上生效。
-  private titleText(): string {
-    return this.page === 'detail' ? originHost(this.detailOrigin) : '网站权限';
-  }
-
-  private handleTitleBack(): void {
-    if (this.page === 'detail') {
-      this.backToList();
-    } else {
-      this.onBack();
-    }
-  }
-
   build() {
-    GlassPage({
-      title: this.titleText(),
-      scrollers: [this.listScroller, this.detailScroller],
-      onBack: (): void => {
-        this.handleTitleBack();
-      }
-    }) {
-    Column() {
-      // 列表/详情两个视图**常驻挂载**、用可见性切换：if/else 换分支会销毁重建，
-      // 从详情返回列表时滚动位置归零。Visibility.None 保留实例，滚动位置留住。
+    // 1.0.160：弃 GlassPage，自持 HdsNavigation + NavPathStack（同
+    // SettingsPanel 1.0.159）。列表是 Navigation 内容、常驻挂载 —— 详情
+    // 返回时滚动位置天然保留（旧 Visibility 双视图方案保实例但转场是硬切）；
+    // 详情作为 NavDestination 推入，走系统原生 push-pop。
+    HdsNavigation(this.pathStack) {
       Column() {
-      if (this.origins.length === 0) {
+        if (this.origins.length === 0) {
           Column() {
             Text(this.loading ? '加载中…' : '还没有单独设置过权限的网站')
               .fontSize(15)
@@ -303,8 +300,55 @@ export struct SitePermissionsPanel {
       }
       .width('100%')
       .height('100%')
-      .visibility(this.page === 'list' ? Visibility.Visible : Visibility.None)
+      .padding({ left: 16, right: 16 })
+      .backgroundColor($r('app.color.page_background'))
+    }
+    .titleBar({
+      content: {
+        title: { mainTitle: '网站权限' },
+        backIcon: {
+          icon: $r('app.media.aura_back'),
+          isEnabled: true,
+          action: (): void => {
+            this.onBack();
+          }
+        },
+        menu: undefined
+      },
+      style: {
+        // 官方渐变模糊滚动效果 + 沉浸光感材质（与 GlassPage 同一套）。
+        scrollEffectOpts: {
+          enableScrollEffect: true,
+          scrollEffectType: ScrollEffectType.GRADIENT_BLUR
+        },
+        systemMaterialEffect: {
+          materialType: hdsMaterial.MaterialType.ADAPTIVE,
+          materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+        }
+      },
+      avoidLayoutSafeArea: true,
+      enableComponentSafeArea: false
+    })
+    .titleMode(HdsNavigationTitleMode.MINI)
+    .hideBackButton(false)
+    .mode(NavigationMode.Stack)
+    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+    .bindToScrollable([this.listScroller, this.detailScroller])
+    .backgroundColor($r('app.color.page_background'))
+    .navDestination(this.buildDetailDestination)
+    .width('100%')
+    .height('100%')
+  }
 
+  // 1.0.160：详情页 destination（真路由栈推入）。
+  @Builder
+  private buildDetailDestination(name: string, _param: Object): void {
+    if (name !== 'detail') {
+      HdsNavDestination() {
+        Column().width('100%').height('100%')
+      }
+    } else {
+      HdsNavDestination() {
       Column() {
         Scroll(this.detailScroller) {
           Column() {
@@ -384,12 +428,44 @@ export struct SitePermissionsPanel {
       }
       .width('100%')
       .height('100%')
-      .visibility(this.page === 'detail' ? Visibility.Visible : Visibility.None)
+      .padding({ left: 16, right: 16 })
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 16, right: 16 })
+    .titleBar({
+      content: {
+        title: { mainTitle: originHost(this.detailOrigin) },
+        backIcon: {
+          icon: $r('app.media.aura_back'),
+          isEnabled: true,
+          action: (): void => {
+            this.backToList();
+          }
+        },
+        menu: undefined
+      },
+      style: {
+        scrollEffectOpts: {
+          enableScrollEffect: true,
+          scrollEffectType: ScrollEffectType.GRADIENT_BLUR
+        },
+        systemMaterialEffect: {
+          materialType: hdsMaterial.MaterialType.ADAPTIVE,
+          materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+        }
+      },
+      avoidLayoutSafeArea: true,
+      enableComponentSafeArea: false
+    })
+    .titleMode(HdsNavDestinationTitleMode.MINI)
+    .hideBackButton(false)
+    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+    .bindToScrollable([this.detailScroller])
     .backgroundColor($r('app.color.page_background'))
+    .onBackPressed((): boolean => {
+      this.backToList();
+      return true;
+    })
     }
   }
 }

@@ -597,11 +597,15 @@ export struct ExtensionPanel {
 
   @Builder
   private ExtensionIcon(item: ExtensionActionItem, size: number) {
+    // 1.0.160：停用（开发者模式关闭）的扩展图标置灰 + 压暗 —— 与桌面 Chrome
+    // chrome://extensions 的停用态一致；此前停用也显示全彩图标，分不清启停。
     if (iconSource(item).length > 0) {
       Image(iconSource(item))
         .width(size)
         .height(size)
         .borderRadius(size / 4)
+        .grayscale(item.userEnabled ? 0 : 1)
+        .opacity(item.userEnabled ? 1 : 0.45)
     } else {
       Text(extensionInitial(item.name))
         .width(size)
@@ -612,6 +616,7 @@ export struct ExtensionPanel {
         .fontWeight(FontWeight.Medium)
         .fontColor($r('app.color.text_primary'))
         .textAlign(TextAlign.Center)
+        .opacity(item.userEnabled ? 1 : 0.45)
     }
   }
 

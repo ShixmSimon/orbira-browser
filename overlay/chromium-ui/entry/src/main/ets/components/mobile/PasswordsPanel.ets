@@ -12,7 +12,15 @@ import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { userAuth } from '@kit.UserAuthenticationKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
-import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
+import { glassBottomInsetVp, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
+import {
+  HdsNavigation,
+  HdsNavigationTitleMode,
+  HdsNavDestination,
+  HdsNavDestinationTitleMode,
+  hdsMaterial,
+  ScrollEffectType
+} from '@kit.UIDesignKit';
 import { promptAction, curves } from '@kit.ArkUI';
 import { MoreMenuDialog, MoreMenuItemSpec } from './MoreMenuDialog';
 import {
@@ -74,6 +82,10 @@ export struct PasswordsPanel {
   @State private verifyError: string = '';
   @State private loading: boolean = true;
   @State private view: string = 'list';
+  // 1.0.160：详情页走真路由栈（NavPathStack + HdsNavDestination），列表是
+  // Navigation 内容常驻挂载 —— 详情返回时列表滚动位置天然保留，转场走系统
+  // 原生 push-pop（同 SettingsPanel 1.0.159 / ExtensionPanel 1.0.157）。
+  private pathStack: NavPathStack = new NavPathStack();
   @State private editId: string = '';
   // 详情页两态：查看（行式 + 复制）默认；编辑单独进入。
   @State private detailMode: string = 'view';
@@ -214,10 +226,10 @@ export struct PasswordsPanel {
       const command = String(payload.command ?? '');
       if (payload.ok === true) {
         if (command === 'deletePassword') {
-          this.view = 'list';
+          this.backToList();
           this.reload();
         } else if (command === 'updatePassword') {
-          this.view = 'list';
+          this.backToList();
           this.reload();
         }
         return;
@@ -486,6 +498,17 @@ export struct PasswordsPanel {
     this.usernameTouched = false;
     this.passwordTouched = false;
     this.noteTouched = false;
+    this.pathStack.pushPathByName('detail', item.id);
+  }
+
+  // 1.0.160：回列表 = 清详情态 + 弹掉详情 destination。删除/保存成功的引擎
+  // 回包也走这里（onResultPayload）—— 只置 view='list' 不弹栈的话，详情页
+  // 还压在列表上面，返回键会再次进详情。
+  private backToList(): void {
+    this.view = 'list';
+    if (this.pathStack.size() > 0) {
+      this.pathStack.pop();
+    }
   }
 
   private closeDetail(): void {
@@ -494,7 +517,7 @@ export struct PasswordsPanel {
       this.detailMode = 'view';
       return;
     }
-    this.view = 'list';
+    this.backToList();
     this.editId = '';
     this.editPassword = '';
     this.editNote = '';
@@ -1450,71 +1473,156 @@ export struct PasswordsPanel {
     }
   }
 
+  // 1.0.160：弃 GlassPage，面板自持 HdsNavigation + NavPathStack（同
+  // SettingsPanel 1.0.159 / ExtensionPanel 1.0.157 套路）。列表是 Navigation
+  // 内容、常驻挂载 —— 详情返回时滚动位置天然保留；详情作为 NavDestination
+  // 推入，系统默认走原生鸿蒙层级转场（干净减速、零过冲、无回弹）。
   build() {
-    // 标题栏放进 Navigation（HarmonyOS 7 之后只有 Navigation 标题栏 / 底部
-    // TabBar / 弹窗类还在沉浸光感的生效范围内）。右侧还有「更多」，故不用
-    // GlassPage，自己包一层。
-    GlassPage({
-      title: this.selectMode
-        ? `已选 ${this.selectedPwdIds.length} 项`
-        : (this.view === 'detail' ? '密码详情' : '密码'),
-      scrollers: [this.listScroller, this.detailScroller],
-      menus: {
-        value: this.selectMode
-          ? [
-            {
-              content: {
-                icon: $r('app.media.aura_close'),
-                label: '取消',
-                action: (): void => {
-                  this.exitPwdSelect();
-                }
-              }
-            }
-          ]
-          : [
-            {
-              content: {
-                icon: $r('app.media.aura_more'),
-                label: '更多操作',
-                action: (): void => {
-                  this.showMoreSheet();
-                }
-              }
-            }
-          ]
-      },
-      onBack: (): void => {
-        if (this.selectMode) {
-          this.exitPwdSelect();
-        } else if (this.view === 'detail') {
-          this.closeDetail();
-        } else {
-          this.onBack();
+    HdsNavigation(this.pathStack) {
+      Stack({ alignContent: Alignment.TopStart }) {
+        Column() {
+          if (!this.verified) {
+            this.GateView()
+          } else {
+            this.ListView()
+          }
         }
-      }
-    }) {
-    // body 包 Stack：导入模式弹窗等悬浮层挂这里（viewport 固定，遮罩盖满全屏）。
-    Stack({ alignContent: Alignment.TopStart }) {
-    Column() {
-      if (!this.verified) {
-        this.GateView()
-      } else if (this.view === 'detail') {
-        this.DetailView()
-      } else {
-        this.ListView()
-      }
-    }
-    .width('100%')
-    .height('100%')
-    .padding({ left: 16, right: 16 })
-    .backgroundColor($r('app.color.page_background'))
+        .width('100%')
+        .height('100%')
+        .padding({ left: 16, right: 16 })
+        .backgroundColor($r('app.color.page_background'))
 
-    this.ImportDialog()
-    this.BatchActionBar()
+        // 导入模式弹窗 / 批量操作栏：悬浮层挂列表这层（viewport 固定）。
+        this.ImportDialog()
+        this.BatchActionBar()
+      }
+      .width('100%')
+      .height('100%')
     }
+    .titleBar({
+      content: {
+        title: { mainTitle: this.selectMode ? `已选 ${this.selectedPwdIds.length} 项` : '密码' },
+        backIcon: {
+          icon: $r('app.media.aura_back'),
+          isEnabled: true,
+          action: (): void => {
+            // 多选态返回先退出多选；否则退出整个密码页（详情的返回由
+            // destination 自己的返回钮 / onBackPressed 处理）。
+            if (this.selectMode) {
+              this.exitPwdSelect();
+            } else {
+              this.onBack();
+            }
+          }
+        },
+        menu: this.selectMode
+          ? {
+            value: [
+              {
+                content: {
+                  icon: $r('app.media.aura_close'),
+                  label: '取消',
+                  action: (): void => {
+                    this.exitPwdSelect();
+                  }
+                }
+              }
+            ]
+          }
+          : {
+            value: [
+              {
+                content: {
+                  icon: $r('app.media.aura_more'),
+                  label: '更多操作',
+                  action: (): void => {
+                    this.showMoreSheet();
+                  }
+                }
+              }
+            ]
+          }
+      },
+      style: {
+        // 官方渐变模糊滚动效果 + 沉浸光感材质（与 GlassPage 同一套）。
+        scrollEffectOpts: {
+          enableScrollEffect: true,
+          scrollEffectType: ScrollEffectType.GRADIENT_BLUR
+        },
+        systemMaterialEffect: {
+          materialType: hdsMaterial.MaterialType.ADAPTIVE,
+          materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+        }
+      },
+      avoidLayoutSafeArea: true,
+      enableComponentSafeArea: false
+    })
+    .titleMode(HdsNavigationTitleMode.MINI)
+    .hideBackButton(false)
+    .mode(NavigationMode.Stack)
+    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+    .bindToScrollable([this.listScroller, this.detailScroller])
+    .backgroundColor($r('app.color.page_background'))
+    .navDestination(this.buildPasswordDestination)
     .width('100%')
     .height('100%')
+  }
+
+  // 1.0.160：详情页 destination（真路由栈推入）。编辑态是页内状态
+  // （detailMode），返回先回查看态、不丢详情；查看态返回才弹栈回列表。
+  @Builder
+  private buildPasswordDestination(name: string, _param: Object): void {
+    if (name !== 'detail') {
+      HdsNavDestination() {
+        Column().width('100%').height('100%')
+      }
+    } else {
+      HdsNavDestination() {
+        Column() {
+          this.DetailView()
+        }
+        .width('100%')
+        .height('100%')
+        .padding({ left: 16, right: 16 })
+      }
+      .width('100%')
+      .height('100%')
+      .titleBar({
+        content: {
+          title: { mainTitle: '密码详情' },
+          backIcon: {
+            icon: $r('app.media.aura_back'),
+            isEnabled: true,
+            action: (): void => {
+              this.closeDetail();
+            }
+          },
+          // 详情的「更多操作」菜单本就带 view!=='list' 守卫（死按钮），
+          // 这里不再挂。
+          menu: undefined
+        },
+        style: {
+          scrollEffectOpts: {
+            enableScrollEffect: true,
+            scrollEffectType: ScrollEffectType.GRADIENT_BLUR
+          },
+          systemMaterialEffect: {
+            materialType: hdsMaterial.MaterialType.ADAPTIVE,
+            materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+          }
+        },
+        avoidLayoutSafeArea: true,
+        enableComponentSafeArea: false
+      })
+      .titleMode(HdsNavDestinationTitleMode.MINI)
+      .hideBackButton(false)
+      .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+      .bindToScrollable([this.detailScroller])
+      .backgroundColor($r('app.color.page_background'))
+      .onBackPressed((): boolean => {
+        this.closeDetail();
+        return true;
+      })
     }
   }
 }

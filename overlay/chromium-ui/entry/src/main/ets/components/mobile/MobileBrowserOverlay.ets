@@ -394,6 +394,13 @@ export struct MobileBrowserOverlay {
   // 面板内二级切换（设置→扩展程序/密码…）的内容层位移方向：±1 = 从右/左
   // 滑入，0 = 就位。见 switchPanel。
   @State private panelContentShift: number = 0;
+  // 1.0.160：常驻挂载 + 转场旧页。visitedPages = 访问过的面板（不卸载）；
+  // outgoingPage = 跨面板转场期间移出的旧页（parallax + 变暗），收尾清空。
+  @State private visitedPages: string[] = [];
+  @State private outgoingPage: string = '';
+  // 转场方向：true = 前进（push，新页整屏滑入）；false = 后退（pop，旧页整屏
+  // 滑出、新页 parallax 揭示）。旧页位移/变暗方向由它决定。
+  @State private panelSwitchForward: boolean = true;
   // 关闭动画的作废令牌：动画期间再次打开面板时，旧的卸载定时器不再生效。
   private panelCloseToken: number = 0;
   // 页面切换柔和过渡帘幕（2026-10-10）：URL 变化（地址栏提交搜索 / 点链接 /
@@ -2767,14 +2774,13 @@ export struct MobileBrowserOverlay {
   // The shell's own pages (bookmarks / history / downloads / settings /
   // extensions) are full-screen pages — no sheet around them,
   // which also removes the sheet's top gap on those pages.
+  // 单个面板槽位（1.0.160）：按 page 渲染对应面板，并按角色（当前页 / 转场
+  // 中的旧页 / 闲置）施加可见性、位移、变暗与层级。常驻挂载 + 可见性切换替代
+  // if/else 销毁重建——跨面板切换时各面板滚动位置与已加载数据保留。
   @Builder
-  private PanelLayer() {
+  private PanelSlot(page: string) {
     Column() {
-      // 面板内容层：二级切换（设置→扩展程序/密码…）的方向性滑入只作用在这一层，
-      // 只搬内容、不搬整屏 —— 切换途中不会露出底下的浏览器。见 switchPanel。
-      // （内部 if/else 链保持原缩进，避免大范围重排。）
-      Column() {
-      if (this.panelPage === 'bookmarks') {
+      if (page === 'bookmarks') {
         BookmarksPanel({
           currentUrl: this.browserState.url,
           currentTitle: this.browserState.title,
@@ -2788,7 +2794,7 @@ export struct MobileBrowserOverlay {
             this.closePanel();
           }
         })
-      } else if (this.panelPage === 'history') {
+      } else if (page === 'history') {
         HistoryPanel({
           onCommand: (command: BrowserCommandPayload): void => {
             this.issueCommand(command);
@@ -2800,7 +2806,7 @@ export struct MobileBrowserOverlay {
             this.closePanel();
           }
         })
-      } else if (this.panelPage === 'downloads') {
+      } else if (page === 'downloads') {
         DownloadsPanel({
           onCommand: (command: BrowserCommandPayload): void => {
             this.issueCommand(command);
@@ -2812,7 +2818,7 @@ export struct MobileBrowserOverlay {
             this.closePanel();
           }
         })
-      } else if (this.panelPage === 'recent') {
+      } else if (page === 'recent') {
         RecentPanel({
           onCommand: (command: BrowserCommandPayload): void => {
             this.issueCommand(command);
@@ -2824,7 +2830,7 @@ export struct MobileBrowserOverlay {
             this.closePanel();
           }
         })
-      } else if (this.panelPage === 'passwords') {
+      } else if (page === 'passwords') {
         PasswordsPanel({
           onCommand: (command: BrowserCommandPayload): void => {
             this.issueCommand(command);
@@ -2836,7 +2842,7 @@ export struct MobileBrowserOverlay {
             this.closePanel();
           }
         })
-      } else if (this.panelPage === 'sitepermissions') {
+      } else if (page === 'sitepermissions') {
         SitePermissionsPanel({
           onCommand: (command: BrowserCommandPayload): void => {
             this.issueCommand(command);
@@ -2848,7 +2854,7 @@ export struct MobileBrowserOverlay {
             this.closePanel();
           }
         })
-      } else if (this.panelPage === 'settings') {
+      } else if (page === 'settings') {
         SettingsPanel({
           onCommand: (command: BrowserCommandPayload): void => {
             this.issueCommand(command);
@@ -2878,7 +2884,7 @@ export struct MobileBrowserOverlay {
             this.requestAddHomeTile();
           }
         })
-      } else if (this.panelPage === 'extensions') {
+      } else if (page === 'extensions') {
         ExtensionPanel({
           currentUrl: this.browserState.url,
           onCommand: (command: BrowserCommandPayload): void => {
@@ -2897,16 +2903,95 @@ export struct MobileBrowserOverlay {
           }
         })
       }
+    }
+    .width('100%')
+    .height('100%')
+    .visibility(this.panelSlotVisible(page) ? Visibility.Visible : Visibility.None)
+    .translate({ x: this.panelSlotShiftX(page) })
+    .opacity(this.panelSlotDim(page))
+    .zIndex(this.panelPage === page ? 2 : (this.outgoingPage === page ? 1 : 0))
+  }
+
+  // 1.0.160：常驻挂载标记——访问过的面板不卸载（否则跨面板返回后滚动归顶、
+  // 数据重载）。仅在面板层关闭（panelPage='none'）时随层整体卸载。
+  private markVisited(page: string): void {
+    if (this.visitedPages.indexOf(page) < 0) {
+      this.visitedPages = this.visitedPages.concat([page]);
+    }
+  }
+
+  private pageMounted(page: string): boolean {
+    return this.visitedPages.indexOf(page) >= 0;
+  }
+
+  private panelSlotVisible(page: string): boolean {
+    return this.panelPage === page || this.outgoingPage === page;
+  }
+
+  // 位移：当前页 = 内容层位移（±1 → 0）；转场中的旧页 = parallax。前进
+  // （push）：新页整屏宽滑入、旧页左移 25% 屏宽并变暗；后退（pop）：旧页
+  // 整屏右移出让、新页只做 25% parallax 揭示——模仿原生层级转场。
+  private panelSlotShiftX(page: string): number {
+    const width: number = this.panelWidthVp();
+    const progress: number = Math.abs(this.panelContentShift);
+    if (this.panelPage === page) {
+      return this.panelContentShift * width * (this.panelSwitchForward ? 1 : 0.25);
+    }
+    if (this.outgoingPage === page) {
+      return this.panelSwitchForward
+        ? (progress - 1) * 0.25 * width
+        : (1 - progress) * width;
+    }
+    return 0;
+  }
+
+  // 变暗：只作用于转场中的旧面板（前进淡到 0.75、后退淡到 0.8），保层次。
+  private panelSlotDim(page: string): number {
+    if (this.panelPage === page || this.outgoingPage !== page) {
+      return 1;
+    }
+    return 1 - (1 - Math.abs(this.panelContentShift)) *
+      (this.panelSwitchForward ? 0.25 : 0.2);
+  }
+
+
+  @Builder
+  private PanelLayer() {
+    Column() {
+      // 1.0.160：各面板**常驻挂载**（首次访问时挂载，之后只切可见性）。
+      // 旧结构 if/else 单分支：跨面板切换（设置→扩展程序/密码/网站权限）会
+      // 销毁旧面板重建新面板——设置页滚到中段进二级页再返回**滚回顶端**，
+      // 且每次进网站权限都重新「加载中…」（装机录屏实锤）。转场期间旧面板
+      // 不卸载：parallax 移出 + 变暗、新页滑入，模仿原生 push-pop。
+      // 槽位逻辑（可见性/位移/变暗/层级）见 PanelSlot。
+      Stack({ alignContent: Alignment.TopStart }) {
+        if (this.pageMounted('bookmarks')) {
+          this.PanelSlot('bookmarks')
+        }
+        if (this.pageMounted('history')) {
+          this.PanelSlot('history')
+        }
+        if (this.pageMounted('downloads')) {
+          this.PanelSlot('downloads')
+        }
+        if (this.pageMounted('recent')) {
+          this.PanelSlot('recent')
+        }
+        if (this.pageMounted('passwords')) {
+          this.PanelSlot('passwords')
+        }
+        if (this.pageMounted('sitepermissions')) {
+          this.PanelSlot('sitepermissions')
+        }
+        if (this.pageMounted('settings')) {
+          this.PanelSlot('settings')
+        }
+        if (this.pageMounted('extensions')) {
+          this.PanelSlot('extensions')
+        }
       }
       .width('100%')
       .height('100%')
-      // 1.0.153：二级切换与「菜单里打开面板」对齐——位移 = 整屏宽、弹簧
-      // springMotion(0.34, 0.84)，与 openPanel 的 panelShift 同一套参数。
-      // 此前 0.22 → 0.62 屏宽都仍偏小，用户反馈"幅度很小、没和菜单对齐"。
-      // 淡出只留 0.2 保一点层次（菜单打开是纯位移，不带淡入）。
-      // 注：中途露出的是本层底下的 page_background（面板底色），不是浏览器。
-      .translate({ x: this.panelContentShift * this.panelWidthVp() })
-      .opacity(1 - Math.abs(this.panelContentShift) * 0.2)
     }
     .width('100%')
     .height('100%')
@@ -3978,6 +4063,9 @@ export struct MobileBrowserOverlay {
     this.menuCardVisible = false;
     this.sheetPage = 'tabs';
     this.extensionsFromSettings = false;
+    // 1.0.160：标记已访问（常驻挂载）+ 清转场旧页引用。
+    this.markVisited(page);
+    this.outgoingPage = '';
     // 面板开合动效：先落到"屏外右侧"，让挂载首帧就渲染在屏外，再由 PanelLayer
     // 的 onAppear 起弹簧动画滑入 —— 既不会闪一帧，也不受首帧重布局影响。
     const wasOpen: boolean = this.panelPage !== 'none';
@@ -4011,8 +4099,10 @@ export struct MobileBrowserOverlay {
     }, 420);
   }
 
-  // 面板内二级切换（设置→扩展程序/网站权限/密码、扩展→设置返回…）：内容层
-  // 按方向滑入（forward=true 从右侧，false 从左侧）+ 轻淡入，250ms 弹簧收尾。
+  // 面板内二级切换（设置→扩展程序/网站权限/密码、扩展→设置返回…）。
+  // 1.0.160：改常驻挂载 + 双层视差转场（旧页 parallax 移出并变暗、新页滑入），
+  // 模仿原生 push-pop。旧实现 if/else 销毁重建：跨面板返回后设置页滚动归顶、
+  // 每次进网站权限都重新「加载中…」（装机录屏实锤）。槽位逻辑见 PanelSlot。
   private switchPanel(page: string, forward: boolean): void {
     if (this.panelPage === 'none') {
       this.openPanel(page);
@@ -4021,12 +4111,16 @@ export struct MobileBrowserOverlay {
     if (this.panelPage === page) {
       return;
     }
+    this.markVisited(page);
+    this.panelSwitchForward = forward;
+    this.outgoingPage = this.panelPage;
     this.panelContentShift = forward ? 1 : -1;
     this.panelPage = page;
     setTimeout((): void => {
       // 与 openPanel 的 panelShift 同一条弹簧（0.34 / 0.84），观感一致。
       animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
         this.panelContentShift = 0;
+        this.outgoingPage = '';
       });
     }, 32);
   }
