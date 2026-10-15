@@ -181,10 +181,25 @@ export struct ExtensionPanel {
       }
     } else if (kind === 'extensionInstallFailed') {
       this.installing = false;
-      const message = String(payload.message ?? '');
+      const reason = String(payload.reason ?? '');
+      const raw = String(payload.message ?? '');
+      // 按 reason 说人话：引擎回的 reason 是机器名，兜底文案「扩展没有执行
+      // 这个操作」对读者什么忙都帮不上（装机反馈）。
+      let message: string;
+      if (reason === 'notCrx') {
+        message = '只支持 .crx 或 .zip 文件。';
+      } else if (reason === 'other') {
+        message = '请先打开一个网页，再安装扩展。';
+      } else if (reason === 'notFound') {
+        message = '文件不存在或已被移走。';
+      } else if (reason === 'loadUnpackedFailed') {
+        message = raw.length > 0 ? raw : '这个目录加载不了，确认里边有 manifest.json。';
+      } else {
+        message = raw.length > 0 ? raw : '无法从该文件安装扩展。';
+      }
       AlertDialog.show({
         title: '安装失败',
-        message: message.length > 0 ? message : '无法从该文件安装扩展。',
+        message: message,
         confirm: {
           value: '好的',
           action: (): void => {
@@ -195,10 +210,31 @@ export struct ExtensionPanel {
       // 安装类命令失败也要解除「正在安装」：loadUnpackedExtension 被拒
       // （developerModeOff / noManifest 等）走的是这条回包。
       this.installing = false;
-      const message = String(payload.message ?? '');
+      const reason = String(payload.reason ?? '');
+      const raw = String(payload.message ?? '');
+      let message: string;
+      if (reason === 'developerModeOff') {
+        message = '请先打开右上角的「开发者模式」开关。';
+      } else if (reason === 'noManifest') {
+        message = '所选目录里没有 manifest.json，不是扩展目录。';
+      } else if (reason === 'badPath') {
+        message = '所选路径不合法。';
+      } else if (reason === 'notCrx') {
+        message = '只支持 .crx 或 .zip 文件。';
+      } else if (reason === 'notAllowed') {
+        message = raw.length > 0 ? raw : '当前策略不允许这个操作。';
+      } else if (reason === 'notAvailable') {
+        message = '这个系统不支持该功能。';
+      } else if (reason === 'stillDisabled') {
+        message = '扩展没能启用，请重试。';
+      } else if (reason === 'notFound') {
+        message = '扩展不存在或已被移除。';
+      } else {
+        message = raw.length > 0 ? raw : '扩展没有执行这个操作。';
+      }
       AlertDialog.show({
         title: '操作未完成',
-        message: message.length > 0 ? message : '扩展没有执行这个操作。',
+        message: message,
         confirm: {
           value: '好的',
           action: (): void => {
@@ -522,7 +558,9 @@ export struct ExtensionPanel {
 
           Column() {
             Row({ space: 12 }) {
-              Image($r('app.media.aura_import'))
+              // 加号而非下载箭头：「添加」分组里的安装入口，下载图形会让人
+              // 以为是去下载扩展（装机反馈）。
+              Image($r('app.media.aura_plus'))
                 .width(22)
                 .height(22)
                 .fillColor($r('app.color.icon_primary'))
@@ -568,7 +606,9 @@ export struct ExtensionPanel {
 
           Column() {
             Row({ space: 12 }) {
-              Image($r('app.media.chromium_settings'))
+              // 外跳箭头而非齿轮：这一行打开的是完整桌面扩展页（跳出去），
+              // 齿轮是「设置项」的语义，放这儿词不达意（装机反馈）。
+              Image($r('app.media.aura_open_in_new'))
                 .width(22)
                 .height(22)
                 .fillColor($r('app.color.icon_primary'))
