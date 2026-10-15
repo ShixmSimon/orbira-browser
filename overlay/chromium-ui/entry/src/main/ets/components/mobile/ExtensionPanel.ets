@@ -511,6 +511,13 @@ export struct ExtensionPanel {
       return;
     }
     this.onCommand({ command: 'reloadExtension', id: this.detailId });
+    // 重载成功后页面看上去纹丝不动（详情页数据不变、列表在底层看不见刷新），
+    // 没有这条提示就会被当成"点了没反应"。失败则由 extensionCommandFailed
+    // 弹"操作未完成"对话框说明原因。
+    this.getUIContext().getPromptAction().showToast({
+      message: '正在重新载入扩展…',
+      duration: 2000
+    });
   }
 
   private confirmUninstall(): void {
