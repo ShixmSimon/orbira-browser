@@ -1,5 +1,5 @@
 /*
- * 手机自绘设置页（参考外壳扩展）。
+ * 手机自绘设置页。
  * 数据流：getPrefs / getSearchEngines / getAboutInfo -> 对应事件
  * （AuraShell 转存到 'auraPanelPrefs' / 'auraPanelEngines' / 'auraPanelAbout'）。
  * setPref 成功后引擎推 prefsChanged（转存到 'auraPanelEvent'），本页据此重拉。

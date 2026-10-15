@@ -83,8 +83,8 @@ function resolveDockBarWidthVp(): number {
   return 328;
 }
 
-// dock 的底距。v11 曾照搬参考实现的钳制算法（PhoneControlsSync
-// .phoneDockBottom：min(安全区, PHONE_TOOLBAR_SAFE_MAX=16) + GAP=4，本机
+// dock 的底距。v11 曾用钳制算法
+// （min(安全区, PHONE_TOOLBAR_SAFE_MAX=16) + GAP=4，本机
 // 算得 20vp），真机用户反馈"太贴边、调回原来的位置"，已回退为原始安全区
 // 值（本机 28vp）。dock 位置、收起行程、响应区条带三处共用这一个底距。
 function resolveDockBottomMarginVp(safeVp: number): number {
@@ -412,7 +412,7 @@ export struct MobileBrowserOverlay {
   private lastNavVeilUrl: string = '';
   private navVeilTimer: number = -1;
 
-  // 1.0.72：加载进度条 —— 参数取自参考实现常量（BAR_HEIGHT=2 /
+  // 1.0.72：加载进度条 —— 参数常量（BAR_HEIGHT=2 /
   // MIN_PROGRESS=0.08 / GROW_MS=200 + EaseOut）。它只有 2vp、不覆盖任何网页
   // 内容，纯指示，因此**不会延长引擎的绘制空档**；1.0.71 用「帘幕等 loading
   // 结束再揭开」是覆盖层，盖多久就空白多久（实测把 0.45s 撑成 1.05s），已废弃。
@@ -559,8 +559,16 @@ export struct MobileBrowserOverlay {
   private onBrowserStateChanged(): void {
     // A' 面板页化：把当前 URL/标题同步进 AppStorage，供路由页（书签/扩展等）
     // 通过 @StorageLink 读取，替代原来从 overlay 直接传 @Prop 的耦合。
-    AppStorage.setOrCreate('auraCurrentUrl', this.browserState.url ?? '');
-    AppStorage.setOrCreate('auraCurrentTitle', this.browserState.title ?? '');
+    // 只在值真正变化时写入 —— 本回调随引擎状态推送触发，高频空写会白跑一遍
+    // AppStorage 的订阅比较，帧敏感期（滚动/转场）没必要。
+    const currentUrlValue: string = this.browserState.url ?? '';
+    if (((AppStorage.get('auraCurrentUrl') as string) ?? '') !== currentUrlValue) {
+      AppStorage.setOrCreate('auraCurrentUrl', currentUrlValue);
+    }
+    const currentTitleValue: string = this.browserState.title ?? '';
+    if (((AppStorage.get('auraCurrentTitle') as string) ?? '') !== currentTitleValue) {
+      AppStorage.setOrCreate('auraCurrentTitle', currentTitleValue);
+    }
     // 页面切换帘幕：顶层 URL 变化就放一次（地址栏提交 / 点链接 / 切标签 /
     // 前进后退都算）——把引擎换页那一瞬的底色空档盖成柔和过渡。
     const navUrl: string = this.browserState.url ?? '';
@@ -576,8 +584,8 @@ export struct MobileBrowserOverlay {
           this.hideAddressSuggest();
         }
         // 1.0.78：帘幕停用 —— 白色色块横向扫过在真机/录屏中被用户感知为"每切
-        // 一次出一遍白屏"（逐帧实证：白块从右向左推进、左侧露旧页残边）。对齐
-        // 参考实现的"直接切换"体验。playNavVeil 本体与 navVeil 视图保留可随时回
+        // 一次出一遍白屏"（逐帧实证：白块从右向左推进、左侧露旧页残边）。改为
+        // "直接切换"体验。playNavVeil 本体与 navVeil 视图保留可随时回
         // 滚（navVeilShift 恒为 1 = 停在屏外右侧，不可见、不参与命中）。
         // if (!goingHome && !leavingHome) {
         //   this.playNavVeil();
@@ -1232,7 +1240,7 @@ export struct MobileBrowserOverlay {
   // 返回/刷新重复，浏览态只显示锁 + 域名，点按进入编辑。
   @Builder
   // Chrome 风格 dock 分发：地址栏在顶=贴顶通宽条带（底沿贴胶囊下沿，1.0.93）；
-  // 在底=悬浮胶囊（左右留白 + 离底，参考 AirA 浏览器，1.0.93）。
+  // 在底=悬浮胶囊（左右留白 + 离底，1.0.93）。
   private GoogleDock() {
     if (this.chromeDockAtTop()) {
       this.GoogleDockTop();
@@ -1511,7 +1519,7 @@ export struct MobileBrowserOverlay {
   //  · 整条 Transparent + 按钮 Default：条带区的滑动照常下发到网页。
   // 1.0.98 曾改成「引擎预留清零 + dock 纯外壳悬浮」的浮胶囊形态，真机反馈否决
   // （「怎么把悬浮胶囊地址栏还给我改了」）——本条带回退；浮胶囊只留给底置
-  // （AirA 参考，1.0.93 定案，见 GoogleDockBottom）。
+  // （1.0.93 定案，见 GoogleDockBottom）。
   @Builder
   private GoogleDockTop() {
     Stack({ alignContent: Alignment.TopStart }) {
@@ -1543,8 +1551,8 @@ export struct MobileBrowserOverlay {
     .animation({ duration: 160, curve: Curve.FastOutSlowIn })
   }
 
-  // Chrome 底置（1.0.105 按用户两段参考视频重做）：把「现有地址栏的内容」整条搬到
-  // 下面，做成参考里那种通宽平铺条带 ——
+  // Chrome 底置（1.0.105 按用户要求重做）：把「现有地址栏的内容」整条搬到
+  // 下面，做成通宽平铺条带 ——
   //   [← 返回] [⋮ 菜单] [🔒 域名（点按=搜索框）] [↻ 刷新·停止] [标签数]
   // 与旧版的区别：①URL 不再是套在 dock 胶囊里的第二层胶囊（用户定「不要胶囊套胶囊」），
   // 就是一个 Button 包着的锁+域名，文字在条带里居中；②返回/刷新/菜单直接搬自顶栏
@@ -1685,7 +1693,7 @@ export struct MobileBrowserOverlay {
   }
 
   // 底栏中段：锁 + 域名（整块是一个 Button：阻断点穿；点按进编辑态=搜索框）。
-  // 单行居中，超长省略——对齐参考视频里「域名在条带正中」的观感。
+  // 单行居中，超长省略——呈现「域名在条带正中」的观感。
   @Builder
   private ChromeBarAddress() {
     Button({ type: ButtonType.Normal, stateEffect: false }) {
@@ -2269,8 +2277,8 @@ export struct MobileBrowserOverlay {
       .width('100%')
       .padding({ top: this.topSafeVp + 8, left: 16, right: 16 })
       // 1.0.72 加载进度条：贴在地址栏条带的**下边沿**（chrome 与网页交界的
-      // 那条线），满宽容器 + 自左向右生长的 2vp 细条 —— 形状与位置对齐
-      // 参考 LoadingBar（BAR_HEIGHT=2 / MIN_PROGRESS=0.08 / 200ms EaseOut）。
+      // 那条线），满宽容器 + 自左向右生长的 2vp 细条 —— 形状与位置取
+      // BAR_HEIGHT=2 / MIN_PROGRESS=0.08 / 200ms EaseOut。
       // 为什么不放在胶囊内部：胶囊高 40、自带 20 圆角，2vp 会被背景吃掉看不见。
       // 为什么不学 1.0.71 用帘幕：帘幕是**覆盖层**，盖多久就空白多久（实测把
       // ≈0.45s 的绘制空档撑成 ≈1.05s）。这条 2vp 细条不覆盖任何内容，只指示，
@@ -2876,7 +2884,7 @@ export struct MobileBrowserOverlay {
     // 0.84 过冲 2.8vp 不可见，0.70 → 16.6vp 露底，0.55 → 45.5vp 严重露底。
     // 宁可慢，不要弹。回弹只用于按压反馈 / 滑动过界（详见 ref/04 §3.1）。
     // 1.0.155 曾把 response 提到 0.48 求「更从容」，真机反馈不合适，1.0.156
-    // 已回退 0.34 —— 开源 Aira 的页面转场常量也是 0.34/0.84，这个值没问题，
+    // 已回退 0.34 —— 0.34/0.84 是页面转场的成熟常量，这个值没问题，
     // 手感差异来自机制（手写位移 vs 官方转场），不来自快慢。
     .translate({ x: (1 - this.panelShift) * this.panelWidthVp() + this.panelDragX })
     // 1.0.163：左边缘右滑返回手势——手指跟手右移当前页，松手过阈值走 panelBack()
@@ -3679,7 +3687,7 @@ export struct MobileBrowserOverlay {
 
   // 进无痕：手机上没有第二个渲染进程可用，先把标签存下来再用另一个 profile
   // 重启应用（引擎据此换一整套用户数据目录）。存不下就不进，免得回来时标签
-  // 全丢——参考实现也是这个取舍。
+  // 全丢——这是有意的取舍。
   private async enterIncognito(): Promise<void> {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
     if (!context) {
@@ -4245,10 +4253,10 @@ export struct MobileBrowserOverlay {
     const target = normalizeAddress(this.addressDraft);
     if (target.length > 0) {
       this.issueCommand({ command: 'navigate', url: target });
-      // Fix H（对齐参考浏览器节奏）：提交瞬间地址栏立即切回浏览态（显示新
+      // Fix H（提交节奏对齐）：提交瞬间地址栏立即切回浏览态（显示新
       // URL），键盘随之收起——这是"第 1 拍"的即时反馈；旧画面与页面切换
-      // 留给引擎（'both' 由 Fix F 延迟交还，不打扰旧画面保持）。参考浏览
-      // 器正是这样分两拍：先地址栏归位，稍后页面才切换，变化不挤在一帧。
+      // 留给引擎（'both' 由 Fix F 延迟交还，不打扰旧画面保持）。分两拍正是
+      // 目标：先地址栏归位，稍后页面才切换，变化不挤在一帧。
       this.editingAddress = false;
       this.reboundControlsAfterPaint();
     } else {
@@ -4647,13 +4655,13 @@ struct DockMaterialPlate {
     .clip(true)
   }
 
-  // 一个 tabBar 项 = 一个 dock 按钮。结构刻意与参考 DockItem 同构
-  // （反编译：Column + width('100%') + height('100%') + justifyContent
+  // 一个 tabBar 项 = 一个 dock 按钮。结构刻意与 dock 页签项同构
+  // （Column + width('100%') + height('100%') + justifyContent
   // Center），两个真机教训是这么修的：
   // ① "胶囊内图标不居中"：固定高 62 的 Button 在 HdsTabs 的槽位里会落在
-  //    偏下 ~4vp 处（像素实测），参考实现同机居中——因为它填满槽位再居中。
+  //    偏下 ~4vp 处（像素实测），修正 = 填满槽位再居中。
   // ② "点按白框"：Button 的默认按压蒙层（stateEffect）在深色下是一块
-  //    浅色矩形（按压缩小后 ≈51×50vp，与截图逐像素吻合）；参考实现的项
+  //    浅色矩形（按压缩小后 ≈51×50vp，与截图逐像素吻合）；正确做法
   //    是普通 Column，全程没有 Button/stateEffect。
   // 点光源也不要：v9 的 BORDER_CONTENT 把每个按钮点亮成一圈白色描边
   // 方框、还把整条胶囊洗白。按压反馈 = 弹簧缩放 + 材质原生触摸光感。
@@ -4772,7 +4780,7 @@ struct DockMaterialPlate {
 // DockMaterialPlate）。
 //
 // 与 DockMaterialPlate 的区别：本组件**只做底板**，五个页签项是空的（内容为
-// 透明占位），真正的按钮/地址栏由 Chrome 底置条带自己叠在上面 —— 因为参考
+// 透明占位），真正的按钮/地址栏由 Chrome 底置条带自己叠在上面 —— 因为目标
 // 布局是「左右各两枚小钮 + 中间域名」的不对称排布，Tabs 的固定均分排不下。
 // 两条必须守住的实测教训（见上方 DockMaterialPlate 注释）：
 //   ① barWidth 必须显式给，且每个页签项要有固有宽度，否则两条测量路径都会塌；

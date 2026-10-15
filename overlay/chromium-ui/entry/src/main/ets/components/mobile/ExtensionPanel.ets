@@ -1,5 +1,5 @@
 /*
- * 手机扩展程序页（参考外壳扩展）。
+ * 手机扩展程序页。
  * 契约："手机上没有能用的 chrome://extensions，外壳自己画一页"。
  * 数据流：getExtensionActions / getExtensionDetails -> 对应事件
  * （AuraShell 转存到 'auraPanelExtensions' / 'auraPanelExtensionDetails'）；
@@ -1069,7 +1069,7 @@ export struct ExtensionPanel {
   build() {
     // 1.0.157：面板自己持有 HdsNavigation + NavPathStack，详情页经由 navDestination
     // 直接引用本组件成员 buildDetailDestination 推入 —— 系统默认走原生鸿蒙7层级转场
-    // （干净减速、零过冲、无回弹，与 Aira 一致，无需任何额外转场配置）。
+    // （干净减速、零过冲、无回弹，无需任何额外转场配置）。
     // 列表页在底层保持挂载，返回时自动恢复滚动位置。
     HdsNavigation(this.pathStack) {
       Stack({ alignContent: Alignment.TopStart }) {

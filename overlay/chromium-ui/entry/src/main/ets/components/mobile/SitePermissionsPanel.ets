@@ -1,5 +1,5 @@
 /*
- * 手机"网站权限"页（参考外壳扩展）。
+ * 手机"网站权限"页。
  * getSiteSettings 列出单独设置过的网站；详情页 getSiteSettingsForOrigin
  * 逐类显示，点按在 允许→询问→禁止→默认 间切换（'default' 即删除这条单独
  * 设置）；底部可整体清除这个网站的权限和数据（resetSiteSettings）。
