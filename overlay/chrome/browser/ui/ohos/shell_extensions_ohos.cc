@@ -244,11 +244,32 @@ void Reload(gfx::AcceleratedWidget widget,
   // Chromium 自己的扩展页 reload（DeveloperPrivateReloadFunction）只检查扩展
   // 是否存在，不套 setExtensionEnabled 那套 UserMayModifySettings 校验：
   // 重载并不改变启用状态，被那道校验拦住是错的。
-  // 收到即回执：重载是异步的，先让外壳确认命令确实到了引擎（是否真正落地
-  // 由随后的 extensionActionsChanged 再确认一次）。
+  //
+  // ReloadExtension 没有返回值，而 DoReloadExtension 内部有多处**静默**
+  // return（已在重载中 / blocklisted / 既未启用又无记录路径），且重载扩展时
+  // 依赖磁盘上的安装目录仍在。所以这里绝不能无条件上报成功 —— 改为如实把
+  // 重载后的实际状态回传，让外壳能定位卡在哪一支。
   Notify(profile, "extensionReloadReceived");
+
+  extensions::ExtensionRegistry* registry =
+      extensions::ExtensionRegistry::Get(profile);
+  extensions::ExtensionPrefs* prefs = extensions::ExtensionPrefs::Get(profile);
+  const base::FilePath path = extension->path();
   extensions::ExtensionRegistrar::Get(profile)->ReloadExtension(*id);
-  Notify(profile, "extensionActionsChanged");
+
+  base::DictValue landed;
+  landed.Set("event", "extensionReloadLanded");
+  landed.Set("id", *id);
+  landed.Set("enabled",
+             registry && registry->enabled_extensions().Contains(*id));
+  landed.Set("blocked",
+             registry && (registry->blocklisted_extensions().Contains(*id) ||
+                          registry->blocked_extensions().Contains(*id)));
+  landed.Set("stuckReloading",
+             prefs && prefs->HasDisableReason(
+                          *id, extensions::disable_reason::DISABLE_RELOAD));
+  landed.Set("pathExists", base::PathExists(path));
+  DispatchAuraShellRuntimeEventToProfile(profile, landed);
 }
 
 // --- uninstallExtension. --------------------------------------------------

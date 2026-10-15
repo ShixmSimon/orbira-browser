@@ -28,6 +28,11 @@ interface PanelEventPayload {
   kind?: string;
   message?: string;
   reason?: string;
+  // extensionReloadLanded：重载之后引擎观察到的状态。
+  enabled?: boolean;
+  blocked?: boolean;
+  stuckReloading?: boolean;
+  pathExists?: boolean;
 }
 
 // getDeveloperMode 的回音（AuraShell 转存到 'auraDeveloperMode'）。
@@ -78,7 +83,7 @@ export struct ExtensionPanel {
   @State private detailSiteAccessChangeable: boolean = false;
   @State private detailMissing: boolean = false;
   @State private installing: boolean = false;
-  // 重新载入命令是否已发出、还在等引擎回执（extensionActionsChanged）。
+  // 重新载入命令是否已发出、还在等引擎回执（extensionReloadLanded）。
   // 不参与渲染，故不用 @State。
   private reloadPending: boolean = false;
   // 详情页的扩展信息（引擎列表项本来就有下发，打开详情时随 item 带入）。
@@ -236,27 +241,46 @@ export struct ExtensionPanel {
     const kind = String(payload.kind ?? '');
     if (kind === 'extensionActionsChanged') {
       this.installing = false;
-      // 重新载入的落地回执：引擎重载会 disable→enable 并触发本事件，收到即说明
-      // 命令真的执行到了引擎（区别于"只弹了 toast 而引擎没动"）。
-      if (this.reloadPending) {
-        this.reloadPending = false;
-        this.getUIContext().getPromptAction().showToast({
-          message: '已重新载入',
-          duration: 2000
-        });
-      }
+      // 重新载入是否落地改由 extensionReloadLanded 报告：重载调用没有返回值，
+      // 只有引擎观察到的状态才可信（本事件在别的场合也会发）。
+      this.reloadPending = false;
       this.reload();
       if (this.page === 'detail' && this.detailId.length > 0) {
         this.requestSeq += 1;
         this.onCommand({ command: 'getExtensionDetails', requestId: this.requestSeq, id: this.detailId });
       }
     } else if (kind === 'extensionReloadReceived') {
-      // 引擎回执：命令确实到达了 native（重载随后异步进行，是否真正落地由
-      // 随后的 extensionActionsChanged 确认）。这条不出现 = 命令没送达引擎。
+      // 引擎回执：命令确实到达了 native。重载是否真的落地，由随后的
+      // extensionReloadLanded 用观察到的状态说明。
       this.getUIContext().getPromptAction().showToast({
         message: '引擎已收到重载请求',
         duration: 1500
       });
+    } else if (kind === 'extensionReloadLanded') {
+      // 落地回执：重载调用没有返回值，只能用引擎观察到的状态说话，据此区分
+      // 「真的重载了」与「被某一支静默 return 挡下」。
+      this.reloadPending = false;
+      let landed: string;
+      if (payload.enabled === true) {
+        landed = '已重新载入';
+      } else if (payload.blocked === true) {
+        landed = '重载未执行：扩展在黑名单中';
+      } else if (payload.stuckReloading === true) {
+        landed = '重载未执行：上一次重载未结束';
+      } else if (payload.pathExists !== true) {
+        landed = '重载未执行：安装目录已不存在';
+      } else {
+        landed = '重载未执行：扩展未回到启用状态';
+      }
+      this.getUIContext().getPromptAction().showToast({
+        message: landed,
+        duration: 2500
+      });
+      this.reload();
+      if (this.page === 'detail' && this.detailId.length > 0) {
+        this.requestSeq += 1;
+        this.onCommand({ command: 'getExtensionDetails', requestId: this.requestSeq, id: this.detailId });
+      }
     } else if (kind === 'extensionInstallFailed') {
       this.installing = false;
       const reason = String(payload.reason ?? '');
@@ -532,8 +556,8 @@ export struct ExtensionPanel {
     this.reloadPending = true;
     this.onCommand({ command: 'reloadExtension', id: this.detailId });
     // 重载成功后详情页数据往往不变、列表的刷新发生在底层看不见，没有提示就会
-    // 被当成"点了没反应"；重载是否真的落地，由 extensionActionsChanged 回执
-    // 再补一条"已重新载入"。失败则由 extensionCommandFailed 弹对话框说明原因。
+    // 被当成"点了没反应"；重载是否真的落地，由 extensionReloadLanded 用引擎
+    // 观察到的状态说明。失败则由 extensionCommandFailed 弹对话框说明原因。
     this.getUIContext().getPromptAction().showToast({
       message: '正在重新载入扩展…',
       duration: 2000

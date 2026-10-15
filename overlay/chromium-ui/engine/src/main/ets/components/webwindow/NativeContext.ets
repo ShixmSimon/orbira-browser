@@ -220,6 +220,8 @@ export interface BrowserRuntimeEvent {
     // 扩展「重新载入」的收到回执：引擎重载是异步的，先回执、再由
     // extensionActionsChanged 报告是否真正落地。
     'extensionReloadReceived' |
+    // 重载落地回执：如实报告重载后观察到的状态（reload 调用本身无返回值）。
+    'extensionReloadLanded' |
     'sitePermissionCancelled' |
     'browserControlsRatio' | 'findResult' | 'pageText' |
     'contextMenuRequested' | 'externalUrlRequested' | 'popupBlocked' |

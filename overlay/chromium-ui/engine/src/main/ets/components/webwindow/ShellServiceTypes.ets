@@ -337,6 +337,23 @@ export interface ExtensionCommandFailedEvent extends ShellServiceEvent {
   message: string;
 }
 
+// What the engine observes right after running a reloadExtension. The reload
+// call reports nothing, and it gives up without a word in several places, so
+// the shell needs the state rather than a bare "done".
+export interface ExtensionReloadLandedEvent extends ShellServiceEvent {
+  id: string;
+  // Sitting in the enabled set again: the extension really was reloaded.
+  enabled: boolean;
+  // Blocklisted or blocked: the reload refuses these outright.
+  blocked: boolean;
+  // Still carrying DISABLE_RELOAD, meaning an earlier reload never finished.
+  // In that state this reload returns without doing anything.
+  stuckReloading: boolean;
+  // The install directory is still on disk. An unpacked install reloads out of
+  // it, so a missing directory leaves nothing to reload.
+  pathExists: boolean;
+}
+
 // A site is asking the user for a permission, and the shell draws the sheet
 // that asks. Answer with the sitePermissionDecision command carrying the same
 // requestId; answer exactly once.

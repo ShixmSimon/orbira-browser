@@ -56,6 +56,7 @@ import {
   DownloadUpdatedEvent,
   ExtensionActionsEvent,
   ExtensionDetailsEvent,
+  ExtensionReloadLandedEvent,
   FaviconsEvent,
   HistoryResultsEvent,
   BookmarkListEvent,
@@ -1833,6 +1834,21 @@ struct AuraShell {
     if (event.event === 'extensionReloadReceived') {
       AppStorage.setOrCreate('auraPanelEvent',
         JSON.stringify({ kind: 'extensionReloadReceived', revision: Date.now() }));
+      return;
+    }
+    // 扩展「重新载入」的落地回执：重载调用没有返回值，引擎只能把重载之后
+    // 观察到的状态报回来，由外壳据此判断到底卡在哪一支。
+    if (event.event === 'extensionReloadLanded') {
+      const landed = shellEvent<ExtensionReloadLandedEvent>(event);
+      AppStorage.setOrCreate('auraPanelEvent',
+        JSON.stringify({
+          kind: 'extensionReloadLanded',
+          enabled: landed.enabled === true,
+          blocked: landed.blocked === true,
+          stuckReloading: landed.stuckReloading === true,
+          pathExists: landed.pathExists === true,
+          revision: Date.now()
+        }));
       return;
     }
     if (event.event === 'developerMode') {
