@@ -1,11 +1,11 @@
 /*
- * 华为账号（对齐 Lumie v2 的账号登录）。
+ * 华为账号（账号登录）。
  *
  * 登录本身走 Account Kit 的 LoginWithHuaweiIDButton（见 AccountPanel）；
  * 这里只管本地状态：把 openID / unionID 落在 preferences 里，AppStorage
  * 存一份给界面用（'auraHuaweiAccount'）。
  * "退出登录"只是清掉本地状态——系统的华为账号和云空间数据不受影响，
- * 与 Lumie 的文案一致（"只在 Lumie 里退出"）。
+ * 文案一致（"只在这里退出"）。
  */
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';

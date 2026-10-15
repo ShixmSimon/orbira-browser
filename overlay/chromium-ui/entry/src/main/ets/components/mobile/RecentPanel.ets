@@ -1,11 +1,11 @@
 /*
- * 手机"最近关闭的标签页"（对齐 Lumie v2：卡片式列表）。
+ * 手机"最近关闭的标签页"（卡片式列表）。
  * 数据流：getRecentlyClosed -> recentlyClosed 事件（AuraShell 转存到
  * 'auraPanelRecent'）；点按一条即 restoreRecentlyClosed 并回到网页。
  */
 import { BrowserCommandPayload, RecentlyClosedTab } from 'engine';
 import { displayUrl, formatVisitTime } from './PanelBridge';
-import { AuraSectionLabel } from './LumieKit';
+import { AuraSectionLabel } from './AuraKit';
 import { GlassPage, glassHeaderInsetVp } from './GlassPage';
 
 @Component

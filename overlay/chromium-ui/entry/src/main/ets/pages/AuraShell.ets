@@ -144,7 +144,7 @@ struct AuraShell {
   @StorageLink('auraStartUrl') startUrl: string = CHROMIUM_HOME_URL;
   @StorageLink('auraAppVisible') @Watch('onAppVisibleChanged') appVisible: boolean = true;
   // 上滑时隐藏状态栏: address bar collapses -> the status bar hides with it
-  // and the page fills the screen (Lumie's 外观 toggle). Hysteresis keeps
+  // and the page fills the screen (the 外观 toggle). Hysteresis keeps
   // the system bar from flapping at the collapse boundary.
   @StorageLink('auraBrowserControlsRatio') @Watch('onControlsRatioMoved') scrolledRatio: number = 1;
   @StorageLink('auraHideStatusBarOnScroll') @Watch('onHideStatusBarPrefChanged') hideStatusBarOnScroll: boolean = false;
@@ -1631,7 +1631,7 @@ struct AuraShell {
         JSON.stringify({ command: result.command, ok: result.ok, reason: result.reason ?? '' }));
       return;
     }
-    // 密码导入 / 导出回包（Lumie v2 对齐）。面板用它决定保存框、结果提示
+    // 密码导入 / 导出回包。面板用它决定保存框、结果提示
     // 与沙箱缓存清理。
     if (event.event === 'passwordsImported') {
       const imported = shellEvent<PasswordsImportedEvent>(event);
@@ -1660,7 +1660,7 @@ struct AuraShell {
       }));
       return;
     }
-    // 书签导入 / 导出回包（Lumie v2 对齐）。
+    // 书签导入 / 导出回包。
     if (event.event === 'bookmarkImportDone') {
       const done = shellEvent<BookmarkImportDoneEvent>(event);
       AppStorage.setOrCreate('auraPanelBookmarkIo', JSON.stringify({

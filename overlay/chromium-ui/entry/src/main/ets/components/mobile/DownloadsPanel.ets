@@ -1,5 +1,5 @@
 /*
- * 手机下载页（对齐 Lumie v2：卡片式列表）。
+ * 手机下载页（卡片式列表）。
  * 数据流：listDownloads -> downloadList 事件（AuraShell 转存到
  * 'auraPanelDownloads'）；进度由 downloadUpdated 事件驱动（AuraShell 转存到
  * 'auraPanelDownloadsTick'），本页做节流重拉，避免每秒多次刷新。
@@ -11,7 +11,7 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { BrowserCommandPayload, DownloadAction, DownloadItem, openDownloadedFile } from 'engine';
 import { formatVisitTime } from './PanelBridge';
-import { AuraSectionLabel } from './LumieKit';
+import { AuraSectionLabel } from './AuraKit';
 import { GlassPage, glassHeaderInsetVp } from './GlassPage';
 
 interface PanelEventPayload {

@@ -52,7 +52,7 @@ export function formatVisitTime(visitTime: number): string {
   return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
 }
 
-// 历史分组的组名（Lumie 的 DayGrouping：今天 / 昨天 / 月日 / 年月日）。
+// 历史分组的组名（今天 / 昨天 / 月日 / 年月日）。
 export function dayGroupLabel(visitTime: number): string {
   if (visitTime <= 0) {
     return '';
@@ -85,7 +85,7 @@ export function formatClock(visitTime: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// 导入 / 导出的文件暂存（对齐 Lumie v2 的密码、书签导入导出流程）。
+// 导入 / 导出的文件暂存（密码、书签导入导出流程）。
 //
 // 契约：引擎的 importXxx / exportXxx 命令只读 / 只写「应用沙箱里的绝对路径」，
 // 系统文件选择器与沙箱内外的复制都归外壳管；导入读完后引擎不留副本，缓存

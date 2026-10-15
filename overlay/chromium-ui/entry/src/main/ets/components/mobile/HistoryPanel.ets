@@ -1,13 +1,13 @@
 /*
- * 手机自绘历史页（对齐 Lumie v2）：卡片式列表，按天分组（今天 / 昨天 /
- * 月日 / 年月日，对齐 Lumie 的 DayGrouping）。
+ * 手机自绘历史页：卡片式列表，按天分组（今天 / 昨天 /
+ * 月日 / 年月日）。
  * 数据流：queryHistory -> historyResults 事件（AuraShell 转存到
  * 'auraPanelHistory'）；删除或别处变化后引擎推 historyChanged
  * （转存到 'auraPanelEvent'），本页据此重拉。
  */
 import { BrowserCommandPayload, HistoryItem, HistoryVisitRef } from 'engine';
 import { displayUrl, dayGroupLabel, formatClock } from './PanelBridge';
-import { AuraSectionLabel } from './LumieKit';
+import { AuraSectionLabel } from './AuraKit';
 import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
 import { promptAction } from '@kit.ArkUI';
 import { MoreMenuDialog, MoreMenuItemSpec } from './MoreMenuDialog';

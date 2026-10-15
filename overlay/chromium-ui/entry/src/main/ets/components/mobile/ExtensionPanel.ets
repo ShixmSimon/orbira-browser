@@ -403,7 +403,7 @@ export struct ExtensionPanel {
   }
 
   private openMoreSettings(): void {
-    // The engine's real chrome://extensions page, same as Lumie's 更多设置.
+    // The engine's real chrome://extensions page, same as 更多设置.
     this.onCommand({ command: 'navigate', url: 'chrome://extensions/' });
     this.onClose();
   }

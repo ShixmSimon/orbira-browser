@@ -31,7 +31,7 @@ const HOME_SEQ_BASE: number = 700000;
 const CHAIN_TIMEOUT_MS: number = 1600;
 const REFRESH_DEBOUNCE_MS: number = 260;
 const MAX_CHAIN_RETRIES: number = 3;
-// 长按菜单卡宽度（与 ⋮ 卡/网页长按卡同一家族，Lumie 风格）。
+// 长按菜单卡宽度（与 ⋮ 卡/网页长按卡同一家族）。
 const MENU_CARD_VP: number = 190;
 const MENU_CARD_H: number = 204;
 // 磁贴底板边长（vp）。底板是磁贴的「托盘」，图标画在它里面。
@@ -42,7 +42,7 @@ const TILE_ICON_RADIUS: number = 13;
 // 引擎按 sizeVp×deviceScaleFactor 生成 PNG（overlay/chrome/browser/ui/ohos/
 // shell_favicons_ohos.cc: size_px = clamp(sizeVp) × PrimaryDisplayScale()），
 // 站点只给 16/32px 的 favicon 时会被拉大 —— 画得越大越糊（46vp 满铺 =
-// 138px，实测发虚）。收到 24vp 画（Chrome/Lumie 磁贴就是这个比例：
+// 138px，实测发虚）。收到 24vp 画（磁贴就是这个比例：
 // 大托盘 + 小图标），小图不再被硬撑，视觉也稳。
 const TILE_FAVICON_VP: number = 24;
 // 底板里 favicon 的圆角（小图不需要大圆角，按约 25% 收）。
@@ -53,7 +53,7 @@ const TILE_FAVICON_RADIUS: number = 6;
 const TILE_FAVICON_REQUEST_VP: number = TILE_FAVICON_VP * 2;
 // 冷启动缓存里 favicon base64 的字符上限（≈192KB）。超了就不缓存图标，只留磁贴。
 const MAX_CACHE_FAVICONS_CHARS: number = 262144;
-// favicon 请求合批窗口（ms）。对齐 Lumie 的 FaviconStore：同一帧里几十个磁贴
+// favicon 请求合批窗口（ms）。同一帧里几十个磁贴
 // 各自 want() → 攒一拍合成**一次** getFavicons（引擎一次最多 100 个 url，
 // 见 shell_favicons_ohos.cc kMaxUrlsPerRequest）。
 const FAVICON_BATCH_MS: number = 60;
@@ -117,7 +117,7 @@ function placeholderTint(node: BookmarkNode): string {
 }
 
 // 只把 http(s) 交给引擎问图标：chrome:// file:// data: 之类永远没有 favicon，
-// 白占一次 requests 的额度（Lumie 的 FaviconStore.want() 同样是这道门）。
+// 白占一次 requests 的额度（FaviconStore.want() 同样是这道门）。
 function isFetchableUrl(url: string): boolean {
   return url.startsWith('http://') || url.startsWith('https://');
 }
@@ -223,10 +223,10 @@ export struct HomeSurface {
   // 累积的 url → PNG base64。分片请求会分批回包，这份是**并集**（渲染 map 由它
   // 重建；回包只覆盖自己那一片，不能直接替换）。
   private faviconBase64: Map<string, string> = new Map();
-  // 已经问过引擎的 url（含取不到的）。对齐 Lumie FaviconStore.settled：命中
+  // 已经问过引擎的 url（含取不到的）。FaviconStore.settled：命中
   // 即不再重复问，避免每次书签刷新都重发同一批请求。
   private faviconAsked: Set<string> = new Set();
-  // 本轮等待合批的 url（Lumie 的 pending）。
+  // 本轮等待合批的 url（pending）。
   private faviconQueued: Set<string> = new Set();
   private faviconBatchTimer: number = -1;
 
@@ -767,7 +767,7 @@ export struct HomeSurface {
 
   // -- 图标 --------------------------------------------------------------------
   //
-  // 取图标这一层对齐 Lumie 的 FaviconStore（反编译 @lumie/uikit/.../FaviconStore）：
+  // 取图标这一层对齐 FaviconStore 的做法：
   //   ① 只问 http(s)（want() 里那道门）；
   //   ② settled / pending 两个集合去重，命中过就不再问；
   //   ③ 攒一拍合批（BATCH_DELAY_MS）后**一次**发出去，回包后统一派发。
@@ -1038,7 +1038,7 @@ export struct HomeSurface {
   // 【1.0.88 图标清晰度】底板仍是 46vp，但图标只画 TILE_FAVICON_VP=24vp：
   // 引擎按 sizeVp×density 把站点图标缩放到请求尺寸（shell_favicons_ohos.cc），
   // 站点只声明 16/32px 时**填满 46vp 就是硬放大 4 倍 → 糊**。小图标落在大
-  // 托盘里（Chrome / Lumie 的磁贴比例），既清晰又不头重脚轻。
+  // 托盘里（磁贴比例），既清晰又不头重脚轻。
   @Builder
   private BookmarkTile(node: BookmarkNode) {
     Column({ space: 7 }) {

@@ -1,10 +1,10 @@
 /*
- * 手机密码页（对齐 Lumie v2）。
+ * 手机密码页。
  * 流程：进入先做本机身份验证（系统锁屏密码/指纹/人脸），通过后向引擎发
  * passwordAuthGranted {validMs:60000}，再拉 getSavedPasswords 列表；
  * 列表 -> 详情（编辑用户名/密码/备注，updatePassword；显示走 revealPassword；
  * 删除走 deletePassword）；顶部 ⋯ 菜单：导入密码（CSV）/ 导出密码（CSV）。
- * 导入导出对齐 Lumie v2：系统文件选择器 <-> 沙箱暂存 -> 引擎读写 -> 外壳清理。
+ * 导入导出：系统文件选择器 <-> 沙箱暂存 -> 引擎读写 -> 外壳清理。
  * 引擎回 authRequired 时回到验证门。应用退后台时由 AuraShell 发
  * passwordAuthReset 作废窗口。
  */
@@ -23,7 +23,7 @@ import {
   SavedPasswordsEvent
 } from 'engine';
 import { displayUrl, pickAndStageImportFile, saveExportedFile, deleteStagedFile } from './PanelBridge';
-import { AuraChevron, AuraSectionLabel } from './LumieKit';
+import { AuraChevron, AuraSectionLabel } from './AuraKit';
 
 interface PanelEventPayload {
   kind?: string;
@@ -75,7 +75,7 @@ export struct PasswordsPanel {
   @State private loading: boolean = true;
   @State private view: string = 'list';
   @State private editId: string = '';
-  // 详情页两态：查看（Lumie 风格行式 + 复制）默认；编辑单独进入。
+  // 详情页两态：查看（行式 + 复制）默认；编辑单独进入。
   @State private detailMode: string = 'view';
   @State private editOrigin: string = '';
   @State private editUsername: string = '';
@@ -623,7 +623,7 @@ export struct PasswordsPanel {
     });
   }
 
-  // -- 导入 / 导出（对齐 Lumie v2） -------------------------------------------
+  // -- 导入 / 导出 -------------------------------------------
 
   // ⋯「导入密码」入口：先弹自绘弹窗（格式说明 + 增量/覆盖），选完模式
   // 再进系统文件选择器 —— 比旧版（先选文件再弹系统 AlertDialog）顺序更直觉。
@@ -901,7 +901,7 @@ export struct PasswordsPanel {
         AuraSectionLabel({ text: displayUrl(this.editOrigin), tightTop: true })
 
         if (this.detailMode === 'view') {
-          // 查看态（Lumie 风格）：行式布局 + 每行复制；编辑单独进入。
+          // 查看态：行式布局 + 每行复制；编辑单独进入。
           Column() {
             Row({ space: 12 }) {
               Column({ space: 2 }) {

@@ -1,5 +1,5 @@
 /*
- * 华为账号页（对齐 Lumie v2：设置里的账号卡 -> 登录 / 已登录 + 退出登录）。
+ * 华为账号页（设置里的账号卡 -> 登录 / 已登录 + 退出登录）。
  *
  * 登录界面用 Account Kit 的 LoginWithHuaweiIDButton（华为账号官方登录按钮组件）；
  * 授权结果只拿 openID / unionID 落本地（见 utils/account/HuaweiAccountService），
@@ -10,7 +10,7 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { loginComponentManager, LoginWithHuaweiIDButton } from '@kit.AccountKit';
-import { AuraSectionLabel } from './LumieKit';
+import { AuraSectionLabel } from './AuraKit';
 import { glassHeaderInsetVp } from './GlassPage';
 import {
   clearAccount,

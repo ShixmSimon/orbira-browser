@@ -61,7 +61,7 @@ export const BOTTOM_DOCK_EXTENT_VP: number = 60;
 
 // The glass bar itself (the Row inside the dock's container): the material
 // plate and the painted fallback must agree on it exactly.
-// 48vp = Lumie 的 PHONE_DOCK_HEIGHT：同一台手机截图实测，Lumie 胶囊
+// 48vp：同一台手机截图实测，胶囊
 // 167px ≈ 48vp，我们的 62 画出来 218px，并排就是"太粗"。
 const DOCK_BAR_HEIGHT_VP: number = 48;
 const DOCK_BAR_RADIUS_VP: number = 24;
@@ -89,7 +89,7 @@ function resolveDockBarWidthVp(): number {
   return 328;
 }
 
-// dock 的底距。v11 曾照搬 Lumie 的钳制算法（反编译 PhoneControlsSync
+// dock 的底距。v11 曾照搬参考实现的钳制算法（PhoneControlsSync
 // .phoneDockBottom：min(安全区, PHONE_TOOLBAR_SAFE_MAX=16) + GAP=4，本机
 // 算得 20vp），真机用户反馈"太贴边、调回原来的位置"，已回退为原始安全区
 // 值（本机 28vp）。dock 位置、收起行程、响应区条带三处共用这一个底距。
@@ -187,7 +187,7 @@ export const TAB_THUMB_HEIGHT_VP: number = TAB_CARD_HEIGHT_VP - TAB_CARD_TITLE_V
 // 请求 getTabThumbnails 时用这两个值算 aspect，一行就正好铺满不裁。
 const TAB_LIST_THUMB_WIDTH_VP: number = 64;
 const TAB_LIST_THUMB_HEIGHT_VP: number = 46;
-// ⋮ 菜单卡片：Lumie 那块是 258 上下、贴着屏幕右侧，左边留出底下网页的宽度。
+// ⋮ 菜单卡片：258 上下、贴着屏幕右侧，左边留出底下网页的宽度。
 const MENU_CARD_WIDTH_VP: number = 258;
 // 长按菜单卡片（v13）：与 ⋮ 卡片同宽同款，锚在按压点旁边。
 const CONTEXT_MENU_CARD_WIDTH_VP: number = 258;
@@ -227,7 +227,7 @@ interface PullRefreshPayload {
 }
 
 // HarmonyOS 7 沉浸光感：设备能不能渲染系统沉浸材质。走 HDS 探测
-// （getSystemMaterialTypes）——与 Lumie 同一个入口：全 NONE（材质被系统
+// （getSystemMaterialTypes）——同一个入口：全 NONE（材质被系统
 // 关掉）或旧 SDK 抛错都算不可用，dock 回退纯色玻璃。一次探测、进程内缓存。
 let cachedDockMaterialAvailable: boolean | undefined = undefined;
 
@@ -290,7 +290,7 @@ export struct MobileBrowserOverlay {
   // Which page the sheet shows: the tabs menu only now; kept as the reset
   // value while the sheet opens or closes.
   @State private sheetPage: string = 'tabs';
-  // The ⋮ menu is a floating card above the dock (Lumie-style), not a
+  // The ⋮ menu is a floating card above the dock, not a
   // sheet; the sheet hosts the tab switcher only.
   @State private menuCardVisible: boolean = false;
   // 1.0.109：「自定义网址」入口菜单（长按 dock 主页图标弹出，自绘卡片）。
@@ -336,7 +336,7 @@ export struct MobileBrowserOverlay {
   // 标签页排布：'grid' 两列卡片 / 'list' 单行列表（preferences 持久化）。
   @State private tabLayout: string = 'grid';
   // Which full-screen shell page is open ('none' while browsing). The shell's
-  // sub-pages are full-screen like Lumie's, not part of the bottom sheet.
+  // sub-pages are full-screen, not part of the bottom sheet.
   @State private panelPage: string = 'none';
   // True while the extensions page was opened from settings, so its back
   // button returns there instead of closing to the browser.
@@ -377,7 +377,7 @@ export struct MobileBrowserOverlay {
   private readonly holdingHandRouter: HoldingHandRouter = new HoldingHandRouter();
   private readonly currentTabCastSession: CurrentTabCastSession = new CurrentTabCastSession();
   // Floating-chrome styling note: the dock's system immersive material (沉浸
-  // 光感) is drawn through HDS, the same door Lumie's dock uses -- a real
+  // 光感) is drawn through HDS -- a real
   // HdsTabs whose tabBar entries ARE the dock buttons (DockMaterialPlate
   // below). uiMaterial was the first attempt and is scoped far tighter
   // (bottom TabBar inside a horizontal Tabs only); on device it rendered
@@ -404,7 +404,7 @@ export struct MobileBrowserOverlay {
   private lastNavVeilUrl: string = '';
   private navVeilTimer: number = -1;
 
-  // 1.0.72：加载进度条 —— 参数取自 Lumie v2 反汇编常量（BAR_HEIGHT=2 /
+  // 1.0.72：加载进度条 —— 参数取自参考实现常量（BAR_HEIGHT=2 /
   // MIN_PROGRESS=0.08 / GROW_MS=200 + EaseOut）。它只有 2vp、不覆盖任何网页
   // 内容，纯指示，因此**不会延长引擎的绘制空档**；1.0.71 用「帘幕等 loading
   // 结束再揭开」是覆盖层，盖多久就空白多久（实测把 0.45s 撑成 1.05s），已废弃。
@@ -561,7 +561,7 @@ export struct MobileBrowserOverlay {
         }
         // 1.0.78：帘幕停用 —— 白色色块横向扫过在真机/录屏中被用户感知为"每切
         // 一次出一遍白屏"（逐帧实证：白块从右向左推进、左侧露旧页残边）。对齐
-        // Lumie 的"直接切换"体验。playNavVeil 本体与 navVeil 视图保留可随时回
+        // 参考实现的"直接切换"体验。playNavVeil 本体与 navVeil 视图保留可随时回
         // 滚（navVeilShift 恒为 1 = 停在屏外右侧，不可见、不参与命中）。
         // if (!goingHome && !leavingHome) {
         //   this.playNavVeil();
@@ -569,7 +569,7 @@ export struct MobileBrowserOverlay {
       }
       this.lastNavVeilUrl = navUrl;
     }
-    // 1.0.72：加载进度条（Lumie v2 同款）——读取引擎真实 loadProgress。它只是
+    // 1.0.72：加载进度条——读取引擎真实 loadProgress。它只是
     // 指示、不覆盖内容，因此既不延长白屏、也不参与切页过渡。
     this.syncLoadBar();
     // Fix B/E：提交导航后保持编辑态与键盘，等导航 commit（url 变化）并留出
@@ -1758,7 +1758,7 @@ export struct MobileBrowserOverlay {
       .onSubmit((): void => {
         this.submitAddress();
       })
-    // 1.0.107：关闭编辑态换成「取消」文字按钮（对齐 Lumie），不再用 36vp 圆叉。
+    // 1.0.107：关闭编辑态换成「取消」文字按钮，不再用 36vp 圆叉。
     // 之前它旁边挂着一个系统 PasteButton（读剪贴板）：点它会走系统授权浮层，
     // 在全屏自绘外壳上把整屏点击拖死（用户报「卡死」），还把旁边的圆叉挤到
     // 点不动（用户报「叉无效」）。粘贴能力改走输入框自身的长按系统菜单
@@ -1833,7 +1833,7 @@ export struct MobileBrowserOverlay {
             this.submitAddress();
           })
         // 1.0.107：与另两处编辑态统一为「取消」文字按钮 + cancelAddressEdit()，
-        // 不再三处各写一份内联取消逻辑（Lumie 同款「取消」，命中更稳）。
+        // 不再三处各写一份内联取消逻辑（同款「取消」，命中更稳）。
         Button({ type: ButtonType.Normal, stateEffect: true }) {
           Text('取消')
             .fontSize(15)
@@ -1995,7 +1995,7 @@ export struct MobileBrowserOverlay {
         this.FindBar()
       }
 
-      // ⋮ 菜单：一块悬浮卡片贴在 dock 上方靠右。Lumie 不铺遮罩，这里也只留
+      // ⋮ 菜单：一块悬浮卡片贴在 dock 上方靠右。不铺遮罩，这里也只留
       // 一层透明点击层，点到卡片外面就收起来。（2026-10-10 两次实测 bindMenu
       // —— 1×1 锚点与 dock 真实锚点 —— 都把整屏点击拖死，系统菜单这条路
       // 在本应用封死，别再试。）
@@ -2248,8 +2248,8 @@ export struct MobileBrowserOverlay {
       .width('100%')
       .padding({ top: this.topSafeVp + 8, left: 16, right: 16 })
       // 1.0.72 加载进度条：贴在地址栏条带的**下边沿**（chrome 与网页交界的
-      // 那条线），满宽容器 + 自左向右生长的 2vp 细条 —— 形状与位置对齐 Lumie
-      // v2 的 LoadingBar（BAR_HEIGHT=2 / MIN_PROGRESS=0.08 / 200ms EaseOut）。
+      // 那条线），满宽容器 + 自左向右生长的 2vp 细条 —— 形状与位置对齐
+      // 参考 LoadingBar（BAR_HEIGHT=2 / MIN_PROGRESS=0.08 / 200ms EaseOut）。
       // 为什么不放在胶囊内部：胶囊高 40、自带 20 圆角，2vp 会被背景吃掉看不见。
       // 为什么不学 1.0.71 用帘幕：帘幕是**覆盖层**，盖多久就空白多久（实测把
       // ≈0.45s 的绘制空档撑成 ≈1.05s）。这条 2vp 细条不覆盖任何内容，只指示，
@@ -2262,7 +2262,7 @@ export struct MobileBrowserOverlay {
             // 只圆右端：自左向右生长的细条；左端贴着屏幕边。
             .borderRadius({ topRight: this.loadBarHeight, bottomRight: this.loadBarHeight })
             .backgroundColor($r('app.color.accent_primary'))
-            // 宽度变化由属性动画接管（同步 Lumie 的 200ms / EaseOut）。
+            // 宽度变化由属性动画接管（同步 200ms / EaseOut）。
             .animation({ duration: this.loadBarGrowMs, curve: Curve.EaseOut })
         }
         .width('100%')
@@ -2322,7 +2322,7 @@ export struct MobileBrowserOverlay {
             this.submitAddress();
           })
         // 1.0.107：与底置编辑态统一——去掉系统 PasteButton（授权浮层拖死整屏
-        // 点击），圆叉换成「取消」文字按钮（Lumie 同款，命中稳定）；取消逻辑
+        // 点击），圆叉换成「取消」文字按钮（命中稳定）；取消逻辑
         // 汇流到 cancelAddressEdit()（含键盘收回与异常隔离）。
         Button({ type: ButtonType.Normal, stateEffect: true }) {
           Text('取消')
@@ -2560,14 +2560,14 @@ export struct MobileBrowserOverlay {
 
   // 底部 dock：一块悬浮玻璃横条——左右各留 16vp、完整圆角，网页从它后面
   // 穿过，跟手收起。玻璃走 HDS（HDS 没有 uiMaterial 的 Navigation/TabBar
-  // 作用域限制，与 Lumie 的 dock 同一条路，详见 DockMaterialPlate）；
+  // 作用域限制，同一条路，详见 DockMaterialPlate）；
   // 拿不到材质时回退半透明纯色玻璃（契约 §8：网页上方不用模糊）。引擎不给
   // dock 保留网页空间（setBrowserControls bottom = 0），网页一直画到窗口底。
   //
-  // 布局（v9，结构对齐 Lumie）：材质板铺满整层（含顶部 12vp 呼吸位与底部
+  // 布局（v9）：材质板铺满整层（含顶部 12vp 呼吸位与底部
   // 安全区），五个按钮作为 HdsTabs 的真实 tabBar 项渲染在浮动胶囊里——
   // 材质、按钮、触摸同在一棵子树内，材质几何随内容收敛、触摸也能被材质
-  // 感知（Lumie 同构）。无材质设备走同一胶囊几何的自绘玻璃。
+  // 感知。无材质设备走同一胶囊几何的自绘玻璃。
   @Builder
   private BottomDock() {
     Stack() {
@@ -2765,7 +2765,7 @@ export struct MobileBrowserOverlay {
   }
 
   // The shell's own pages (bookmarks / history / downloads / settings /
-  // extensions) are full-screen pages, like Lumie's — no sheet around them,
+  // extensions) are full-screen pages — no sheet around them,
   // which also removes the sheet's top gap on those pages.
   @Builder
   private PanelLayer() {
@@ -3282,7 +3282,7 @@ export struct MobileBrowserOverlay {
     this.closeMenuSheet();
   }
 
-  // ⋮ 菜单：Lumie 那块悬浮卡片的样子。不铺遮罩（只留一层透明点击层收卡片），
+  // ⋮ 菜单：一块悬浮卡片的样子。不铺遮罩（只留一层透明点击层收卡片），
   // 卡片贴在 dock 上方、靠右；第一行是"域名 · 连接安全"，然后是页面操作，
   // 再一组是无痕与桌面版，最后一行四个入口。**主页上没有页面可操作，页面类
   // 的项一律不出现**，只剩无痕与入口行。每一项点完立即关卡片。
@@ -3610,7 +3610,7 @@ export struct MobileBrowserOverlay {
     ).animation({ curve: curves.springMotion(0.3, 0.72) }))
   }
 
-  // 第一行：连接状态。锁形图标 + 域名 + " · 连接安全/不安全"，与 Lumie 一致。
+  // 第一行：连接状态。锁形图标 + 域名 + " · 连接安全/不安全"。
   @Builder
   private MenuHeader() {
     Row({ space: 10 }) {
@@ -3680,7 +3680,7 @@ export struct MobileBrowserOverlay {
 
   // 进无痕：手机上没有第二个渲染进程可用，先把标签存下来再用另一个 profile
   // 重启应用（引擎据此换一整套用户数据目录）。存不下就不进，免得回来时标签
-  // 全丢——Lumie 也是这个取舍。
+  // 全丢——参考实现也是这个取舍。
   private async enterIncognito(): Promise<void> {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
     if (!context) {
@@ -4490,13 +4490,13 @@ export struct MobileBrowserOverlay {
 }
 
 // The dock's system immersive material (沉浸光感), driven exactly the way
-// Lumie drives it: a real HdsTabs whose five tabBar entries ARE the five
+// It is driven as a real HdsTabs whose five tabBar entries ARE the five
 // dock buttons. The earlier revision used a bare single-tab backplate with
 // the buttons stacked on top of it; on device the material's geometry
 // followed that empty bar, so the capsule looked too tall and a haze ring
 // bled around both rounded ends -- and with hitTest None touches never
-// reached the material either, so the press light never fired. Lumie shows
-// none of that on the same phone, and its decompiled shell explains why:
+// reached the material either, so the press light never fired. A reference
+// build shows none of that on the same phone, and its shell explains why:
 // five TabContents, each with a tabBar builder rendering a real button,
 // clicks distributed centrally from onTabBarClick.
 //
@@ -4505,14 +4505,14 @@ export struct MobileBrowserOverlay {
 // barOverlap true + vertical false + barPosition End.
 //
 // gradientMask pins the material's fade region to exactly "bar + the strip
-// below it" -- the same shape as Lumie's dock mask. Left unset, the mask
+// below it" -- the same shape as the reference dock mask. Left unset, the mask
 // falls back to "component height + tabBar + 32vp", a tall rectangle
 // bleeding above the capsule. barBackgroundColor / barBackgroundBlurStyle
 // are deliberately never set: the official guide says they cover the
 // material ("避免遮挡材质效果").
 //
-// barWidth is set explicitly. A first revision passed no barWidth (Lumie
-// sets none either) and the floating bar measured itself from its tab
+// barWidth is set explicitly. A first revision passed no barWidth (the
+// reference sets none either) and the floating bar measured itself from its tab
 // items -- but our items are percent-sized, so the measurement collapsed
 // to nothing and the whole plate (material AND buttons) vanished. Now the
 // bar gets the concrete width on all three breakpoints AND every tab item
@@ -4570,13 +4570,13 @@ struct DockMaterialPlate {
     .clip(true)
   }
 
-  // 一个 tabBar 项 = 一个 dock 按钮。结构刻意与 Lumie 的 DockItem 同构
+  // 一个 tabBar 项 = 一个 dock 按钮。结构刻意与参考 DockItem 同构
   // （反编译：Column + width('100%') + height('100%') + justifyContent
   // Center），两个真机教训是这么修的：
   // ① "胶囊内图标不居中"：固定高 62 的 Button 在 HdsTabs 的槽位里会落在
-  //    偏下 ~4vp 处（像素实测），Lumie 同机居中——因为它填满槽位再居中。
+  //    偏下 ~4vp 处（像素实测），参考实现同机居中——因为它填满槽位再居中。
   // ② "点按白框"：Button 的默认按压蒙层（stateEffect）在深色下是一块
-  //    浅色矩形（按压缩小后 ≈51×50vp，与截图逐像素吻合）；Lumie 的项
+  //    浅色矩形（按压缩小后 ≈51×50vp，与截图逐像素吻合）；参考实现的项
   //    是普通 Column，全程没有 Button/stateEffect。
   // 点光源也不要：v9 的 BORDER_CONTENT 把每个按钮点亮成一圈白色描边
   // 方框、还把整条胶囊洗白。按压反馈 = 弹簧缩放 + 材质原生触摸光感。
@@ -4602,7 +4602,7 @@ struct DockMaterialPlate {
     }
     // 固有宽度 65 是防塌缩保险（浮动条自动测量路径要靠它；barWidth 已
     // 显式给，两条测量路径都要能立起来）。高度交给槽位（100%），内容
-    // 由 justifyContent 垂直居中——这是与 Lumie 对齐的关键。
+    // 由 justifyContent 垂直居中——这是对齐的关键。
     .width(DOCK_SLOT_WIDTH_VP)
     .height('100%')
     .justifyContent(FlexAlign.Center)
@@ -4669,14 +4669,14 @@ struct DockMaterialPlate {
         largeWidth: width
       },
       // ADAPTIVE lets the system pick the material strength for the device
-      // (Lumie's DOCK_MATERIAL is exactly this type/level pair).
+      // (the reference DOCK_MATERIAL is exactly this type/level pair).
       systemMaterialEffect: {
         materialType: hdsMaterial.MaterialType.ADAPTIVE,
         materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
       },
       // The fade region: from the bar down past the home-indicator strip to
       // the layer's bottom edge (= the screen edge). maskHeight = bar +
-      // bottom margin, mirroring Lumie's dockMaskHeight.
+      // bottom margin, mirroring the reference dockMaskHeight.
       gradientMask: {
         maskColor: $r('app.color.dock_mask'),
         maskHeight: this.barHeightVp + this.bottomMarginVp

@@ -2,7 +2,7 @@
  * 无痕模式（手机路线）。
  *
  * 引擎里一个 Browser 绑一个 Profile，手机只跑单进程、装不下第二个 Profile，
- * 所以 newIncognitoWindow 在手机上会被引擎直接拒绝。作者在 Lumie 里绕开的
+ * 所以 newIncognitoWindow 在手机上会被引擎直接拒绝。参考实现里绕开的
  * 办法是：把当前标签记下来，然后用另一个 profileId 重启应用 —— 引擎据此把
  * profile 放在 filesDir/chromium-profiles/incognito，等于换了一套干净的
  * 用户数据目录，单进程也成立。退出无痕时再重启回普通 profile，并把那个目录

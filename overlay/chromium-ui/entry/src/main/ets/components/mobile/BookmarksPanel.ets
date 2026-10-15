@@ -18,7 +18,7 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { BookmarkNode, BrowserCommandPayload } from 'engine';
 import { HomePrefs } from '../../utils/appearance/HomePrefs';
 import { displayUrl, pickAndStageImportFile, saveExportedFile, deleteStagedFile } from './PanelBridge';
-import { AuraSectionLabel } from './LumieKit';
+import { AuraSectionLabel } from './AuraKit';
 import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
 import { MoreMenuDialog, MoreMenuItemSpec } from './MoreMenuDialog';
 
@@ -749,7 +749,7 @@ export struct BookmarksPanel {
     return '重命名文件夹';
   }
 
-  // -- 导入 / 导出（对齐 Lumie v2，原样保留） ----------------------------------
+  // -- 导入 / 导出 ----------------------------------
 
   private cleanupPendingImport(): void {
     if (this.pendingImportPath.length > 0) {

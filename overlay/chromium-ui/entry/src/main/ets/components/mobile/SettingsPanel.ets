@@ -13,7 +13,7 @@ import { ShellUiPrefs } from '../../utils/appearance/ShellUiPrefs';
 import { SearchEnginesPrefs } from '../../utils/appearance/SearchEnginesPrefs';
 import { HuaweiAccountInfo } from '../../utils/account/HuaweiAccountService';
 import { HuaweiAccountView } from './AccountPanel';
-import { AuraNavIconRow, AuraSectionLabel } from './LumieKit';
+import { AuraNavIconRow, AuraSectionLabel } from './AuraKit';
 import { searchTemplateForSite } from './ShellUtils';
 import { curves } from '@kit.ArkUI';
 import {
