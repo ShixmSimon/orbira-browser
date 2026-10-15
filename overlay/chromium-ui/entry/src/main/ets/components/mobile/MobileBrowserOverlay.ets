@@ -5,6 +5,7 @@ import { hdsEffect, hdsMaterial, HdsTabs, HdsTabsFloatingStyle } from '@kit.UIDe
 import { inputMethod } from '@kit.IMEKit';
 import { http } from '@kit.NetworkKit';
 import { curves, promptAction } from '@kit.ArkUI';
+import router from '@ohos.router';
 import display from '@ohos.display';
 import { showSystemPasteDialog } from './SystemPasteDialog';
 import { ScanService } from './ScanService';
@@ -18,6 +19,7 @@ import {
 } from 'engine';
 import { HuaweiShareAdapter } from 'engine';
 import { GripSide, HoldingHandRouter } from './HoldingHandRouter';
+import { BrowserCommandBus } from '../../bus/BrowserCommandBus';
 import { CurrentTabCastSession } from './CurrentTabCastSession';
 import { BookmarksPanel } from './BookmarksPanel';
 import {
@@ -463,6 +465,10 @@ export struct MobileBrowserOverlay {
     // The entry page's onBackPress asks this before letting the system back
     // gesture exit the app.
     MobileBackRouter.handler = (): boolean => this.handleSystemBack();
+    // A' 面板页化：面板（可能已是独立路由页）经此总线把浏览器命令发回壳。
+    BrowserCommandBus.setHandler((command: BrowserCommandPayload): void => {
+      this.issueCommand(command);
+    });
     // The cast session starts when the cast picker opens, not here. HarmonyOS
     // allows one AVSession per ability, and an idle one held from launch left
     // the engine's media session (control center card) unable to exist.
@@ -556,6 +562,10 @@ export struct MobileBrowserOverlay {
   }
 
   private onBrowserStateChanged(): void {
+    // A' 面板页化：把当前 URL/标题同步进 AppStorage，供路由页（书签/扩展等）
+    // 通过 @StorageLink 读取，替代原来从 overlay 直接传 @Prop 的耦合。
+    AppStorage.setOrCreate('auraCurrentUrl', this.browserState.url ?? '');
+    AppStorage.setOrCreate('auraCurrentTitle', this.browserState.title ?? '');
     // 页面切换帘幕：顶层 URL 变化就放一次（地址栏提交 / 点链接 / 切标签 /
     // 前进后退都算）——把引擎换页那一瞬的底色空档盖成柔和过渡。
     const navUrl: string = this.browserState.url ?? '';
@@ -3715,7 +3725,7 @@ export struct MobileBrowserOverlay {
           this.openPanel('bookmarks');
         })
         this.PanelEntryButton('历史', $r('app.media.chromium_history'), (): void => {
-          this.openPanel('history');
+          this.openHistoryPanel();
         })
         this.PanelEntryButton('下载', $r('app.media.chromium_download'), (): void => {
           this.openPanel('downloads');
@@ -4107,6 +4117,16 @@ export struct MobileBrowserOverlay {
     } else {
       this.openPanel('extensions');
     }
+  }
+
+  // A' 面板页化（试点）：历史改为独立路由页。先收起菜单，再 router.pushUrl
+  // 压栈；返回由系统手势/返回键经 router 自动 pop（HistoryPanelPage 的 onBack/onClose 也指向 router.back）。
+  private openHistoryPanel(): void {
+    this.menuVisible = false;
+    this.menuCardVisible = false;
+    router.pushUrl({ url: 'pages/panels/HistoryPanelPage' }).catch((error: Error): void => {
+      console.error('openHistoryPanel pushUrl failed:', error);
+    });
   }
 
   private openPanel(page: string): void {
