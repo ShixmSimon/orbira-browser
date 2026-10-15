@@ -2,6 +2,9 @@
   "src": [
     "pages/AuraShell",
     "pages/PWASmallAppExperience",
-    "pages/panels/HistoryPanelPage"
+    "pages/panels/HistoryPanelPage",
+    "pages/panels/BookmarksPanelPage",
+    "pages/panels/DownloadsPanelPage",
+    "pages/panels/RecentPanelPage"
   ]
 }

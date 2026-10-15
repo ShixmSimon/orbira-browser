@@ -21,7 +21,6 @@ import { HuaweiShareAdapter } from 'engine';
 import { GripSide, HoldingHandRouter } from './HoldingHandRouter';
 import { BrowserCommandBus } from '../../bus/BrowserCommandBus';
 import { CurrentTabCastSession } from './CurrentTabCastSession';
-import { BookmarksPanel } from './BookmarksPanel';
 import {
   ContextMenuItem,
   ContextMenuModel,
@@ -29,12 +28,9 @@ import {
   parseContextMenuModel,
   shellCopyTextFor
 } from './ContextMenuSheet';
-import { DownloadsPanel } from './DownloadsPanel';
 import { ExtensionPanel } from './ExtensionPanel';
-import { HistoryPanel } from './HistoryPanel';
 import { MobileBackRouter } from './MobileBackRouter';
 import { PasswordsPanel } from './PasswordsPanel';
-import { RecentPanel } from './RecentPanel';
 import { SettingsPanel } from './SettingsPanel';
 import { SitePermissionsPanel } from './SitePermissionsPanel';
 import { normalizeAddress, searchUrlFor } from './ShellUtils';
@@ -2794,57 +2790,7 @@ export struct MobileBrowserOverlay {
   @Builder
   private PanelSlot(page: string) {
     Column() {
-      if (page === 'bookmarks') {
-        BookmarksPanel({
-          currentUrl: this.browserState.url,
-          currentTitle: this.browserState.title,
-          onCommand: (command: BrowserCommandPayload): void => {
-            this.issueCommand(command);
-          },
-          onBack: (): void => {
-            this.closePanel();
-          },
-          onClose: (): void => {
-            this.closePanel();
-          }
-        })
-      } else if (page === 'history') {
-        HistoryPanel({
-          onCommand: (command: BrowserCommandPayload): void => {
-            this.issueCommand(command);
-          },
-          onBack: (): void => {
-            this.closePanel();
-          },
-          onClose: (): void => {
-            this.closePanel();
-          }
-        })
-      } else if (page === 'downloads') {
-        DownloadsPanel({
-          onCommand: (command: BrowserCommandPayload): void => {
-            this.issueCommand(command);
-          },
-          onBack: (): void => {
-            this.closePanel();
-          },
-          onClose: (): void => {
-            this.closePanel();
-          }
-        })
-      } else if (page === 'recent') {
-        RecentPanel({
-          onCommand: (command: BrowserCommandPayload): void => {
-            this.issueCommand(command);
-          },
-          onBack: (): void => {
-            this.closePanel();
-          },
-          onClose: (): void => {
-            this.closePanel();
-          }
-        })
-      } else if (page === 'passwords') {
+      if (page === 'passwords') {
         PasswordsPanel({
           onCommand: (command: BrowserCommandPayload): void => {
             this.issueCommand(command);
@@ -2988,18 +2934,6 @@ export struct MobileBrowserOverlay {
       // 不卸载：parallax 移出 + 变暗、新页滑入，模仿原生 push-pop。
       // 槽位逻辑（可见性/位移/变暗/层级）见 PanelSlot。
       Stack({ alignContent: Alignment.TopStart }) {
-        if (this.pageMounted('bookmarks')) {
-          this.PanelSlot('bookmarks')
-        }
-        if (this.pageMounted('history')) {
-          this.PanelSlot('history')
-        }
-        if (this.pageMounted('downloads')) {
-          this.PanelSlot('downloads')
-        }
-        if (this.pageMounted('recent')) {
-          this.PanelSlot('recent')
-        }
         if (this.pageMounted('passwords')) {
           this.PanelSlot('passwords')
         }
@@ -3171,7 +3105,7 @@ export struct MobileBrowserOverlay {
       .width('100%')
       .height(40)
       .onClick(() => {
-        this.openPanel('recent');
+        this.openRecentPanel();
       })
     }
     .width('100%')
@@ -3725,13 +3659,13 @@ export struct MobileBrowserOverlay {
       // 卡片内宽 258-2*8-4*6 = 218vp → 每格 ≈43vp，22 图标 + 12sp 文字放得下。
       Row({ space: 6 }) {
         this.PanelEntryButton('书签', $r('app.media.chromium_bookmark'), (): void => {
-          this.openPanel('bookmarks');
+          this.openBookmarksPanel();
         })
         this.PanelEntryButton('历史', $r('app.media.chromium_history'), (): void => {
           this.openHistoryPanel();
         })
         this.PanelEntryButton('下载', $r('app.media.chromium_download'), (): void => {
-          this.openPanel('downloads');
+          this.openDownloadsPanel();
         })
         this.PanelEntryButton('扩展', $r('app.media.aura_extensions'), (): void => {
           this.openExtensionsPanel(false);
@@ -4129,6 +4063,34 @@ export struct MobileBrowserOverlay {
     this.menuCardVisible = false;
     router.pushUrl({ url: 'pages/panels/HistoryPanelPage' }).catch((error: Error): void => {
       console.error('openHistoryPanel pushUrl failed:', error);
+    });
+  }
+
+  // A' 面板页化（Phase 2）：书签/下载/最近改为独立路由页，系统 router 栈接管。
+  private openBookmarksPanel(): void {
+    this.menuVisible = false;
+    this.menuCardVisible = false;
+    this.sheetPage = 'tabs';
+    router.pushUrl({ url: 'pages/panels/BookmarksPanelPage' }).catch((error: Error): void => {
+      console.error('openBookmarksPanel pushUrl failed:', error);
+    });
+  }
+
+  private openDownloadsPanel(): void {
+    this.menuVisible = false;
+    this.menuCardVisible = false;
+    this.sheetPage = 'tabs';
+    router.pushUrl({ url: 'pages/panels/DownloadsPanelPage' }).catch((error: Error): void => {
+      console.error('openDownloadsPanel pushUrl failed:', error);
+    });
+  }
+
+  private openRecentPanel(): void {
+    this.menuVisible = false;
+    this.menuCardVisible = false;
+    this.sheetPage = 'tabs';
+    router.pushUrl({ url: 'pages/panels/RecentPanelPage' }).catch((error: Error): void => {
+      console.error('openRecentPanel pushUrl failed:', error);
     });
   }
 

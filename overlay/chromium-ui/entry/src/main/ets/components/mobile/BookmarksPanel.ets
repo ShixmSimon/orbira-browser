@@ -53,8 +53,10 @@ const LOAD_SHOW_MS: number = 350;
 
 @Component
 export struct BookmarksPanel {
-  @Prop currentUrl: string = '';
-  @Prop currentTitle: string = '';
+  // A' 面板页化（Phase 2）：改为独立路由页后不再从 overlay 以构造参数传入，
+  // 改由 AppStorage 读取（overlay 的 onBrowserStateChanged 已同步这两个键）。
+  @StorageLink('auraCurrentUrl') currentUrl: string = '';
+  @StorageLink('auraCurrentTitle') currentTitle: string = '';
   // 当前层节点（getBookmarks 回包；根级 = 三个根文件夹）。
   @StorageLink('auraPanelBookmarkList') @Watch('onListChanged') listJson: string = '';
   // 最近添加（根级下方平铺；getRecentBookmarks 通道）。
