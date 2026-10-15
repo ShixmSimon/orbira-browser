@@ -1832,11 +1832,14 @@ struct AuraShell {
       // 扩展页标题栏的「开发者模式」开关：引擎 profile pref 的回音。
       // 存 AppStorage 供 ExtensionPanel 读；setDeveloperMode 成功后引擎
       // 会立即回这个事件，所以开关状态永远以引擎为准。
+      // revision 让 JSON 每次字节必变：同名同值回包（重开面板的
+      // getDeveloperMode）不 otherwise 就唤不醒 @StorageLink 的 @Watch。
       const mode = shellEvent<DeveloperModeEvent>(event);
       AppStorage.setOrCreate('auraDeveloperMode',
         JSON.stringify({
           enabled: mode.enabled === true,
-          available: mode.available !== false
+          available: mode.available !== false,
+          revision: Date.now()
         }));
       return;
     }

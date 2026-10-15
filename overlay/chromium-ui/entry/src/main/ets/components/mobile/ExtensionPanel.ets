@@ -23,9 +23,11 @@ interface PanelEventPayload {
 }
 
 // getDeveloperMode 的回音（AuraShell 转存到 'auraDeveloperMode'）。
+// revision 由 AuraShell 填，只为保证回包字节必变、@Watch 必触发。
 interface DeveloperModePayload {
   enabled?: boolean;
   available?: boolean;
+  revision?: number;
 }
 
 function extensionInitial(name: string): string {
@@ -239,6 +241,32 @@ export struct ExtensionPanel {
   }
 
   private toggleExtension(item: ExtensionActionItem, enabled: boolean): void {
+    // 乐观更新：先改本地列表再发命令（装机反馈：等回包重拉列表时 UI 迟一
+    // 拍）。数组整体换新对象才触发刷新；回包后 reload 以引擎为准，写不进去
+    // 的（企业策略）会被回包列表纠正回来。
+    // 逐字段重建：ArkTS 禁止对象展开（arkts-no-spread）。
+    this.items = this.items.map((entry: ExtensionActionItem): ExtensionActionItem => {
+      if (entry.id !== item.id) {
+        return entry;
+      }
+      const updated: ExtensionActionItem = {
+        id: entry.id,
+        name: entry.name,
+        iconPngBase64: entry.iconPngBase64,
+        badgeText: entry.badgeText,
+        badgeColor: entry.badgeColor,
+        enabled: entry.enabled,
+        pinned: entry.pinned,
+        userEnabled: enabled,
+        disableReasons: entry.disableReasons,
+        hasPopup: entry.hasPopup,
+        optionsUrl: entry.optionsUrl,
+        version: entry.version,
+        description: entry.description,
+        author: entry.author
+      };
+      return updated;
+    });
     this.onCommand({ command: 'setExtensionEnabled', id: item.id, enabled: enabled });
   }
 
@@ -266,8 +294,10 @@ export struct ExtensionPanel {
   }
 
   private setDeveloperMode(enabled: boolean): void {
-    // 不本地改状态：引擎 setDeveloperMode 成功后会把新值回成 developerMode
-    // 事件，开关以引擎为准（企业策略可能把写入立刻收回，那时得显示收回后的）。
+    // 乐观更新：拨动瞬间就变，不等引擎回包（装机反馈：回包链路上 UI
+    // 迟一拍，退出重进才见新状态）。回包之后仍以引擎为准——企业策略
+    // 把写入收回时，developerMode 事件带回来的值会把这里盖回去。
+    this.developerMode = enabled;
     this.onCommand({ command: 'setDeveloperMode', enabled: enabled });
   }
 
@@ -370,7 +400,8 @@ export struct ExtensionPanel {
     .width('100%')
     .height('100%')
     .justifyContent(FlexAlign.Center)
-    .padding({ right: 4 })
+    // 右侧留 16vp：与左侧返回钮的边距对称（装机反馈：right:4 太贴屏缘）。
+    .padding({ right: 16 })
   }
 
   @Builder
@@ -473,7 +504,9 @@ export struct ExtensionPanel {
                   }
                 }
                 .width('100%')
-              }, (item: ExtensionActionItem): string => item.id)
+              // 键并入 userEnabled：只拿 id 当键的话，启停后同键复用旧组件，
+              // Toggle 的 isOn 停在旧值（ref/04 铁律）。
+              }, (item: ExtensionActionItem): string => `${item.id}-${item.userEnabled ? 1 : 0}`)
             }
             .width('100%')
             .borderRadius(16)
@@ -818,9 +851,32 @@ export struct ExtensionPanel {
     }) {
     Column() {
       if (this.page === 'detail') {
-        this.DetailView()
+        // 点"i"进详情要有过渡（装机反馈：无动画像闪变）。详情是二级页：
+        // 进入时从右推入 + 淡入，离开时淡出让位；列表原地淡入淡出。
+        Column() {
+          this.DetailView()
+        }
+        .width('100%')
+        .height('100%')
+        .transition(TransitionEffect.asymmetric(
+          TransitionEffect.translate({ x: '42%' })
+            .combine(TransitionEffect.OPACITY)
+            .animation({ duration: 260, curve: Curve.Friction }),
+          TransitionEffect.OPACITY
+            .animation({ duration: 200, curve: Curve.EaseOut })
+        ))
       } else {
-        this.ListView()
+        Column() {
+          this.ListView()
+        }
+        .width('100%')
+        .height('100%')
+        .transition(TransitionEffect.asymmetric(
+          TransitionEffect.OPACITY
+            .animation({ duration: 200, curve: Curve.EaseOut }),
+          TransitionEffect.OPACITY
+            .animation({ duration: 160, curve: Curve.EaseOut })
+        ))
       }
     }
     .width('100%')
