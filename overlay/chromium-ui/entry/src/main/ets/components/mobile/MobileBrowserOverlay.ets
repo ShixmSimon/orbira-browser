@@ -544,6 +544,11 @@ export struct MobileBrowserOverlay {
     // the gesture ends the app instead of paging further back through
     // history that was left behind when "home" was pressed.
     if (this.isHomeSurface()) {
+      // 扩展 popup 让位中：返回键先恢复主页层，而不是退出应用。
+      if ((AppStorage.get('auraPopupHomeHold') as number ?? 0) > 0) {
+        AppStorage.setOrCreate('auraPopupHomeHold', 0);
+        return true;
+      }
       return false;
     }
     if (this.browserState.canGoBack) {
@@ -568,6 +573,11 @@ export struct MobileBrowserOverlay {
     const currentTitleValue: string = this.browserState.title ?? '';
     if (((AppStorage.get('auraCurrentTitle') as string) ?? '') !== currentTitleValue) {
       AppStorage.setOrCreate('auraCurrentTitle', currentTitleValue);
+    }
+    // 扩展 popup 让位期间导航离开了主页 → 让位结束，恢复 HomeSurface。
+    if ((AppStorage.get('auraPopupHomeHold') as number ?? 0) > 0 &&
+      !this.isNewTabUrl(currentUrlValue)) {
+      AppStorage.setOrCreate('auraPopupHomeHold', 0);
     }
     // 页面切换帘幕：顶层 URL 变化就放一次（地址栏提交 / 点链接 / 切标签 /
     // 前进后退都算）——把引擎换页那一瞬的底色空档盖成柔和过渡。

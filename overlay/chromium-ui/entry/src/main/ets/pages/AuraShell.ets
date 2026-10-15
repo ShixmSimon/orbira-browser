@@ -94,6 +94,9 @@ import { BrowserProfileState } from '../utils/profile/BrowserProfileService';
 interface ExtensionNoticePayload {
   message?: string;
   reason?: string;
+  // extensionCommandFailed: which command failed -- notFound means different
+  // things per command (no options page vs no such extension).
+  command?: string;
 }
 
 // 上滑兜底触发位移（vp）：手指在页面区向上划过这么多、且引擎全程没动过
@@ -163,6 +166,9 @@ struct AuraShell {
   // 网页外链是否交给本机应用打开（知乎/B站等 scheme）。默认开；关掉后
   // externalUrlRequested 一律走 fallbackUrl，留在浏览器里。
   @StorageLink('auraExternalAppLinks') externalAppLinks: boolean = true;
+  // 扩展 popup 让位：主页（新标签页）上点扩展时由 ExtensionPanel 置值，
+  // 让 HomeSurface 暂时让位给原生 popup；返回键或离开主页时清零恢复。
+  @StorageLink('auraPopupHomeHold') popupHomeHold: number = 0;
   private statusBarHiddenByScroll: boolean = false;
   // 1.0.103：顶栏是否已「完全收起」（贴状态栏底模式的静息态）。视口底部内距按它
   // 追加 topSafe 补偿——否则滚到页尾最后 ~topSafe 够不到（见 applyDockViewportInset
@@ -1884,7 +1890,8 @@ struct AuraShell {
           kind: 'extensionCommandFailed',
           revision: Date.now(),
           message: notice.message ?? '',
-          reason: notice.reason ?? ''
+          reason: notice.reason ?? '',
+          command: notice.command ?? ''
         }));
       return;
     }
@@ -2345,6 +2352,11 @@ struct AuraShell {
   private homeSurfaceVisible(): boolean {
     if (this.homeHold || this.homeReturnCover) {
       return true;
+    }
+    // 扩展 popup 让位中：原生 popup 画在窗口层，主页盖层必须暂时收起才不
+    // 把它压在底下。返回键（overlay 的 handleSystemBack）或导航离开主页时清零。
+    if (this.popupHomeHold > 0) {
+      return false;
     }
     if (this.navCover) {
       return false;

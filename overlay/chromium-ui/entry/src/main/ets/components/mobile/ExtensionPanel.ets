@@ -28,6 +28,8 @@ interface PanelEventPayload {
   kind?: string;
   message?: string;
   reason?: string;
+  // extensionCommandFailed：哪条命令失败的（notFound 的含义随命令不同）。
+  command?: string;
   // extensionReloadLanded：重载之后引擎观察到的状态。
   enabled?: boolean;
   blocked?: boolean;
@@ -330,7 +332,10 @@ export struct ExtensionPanel {
       } else if (reason === 'stillDisabled') {
         message = '扩展没能启用，请重试。';
       } else if (reason === 'notFound') {
-        message = '扩展不存在或已被移除。';
+        // openExtensionOptions 的 notFound 是"没有选项页"，不是扩展不存在。
+        message = String(payload.command ?? '') === 'openExtensionOptions'
+          ? '该扩展没有选项页。'
+          : '扩展不存在或已被移除。';
       } else {
         message = raw.length > 0 ? raw : '扩展没有执行这个操作。';
       }
@@ -350,32 +355,40 @@ export struct ExtensionPanel {
     if (!item.userEnabled) {
       return;
     }
-    // 1.0.124：扩展的 popup 由原生画在**网页层**（脚本猫这类点一下就弹面板的
-    // 扩展正是如此）。当前标签页不是真网页时——新标签页被外壳主页层盖着、
-    // chrome:// 页也没地方锚——弹出来的面板根本看不见，点了像没反应。
-    // 1.0.148：守卫收窄到**真有 popup 的扩展**（item.hasPopup，引擎按
-    // action.default_popup 下发）。没有 popup 的（调姬助手这类点按打开
-    // options 页或直接开网页）不依赖网页上下文，放行——否则从主页点
-    // 它们也会被「先打开网页」误拦。
-    // 注意这条守卫只管点扩展项：设置里打开扩展列表（管理/启停/详情）不
-    // 依赖当前标签页，不该被拦。
-    if (item.hasPopup && !this.isWebPageUrl(this.currentUrl)) {
-      this.getUIContext().getPromptAction().showToast({
-        message: '先打开一个网页，再打开扩展面板',
-        duration: 3000
-      });
-      return;
+    // popup 挂在浏览器**窗口层**（引擎 ExtensionPopup::ShowPopupAtShellRect，
+    // 拿不到锚点时落到窗口底部中央），http(s)、chrome:// 与
+    // chrome-extension:// 页都能承载它——唯独主页不行：外壳的 HomeSurface
+    // 盖层铺满全屏，会把 popup 压在底下，点了像没反应。所以只在主页
+    // （新标签页）请求 HomeSurface 让位（auraPopupHomeHold），返回键或离开
+    // 主页时恢复；其余场景一律放行。
+    // 1.0.148 起守卫只管真有 popup 的扩展（item.hasPopup，引擎按
+    // action.default_popup 下发）；没有 popup 的（调姬助手这类）一直放行。
+    if (item.hasPopup && this.isNewTabUrl(this.currentUrl)) {
+      AppStorage.setOrCreate('auraPopupHomeHold', Date.now());
     }
-    // The extension's popup panel is drawn by native in the web layer --
+    // The extension's popup panel is drawn by native above the web layer --
     // under this full-screen page. Dismiss the page so the popup is
     // visible; reopen the extensions page to see list changes.
     this.onClose();
     this.onCommand({ command: 'runExtensionAction', id: item.id });
   }
 
-  // 与外壳同一个判据：只有 http(s) 才算能让原生 popup 落地的真网页。
-  private isWebPageUrl(url: string): boolean {
-    return url.startsWith('http://') || url.startsWith('https://');
+  // 与 MobileBrowserOverlay.isNewTabUrl 同一份判据（引擎换 URL 写法时一起改）。
+  private isNewTabUrl(url: string): boolean {
+    return url.startsWith('chrome://newtab') ||
+      url.startsWith('chrome://new-tab-page') ||
+      url.startsWith('chrome://new-tab-page-third-party') ||
+      url.startsWith('chrome-native://newtab');
+  }
+
+  // 扩展的选项页：引擎 ExtensionTabUtil::OpenOptionsPage 新开标签页打开
+  // manifest 注册的 options 页——走导航而不是 popup，主页上也能进。没有
+  // 选项页的扩展引擎回 notFound，失败文案按命令区分（见面板事件处理）。
+  private openOptionsPage(): void {
+    if (this.detailId.length === 0) {
+      return;
+    }
+    this.onCommand({ command: 'openExtensionOptions', id: this.detailId });
   }
 
   private toggleExtension(item: ExtensionActionItem, enabled: boolean): void {
@@ -1132,6 +1145,40 @@ export struct ExtensionPanel {
             .backgroundColor($r('app.color.card_background'))
             .clip(true)
             .margin({ top: 26 })
+
+            // 扩展选项：chrome://extensions 卡片「详情」里的选项页——
+            // 新开标签页直达 manifest 注册的 options 页，不经过 popup 守卫，
+            // 主页上也能进（脚本猫的「我的脚本」这类完整界面就在这里）。
+            Column() {
+              Row({ space: 12 }) {
+                Image($r('app.media.chromium_settings'))
+                  .width(22)
+                  .height(22)
+                  .fillColor($r('app.color.icon_primary'))
+
+                Column({ space: 3 }) {
+                  Text('扩展选项')
+                    .fontSize(16)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor($r('app.color.text_primary'))
+                  Text('新开标签页打开该扩展的选项页')
+                    .fontSize(12)
+                    .fontColor($r('app.color.text_secondary'))
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 10, bottom: 10 })
+              .onClick(() => {
+                this.openOptionsPage();
+              })
+            }
+            .width('100%')
+            .borderRadius(16)
+            .backgroundColor($r('app.color.card_background'))
+            .clip(true)
+            .margin({ top: 12 })
 
             Button('卸载扩展')
               .width('100%')
