@@ -79,6 +79,9 @@ export struct ExtensionPanel {
   // 状态永远以引擎为准——setDeveloperMode 成功后引擎会回 developerMode 事件。
   @State private developerMode: boolean = false;
   @State private developerModeAvailable: boolean = true;
+  // 开发者模式总闸的快照：关闭总闸那一刻各扩展的开关状态（id -> 原开关值），
+  // 用于重新打开总闸时逐个恢复。非 UI 状态，用普通字段（改动不必触发刷新）。
+  private enabledSnapshot: Record<string, boolean> = {};
   private requestSeq: number = 0;
   private retryTimer: number = -1;
 
@@ -335,6 +338,42 @@ export struct ExtensionPanel {
     // 把写入收回时，developerMode 事件带回来的值会把这里盖回去。
     this.developerMode = enabled;
     this.onCommand({ command: 'setDeveloperMode', enabled: enabled });
+    // 1.0.151：开发者模式是总闸——关掉时把扩展全停（未打包扩展在开发者
+    // 模式关闭下本就不该跑，引擎也会拒），打开时按快照把原来开着的恢复。
+    this.applyDeveloperModeCascade(enabled);
+  }
+
+  // 开发者模式总闸的级联：关→全停并记快照；开→按快照恢复。
+  // 快照是「读者自己拨过的状态」（userEnabled），不是引擎的 enabled
+  // （那是当前网页是否用得上，两回事）。
+  private applyDeveloperModeCascade(developerModeOn: boolean): void {
+    if (developerModeOn) {
+      // 恢复：对每个扩展下发"回到快照值"。没快照记录的（首次进入就是
+      // 关闭态）保持不动。
+      this.items.forEach((entry: ExtensionActionItem): void => {
+        const wanted = this.enabledSnapshot[entry.id];
+        if (wanted === undefined) {
+          return;
+        }
+        if (entry.userEnabled === wanted) {
+          return;
+        }
+        this.onCommand({ command: 'setExtensionEnabled', id: entry.id, enabled: wanted });
+      });
+      return;
+    }
+    // 关闭：先记快照，再把当前开着的全部停掉。
+    const snapshot: Record<string, boolean> = {};
+    this.items.forEach((entry: ExtensionActionItem): void => {
+      snapshot[entry.id] = entry.userEnabled;
+    });
+    this.enabledSnapshot = snapshot;
+    this.items.forEach((entry: ExtensionActionItem): void => {
+      if (!entry.userEnabled) {
+        return;
+      }
+      this.onCommand({ command: 'setExtensionEnabled', id: entry.id, enabled: false });
+    });
   }
 
   private openMoreSettings(): void {
@@ -503,7 +542,10 @@ export struct ExtensionPanel {
                     .alignItems(HorizontalAlign.Start)
                     .layoutWeight(1)
 
+                    // 1.0.151：开发者模式关闭时启停开关一并置灰（总闸关着，
+                    // 未打包扩展本就不该跑，拨了也是被拒）。
                     Toggle({ type: ToggleType.Switch, isOn: item.userEnabled })
+                      .enabled(this.developerMode)
                       .onChange((isOn: boolean) => {
                         this.toggleExtension(item, isOn);
                       })
@@ -747,14 +789,20 @@ export struct ExtensionPanel {
 
             // 「允许用户脚本」：桌面详情页同款开关。只有声明了 userScripts
             // 权限的扩展才出现（引擎侧同一道闸门）；不开它用户脚本跑不了。
+            // 1.0.151：开发者模式是总闸——关闭时整个条置灰不可拨（此前能拨，
+            // 拨了才回"当前策略不允许这个操作"，等于挖个坑给人跳）。
             if (this.detailUserScriptsAvailable) {
               Row({ space: 12 }) {
                 Column({ space: 3 }) {
                   Text('允许用户脚本')
                     .fontSize(16)
                     .fontWeight(FontWeight.Medium)
-                    .fontColor($r('app.color.text_primary'))
-                  Text('让这个扩展运行用户脚本（脚本管理器类扩展必开）')
+                    .fontColor(this.developerMode ?
+                      $r('app.color.text_primary') : $r('app.color.text_secondary'))
+                    .opacity(this.developerMode ? 1 : 0.5)
+                  Text(this.developerMode ?
+                    '让这个扩展运行用户脚本（脚本管理器类扩展必开）' :
+                    '打开标题栏的「开发者模式」后才能设置')
                     .fontSize(12)
                     .fontColor($r('app.color.text_secondary'))
                 }
@@ -762,6 +810,7 @@ export struct ExtensionPanel {
                 .layoutWeight(1)
 
                 Toggle({ type: ToggleType.Switch, isOn: this.detailUserScriptsAllowed })
+                  .enabled(this.developerMode)
                   .onChange((isOn: boolean) => {
                     // 不本地改状态：引擎 setExtensionUserScriptsAllowed 成功
                     // 后回一份最新详情（含新 allowed 值），以引擎为准。
@@ -778,6 +827,7 @@ export struct ExtensionPanel {
               .backgroundColor($r('app.color.card_background'))
               .clip(true)
               .margin({ top: 12 })
+              .opacity(this.developerMode ? 1 : 0.5)
             }
 
             Text('权限')
