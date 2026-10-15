@@ -70,6 +70,8 @@ export struct PasswordsPanel {
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
   onBack: () => void = (): void => {};
   onClose: () => void = (): void => {};
+  // 1.0.163：内层详情导航激活态回传 overlay（禁用面板级边缘右滑，避免与原生子页返回冲突）。
+  onInnerNavChange?: (active: boolean) => void = (_active: boolean): void => {};
 
   @State private items: SavedPasswordItem[] = [];
   // 验证门优先：进入先做本机验证，通过后 passwordAuthGranted + reload，
@@ -499,6 +501,7 @@ export struct PasswordsPanel {
     this.passwordTouched = false;
     this.noteTouched = false;
     this.pathStack.pushPathByName('detail', item.id);
+    this.onInnerNavChange?.(this.pathStack.size() > 0);
   }
 
   // 1.0.160：回列表 = 清详情态 + 弹掉详情 destination。删除/保存成功的引擎
@@ -508,6 +511,7 @@ export struct PasswordsPanel {
     this.view = 'list';
     if (this.pathStack.size() > 0) {
       this.pathStack.pop();
+      this.onInnerNavChange?.(this.pathStack.size() > 0);
     }
   }
 

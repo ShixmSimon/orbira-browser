@@ -70,6 +70,8 @@ export struct SitePermissionsPanel {
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
   onBack: () => void = (): void => {};
   onClose: () => void = (): void => {};
+  // 1.0.163：内层详情导航激活态回传 overlay（禁用面板级边缘右滑，避免与原生子页返回冲突）。
+  onInnerNavChange?: (active: boolean) => void = (_active: boolean): void => {};
 
   @State private page: string = 'list';
   // 1.0.160：详情页走真路由栈（NavPathStack + HdsNavDestination），列表是
@@ -156,6 +158,7 @@ export struct SitePermissionsPanel {
     this.detailItems = [];
     this.page = 'detail';
     this.pathStack.pushPathByName('detail', origin);
+    this.onInnerNavChange?.(this.pathStack.size() > 0);
     this.refreshDetail();
   }
 
@@ -163,6 +166,7 @@ export struct SitePermissionsPanel {
     this.page = 'list';
     if (this.pathStack.size() > 0) {
       this.pathStack.pop();
+      this.onInnerNavChange?.(this.pathStack.size() > 0);
     }
     this.reloadList();
   }

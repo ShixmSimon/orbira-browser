@@ -401,6 +401,10 @@ export struct MobileBrowserOverlay {
   // 转场方向：true = 前进（push，新页整屏滑入）；false = 后退（pop，旧页整屏
   // 滑出、新页 parallax 揭示）。旧页位移/变暗方向由它决定。
   @State private panelSwitchForward: boolean = true;
+  // 1.0.163：左边缘右滑返回手势状态。
+  @State private panelDragX: number = 0;          // 当前页跟手右移位移（vp）
+  @State private panelDragging: boolean = false;  // 是否正在右滑返回
+  @State private panelInnerNavActive: boolean = false; // 当前面板是否有激活的内层子页（避免与原生子页返回手势打架）
   // 关闭动画的作废令牌：动画期间再次打开面板时，旧的卸载定时器不再生效。
   private panelCloseToken: number = 0;
   // 页面切换柔和过渡帘幕（2026-10-10）：URL 变化（地址栏提交搜索 / 点链接 /
@@ -2840,6 +2844,9 @@ export struct MobileBrowserOverlay {
           },
           onClose: (): void => {
             this.closePanel();
+          },
+          onInnerNavChange: (active: boolean): void => {
+            this.panelInnerNavActive = active;
           }
         })
       } else if (page === 'sitepermissions') {
@@ -2852,6 +2859,9 @@ export struct MobileBrowserOverlay {
           },
           onClose: (): void => {
             this.closePanel();
+          },
+          onInnerNavChange: (active: boolean): void => {
+            this.panelInnerNavActive = active;
           }
         })
       } else if (page === 'settings') {
@@ -2861,6 +2871,9 @@ export struct MobileBrowserOverlay {
           },
           onBack: (): void => {
             this.closePanel();
+          },
+          onInnerNavChange: (active: boolean): void => {
+            this.panelInnerNavActive = active;
           },
           onOpenExtensions: (): void => {
             this.openExtensionsPanel(true);
@@ -2900,6 +2913,9 @@ export struct MobileBrowserOverlay {
           },
           onClose: (): void => {
             this.closePanel();
+          },
+          onInnerNavChange: (active: boolean): void => {
+            this.panelInnerNavActive = active;
           }
         })
       }
@@ -3008,7 +3024,45 @@ export struct MobileBrowserOverlay {
     // 1.0.155 曾把 response 提到 0.48 求「更从容」，真机反馈不合适，1.0.156
     // 已回退 0.34 —— 开源 Aira 的页面转场常量也是 0.34/0.84，这个值没问题，
     // 手感差异来自机制（手写位移 vs 官方转场），不来自快慢。
-    .translate({ x: (1 - this.panelShift) * this.panelWidthVp() })
+    .translate({ x: (1 - this.panelShift) * this.panelWidthVp() + this.panelDragX })
+    // 1.0.163：左边缘右滑返回手势——手指跟手右移当前页，松手过阈值走 panelBack()
+    // （与各面板 onBack 行为一致），未过阈值弹回。panelInnerNavActive 为真时
+    // （当前面板有激活的内层子页）交还给系统原生子页返回手势，避免冲突。
+    .gesture(
+      PanGesture({ direction: PanDirection.Horizontal, fingers: 1 })
+        .onActionStart((event: GestureEvent): void => {
+          if (this.panelPage === 'none' || this.panelDragging || this.panelInnerNavActive) {
+            return;
+          }
+          const startX: number = event.fingerList[0].x;
+          if (startX > 32) {
+            return;
+          }
+          this.panelDragging = true;
+        })
+        .onActionUpdate((event: GestureEvent): void => {
+          if (!this.panelDragging) {
+            return;
+          }
+          const dx: number = event.offsetX;
+          this.panelDragX = dx > 0 ? dx : 0;
+        })
+        .onActionEnd((): void => {
+          if (!this.panelDragging) {
+            return;
+          }
+          this.panelDragging = false;
+          const threshold: number = this.panelWidthVp() * 0.33;
+          if (this.panelDragX > threshold) {
+            this.panelDragX = 0;
+            this.panelBack();
+          } else {
+            animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
+              this.panelDragX = 0;
+            });
+          }
+        })
+    )
     .onAppear((): void => {
       animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
         this.panelShift = 1;
@@ -4121,6 +4175,25 @@ export struct MobileBrowserOverlay {
         this.outgoingPage = '';
       });
     }, 32);
+  }
+
+  // 1.0.163：面板级返回（边缘右滑 / 返回钮统一走这里）。
+  // 与各面板 PanelSlot 里接的 onBack 行为完全一致：顶层面板关闭整层；
+  // 网站权限/密码恒回设置；扩展程序依来源回设置或关闭。
+  private panelBack(): void {
+    const page: string = this.panelPage;
+    if (page === 'passwords' || page === 'sitepermissions') {
+      this.switchPanel('settings', false);
+    } else if (page === 'extensions') {
+      if (this.extensionsFromSettings) {
+        this.extensionsFromSettings = false;
+        this.switchPanel('settings', false);
+      } else {
+        this.closePanel();
+      }
+    } else {
+      this.closePanel();
+    }
   }
 
   // 页面切换："横向扫过"帘幕（1.0.67，替代纯淡入淡出）—— 从右侧扫入盖上、
