@@ -78,6 +78,9 @@ export struct ExtensionPanel {
   @State private detailSiteAccessChangeable: boolean = false;
   @State private detailMissing: boolean = false;
   @State private installing: boolean = false;
+  // 重新载入命令是否已发出、还在等引擎回执（extensionActionsChanged）。
+  // 不参与渲染，故不用 @State。
+  private reloadPending: boolean = false;
   // 详情页的扩展信息（引擎列表项本来就有下发，打开详情时随 item 带入）。
   @State private detailVersion: string = '';
   @State private detailDescription: string = '';
@@ -233,6 +236,15 @@ export struct ExtensionPanel {
     const kind = String(payload.kind ?? '');
     if (kind === 'extensionActionsChanged') {
       this.installing = false;
+      // 重新载入的落地回执：引擎重载会 disable→enable 并触发本事件，收到即说明
+      // 命令真的执行到了引擎（区别于"只弹了 toast 而引擎没动"）。
+      if (this.reloadPending) {
+        this.reloadPending = false;
+        this.getUIContext().getPromptAction().showToast({
+          message: '已重新载入',
+          duration: 2000
+        });
+      }
       this.reload();
       if (this.page === 'detail' && this.detailId.length > 0) {
         this.requestSeq += 1;
@@ -510,10 +522,11 @@ export struct ExtensionPanel {
     if (this.detailId.length === 0) {
       return;
     }
+    this.reloadPending = true;
     this.onCommand({ command: 'reloadExtension', id: this.detailId });
-    // 重载成功后页面看上去纹丝不动（详情页数据不变、列表在底层看不见刷新），
-    // 没有这条提示就会被当成"点了没反应"。失败则由 extensionCommandFailed
-    // 弹"操作未完成"对话框说明原因。
+    // 重载成功后详情页数据往往不变、列表的刷新发生在底层看不见，没有提示就会
+    // 被当成"点了没反应"；重载是否真的落地，由 extensionActionsChanged 回执
+    // 再补一条"已重新载入"。失败则由 extensionCommandFailed 弹对话框说明原因。
     this.getUIContext().getPromptAction().showToast({
       message: '正在重新载入扩展…',
       duration: 2000
