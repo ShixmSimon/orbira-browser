@@ -2945,13 +2945,10 @@ export struct MobileBrowserOverlay {
     return 0;
   }
 
-  // 变暗：只作用于转场中的旧面板（前进淡到 0.75、后退淡到 0.8），保层次。
-  private panelSlotDim(page: string): number {
-    if (this.panelPage === page || this.outgoingPage !== page) {
-      return 1;
-    }
-    return 1 - (1 - Math.abs(this.panelContentShift)) *
-      (this.panelSwitchForward ? 0.25 : 0.2);
+  // 1.0.161：去掉转场旧面板变暗——与扩展详情页（原生 NavPathStack push-pop，
+  // 旧页只左移 parallax、不变暗）对齐。parallax 位移已保留层级纵深，无需再压暗。
+  private panelSlotDim(_page: string): number {
+    return 1;
   }
 
 
@@ -4063,31 +4060,32 @@ export struct MobileBrowserOverlay {
     this.menuCardVisible = false;
     this.sheetPage = 'tabs';
     this.extensionsFromSettings = false;
-    // 1.0.160：标记已访问（常驻挂载）+ 清转场旧页引用。
+    // 已在目标面板：不触发任何转场。
+    if (this.panelPage === page) {
+      return;
+    }
+    // 1.0.161：面板已在场（菜单内再点别的面板入口）时改走 push 式转场——
+    // 新页整屏右滑入、旧页左移 25% parallax，与扩展详情页原生层级转场一致；
+    // 不再把整层 PanelLayer 重新右滑入场（旧页会瞬移屏外再滑回，观感割裂）。
+    if (this.panelPage !== 'none') {
+      this.switchPanel(page, true);
+      return;
+    }
+    // 关闭态 → 整层右滑入场（首屏 push）。
     this.markVisited(page);
     this.outgoingPage = '';
-    // 面板开合动效：先落到"屏外右侧"，让挂载首帧就渲染在屏外，再由 PanelLayer
-    // 的 onAppear 起弹簧动画滑入 —— 既不会闪一帧，也不受首帧重布局影响。
-    const wasOpen: boolean = this.panelPage !== 'none';
     this.panelCloseToken++;
     this.panelShift = 0;
     this.panelContentShift = 0;
     this.panelPage = page;
-    if (wasOpen) {
-      // 面板已在场（关闭动画收尾前又点开）：onAppear 不会再触发，这里补一次。
-      setTimeout((): void => {
-        animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
-          this.panelShift = 1;
-        });
-      }, 32);
-    }
   }
 
   private closePanel(): void {
     this.extensionsFromSettings = false;
     // 关闭动效：滑出到右侧**之后**才卸载（动画期间内容保留在场）。
+    // 1.0.161：曲线与 push 对齐（0.34/0.84），开合手感统一。
     const token: number = ++this.panelCloseToken;
-    animateTo({ curve: curves.springMotion(0.32, 0.92) }, (): void => {
+    animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
       this.panelShift = 0;
     });
     setTimeout((): void => {
