@@ -1708,6 +1708,11 @@ export struct BookmarksPanel {
     // body 包 Stack：行菜单/表单弹窗挂这里（viewport 固定，遮罩盖满全屏）。
     Stack({ alignContent: Alignment.TopStart }) {
     Column() {
+      // 1.0.179：搜索框与列表合并进同一个 Scroll —— 外层 top padding 会把
+      // 滚动视口压低到标题行下方，内容进不了标题行区域（顶部渐变模糊丢失，
+      // 1.0.121 同类教训）；搜索框随内容滚动，输入时组件不重建、焦点不丢。
+      Scroll(this.listScroller) {
+      Column() {
       Row({ space: 8 }) {
         Image($r('app.media.chromium_search'))
           .width(16)
@@ -1721,8 +1726,16 @@ export struct BookmarksPanel {
           .placeholderColor($r('app.color.text_secondary'))
           .backgroundColor(Color.Transparent)
           .onChange((value: string) => {
+            const wasSearching: boolean = this.searchText.trim().length > 0;
             this.searchText = value;
             this.runSearch(value);
+            // 搜索态 ↔ 普通态内容整体替换：归顶（旧版靠两个互斥 Scroll 重建
+            // 自然归零；合并后显式下发，且仅在切换瞬间，与旧行为一致）。
+            if (wasSearching !== (value.trim().length > 0)) {
+              setTimeout((): void => {
+                this.listScroller.scrollEdge(Edge.Top);
+              }, 0);
+            }
           })
       }
       .width('100%')
@@ -1730,11 +1743,10 @@ export struct BookmarksPanel {
       .borderRadius(20)
       .backgroundColor($r('app.color.surface_secondary'))
       .padding({ left: 12, right: 12 })
+      .margin({ bottom: 12 })
 
       if (this.searchText.trim().length > 0) {
         // 搜索：引擎全树匹配（searchBookmarks，命中带 path）。
-        Scroll(this.listScroller) {
-        Column() {
         if (this.searchResults.length === 0) {
           Text('没有匹配的书签')
             .fontSize(14)
@@ -1755,17 +1767,6 @@ export struct BookmarksPanel {
         .borderRadius(16)
         .backgroundColor($r('app.color.card_background'))
         .clip(true)
-        }
-        .width('100%')
-        // 末尾留白写在「滚动内容」里而不是视口上：列表铺满全高、不留死区，
-        // 最后一行也能滚到悬浮药丸之上（见 BatchActionBar 注释）。
-        .padding({ bottom: this.selectMode ? (50 + glassBottomInsetVp()) : 0 })
-        }
-        .layoutWeight(1)
-        .padding({ top: 12 })
-        .scrollBar(BarState.Off)
-        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-        .align(Alignment.TopStart)
       } else if (this.loading) {
         Text('加载中…')
           .fontSize(14)
@@ -1774,71 +1775,70 @@ export struct BookmarksPanel {
           .textAlign(TextAlign.Center)
           .margin({ top: 40 })
       } else {
-        Scroll(this.listScroller) {
-        Column() {
-          if (this.currentNodes.length === 0 && this.currentFolderId.length > 0) {
-            // 空文件夹提示（v3.1 重写时遗漏，用户反馈补回）。
-            Column({ space: 6 }) {
-              Text('这个文件夹是空的')
-                .fontSize(15)
-                .fontColor($r('app.color.text_secondary'))
-              Text('右上角 + 可以添加书签或新建文件夹')
-                .fontSize(13)
-                .fontColor($r('app.color.text_secondary'))
-            }
-            .width('100%')
-            .margin({ top: 60 })
-          } else {
-          // 根级置顶：主页书签（「首页」文件夹）入口 —— 主页磁贴显示的就是这里
-          // 的书签；文件夹由主页在手机书签根下自动创建维护。选择模式不出（这条
-          // 是跳转入口，不参与批量勾选）。
-          if (this.currentFolderId.length === 0 && !this.selectMode && this.homeFolderId.length > 0) {
-            this.HomeFolderRow()
+        if (this.currentNodes.length === 0 && this.currentFolderId.length > 0) {
+          // 空文件夹提示（v3.1 重写时遗漏，用户反馈补回）。
+          Column({ space: 6 }) {
+            Text('这个文件夹是空的')
+              .fontSize(15)
+              .fontColor($r('app.color.text_secondary'))
+            Text('右上角 + 可以添加书签或新建文件夹')
+              .fontSize(13)
+              .fontColor($r('app.color.text_secondary'))
           }
-          // 当前层：根级 = 三个根文件夹；子层 = 该文件夹内容（文件夹在前）。
-          ForEach(this.currentNodes, (node: BookmarkNode, index: number) => {
-            if (node.type === 'folder') {
-              this.FolderRow(node)
-            }
-          }, (node: BookmarkNode): string =>
-            `f|${node.id}#${node.childCount ?? 0}|${node.title}`)
+          .width('100%')
+          .margin({ top: 60 })
+        } else {
+        // 根级置顶：主页书签（「首页」文件夹）入口 —— 主页磁贴显示的就是这里
+        // 的书签；文件夹由主页在手机书签根下自动创建维护。选择模式不出（这条
+        // 是跳转入口，不参与批量勾选）。
+        if (this.currentFolderId.length === 0 && !this.selectMode && this.homeFolderId.length > 0) {
+          this.HomeFolderRow()
+        }
+        // 当前层：根级 = 三个根文件夹；子层 = 该文件夹内容（文件夹在前）。
+        ForEach(this.currentNodes, (node: BookmarkNode, index: number) => {
+          if (node.type === 'folder') {
+            this.FolderRow(node)
+          }
+        }, (node: BookmarkNode): string =>
+          `f|${node.id}#${node.childCount ?? 0}|${node.title}`)
 
-          if (this.currentFolderId.length === 0 && this.recentNodes.length > 0) {
-            AuraSectionLabel({ text: '最近添加' })
-            Column() {
-              ForEach(this.recentNodes, (node: BookmarkNode, index: number) => {
-                this.BookmarkRow(node, index, this.recentNodes.length)
-              }, (node: BookmarkNode): string => `r|${node.id}|${node.title}|${node.url ?? ''}`)
-            }
-            .width('100%')
-            .borderRadius(16)
-            .backgroundColor($r('app.color.card_background'))
-            .clip(true)
-          } else if (this.currentFolderId.length > 0) {
-            Column() {
-              ForEach(this.currentNodes, (node: BookmarkNode, index: number) => {
-                if (node.type !== 'folder') {
-                  this.BookmarkRow(node, index, this.currentNodes.length)
-                }
-              }, (node: BookmarkNode): string => `u|${node.id}|${node.title}|${node.url ?? ''}`)
-            }
-            .width('100%')
-            .borderRadius(16)
-            .backgroundColor($r('app.color.card_background'))
-            .clip(true)
+        if (this.currentFolderId.length === 0 && this.recentNodes.length > 0) {
+          AuraSectionLabel({ text: '最近添加' })
+          Column() {
+            ForEach(this.recentNodes, (node: BookmarkNode, index: number) => {
+              this.BookmarkRow(node, index, this.recentNodes.length)
+            }, (node: BookmarkNode): string => `r|${node.id}|${node.title}|${node.url ?? ''}`)
           }
+          .width('100%')
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
+        } else if (this.currentFolderId.length > 0) {
+          Column() {
+            ForEach(this.currentNodes, (node: BookmarkNode, index: number) => {
+              if (node.type !== 'folder') {
+                this.BookmarkRow(node, index, this.currentNodes.length)
+              }
+            }, (node: BookmarkNode): string => `u|${node.id}|${node.title}|${node.url ?? ''}`)
           }
+          .width('100%')
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
         }
-        .width('100%')
-        // 同上：底部占位进内容，视口保持全高。
-        .padding({ bottom: this.selectMode ? (50 + glassBottomInsetVp()) : 0 })
         }
-        .layoutWeight(1)
-        .padding({ top: 12 })
-        .scrollBar(BarState.Off)
-        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-        .align(Alignment.TopStart)
       }
+      }
+      .width('100%')
+      // 大标题带：滚动内容穿过「书签」大标题时逐渐虚化（见 GlassPage 文件头）。
+      // 顶部留白进内容层（不是视口）：视口保持全高，内容才能穿过状态栏/标题行；
+      // 末尾留白同理写进滚动内容，列表铺满全高无死区（见 BatchActionBar 注释）。
+      .padding({ top: glassHeaderInsetVp(), bottom: this.selectMode ? (50 + glassBottomInsetVp()) : 0 })
+      }
+      .layoutWeight(1)
+      .scrollBar(BarState.Off)
+      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+      .align(Alignment.TopStart)
 
       // 批量操作条改为悬浮胶囊（见 BatchActionBar()，挂 body Stack，不占流式高度）。
     }
@@ -1846,8 +1846,9 @@ export struct BookmarksPanel {
     .height('100%')
     .padding({
       left: 16,
-      right: 16,
-      top: glassHeaderInsetVp()
+      right: 16
+      // 1.0.179：top 移入滚动内容层——外层 top padding 会压低滚动视口，
+      // 内容永远进不了标题行区域，顶部渐变模糊丢失（1.0.121 同类教训）。
       // 选择态底部占位不写在这里：会缩短滚动视口 → 视口边缘出现切一半的行
       // + 底部死区（用户反馈的"有遮罩"）。改为写进滚动内容末尾。
     })

@@ -910,6 +910,16 @@ export struct PasswordsPanel {
         // 官方实测 ForEach 到 10000 项即 560MB 内存 / 58% 丢帧。
         // 卡片观感由首/末行各自的圆角拼出（旧版是外层卡片 Column + clip）。
         List({ scroller: this.listScroller, space: 0 }) {
+          // 1.0.179：顶部留白写成「内容项」而不是 List 视口的 padding ——
+          // 视口 padding 会把滚动视口压低到标题行下方，内容永远进不了标题行
+          // 区域，顶部渐变模糊丢失（1.0.121 同类教训）。留白作为第一个
+          // ListItem：滚动时随内容滚走，内容才能穿过状态栏被渐变模糊盖住。
+          ListItem() {
+            Column()
+              .width('100%')
+              .height(glassHeaderInsetVp())
+          }
+
           // 搜索框：随内容滚动（与旧版一致，位于大标题带之下）。
           ListItem() {
             Row({ space: 8 }) {
@@ -983,15 +993,22 @@ export struct PasswordsPanel {
               .width('100%')
               .padding({ left: 4, right: 4, top: 10 })
           }
+
+          // 选择态末尾留白：同样写成内容项（不是视口）——列表铺满全高无死区，
+          // 最后一行也能滚到悬浮操作条之上（见 BatchActionBar 注释）。
+          if (this.selectMode && this.view === 'list') {
+            ListItem() {
+              Column()
+                .width('100%')
+                .height(50 + glassBottomInsetVp())
+            }
+          }
         }
         .layoutWeight(1)
         .width('100%')
         .scrollBar(BarState.Off)
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .align(Alignment.TopStart)
-        // 大标题带：滚动内容穿过「密码」大标题时逐渐虚化（见 GlassPage 文件头）。
-        // 选择态末尾留白写在滚动内容里（不是视口），列表铺满全高无死区。
-        .padding({ top: glassHeaderInsetVp(), bottom: this.selectMode && this.view === 'list' ? (50 + glassBottomInsetVp()) : 0 })
       }
 
       // 批量操作条改为悬浮胶囊（见 BatchActionBar()，挂 body Stack，不占流式高度）。
