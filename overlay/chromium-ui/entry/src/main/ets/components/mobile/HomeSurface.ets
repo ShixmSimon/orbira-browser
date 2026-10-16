@@ -1595,8 +1595,17 @@ export struct HomeSurface {
       }
 
       Column() {
+        // 1.0.178：上下留白均分。原先是顶部固定 15% 窗高占位，内容组
+        // （Logo→搜索框→书签）整体贴在上半屏，下半屏留一大片空白。现改为
+        // 一对弹性占位（layoutWeight）对半劈剩余空间：内容组垂直居中，
+        // 磁贴增减自动保持上下均匀，不按窗高算死数。
+        Column()
+          .layoutWeight(1)
+
+        // 主页布局弹层的「Logo」微调：在居中基础之上再下移。负值不生效
+        // （顶部已是弹性占位，没有可压缩的固定基数可吃）。
         Blank()
-          .height(Math.max(0, this.windowH * 0.15 + this.custom.logoOffset))
+          .height(Math.max(0, this.custom.logoOffset))
 
         if (this.custom.showLogo || this.incognito) {
           Row({ space: 8 }) {
@@ -1700,7 +1709,9 @@ export struct HomeSurface {
           }
         }
 
-        Blank()
+        // 与顶部弹性占位成对：下半留白 = 剩余空间的一半。
+        Column()
+          .layoutWeight(1)
       }
       .width('100%')
       .height('100%')

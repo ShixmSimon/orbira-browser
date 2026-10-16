@@ -60,6 +60,136 @@ interface IoPayload {
   reason?: string;
 }
 
+// LazyForEach 数据源（密码列表）。IDataSource / DataChangeListener 是 ArkTS
+// 全局类型（编译器内置声明）——**不可**从 '@kit.ArkUI' import（1.0.177 教训：
+// 报 10505001 has no exported member，级联满屏编译错）。
+class PasswordDataSource implements IDataSource {
+  private rows: SavedPasswordItem[] = [];
+  private listeners: DataChangeListener[] = [];
+
+  totalCount(): number {
+    return this.rows.length;
+  }
+
+  getData(index: number): SavedPasswordItem {
+    return this.rows[index];
+  }
+
+  registerDataChangeListener(listener: DataChangeListener): void {
+    this.listeners.push(listener);
+  }
+
+  unregisterDataChangeListener(listener: DataChangeListener): void {
+    const index = this.listeners.indexOf(listener);
+    if (index >= 0) {
+      this.listeners.splice(index, 1);
+    }
+  }
+
+  // 过滤结果/全量刷新后整体重排：onDataReloaded 让 List 重新取数。
+  rebuild(rows: SavedPasswordItem[]): void {
+    this.rows = rows;
+    for (const listener of this.listeners) {
+      listener.onDataReloaded();
+    }
+  }
+}
+
+// 密码行（@Reusable）：供 List + LazyForEach 复用。行数据走 @Prop —— 复用
+// 时自动同步新值，无需 aboutToReuse 重复赋值。点击回传 itemId 由父组件查找
+// （避免复用后闭包仍指向旧 item 的点错行）。
+// 卡片观感：旧版是外层卡片 Column（borderRadius 16 + clip）包住 ForEach；
+// 虚拟化后圆角拆到首/末行各自拼，视觉与旧版一致（分割线判据同时修正：
+// 旧版按全量 items.length 判末行，搜索过滤后末行也会带一条）。
+@Reusable
+struct PasswordListRow {
+  @Prop itemId: string = '';
+  @Prop origin: string = '';
+  @Prop username: string = '';
+  @Prop selectMode: boolean = false;
+  @Prop selected: boolean = false;
+  @Prop isFirst: boolean = false;
+  @Prop isLast: boolean = false;
+  onOpen: (id: string) => void = (_id: string): void => {};
+  onToggle: (id: string) => void = (_id: string): void => {};
+
+  build() {
+    Column() {
+      Row({ space: 12 }) {
+        if (this.selectMode) {
+          Column() {
+            if (this.selected) {
+              Image($r('app.media.aura_check'))
+                .width(16)
+                .height(16)
+                .fillColor($r('app.color.on_accent'))
+            }
+          }
+          .width(26)
+          .height(26)
+          .borderRadius(13)
+          .border({
+            width: 2,
+            color: this.selected ? $r('app.color.accent_primary') : $r('app.color.divider')
+          })
+          .backgroundColor(this.selected ? $r('app.color.accent_primary') : Color.Transparent)
+          .justifyContent(FlexAlign.Center)
+        } else {
+          Image($r('app.media.aura_lock'))
+            .width(22)
+            .height(22)
+            .fillColor($r('app.color.icon_primary'))
+        }
+
+        Column({ space: 2 }) {
+          Text(displayUrl(this.origin))
+            .fontSize(16)
+            .fontColor($r('app.color.text_primary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+          Text(this.username.length > 0 ? this.username : '（没有用户名）')
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+
+        if (!this.selectMode) {
+          AuraChevron()
+        }
+      }
+      .width('100%')
+      .constraintSize({ minHeight: 60 })
+      .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+      .onClick(() => {
+        if (this.selectMode) {
+          this.onToggle(this.itemId);
+        } else {
+          this.onOpen(this.itemId);
+        }
+      })
+
+      if (!this.isLast) {
+        Divider()
+          .color($r('app.color.divider'))
+          .margin({ left: 50 })
+      }
+    }
+    .width('100%')
+    .backgroundColor($r('app.color.card_background'))
+    .borderRadius({
+      topLeft: this.isFirst ? 16 : 0,
+      topRight: this.isFirst ? 16 : 0,
+      bottomLeft: this.isLast ? 16 : 0,
+      bottomRight: this.isLast ? 16 : 0
+    })
+  }
+}
+
 @Component
 export struct PasswordsPanel {
   @StorageLink('auraPanelPasswords') @Watch('onPasswordsPayload') passwordsJson: string = '';
@@ -74,6 +204,8 @@ export struct PasswordsPanel {
   onInnerNavChange?: (active: boolean) => void = (_active: boolean): void => {};
 
   @State private items: SavedPasswordItem[] = [];
+  // 列表虚拟化数据源（LazyForEach）：filteredPasswords 变化时整体重建。
+  private pwdDataSource: PasswordDataSource = new PasswordDataSource();
   // 验证门优先：进入先做本机验证，通过后 passwordAuthGranted + reload，
   // 引擎必有数据（requestId 回环已对齐书签，不会卡"加载中"）。
   @State private verified: boolean = false;
@@ -756,78 +888,6 @@ export struct PasswordsPanel {
   }
 
   @Builder
-  private SelectBoxPwd(id: string) {
-    Column() {
-      if (this.isSelectedPwd(id)) {
-        Image($r('app.media.aura_check'))
-          .width(16)
-          .height(16)
-          .fillColor($r('app.color.on_accent'))
-      }
-    }
-    .width(26)
-    .height(26)
-    .borderRadius(13)
-    .border({ width: 2, color: this.isSelectedPwd(id) ? $r('app.color.accent_primary') : $r('app.color.divider') })
-    .backgroundColor(this.isSelectedPwd(id) ? $r('app.color.accent_primary') : Color.Transparent)
-    .justifyContent(FlexAlign.Center)
-  }
-
-  @Builder
-  private PasswordRow(item: SavedPasswordItem, index: number) {
-    Column() {
-      Row({ space: 12 }) {
-        if (this.selectMode) {
-          this.SelectBoxPwd(item.id)
-        } else {
-          Image($r('app.media.aura_lock'))
-            .width(22)
-            .height(22)
-            .fillColor($r('app.color.icon_primary'))
-        }
-
-        Column({ space: 2 }) {
-          Text(displayUrl(item.origin))
-            .fontSize(16)
-            .fontColor($r('app.color.text_primary'))
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .width('100%')
-          Text(item.username.length > 0 ? item.username : '（没有用户名）')
-            .fontSize(12)
-            .fontColor($r('app.color.text_secondary'))
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .width('100%')
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-
-        if (!this.selectMode) {
-          AuraChevron()
-        }
-      }
-      .width('100%')
-      .constraintSize({ minHeight: 60 })
-      .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-      .onClick(() => {
-        if (this.selectMode) {
-          this.togglePwd(item);
-        } else {
-          this.openDetail(item);
-        }
-      })
-
-      if (index < this.items.length - 1) {
-        Divider()
-          .color($r('app.color.divider'))
-          .margin({ left: 50 })
-      }
-    }
-    .width('100%')
-  }
-
-  @Builder
   private ListView() {
     Column() {
       if (this.items.length === 0) {
@@ -845,8 +905,13 @@ export struct PasswordsPanel {
         .layoutWeight(1)
         .justifyContent(FlexAlign.Center)
       } else {
-        Scroll(this.listScroller) {
-          Column() {
+        // 1.0.178：列表虚拟化。Scroll+Column+ForEach → List+LazyForEach +
+        // @Reusable 行组件——getSavedPasswords 无条数上限，重度用户可上千条，
+        // 官方实测 ForEach 到 10000 项即 560MB 内存 / 58% 丢帧。
+        // 卡片观感由首/末行各自的圆角拼出（旧版是外层卡片 Column + clip）。
+        List({ scroller: this.listScroller, space: 0 }) {
+          // 搜索框：随内容滚动（与旧版一致，位于大标题带之下）。
+          ListItem() {
             Row({ space: 8 }) {
               Image($r('app.media.chromium_search'))
                 .width(16)
@@ -870,8 +935,10 @@ export struct PasswordsPanel {
             .backgroundColor($r('app.color.surface_secondary'))
             .padding({ left: 12, right: 12 })
             .margin({ bottom: 10 })
+          }
 
-            if (this.filteredPasswords.length === 0) {
+          if (this.filteredPasswords.length === 0) {
+            ListItem() {
               Text('没有匹配的密码')
                 .fontSize(14)
                 .fontColor($r('app.color.text_secondary'))
@@ -879,31 +946,52 @@ export struct PasswordsPanel {
                 .textAlign(TextAlign.Center)
                 .margin({ top: 40 })
             }
-            Column() {
-              ForEach(this.filteredPasswords, (item: SavedPasswordItem, index: number) => {
-                this.PasswordRow(item, index)
-              }, (item: SavedPasswordItem): string => item.id)
-            }
-            .width('100%')
-            .borderRadius(16)
-            .backgroundColor($r('app.color.card_background'))
-            .clip(true)
+          }
 
+          LazyForEach(this.pwdDataSource, (item: SavedPasswordItem, index: number) => {
+            ListItem() {
+              PasswordListRow({
+                itemId: item.id,
+                origin: item.origin,
+                username: item.username,
+                selectMode: this.selectMode,
+                selected: this.isSelectedPwd(item.id),
+                isFirst: index === 0,
+                isLast: index === this.filteredPasswords.length - 1,
+                onOpen: (id: string): void => {
+                  const target = this.filteredPasswords.find((candidate: SavedPasswordItem): boolean =>
+                    candidate.id === id);
+                  if (target !== undefined) {
+                    this.openDetail(target);
+                  }
+                },
+                onToggle: (id: string): void => {
+                  const target = this.filteredPasswords.find((candidate: SavedPasswordItem): boolean =>
+                    candidate.id === id);
+                  if (target !== undefined) {
+                    this.togglePwd(target);
+                  }
+                }
+              })
+            }
+          }, (item: SavedPasswordItem): string => item.id)
+
+          ListItem() {
             Text('在网页上登录时，浏览器会询问是否保存密码；右上角可以导入、导出。')
               .fontSize(12)
               .fontColor($r('app.color.text_secondary'))
               .width('100%')
               .padding({ left: 4, right: 4, top: 10 })
           }
-          .width('100%')
-          // 大标题带：滚动内容穿过「密码」大标题时逐渐虚化（见 GlassPage 文件头）。
-          // 选择态末尾留白写在滚动内容里（不是视口），列表铺满全高无死区。
-          .padding({ top: glassHeaderInsetVp(), bottom: this.selectMode && this.view === 'list' ? (50 + glassBottomInsetVp()) : 0 })
         }
         .layoutWeight(1)
+        .width('100%')
         .scrollBar(BarState.Off)
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .align(Alignment.TopStart)
+        // 大标题带：滚动内容穿过「密码」大标题时逐渐虚化（见 GlassPage 文件头）。
+        // 选择态末尾留白写在滚动内容里（不是视口），列表铺满全高无死区。
+        .padding({ top: glassHeaderInsetVp(), bottom: this.selectMode && this.view === 'list' ? (50 + glassBottomInsetVp()) : 0 })
       }
 
       // 批量操作条改为悬浮胶囊（见 BatchActionBar()，挂 body Stack，不占流式高度）。
@@ -1286,6 +1374,7 @@ export struct PasswordsPanel {
     const q = this.searchText.trim().toLowerCase();
     if (q.length === 0) {
       this.filteredPasswords = this.items;
+      this.pwdDataSource.rebuild(this.items);
       return;
     }
     const out: SavedPasswordItem[] = [];
@@ -1295,6 +1384,7 @@ export struct PasswordsPanel {
       }
     }
     this.filteredPasswords = out;
+    this.pwdDataSource.rebuild(out);
   }
 
     // 导入模式弹窗（自绘）：格式说明 + 增量/覆盖选择。
