@@ -198,6 +198,11 @@ void RequestAuraShellExternalUrl(content::WebContents* contents,
 void NotifyAuraShellPopupBlocked(content::WebContents* contents,
                                  const GURL& popup_url,
                                  int blocked_on_page);
+// 扩展 popup 关闭：引擎在原生 popup widget 销毁时发出，外壳据此立刻收回
+// 主页盖层（auraPopupHomeHold 清零），不必再等 8 秒兜底超时。点击扩展图标
+// 打开 popup 时主页让位露出引擎原生 NTP，popup 一关主页就回来。
+void NotifyAuraShellExtensionPopupClosed(Profile* profile,
+                                         const std::string& extension_id);
 void NotifyAuraShellWebAppInstalled(const std::string& app_id,
                                     const std::string& title,
                                     const std::string& start_url);

@@ -303,7 +303,7 @@ export interface ExtensionDetailsEvent extends ShellServiceEvent {
   siteAccess: ExtensionSiteAccess;
   // False when the extension asks for no sites, or policy decides for it.
   siteAccessChangeable: boolean;
-  // The "允许用户脚本" switch from the extension's detail page. Whether it
+  // The "允许运行用户脚本" switch from the extension's detail page. Whether it
   // shows at all is the extension's own doing -- it has to declare the
   // userScripts permission (脚本猫 does); the state is a per-extension pref.
   userScriptsAvailable?: boolean;

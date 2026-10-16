@@ -222,6 +222,9 @@ export interface BrowserRuntimeEvent {
     'extensionReloadReceived' |
     // 重载落地回执：如实报告重载后观察到的状态（reload 调用本身无返回值）。
     'extensionReloadLanded' |
+    // 原生扩展 popup 关闭：popup widget 销毁时由引擎发出，外壳据此立刻收回
+    // 主页盖层（auraPopupHomeHold 清零），不必再等 8 秒兜底超时。
+    'extensionPopupClosed' |
     'sitePermissionCancelled' |
     'browserControlsRatio' | 'findResult' | 'pageText' |
     'contextMenuRequested' | 'externalUrlRequested' | 'popupBlocked' |

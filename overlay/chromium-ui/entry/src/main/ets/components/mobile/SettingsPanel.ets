@@ -1106,7 +1106,7 @@ export struct SettingsPanel {
               this.CardDivider()
               this.HomeDockPositionRow()
               this.CardDivider()
-              this.ShellToggleRow($r('app.media.aura_topbar'), '滚动时隐藏地址栏', '向下滚动时收起 dock（含地址栏）；关掉则常驻',
+              this.ShellToggleRow($r('app.media.aura_topbar'), '滚动时隐藏地址栏', '',
                 this.hideTopBarOnScroll, (isOn: boolean): void => {
                   AppStorage.setOrCreate('auraHideTopBarOnScroll', isOn);
                   const context = this.getUIContext().getHostContext() as common.Context | undefined;
@@ -1120,7 +1120,7 @@ export struct SettingsPanel {
               // 不起作用 → 隐藏该行，免得拨了没反应）。
               if (this.hideStatusBarRowVisible()) {
                 this.CardDivider()
-                this.ShellToggleRow($r('app.media.aura_eye'), '上滑时隐藏状态栏', '地址栏收起时一起隐藏，网页铺满全屏',
+                this.ShellToggleRow($r('app.media.aura_eye'), '上滑时隐藏状态栏', '',
                   this.hideStatusBarOnScroll, (isOn: boolean): void => {
                     AppStorage.setOrCreate('auraHideStatusBarOnScroll', isOn);
                     const context = this.getUIContext().getHostContext() as common.Context | undefined;
@@ -1135,7 +1135,7 @@ export struct SettingsPanel {
               // （原先在「滚动时隐藏地址栏」上方）——先讲"滚动怎么收"，再讲"收起来后
               // 状态栏要不要一起隐"，阅读顺序更顺。
               this.CardDivider()
-              this.ShellToggleRow($r('app.media.aura_topbar'), '滚动时隐藏地址栏', '向下滚动时收起顶部地址栏；关掉则地址栏常驻',
+              this.ShellToggleRow($r('app.media.aura_topbar'), '滚动时隐藏地址栏', '',
                 this.hideTopBarOnScroll, (isOn: boolean): void => {
                   AppStorage.setOrCreate('auraHideTopBarOnScroll', isOn);
                   const context = this.getUIContext().getHostContext() as common.Context | undefined;
@@ -1144,7 +1144,7 @@ export struct SettingsPanel {
                   }
                 })
               this.CardDivider()
-              this.ShellToggleRow($r('app.media.aura_dock'), '滚动时隐藏底部栏', '向下滚动时收起底部栏；关掉则常驻',
+              this.ShellToggleRow($r('app.media.aura_dock'), '滚动时隐藏底部栏', '',
                 this.hideDockOnScroll, (isOn: boolean): void => {
                   AppStorage.setOrCreate('auraHideDockOnScroll', isOn);
                   const context = this.getUIContext().getHostContext() as common.Context | undefined;
@@ -1156,7 +1156,7 @@ export struct SettingsPanel {
               // 收起这一刻，该开关不起作用）。
               if (this.hideStatusBarRowVisible()) {
                 this.CardDivider()
-                this.ShellToggleRow($r('app.media.aura_eye'), '上滑时隐藏状态栏', '地址栏收起时一起隐藏，网页铺满全屏',
+                this.ShellToggleRow($r('app.media.aura_eye'), '上滑时隐藏状态栏', '',
                   this.hideStatusBarOnScroll, (isOn: boolean): void => {
                     AppStorage.setOrCreate('auraHideStatusBarOnScroll', isOn);
                     const context = this.getUIContext().getHostContext() as common.Context | undefined;
@@ -1196,7 +1196,7 @@ export struct SettingsPanel {
             })
             this.CardDivider()
             this.ShellToggleRow($r('app.media.aura_open_in_new'), '允许跳转本机应用',
-              '知乎、B站这类链接询问后交给对应应用打开；关掉则一律在浏览器里打开',
+              '',
               this.externalAppLinks, (isOn: boolean): void => {
                 AppStorage.setOrCreate('auraExternalAppLinks', isOn);
                 const context = this.getUIContext().getHostContext() as common.Context | undefined;
@@ -2095,11 +2095,6 @@ export struct SettingsPanel {
         Text('地址栏位置')
           .fontSize(16)
           .fontColor($r('app.color.text_primary'))
-        Text('Chrome 风格下，带地址栏的 dock 放在顶部或底部')
-          .fontSize(12)
-          .fontColor($r('app.color.text_secondary'))
-          .maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)

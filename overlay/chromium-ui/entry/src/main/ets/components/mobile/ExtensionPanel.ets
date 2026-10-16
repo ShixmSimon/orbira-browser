@@ -92,7 +92,11 @@ export struct ExtensionPanel {
   @State private detailVersion: string = '';
   @State private detailDescription: string = '';
   @State private detailAuthor: string = '';
-  // 详情页「允许用户脚本」：只有声明了 userScripts 权限的扩展才显示
+  // 详情页「扩展选项」是否可点：manifest 注册的 options 页 URL（引擎随列表项
+  // 下发）。空 = 没有选项页，点下去只能等引擎回 notFound——此时就地提示，
+  // 不收起面板（收起=让开网页层，但游标页根本不会开，等于"点了没反应"）。
+  @State private detailOptionsUrl: string = '';
+  // 详情页「允许运行用户脚本」：只有声明了 userScripts 权限的扩展才显示
   // （脚本猫这类用户脚本管理器正是如此）；不开它，用户脚本跑不了。
   @State private detailUserScriptsAvailable: boolean = false;
   @State private detailUserScriptsAllowed: boolean = false;
@@ -359,8 +363,9 @@ export struct ExtensionPanel {
     // 拿不到锚点时落到窗口底部中央），http(s)、chrome:// 与
     // chrome-extension:// 页都能承载它——唯独主页不行：外壳的 HomeSurface
     // 盖层铺满全屏，会把 popup 压在底下，点了像没反应。所以只在主页
-    // （新标签页）请求 HomeSurface 让位（auraPopupHomeHold），返回键或离开
-    // 主页时恢复；其余场景一律放行。
+    // （新标签页）请求 HomeSurface 让位（auraPopupHomeHold），返回键、离开
+    // 主页或 8 秒超时（AuraShell 的 onPopupHomeHoldChanged）时恢复；其余
+    // 场景一律放行。
     // 1.0.148 起守卫只管真有 popup 的扩展（item.hasPopup，引擎按
     // action.default_popup 下发）；没有 popup 的（调姬助手这类）一直放行。
     if (item.hasPopup && this.isNewTabUrl(this.currentUrl)) {
@@ -382,12 +387,24 @@ export struct ExtensionPanel {
   }
 
   // 扩展的选项页：引擎 ExtensionTabUtil::OpenOptionsPage 新开标签页打开
-  // manifest 注册的 options 页——走导航而不是 popup，主页上也能进。没有
-  // 选项页的扩展引擎回 notFound，失败文案按命令区分（见面板事件处理）。
+  // manifest 注册的 options 页——走导航而不是 popup，主页上也能进。
+  // ⚠️ 选项页画在**网页层**，本页是全屏面板、会把它整个盖住：必须像
+  // runExtension 那样先 onClose（收起本页回浏览器）再发命令，否则新标签页
+  // 开在面板背后，表现为「点击无反应」。没有选项页的扩展（detailOptionsUrl
+  // 为空）引擎只会回 notFound，而面板收起后就没人显示失败文案了——就地
+  // 提示、不收起。
   private openOptionsPage(): void {
     if (this.detailId.length === 0) {
       return;
     }
+    if (this.detailOptionsUrl.length === 0) {
+      this.getUIContext().getPromptAction().showToast({
+        message: '该扩展没有选项页',
+        duration: 1500
+      });
+      return;
+    }
+    this.onClose();
     this.onCommand({ command: 'openExtensionOptions', id: this.detailId });
   }
 
@@ -433,6 +450,7 @@ export struct ExtensionPanel {
     this.detailVersion = item.version ?? '';
     this.detailDescription = item.description ?? '';
     this.detailAuthor = item.author ?? '';
+    this.detailOptionsUrl = item.optionsUrl ?? '';
     this.detailUserScriptsAvailable = false;
     this.detailUserScriptsAllowed = false;
     // 1.0.157：改用真 Navigation 路由栈（GlassPage 内嵌原生 Navigation+NavPathStack）。
@@ -1001,14 +1019,14 @@ export struct ExtensionPanel {
               .clip(true)
             }
 
-            // 「允许用户脚本」：桌面详情页同款开关。只有声明了 userScripts
+            // 「允许运行用户脚本」：桌面详情页同款开关。只有声明了 userScripts
             // 权限的扩展才出现（引擎侧同一道闸门）；不开它用户脚本跑不了。
             // 1.0.151：开发者模式是总闸——关闭时整个条置灰不可拨（此前能拨，
             // 拨了才回"当前策略不允许这个操作"，等于挖个坑给人跳）。
             if (this.detailUserScriptsAvailable) {
               Row({ space: 12 }) {
                 Column({ space: 3 }) {
-                  Text('允许用户脚本')
+                  Text('允许运行用户脚本')
                     .fontSize(16)
                     .fontWeight(FontWeight.Medium)
                     .fontColor(this.developerMode ?

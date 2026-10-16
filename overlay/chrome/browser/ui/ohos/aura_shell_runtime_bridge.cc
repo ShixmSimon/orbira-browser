@@ -105,6 +105,7 @@
 #include "chrome/browser/ui/extensions/extension_popup_types.h"
 #include "base/strings/strcat.h"
 #include "ui/views/bubble/bubble_border.h"
+#include "ui/views/widget/widget_observer.h"
 #include "skia/ext/image_operations.h"
 #include "base/containers/lru_cache.h"
 #include "chrome/browser/dom_distiller/tab_utils.h"
@@ -1878,6 +1879,45 @@ void InstallExtensionFromFile(gfx::AcceleratedWidget widget,
   installer->InstallCrx(file);
 }
 
+namespace {
+
+// Watches an extension popup's widget. The popup is drawn by Chromium on the
+// Web layer, below the shell's home surface; opening it makes the shell drop
+// the home-surface hold (auraPopupHomeHold) so the popup is not covered. There
+// is no ArkTS-side signal when the popup closes (outside tap, Escape, or the
+// extension's own window.close()), so we watch the widget here and tell the
+// shell the moment it is destroyed -- the shell then restores the home surface
+// immediately instead of waiting for the 8-second fallback.
+class ExtensionPopupCloseWatcher : public views::WidgetObserver {
+ public:
+  ExtensionPopupCloseWatcher(views::Widget* widget,
+                             Profile* profile,
+                             const std::string& extension_id)
+      : profile_(profile), extension_id_(extension_id) {
+    observation_.Observe(widget);
+  }
+  ExtensionPopupCloseWatcher(const ExtensionPopupCloseWatcher&) = delete;
+  ExtensionPopupCloseWatcher& operator=(const ExtensionPopupCloseWatcher&) =
+      delete;
+
+  void OnWidgetDestroyed(views::Widget* widget) override {
+    NotifyAuraShellExtensionPopupClosed(profile_, extension_id_);
+    // Safe: we were already notified (OnWidgetDestroyed is the last call in the
+    // widget's observer sweep); ScopedObservation removes us before we free.
+    delete this;
+  }
+
+ private:
+  ~ExtensionPopupCloseWatcher() override = default;
+
+  raw_ptr<Profile> profile_;
+  std::string extension_id_;
+  base::ScopedObservation<views::Widget, views::WidgetObserver> observation_{
+      this};
+};
+
+}  // namespace
+
 void RunExtensionAction(BrowserWindowInterface* browser,
                         const base::DictValue& command) {
   Profile* profile = browser ? browser->GetProfile() : nullptr;
@@ -1937,6 +1977,16 @@ void RunExtensionAction(BrowserWindowInterface* browser,
                                        anchor.rect, anchor.arrow,
                                        PopupShowAction::kShow,
                                        ShowPopupCallback());
+
+  // Watch the popup's widget so the shell learns the instant it closes and can
+  // restore the home surface without waiting for the 8-second timeout fallback.
+  // last_popup_for_testing() is the popup we just created (set in its ctor,
+  // synchronously, before ShowPopupAtShellRect returns).
+  if (ExtensionPopup* popup = ExtensionPopup::last_popup_for_testing()) {
+    if (views::Widget* widget = popup->GetWidget()) {
+      new ExtensionPopupCloseWatcher(widget, profile, *id);
+    }
+  }
 }
 
 void SetExtensionPinned(BrowserWindowInterface* browser,
@@ -6053,6 +6103,17 @@ void NotifyAuraShellPopupBlocked(content::WebContents* contents,
   // Only the tab's own window: a background tab's popups are still listed
   // when the user switches to it, through showBlockedPopups.
   DispatchAuraShellRuntimeEvent(contents, std::move(event));
+}
+
+void NotifyAuraShellExtensionPopupClosed(Profile* profile,
+                                         const std::string& extension_id) {
+  if (!profile) {
+    return;
+  }
+  base::DictValue event;
+  event.Set("event", "extensionPopupClosed");
+  event.Set("id", extension_id);
+  DispatchAuraShellRuntimeEventToProfile(profile, std::move(event));
 }
 
 bool RequestAuraShellSystemAction(const std::string& action) {

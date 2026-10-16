@@ -167,8 +167,30 @@ struct AuraShell {
   // externalUrlRequested 一律走 fallbackUrl，留在浏览器里。
   @StorageLink('auraExternalAppLinks') externalAppLinks: boolean = true;
   // 扩展 popup 让位：主页（新标签页）上点扩展时由 ExtensionPanel 置值，
-  // 让 HomeSurface 暂时让位给原生 popup；返回键或离开主页时清零恢复。
-  @StorageLink('auraPopupHomeHold') popupHomeHold: number = 0;
+  // 让 HomeSurface 暂时让位给原生 popup；返回键、离开主页、或收到引擎的
+  // extensionPopupClosed 事件（popup widget 销毁）时清零恢复。native 侧
+  // ExtensionPopupCloseWatcher 监听 popup widget 销毁并派发该事件，所以
+  // 关闭后主页立即回来（1.0.175）。8 秒超时仍是兜底：万一事件没到，也不
+  // 会让引擎原生 NTP 一直露底。
+  @StorageLink('auraPopupHomeHold') @Watch('onPopupHomeHoldChanged') popupHomeHold: number = 0;
+  private popupHoldTimer: number = -1;
+
+  private onPopupHomeHoldChanged(): void {
+    if (this.popupHomeHold > 0) {
+      if (this.popupHoldTimer !== -1) {
+        clearTimeout(this.popupHoldTimer);
+      }
+      this.popupHoldTimer = setTimeout((): void => {
+        this.popupHoldTimer = -1;
+        if (this.popupHomeHold > 0) {
+          AppStorage.setOrCreate('auraPopupHomeHold', 0);
+        }
+      }, 8000);
+    } else if (this.popupHoldTimer !== -1) {
+      clearTimeout(this.popupHoldTimer);
+      this.popupHoldTimer = -1;
+    }
+  }
   private statusBarHiddenByScroll: boolean = false;
   // 1.0.103：顶栏是否已「完全收起」（贴状态栏底模式的静息态）。视口底部内距按它
   // 追加 topSafe 补偿——否则滚到页尾最后 ~topSafe 够不到（见 applyDockViewportInset
@@ -1855,6 +1877,12 @@ struct AuraShell {
           pathExists: landed.pathExists === true,
           revision: Date.now()
         }));
+      return;
+    }
+    // 原生扩展 popup 关闭：立刻收回主页盖层，不必再等 8 秒兜底超时
+    // （@Watch('onPopupHomeHoldChanged') 见 popupHomeHold 声明处）。
+    if (event.event === 'extensionPopupClosed') {
+      AppStorage.setOrCreate('auraPopupHomeHold', 0);
       return;
     }
     if (event.event === 'developerMode') {
