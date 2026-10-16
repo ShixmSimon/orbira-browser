@@ -580,6 +580,8 @@ export struct ExtensionPanel {
 
   // 重新载入：Chromium 的 reloadExtension —— 重新读取扩展文件并重启它
   // （chrome://extensions 卡片上的刷新按钮；改完未打包扩展的代码后回到干净状态）。
+  // 1.0.180 起详情页入口暂时隐藏（见 build 里该处注释），此方法与
+  // extensionReloadLanded 回执一并保留，入口放回即恢复。
   private reloadExtension(): void {
     if (this.detailId.length === 0) {
       return;
@@ -1125,44 +1127,16 @@ export struct ExtensionPanel {
                 .margin({ top: 8 })
             }
 
-            // 重新载入：Chromium 扩展卡片的刷新按钮（reloadExtension）——
-            // 重新读取扩展文件并重启它，改完未打包扩展的代码后回到干净状态。
-            Column() {
-              Row({ space: 12 }) {
-                Image($r('app.media.chromium_reload'))
-                  .width(22)
-                  .height(22)
-                  .fillColor($r('app.color.icon_primary'))
-
-                Column({ space: 3 }) {
-                  Text('重新载入')
-                    .fontSize(16)
-                    .fontWeight(FontWeight.Medium)
-                    .fontColor($r('app.color.text_primary'))
-                  Text('重新读取扩展文件并重启')
-                    .fontSize(12)
-                    .fontColor($r('app.color.text_secondary'))
-                }
-                .alignItems(HorizontalAlign.Start)
-                .layoutWeight(1)
-
-                Image($r('app.media.aura_chevron'))
-                  .width(16)
-                  .height(16)
-                  .fillColor($r('app.color.icon_secondary'))
-                  .opacity(0.65)
-              }
-              .width('100%')
-              .padding({ left: 16, right: 16, top: 10, bottom: 10 })
-              .onClick(() => {
-                this.reloadExtension();
-              })
-            }
-            .width('100%')
-            .borderRadius(16)
-            .backgroundColor($r('app.color.card_background'))
-            .clip(true)
-            .margin({ top: 26 })
+            // 重新载入入口暂时隐藏（1.0.180）：用户反馈点它「不能用」——
+            // 重载是读盘重启扩展，对常规装机用户没有可感效果，留着只会被
+            // 当成坏按钮。机制全部保留（reloadExtension 命令与 native 处理器、
+            // 本文件的 reloadExtension() 方法、extensionReloadLanded 回执），
+            // 需要时把下面这块整段放回即可：
+            //   Column() { Row({space:12}) { chromium_reload 图标 +
+            //   「重新载入 / 重新读取扩展文件并重启」+ aura_chevron }
+            //   .onClick(() => this.reloadExtension()) }
+            //   .borderRadius(16).backgroundColor(card_background)
+            //   .clip(true).margin({ top: 26 })
 
             // 扩展选项：chrome://extensions 卡片「详情」里的选项页——
             // 新开标签页直达 manifest 注册的 options 页，不经过 popup 守卫，

@@ -1576,6 +1576,15 @@ export struct HomeSurface {
 
   // （1.0.111：onOpenHomeTile 随信号一并移除。）
 
+  // 首页内容组的顶部锚点占位（1.0.180）：把 Logo 行中心钉在 22% 窗高
+  // （设计稿 440×956 实测 21.9%）；Logo 关闭时改为把搜索框中心钉在 33.5%
+  // （实测 33.6%）。减去的 24 = 行半高（Logo 行与搜索框都是 48 高）。
+  // 「Logo」微调 logoOffset 叠加在锚点之上，负值可上移。
+  private homeTopBlankVp(): number {
+    const anchor: number = (this.custom.showLogo || this.incognito) ? 0.22 : 0.335;
+    return Math.max(0, this.windowH * anchor - this.topSafeVp - 24 + this.custom.logoOffset);
+  }
+
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       // 背景图（设置了才铺；无痕不铺）。hitTestBehavior None：纯装饰层。
@@ -1595,17 +1604,14 @@ export struct HomeSurface {
       }
 
       Column() {
-        // 1.0.178：上下留白均分。原先是顶部固定 15% 窗高占位，内容组
-        // （Logo→搜索框→书签）整体贴在上半屏，下半屏留一大片空白。现改为
-        // 一对弹性占位（layoutWeight）对半劈剩余空间：内容组垂直居中，
-        // 磁贴增减自动保持上下均匀，不按窗高算死数。
-        Column()
-          .layoutWeight(1)
-
-        // 主页布局弹层的「Logo」微调：在居中基础之上再下移。负值不生效
-        // （顶部已是弹性占位，没有可压缩的固定基数可吃）。
+        // 1.0.180：内容组按设计稿锚定——顶部是**按窗高算出的固定占位**
+        // （Logo 行/搜索框的中心 22% / 33.5% 窗高，见 homeTopBlankVp），
+        // 下方留一个弹性占位吸收剩余空间。（1.0.178 的上下对半劈会把内容
+        // 压到窗高 36% 一带，低于设计稿。）
+        // 主页布局弹层的「Logo」微调叠加在锚点上：锚点是固定基数，负值
+        // 可上移（1.0.178 弹性占位时代负值无效，那套限制随本次移除）。
         Blank()
-          .height(Math.max(0, this.custom.logoOffset))
+          .height(this.homeTopBlankVp())
 
         if (this.custom.showLogo || this.incognito) {
           Row({ space: 8 }) {
@@ -1628,8 +1634,11 @@ export struct HomeSurface {
           }
         }
 
+        // Logo 行中心 ↔ 搜索框中心的锚点差 = 11.5% 窗高（设计稿 22% → 33.5%
+        // 实测），减去两行半高（24 + 24）即为此处间隙；「搜索框」微调
+        // searchOffset 照旧叠加。行高变化时两个锚点各偏半个误差，可接受。
         Blank()
-          .height(Math.max(0, 26 + this.custom.searchOffset))
+          .height(Math.max(0, this.windowH * 0.115 - 48 + this.custom.searchOffset))
 
         if (this.custom.showSearch || this.incognito) {
           Row({ space: 10 }) {
@@ -1709,7 +1718,7 @@ export struct HomeSurface {
           }
         }
 
-        // 与顶部弹性占位成对：下半留白 = 剩余空间的一半。
+        // 下方弹性占位：内容组锚在窗高上 1/3（设计稿），剩余空间全留白。
         Column()
           .layoutWeight(1)
       }
