@@ -47,6 +47,84 @@ interface FolderOption {
   childCount: number;
 }
 
+// 「移动到」选择器用的可复用行：整棵树可被 BFS 扁平化（可上千项），
+// 用 @Reusable 让 List 滑动时回收复用，避免逐条重建组件（官方实测丢帧 3.7%→0%）。
+@Component
+@Reusable
+struct FolderPickerRow {
+  // ⚠️ 不能叫 id：与 CustomComponent 基类的通用属性 .id() setter 撞名，
+  // ArkTS 报 10505001（'string' 不兼容 '(value: string) => CommonAttribute'）。
+  @Prop folderId: string = '';
+  @Prop title: string = '';
+  @Prop childCount: number = 0;
+  // 普通属性（非状态）：stable 回调，复用时不重新求值，由本行 @Prop id 决定目标。
+  onPick: (id: string) => void = (_id: string): void => {};
+
+  build(): void {
+    Row({ space: 12 }) {
+      Image($r('app.media.aura_folder'))
+        .width(20)
+        .height(20)
+        .fillColor($r('app.color.icon_secondary'))
+      Text(this.title)
+        .fontSize(15)
+        .fontColor($r('app.color.text_primary'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+      Text(`${this.childCount} 项`)
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+    }
+    .width('100%')
+    .height(48)
+    .padding({ left: 12, right: 12 })
+    .borderRadius(10)
+    .onClick(() => {
+      this.onPick(this.folderId);
+    })
+  }
+}
+
+// LazyForEach 数据源（整棵树作为扁平数组）。
+// 注意：IDataSource / DataChangeListener 是 ArkTS 全局类型（编译器内置声明），
+// **不可**从 '@kit.ArkUI' import（该 kit 不导出它们，会报 10505001）。
+class FolderOptionDataSource implements IDataSource {
+  private listeners: DataChangeListener[] = [];
+  private data: FolderOption[] = [];
+
+  constructor(data: FolderOption[]) {
+    this.data = data;
+  }
+
+  totalCount(): number {
+    return this.data.length;
+  }
+
+  getData(index: number): FolderOption {
+    return this.data[index];
+  }
+
+  registerDataChangeListener(listener: DataChangeListener): void {
+    if (this.listeners.indexOf(listener) === -1) {
+      this.listeners.push(listener);
+    }
+  }
+
+  unregisterDataChangeListener(listener: DataChangeListener): void {
+    const index = this.listeners.indexOf(listener);
+    if (index !== -1) {
+      this.listeners.splice(index, 1);
+    }
+  }
+
+  notifyDataReload(): void {
+    this.listeners.forEach((listener: DataChangeListener): void => {
+      listener.onDataReloaded();
+    });
+  }
+}
+
 const MAX_LOAD_RETRIES: number = 3;
 const LOAD_RETRY_MS: number = 700;
 const LOAD_SHOW_MS: number = 350;
@@ -115,6 +193,8 @@ export struct BookmarksPanel {
   // 「移动到」：打开选择器时 BFS 拉全树，收集全部文件夹。
   @State private pickerVisible: boolean = false;
   @State private pickerFolders: FolderOption[] = [];
+  // LazyForEach 数据源：打开选择器时按当前整树重建（pickerVisible 切 true 时子树全新挂载，读最新实例）。
+  private pickerDataSource: FolderOptionDataSource = new FolderOptionDataSource([]);
   // 表单里选中的移动目标（'' = 不移动）。
   @State private moveTargetId: string = '';
   // 正在编辑/新建的节点的父文件夹（显示「所在文件夹」用）。
@@ -449,6 +529,8 @@ export struct BookmarksPanel {
       } as FolderOption);
     }
     this.pickerFolders = out;
+    // 整棵树作为扁平数组喂给 LazyForEach（pickerVisible 切 true 时子树全新挂载，读最新实例）。
+    this.pickerDataSource = new FolderOptionDataSource(out);
     this.pickerVisible = true;
   }
 
@@ -1446,34 +1528,19 @@ export struct BookmarksPanel {
             .fontColor($r('app.color.text_primary'))
             .width('100%')
 
-          Scroll() {
-            Column({ space: 4 }) {
-              ForEach(this.pickerFolders, (option: FolderOption) => {
-                Row({ space: 12 }) {
-                  Image($r('app.media.aura_folder'))
-                    .width(20)
-                    .height(20)
-                    .fillColor($r('app.color.icon_secondary'))
-                  Text(option.title)
-                    .fontSize(15)
-                    .fontColor($r('app.color.text_primary'))
-                    .maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .layoutWeight(1)
-                  Text(`${option.childCount} 项`)
-                    .fontSize(12)
-                    .fontColor($r('app.color.text_secondary'))
-                }
-                .width('100%')
-                .height(48)
-                .padding({ left: 12, right: 12 })
-                .borderRadius(10)
-                .onClick(() => {
-                  this.pickMoveTarget(option.id);
+          List({ space: 4 }) {
+            LazyForEach(this.pickerDataSource, (option: FolderOption) => {
+              ListItem() {
+                FolderPickerRow({
+                  folderId: option.id,
+                  title: option.title,
+                  childCount: option.childCount,
+                  onPick: (id: string): void => {
+                    this.pickMoveTarget(id);
+                  }
                 })
-              }, (option: FolderOption): string => option.id)
-            }
-            .width('100%')
+              }
+            }, (option: FolderOption): string => option.id)
           }
           .constraintSize({ maxHeight: 380 })
           .scrollBar(BarState.Off)
