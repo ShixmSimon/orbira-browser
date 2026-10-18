@@ -178,6 +178,18 @@ export struct BookmarksPanel {
 
   // 搜索（searchBookmarks 命令，命中带 path）。
   @State private searchText: string = '';
+  // 搜索框随列表滚走后，标题栏右侧（⋯ 菜单旁）浮现搜索按钮（点它回顶 + 聚焦）。
+  @State private searchFabVisible: boolean = false;
+
+  // 搜索框滚走后，点标题栏搜索按钮平滑回顶并聚焦搜索框。
+  private scrollToSearch(): void {
+    this.listScroller.scrollTo({
+      xOffset: 0,
+      yOffset: 0,
+      animation: { duration: 320, curve: curves.springMotion(0.34, 0.84) }
+    });
+    this.getUIContext().getFocusController().requestFocus('bookmarks_search_input');
+  }
   @State private searchResults: BookmarkNode[] = [];
 
   // 行菜单（自绘卡，首页同款）：目标节点 + 落点。
@@ -1679,27 +1691,58 @@ export struct BookmarksPanel {
               }
             }
           ]
-          : [
-            {
-              content: {
-                icon: $r('app.media.aura_plus'),
-                label: '添加',
-                isEnabled: true,
-                action: (): void => {
-                  this.showPlusSheet();
+          : (this.searchFabVisible
+            ? [
+              {
+                content: {
+                  icon: $r('app.media.aura_plus'),
+                  label: '添加',
+                  isEnabled: true,
+                  action: (): void => {
+                    this.showPlusSheet();
+                  }
+                }
+              },
+              {
+                content: {
+                  icon: $r('app.media.chromium_search'),
+                  label: '回到搜索',
+                  action: (): void => {
+                    this.scrollToSearch();
+                  }
+                }
+              },
+              {
+                content: {
+                  icon: $r('app.media.aura_more'),
+                  label: '更多操作',
+                  action: (): void => {
+                    this.showMoreSheet();
+                  }
                 }
               }
-            },
-            {
-              content: {
-                icon: $r('app.media.aura_more'),
-                label: '更多操作',
-                action: (): void => {
-                  this.showMoreSheet();
+            ]
+            : [
+              {
+                content: {
+                  icon: $r('app.media.aura_plus'),
+                  label: '添加',
+                  isEnabled: true,
+                  action: (): void => {
+                    this.showPlusSheet();
+                  }
+                }
+              },
+              {
+                content: {
+                  icon: $r('app.media.aura_more'),
+                  label: '更多操作',
+                  action: (): void => {
+                    this.showMoreSheet();
+                  }
                 }
               }
-            }
-          ]
+            ])
       },
       onBack: (): void => {
         this.handleBack();
@@ -1718,7 +1761,8 @@ export struct BookmarksPanel {
           .width(16)
           .height(16)
           .fillColor($r('app.color.icon_secondary'))
-        TextInput({ text: this.searchText, placeholder: '搜索书签' })
+              TextInput({ text: this.searchText, placeholder: '搜索书签' })
+          .id('bookmarks_search_input')
           .layoutWeight(1)
           .height(38)
           .fontSize(14)
@@ -1833,12 +1877,20 @@ export struct BookmarksPanel {
       // 大标题带：滚动内容穿过「书签」大标题时逐渐虚化（见 GlassPage 文件头）。
       // 顶部留白进内容层（不是视口）：视口保持全高，内容才能穿过状态栏/标题行；
       // 末尾留白同理写进滚动内容，列表铺满全高无死区（见 BatchActionBar 注释）。
-      .padding({ top: glassHeaderInsetVp(), bottom: this.selectMode ? (50 + glassBottomInsetVp()) : 0 })
+          .padding({ top: glassHeaderInsetVp(), bottom: this.selectMode ? (50 + glassBottomInsetVp()) : 0 })
       }
       .layoutWeight(1)
       .scrollBar(BarState.Off)
       .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
       .align(Alignment.TopStart)
+      .onDidScroll(() => {
+        // 搜索框随列表滚走后，标题栏右侧浮现搜索按钮（点它回顶 + 聚焦）。
+        const off = this.listScroller.currentOffset().yOffset;
+        const show = off > glassHeaderInsetVp() + 20;
+        if (show !== this.searchFabVisible) {
+          this.searchFabVisible = show;
+        }
+      })
 
       // 批量操作条改为悬浮胶囊（见 BatchActionBar()，挂 body Stack，不占流式高度）。
     }

@@ -9,6 +9,7 @@ import bundleManager from '@ohos.bundle.bundleManager';
 import deviceInfo from '@ohos.deviceInfo';
 import { AppearanceSettings, ColorModeSetting } from '../../utils/appearance/AppearanceSettings';
 import { glassBottomInsetVp, glassHeaderInsetVp } from './GlassPage';
+import { curves } from '@kit.ArkUI';
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
@@ -189,6 +190,16 @@ export struct SettingsPanel {
   private pathStack: NavPathStack = new NavPathStack();
   // 设置检索：常驻搜索框，输入即就地过滤设置项（不单独开搜索页）。
   @State private searchText: string = '';
+  // 搜索框随设置列表滚走后，标题栏右侧浮现搜索按钮（点它回顶 + 聚焦）。
+  @State private searchFabVisible: boolean = false;
+
+  // 搜索框滚走后，点标题栏搜索按钮平滑回顶并聚焦搜索框（主列表与过滤列表共用）。
+  private scrollToSearch(): void {
+    this.mainScroller.scrollTo({ xOffset: 0, yOffset: 0, animation: { duration: 320, curve: curves.springMotion(0.34, 0.84) } });
+    this.filteredScroller.scrollTo({ xOffset: 0, yOffset: 0, animation: { duration: 320, curve: curves.springMotion(0.34, 0.84) } });
+    this.getUIContext().getFocusController().requestFocus('settings_main_search');
+    this.getUIContext().getFocusController().requestFocus('settings_filtered_search');
+  }
   // 渐变模糊滚动效果按官方要求 bindToScrollable。
   private mainScroller: Scroller = new Scroller();
   private enginesScroller: Scroller = new Scroller();
@@ -956,13 +967,14 @@ export struct SettingsPanel {
   // 设置检索页：一个输入框 + 命中清单。开关项就地切换（带当前状态），
   // 常驻搜索框：始终显示在设置列表顶部，输入即就地过滤（不单独开搜索页）。
   @Builder
-  private SearchBar() {
+  private SearchBar(searchInputId: string) {
     Row({ space: 8 }) {
       Image($r('app.media.aura_search'))
         .width(20)
         .height(20)
         .fillColor($r('app.color.icon_secondary'))
       TextInput({ placeholder: '搜索设置项', text: this.searchText })
+        .id(searchInputId)
         .fontSize(16)
         .fontColor($r('app.color.text_primary'))
         .placeholderColor($r('app.color.text_secondary'))
@@ -970,6 +982,7 @@ export struct SettingsPanel {
         .layoutWeight(1)
         .onChange((value: string): void => {
           this.searchText = value;
+          this.searchFabVisible = false;
         })
       if (this.searchText.length > 0) {
         Image($r('app.media.aura_close'))
@@ -1033,7 +1046,7 @@ export struct SettingsPanel {
     Column() {
       Scroll(this.mainScroller) {
         Column() {
-          this.SearchBar()
+          this.SearchBar('settings_main_search')
           // 华为账号入口：按要求隐藏（同步/登录能力暂不面向用户开放）。
           // 恢复方式：把下面整段注释打开即可，二级页 AccountPanel 代码保留未删。
           // this.SectionLabel('华为账号', true)
@@ -1317,11 +1330,19 @@ export struct SettingsPanel {
       // universal `align` attribute defaults to Alignment.Center), which
       // showed up as a big gap under the header. Pin it to the top.
       .align(Alignment.TopStart)
+      .onDidScroll(() => {
+        // 搜索框随设置列表滚走后，标题栏右侧浮现搜索按钮（点它回顶 + 聚焦）。
+        const off = this.mainScroller.currentOffset().yOffset;
+        const show = off > glassHeaderInsetVp() + 20;
+        if (show !== this.searchFabVisible) {
+          this.searchFabVisible = show;
+        }
+      })
       .visibility(this.searchQuery().length === 0 ? Visibility.Visible : Visibility.None)
 
       Scroll(this.filteredScroller) {
         Column() {
-          this.SearchBar()
+          this.SearchBar('settings_filtered_search')
           ForEach(this.matchedEntries(), (entry: SettingsEntry) => {
             this.SearchResultRow(entry)
           }, (entry: SettingsEntry): string => entry.id)
@@ -1342,6 +1363,14 @@ export struct SettingsPanel {
       .scrollBar(BarState.Off)
       .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
       .align(Alignment.TopStart)
+      .onDidScroll(() => {
+        // 搜索框随过滤列表滚走后，标题栏右侧浮现搜索按钮（点它回顶 + 聚焦）。
+        const off = this.filteredScroller.currentOffset().yOffset;
+        const show = off > glassHeaderInsetVp() + 20;
+        if (show !== this.searchFabVisible) {
+          this.searchFabVisible = show;
+        }
+      })
       .visibility(this.searchQuery().length === 0 ? Visibility.None : Visibility.Visible)
     }
     .width('100%')
@@ -2334,7 +2363,19 @@ export struct SettingsPanel {
             this.onBack();
           }
         },
-        menu: undefined
+        menu: this.searchFabVisible ? {
+          value: [
+            {
+              content: {
+                icon: $r('app.media.chromium_search'),
+                label: '回到搜索',
+                action: (): void => {
+                  this.scrollToSearch();
+                }
+              }
+            }
+          ]
+        } : undefined
       },
       style: {
         scrollEffectOpts: {

@@ -9,7 +9,7 @@ import { BrowserCommandPayload, HistoryItem, HistoryVisitRef } from 'engine';
 import { displayUrl, dayGroupLabel, formatClock } from './PanelBridge';
 import { AuraSectionLabel } from './AuraKit';
 import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
-import { promptAction } from '@kit.ArkUI';
+import { promptAction, curves } from '@kit.ArkUI';
 import { MoreMenuDialog, MoreMenuItemSpec } from './MoreMenuDialog';
 
 interface HistoryGroup {
@@ -50,6 +50,18 @@ export struct HistoryPanel {
   // 渐变模糊滚动效果按官方要求 bindToScrollable。
   private listScroller: Scroller = new Scroller();
   @State private searchText: string = '';
+  // 搜索框随列表滚走后，标题栏右侧（⋯ 菜单旁）浮现搜索按钮（点它回顶 + 聚焦）。
+  @State private searchFabVisible: boolean = false;
+
+  // 搜索框滚走后，点标题栏搜索按钮平滑回顶并聚焦搜索框。
+  private scrollToSearch(): void {
+    this.listScroller.scrollTo({
+      xOffset: 0,
+      yOffset: 0,
+      animation: { duration: 320, curve: curves.springMotion(0.34, 0.84) }
+    });
+    this.getUIContext().getFocusController().requestFocus('history_search_input');
+  }
   // 过滤结果落 @State：build 里 ForEach/if 经方法间接读 @State 不会建立更新依赖
   //（编译器不分析方法体），搜索词变化时列表不刷新——显式重算才能驱动更新。
   @State private filteredGroups: HistoryGroup[] = [];
@@ -426,17 +438,38 @@ export struct HistoryPanel {
               }
             }
           ]
-          : [
-            {
-              content: {
-                icon: $r('app.media.aura_more'),
-                label: '更多操作',
-                action: (): void => {
-                  this.showMoreSheet();
+          : (this.searchFabVisible
+            ? [
+              {
+                content: {
+                  icon: $r('app.media.chromium_search'),
+                  label: '回到搜索',
+                  action: (): void => {
+                    this.scrollToSearch();
+                  }
+                }
+              },
+              {
+                content: {
+                  icon: $r('app.media.aura_more'),
+                  label: '更多操作',
+                  action: (): void => {
+                    this.showMoreSheet();
+                  }
                 }
               }
-            }
-          ]
+            ]
+            : [
+              {
+                content: {
+                  icon: $r('app.media.aura_more'),
+                  label: '更多操作',
+                  action: (): void => {
+                    this.showMoreSheet();
+                  }
+                }
+              }
+            ])
       },
       onBack: (): void => {
         // 选择态下返回键先退出多选，别直接退页面。
@@ -467,7 +500,8 @@ export struct HistoryPanel {
                 .height(16)
                 .fillColor($r('app.color.icon_secondary'))
               TextInput({ text: this.searchText, placeholder: '搜索历史记录' })
-                .layoutWeight(1)
+          .id('history_search_input')
+          .layoutWeight(1)
                 .height(38)
                 .fontSize(14)
                 .fontColor($r('app.color.text_primary'))
@@ -517,6 +551,14 @@ export struct HistoryPanel {
         .scrollBar(BarState.Off)
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .align(Alignment.TopStart)
+        .onDidScroll(() => {
+          // 搜索框随列表滚走后，标题栏右侧浮现搜索按钮（点它回顶 + 聚焦）。
+          const off = this.listScroller.currentOffset().yOffset;
+          const show = off > glassHeaderInsetVp() + 20;
+          if (show !== this.searchFabVisible) {
+            this.searchFabVisible = show;
+          }
+        })
       }
 
       // 批量操作条改为悬浮胶囊（见 BatchActionBar()，挂 body Stack，不占流式高度）。

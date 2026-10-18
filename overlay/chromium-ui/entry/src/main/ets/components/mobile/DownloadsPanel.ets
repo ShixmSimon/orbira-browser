@@ -13,6 +13,7 @@ import { BrowserCommandPayload, DownloadAction, DownloadItem, openDownloadedFile
 import { formatVisitTime } from './PanelBridge';
 import { AuraSectionLabel } from './AuraKit';
 import { GlassPage, glassHeaderInsetVp } from './GlassPage';
+import { curves } from '@kit.ArkUI';
 
 interface PanelEventPayload {
   kind?: string;
@@ -54,6 +55,18 @@ export struct DownloadsPanel {
   // 渐变模糊滚动效果按官方要求 bindToScrollable。
   private listScroller: Scroller = new Scroller();
   @State private searchText: string = '';
+  // 搜索框随列表滚走后，标题栏右侧浮现搜索按钮（点它回顶 + 聚焦）。
+  @State private searchFabVisible: boolean = false;
+
+  // 搜索框滚走后，点标题栏搜索按钮平滑回顶并聚焦搜索框。
+  private scrollToSearch(): void {
+    this.listScroller.scrollTo({
+      xOffset: 0,
+      yOffset: 0,
+      animation: { duration: 320, curve: curves.springMotion(0.34, 0.84) }
+    });
+    this.getUIContext().getFocusController().requestFocus('downloads_search_input');
+  }
   // 过滤结果落 @State（同 HistoryPanel：方法间接读 @State 不建立更新依赖）。
   @State private filteredDownloads: DownloadItem[] = [];
   private requestSeq: number = 0;
@@ -375,7 +388,7 @@ export struct DownloadsPanel {
     build() {
     // 标题栏交给 GlassPage（落在 Navigation 标题栏里 —— HarmonyOS 7 之后
     // 只有这块区域 + 弹窗类还在沉浸光感的生效范围内）。
-    GlassPage({ title: '下载', scrollers: [this.listScroller], onBack: (): void => { this.onBack(); } }) {
+    GlassPage({ title: '下载', scrollers: [this.listScroller], menus: this.searchFabVisible ? { value: [{ content: { icon: $r('app.media.chromium_search'), label: '回到搜索', action: (): void => { this.scrollToSearch(); } } }] } : undefined, onBack: (): void => { this.onBack(); } }) {
     Column() {
       if (this.items.length === 0) {
         Column() {
@@ -395,7 +408,8 @@ export struct DownloadsPanel {
                 .height(16)
                 .fillColor($r('app.color.icon_secondary'))
               TextInput({ text: this.searchText, placeholder: '搜索下载记录' })
-                .layoutWeight(1)
+          .id('downloads_search_input')
+          .layoutWeight(1)
                 .height(38)
                 .fontSize(14)
                 .fontColor($r('app.color.text_primary'))
@@ -448,6 +462,14 @@ export struct DownloadsPanel {
         // universal `align` attribute defaults to Alignment.Center), which
         // showed up as a big gap under the header. Pin it to the top.
         .align(Alignment.TopStart)
+        .onDidScroll(() => {
+          // 搜索框随列表滚走后，标题栏右侧浮现搜索按钮（点它回顶 + 聚焦）。
+          const off = this.listScroller.currentOffset().yOffset;
+          const show = off > glassHeaderInsetVp() + 20;
+          if (show !== this.searchFabVisible) {
+            this.searchFabVisible = show;
+          }
+        })
       }
     }
     .width('100%')
