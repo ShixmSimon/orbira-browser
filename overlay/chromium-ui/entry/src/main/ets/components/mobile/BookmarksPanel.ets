@@ -11,10 +11,13 @@
  * ⚠️ 不要用 getBookmarksForSync/applyBookmarks（版本 4）：当前引擎 HAR 的
  * bookmarkApiVersion 还没实现它们，命令会被吞、页面永远"加载中"（实测）。
  *
- * 页面根部不再是引擎的三个永久根（移动设备书签 / 书签栏 / 其他书签），而是
- * 「首页」文件夹本身——主页磁贴读的也是这个文件夹，两处同源。引擎侧它仍挂在
- * 移动设备书签下面（用户看不到）；id 由主页发现后写进 AppStorage
- * 'auraHomeFolderId' + prefs，本页兜底自建（见 discoverHomeFolder）。
+ * 页面根部 = 移动设备书签那一层（三个永久根本身不露出）。这一层里有一个**受保护的
+ * 「首页」文件夹**：主页磁贴读的就是它里面的书签，只有用户主动移进去的才上主页。
+ *   · 「首页」置顶显示、不可删除、不可改名（主页按标题 '首页' 找它）；
+ *   · 新书签 / 导入默认落在书签页根，**不**进「首页」；
+ *   · 要放到主页：把书签或文件夹「移动到」→ 选「首页」。
+ * 「首页」id 由主页发现后写进 AppStorage 'auraHomeFolderId' + prefs；本页进页面
+ * 时自己走发现链（根 → 移动设备书签 → 找/建「首页」），再把这一层显示出来。
  * 标题栏只有 ⋯：添加书签 / 新建文件夹 / 导入 / 导出 / 多选都在里面。
  */
 import { common } from '@kit.AbilityKit';
@@ -146,6 +149,8 @@ const HOME_FALLBACK_MS: number = 1200;
 // → @Watch 不触发**。requestSeq 每次挂载从 0 重来，第二次进页面请求号与上次
 // 撞车时，引擎明明回了包，面板却永远等在那儿（页面空、添加也落不了地）。
 let panelSeqBump: number = 0;
+// 上次定位到的书签页根（移动设备书签）id：同一会话里重开页面可直接拿缓存回填。
+let lastRootId: string = '';
 
 @Component
 export struct BookmarksPanel {
@@ -323,15 +328,16 @@ export struct BookmarksPanel {
 
   /** 首屏 hydration：从持久化的 auraPanelBookmarkList 直接回填根层。
    *  @StorageLink 跨挂载保留，所以重进页面时通常已有缓存——直接填进 currentNodes
-   *  让 hadData=true，loadLayer 就不会闪「加载中」。只认「首页」文件夹那一层
-   *  （parentId === homeFolderId）；搜索结果与其它层的回包不匹配，跳过。 */
+   *  让 hadData=true，loadLayer 就不会闪「加载中」。只认书签页根那一层
+   *  （parentId === 上次定位到的根 id）；搜索结果与其它层的回包不匹配，跳过。 */
   private hydrateFromCache(): void {
-    if (this.listJson.length === 0 || this.homeFolderId.length === 0) {
+    const rootId = lastRootId.length > 0 ? lastRootId : this.mobileFolderId;
+    if (this.listJson.length === 0 || rootId.length === 0) {
       return;
     }
     try {
       const payload = JSON.parse(this.listJson) as BookmarkListPayload;
-      if ((payload.parentId ?? '') !== this.homeFolderId) {
+      if ((payload.parentId ?? '') !== rootId) {
         return;
       }
       const nodes = payload.nodes ?? [];
@@ -346,12 +352,18 @@ export struct BookmarksPanel {
 
   // -- 数据层 -----------------------------------------------------------------
 
-  /** '' 代表书签页根 —— 换成「首页」文件夹 id；定位失败降级后则表示引擎根。 */
+  /** '' 代表书签页根 —— 换成移动设备书签 id；定位失败降级后则表示引擎根。
+   *  书签页显示的就是这一层，里面含「首页」文件夹（主页磁贴的数据源）。 */
   private resolvedFolderId(id: string): string {
     if (id.length > 0) {
       return id;
     }
-    return this.rootIsEngine ? '' : this.homeFolderId;
+    return this.rootIsEngine ? '' : this.mobileFolderId;
+  }
+
+  /** 「首页」文件夹不可删除：它是主页磁贴的数据源，删了主页就没东西可显示。 */
+  private isHomeFolder(id: string): boolean {
+    return this.homeFolderId.length > 0 && id === this.homeFolderId;
   }
 
   /** 发一次 getBookmarks：target 空 = 引擎根（三个永久根）。 */
@@ -477,6 +489,16 @@ export struct BookmarksPanel {
 
   private onHomePacket(nodes: BookmarkNode[]): void {
     if (this.homeStep === 'root') {
+      this.onRootPacketForDiscovery(nodes);
+      return;
+    }
+    // 移动设备书签这一层 = 书签页本身：先确保里面有「首页」文件夹，再把这层显示出来。
+    if (this.homeStep === 'mobile') {
+      this.ensureHomeIn(nodes);
+    }
+  }
+
+  private onRootPacketForDiscovery(nodes: BookmarkNode[]): void {
       let mobile = '';
       const candidates: string[] = [];
       for (const node of nodes) {
@@ -504,55 +526,57 @@ export struct BookmarksPanel {
         this.homeCandidateIdx = 0;
       }
       this.mobileFolderId = mobile;
+      lastRootId = mobile;
       this.homeStep = 'mobile';
       this.requestMobileChildren(mobile);
       return;
+  }
+
+  /** 移动设备书签这一层：确认「首页」文件夹在不在，不在就建一个。 */
+  private ensureHomeIn(nodes: BookmarkNode[]): void {
+    let found = '';
+    for (const node of nodes) {
+      if (node.type === 'folder' &&
+        (node.title === HOME_FOLDER_TITLE || node.id === this.homeFolderId)) {
+        found = node.id;
+        break;
+      }
     }
-    if (this.homeStep === 'mobile') {
-      let found = '';
-      for (const node of nodes) {
-        if (node.type === 'folder' &&
-          (node.title === HOME_FOLDER_TITLE || node.id === this.homeFolderId)) {
-          found = node.id;
-          break;
-        }
-      }
-      if (found.length > 0) {
-        this.adoptHomeFolder(found);
-        return;
-      }
-      // 还有别的候选根：换下一个接着找。
-      if (this.homeCandidateIdx + 1 < this.homeCandidates.length) {
-        this.homeCandidateIdx += 1;
-        const next: string = this.homeCandidates[this.homeCandidateIdx];
-        this.mobileFolderId = next;
-        this.requestMobileChildren(next);
-        return;
-      }
-      if (!this.homeCreateTried && this.mobileFolderId.length > 0) {
-        this.homeCreateTried = true;
-        this.homeStep = 'creating';
-        this.requestSeq += 1;
-        this.pendingSeq = this.requestSeq;
-        this.onCommand({
-          command: 'createBookmarkFolder',
-          requestId: this.requestSeq,
-          parentId: this.mobileFolderId,
-          title: HOME_FOLDER_TITLE
-        });
-        // 建完回移动设备书签层再找一次（不依赖事件回包的时序）。
-        setTimeout((): void => {
-          if (this.homeStep === 'creating') {
-            this.homeStep = 'mobile';
-            this.requestMobileChildren(this.mobileFolderId);
-          }
-        }, 420);
-        return;
-      }
-      // 建也建不出来：放弃发现，别再无限重试。
-      this.abortHomeDiscovery();
+    if (found.length > 0) {
+      this.adoptHomeFolder(found);
       return;
     }
+    // 还有别的候选根：换下一个接着找。
+    if (this.homeCandidateIdx + 1 < this.homeCandidates.length) {
+      this.homeCandidateIdx += 1;
+      const next: string = this.homeCandidates[this.homeCandidateIdx];
+      this.mobileFolderId = next;
+      lastRootId = next;
+      this.requestMobileChildren(next);
+      return;
+    }
+    if (!this.homeCreateTried && this.mobileFolderId.length > 0) {
+      this.homeCreateTried = true;
+      this.homeStep = 'creating';
+      this.requestSeq += 1;
+      this.pendingSeq = this.requestSeq;
+      this.onCommand({
+        command: 'createBookmarkFolder',
+        requestId: this.requestSeq,
+        parentId: this.mobileFolderId,
+        title: HOME_FOLDER_TITLE
+      });
+      // 建完回这一层再找一次（不依赖事件回包的时序）。
+      setTimeout((): void => {
+        if (this.homeStep === 'creating') {
+          this.homeStep = 'mobile';
+          this.requestMobileChildren(this.mobileFolderId);
+        }
+      }, 420);
+      return;
+    }
+    // 建不出来也照样把书签页显示出来（「首页」缺失只影响主页磁贴）。
+    this.finishDiscovery();
   }
 
   private abortHomeDiscovery(): void {
@@ -568,13 +592,18 @@ export struct BookmarksPanel {
   }
 
   private adoptHomeFolder(id: string): void {
-    this.clearHomeTimers();
-    this.homeStep = 'idle';
     this.homeFolderId = id; // @StorageLink：同步写 AppStorage，主页也读这个键
     const host = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
     HomePrefs.saveFolderId(host, id);
-    this.currentFolderId = '';
-    this.loadLayer(id);
+    this.finishDiscovery();
+  }
+
+  /** 发现链收尾：书签页显示的是移动设备书签这一层（含「首页」文件夹）。 */
+  private finishDiscovery(): void {
+    this.clearHomeTimers();
+    this.homeStep = 'idle';
+    this.pendingKind = 'layer';
+    this.loadLayer('');
     // 定位前点过「添加书签 / 新建文件夹」的，定位好了自动把表单弹出来。
     if (this.pendingFormMode.length > 0) {
       const mode: FormMode = this.pendingFormMode;
@@ -588,7 +617,7 @@ export struct BookmarksPanel {
     return `诊断：「首页」${this.homeFolderId.length > 0 ? '已定位' : '未定位'}${this.rootIsEngine ? '（已降级到根）' : ''} · ${this.homeStep} · 本层 ${this.currentNodes.length} 项`;
   }
 
-  // 当前层渲染顺序：文件夹在前、书签在后（同一张浮框卡里）。
+  // 当前层渲染顺序：「首页」文件夹置顶 → 其它文件夹 → 书签（同一张浮框卡）。
   private rebuildContentRows(): void {
     const folders: BookmarkNode[] = [];
     const bookmarks: BookmarkNode[] = [];
@@ -599,7 +628,19 @@ export struct BookmarksPanel {
         bookmarks.push(node);
       }
     }
-    this.contentRows = folders.concat(bookmarks);
+    // 「首页」排在其它文件夹前面：它是主页书签的入口，不该混在一堆文件夹里找。
+    const ordered: BookmarkNode[] = [];
+    for (const node of folders) {
+      if (this.isHomeFolder(node.id)) {
+        ordered.push(node);
+      }
+    }
+    for (const node of folders) {
+      if (!this.isHomeFolder(node.id)) {
+        ordered.push(node);
+      }
+    }
+    this.contentRows = ordered.concat(bookmarks);
   }
 
   // 统一清理加载相关的两个定时器（延迟显示 + 重试）。
@@ -789,8 +830,9 @@ export struct BookmarksPanel {
   // -- 「移动到」：BFS 收集全部文件夹 -------------------------------------------
 
   private openFolderPicker(): void {
-    // 降级模式（定位不到「首页」）下把移动设备书签当收集根，移动功能不至于残废。
-    const rootId = this.homeFolderId.length > 0 ? this.homeFolderId : this.mobileFolderId;
+    // 收集根 = 书签页根（移动设备书签）：「首页」文件夹与它的子文件夹都在里面，
+    // 所以既能移到首页（上主页），也能移到任意其它文件夹。
+    const rootId = this.mobileFolderId.length > 0 ? this.mobileFolderId : this.homeFolderId;
     if (rootId.length === 0) {
       this.discoverHomeFolder();
       this.getUIContext().getPromptAction().showToast({
@@ -887,7 +929,7 @@ export struct BookmarksPanel {
     if (rootId.length > 0 && !excluded.has(rootId)) {
       out.push({
         id: rootId,
-        title: rootId === this.homeFolderId ? HOME_FOLDER_TITLE : '移动设备书签',
+        title: rootId === this.homeFolderId ? HOME_FOLDER_TITLE : '书签',
         childCount: this.collectRootKids
       } as FolderOption);
       this.folderKids.set(rootId, this.collectRootKids);
@@ -970,16 +1012,14 @@ export struct BookmarksPanel {
     this.onClose();
   }
 
-  /** 新建书签/文件夹的父层：页面根级落到「首页」文件夹，子层落到当前文件夹；
-   *  降级模式（rootIsEngine）回落点 = 移动设备书签。 */
+  /** 新建书签/文件夹的父层：页面根级落到书签页本身（移动设备书签），子层落到
+   *  当前文件夹。**不**是「首页」——只有用户主动送进去的才上主页。
+   *  降级模式（rootIsEngine）同理回落点 = 三个永久根里那个移动设备书签。 */
   private targetParentId(): string {
     if (this.currentFolderId.length > 0) {
       return this.currentFolderId;
     }
-    if (this.rootIsEngine) {
-      return this.mobileFolderId;
-    }
-    return this.homeFolderId;
+    return this.mobileFolderId;
   }
 
   // -- 行菜单 -----------------------------------------------------------------
@@ -1002,6 +1042,13 @@ export struct BookmarksPanel {
   }
 
   private removeWithConfirm(node: BookmarkNode): void {
+    if (this.isHomeFolder(node.id)) {
+      this.getUIContext().getPromptAction().showToast({
+        message: '「首页」文件夹不能删除（主页书签都在里面）',
+        duration: 2000
+      });
+      return;
+    }
     this.getUIContext().getPromptAction().showDialog({
       title: node.type === 'folder' ? '删除文件夹' : '删除书签',
       message: node.title.length > 0 ? node.title : (node.url ?? ''),
@@ -1032,6 +1079,9 @@ export struct BookmarksPanel {
   }
 
   private toggleSelect(id: string): void {
+    if (this.isHomeFolder(id)) {
+      return; // 「首页」文件夹不可选（就不可被批量删除）
+    }
     const idx = this.selectedIds.indexOf(id);
     if (idx >= 0) {
       this.selectedIds.splice(idx, 1);
@@ -1042,10 +1092,14 @@ export struct BookmarksPanel {
     this.selectedIds = this.selectedIds.slice();
   }
 
-  // 当前视图可见的节点 id（整份浮框卡里的文件夹 + 书签）。
+  // 当前视图可见的节点 id（整份浮框卡里的文件夹 + 书签）。「首页」文件夹不参与
+  // 批量操作：它不可删除（主页磁贴的数据源）。
   private visibleNodeIds(): string[] {
     const ids: string[] = [];
     for (const node of this.contentRows) {
+      if (this.isHomeFolder(node.id)) {
+        continue;
+      }
       ids.push(node.id);
     }
     return ids;
@@ -1072,8 +1126,16 @@ export struct BookmarksPanel {
     if (this.selectedIds.length === 0) {
       return;
     }
-    const count = this.selectedIds.length;
-    const ids = this.selectedIds.slice();
+    // 兜底：万一选中集合里混进了「首页」文件夹，删掉它主页就没数据了。
+    const ids = this.selectedIds.filter((id: string): boolean => !this.isHomeFolder(id));
+    if (ids.length === 0) {
+      this.getUIContext().getPromptAction().showToast({
+        message: '「首页」文件夹不能删除',
+        duration: 2000
+      });
+      return;
+    }
+    const count = ids.length;
     this.getUIContext().getPromptAction().showDialog({
       title: '删除所选',
       message: `确定删除选中的 ${count} 项吗？文件夹会连同里面的内容一起删除。`,
@@ -1339,14 +1401,14 @@ export struct BookmarksPanel {
     }
     this.pendingImportPath = path;
     this.requestSeq += 1;
-    // 导入到「首页」文件夹（页面根）：否则书签会落进看不见的永久根，用户找不到。
-    if (this.homeFolderId.length > 0) {
+    // 导入到书签页根（移动设备书签）：否则书签会落进看不见的永久根，用户找不到。
+    if (this.mobileFolderId.length > 0) {
       this.onCommand({
         command: 'importBookmarks',
         requestId: this.requestSeq,
         path: path,
         title: '导入的书签',
-        parentId: this.homeFolderId
+        parentId: this.mobileFolderId
       });
     } else {
       this.onCommand({
@@ -1452,11 +1514,11 @@ export struct BookmarksPanel {
   private FolderRow(node: BookmarkNode, index: number, total: number) {
     Column() {
       Row({ space: 12 }) {
-        if (this.selectMode) {
+        if (this.selectMode && !this.isHomeFolder(node.id)) {
           this.SelectBox(node.id)
         } else {
           Column() {
-            Image($r('app.media.aura_folder'))
+            Image(this.isHomeFolder(node.id) ? $r('app.media.aura_home') : $r('app.media.aura_folder'))
               .width(20)
               .height(20)
               .fillColor($r('app.color.text_primary'))
@@ -1476,14 +1538,17 @@ export struct BookmarksPanel {
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.text_primary'))
             .width('100%')
-          Text(`${node.childCount ?? 0} 项`)
+          Text(this.isHomeFolder(node.id) ?
+            `${node.childCount ?? 0} 项 · 显示在主页` : `${node.childCount ?? 0} 项`)
             .fontSize(12)
             .fontColor($r('app.color.text_secondary'))
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
 
-        if (!this.selectMode) {
+        // 「首页」文件夹不给操作菜单：改名会让主页按标题找不到它，删除会让主页
+        // 磁贴失去数据源（多选里也不出现，见 visibleNodeIds / batchRemove）。
+        if (!this.selectMode && !this.isHomeFolder(node.id)) {
           Button({ type: ButtonType.Circle }) {
             Image($r('app.media.aura_more'))
               .width(18)
@@ -1508,9 +1573,9 @@ export struct BookmarksPanel {
       .constraintSize({ minHeight: 60 })
       .padding({ left: 16, right: 12, top: 8, bottom: 8 })
       .onClick(() => {
-        if (this.selectMode) {
+        if (this.selectMode && !this.isHomeFolder(node.id)) {
           this.toggleSelect(node.id);
-        } else {
+        } else if (!this.selectMode) {
           this.openNode(node);
         }
       })

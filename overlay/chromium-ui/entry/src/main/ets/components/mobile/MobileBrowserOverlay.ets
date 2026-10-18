@@ -1217,20 +1217,14 @@ export struct MobileBrowserOverlay {
     if (url.length === 0 || this.isNewTabUrl(url)) {
       return;
     }
-    const title = this.browserState.title && this.browserState.title.length > 0 ?
-      this.browserState.title : this.displayDomain();
-    // 落点 = 书签页根（「首页」文件夹），否则新书签会掉进用户看不到的永久根。
-    const homeFolderId = String(AppStorage.get('auraHomeFolderId') ?? '');
-    if (homeFolderId.length > 0) {
-      this.issueCommand({
-        command: 'addBookmark',
-        url: url,
-        title: title,
-        parentId: homeFolderId
-      });
-    } else {
-      this.issueCommand({ command: 'addBookmark', url: url, title: title });
-    }
+    // 不带 parentId：引擎默认落点就是移动设备书签 = 书签页根。**不要**指定成
+    // 「首页」文件夹——只有用户主动送进去的书签才该出现在主页上。
+    this.issueCommand({
+      command: 'addBookmark',
+      url: url,
+      title: this.browserState.title && this.browserState.title.length > 0 ?
+        this.browserState.title : this.displayDomain()
+    });
     this.menuCardVisible = false;
     this.getUIContext().getPromptAction().showToast({ message: '已加入书签', duration: 2000 });
   }
