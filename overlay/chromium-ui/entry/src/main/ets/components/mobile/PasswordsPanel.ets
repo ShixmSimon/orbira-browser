@@ -633,6 +633,7 @@ export struct PasswordsPanel {
     this.passwordTouched = false;
     this.noteTouched = false;
     this.pathStack.pushPathByName('detail', item.id);
+    this.detailOnTop = true;
     this.onInnerNavChange?.(this.pathStack.size() > 0);
   }
 
@@ -643,6 +644,7 @@ export struct PasswordsPanel {
     this.view = 'list';
     if (this.pathStack.size() > 0) {
       this.pathStack.pop();
+      this.detailOnTop = false;
       this.onInnerNavChange?.(this.pathStack.size() > 0);
     }
   }
@@ -1389,6 +1391,10 @@ export struct PasswordsPanel {
   @State private searchText: string = '';
   // 搜索框滚走后，标题栏右侧浮现搜索按钮（点它回顶 + 聚焦）。
   @State private searchFabVisible: boolean = false;
+  // 详情 destination 是否在栈顶：搜索回顶按钮挂 Navigation overlay（内容层
+  // 在 titleBar 之下，会被渐变模糊压住发暗），overlay 会盖住推入的详情页，
+  // 故推入/弹出时联动隐藏。
+  @State private detailOnTop: boolean = false;
   // 导入模式弹窗（自绘）：先选增量/覆盖，再进文件选择器。
   @State private importDialogVisible: boolean = false;
   @State private importOverwrite: boolean = false;
@@ -1628,36 +1634,6 @@ export struct PasswordsPanel {
         // 导入模式弹窗 / 批量操作栏：悬浮层挂列表这层（viewport 固定）。
         this.ImportDialog()
         this.BatchActionBar()
-        // 搜索回顶按钮：搜索框滚走后浮现于标题栏右侧、⋯ 菜单左侧；点击平滑回顶并聚焦搜索框。
-        if (this.searchFabVisible && this.verified && this.items.length > 0) {
-          Row() {
-            Button({ type: ButtonType.Circle }) {
-              Image($r('app.media.chromium_search'))
-                .width(18)
-                .height(18)
-                .fillColor($r('app.color.icon_primary'))
-            }
-            .width(40)
-            .height(40)
-            .backgroundColor($r('app.color.float_bar_bg'))
-            .border({ width: 0.5, color: $r('app.color.divider') })
-            .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
-            .onClick(() => {
-              this.scrollToSearch();
-            })
-          }
-          .width('100%')
-          .height('100%')
-          .justifyContent(FlexAlign.End)
-          .alignItems(VerticalAlign.Top)
-          .padding({ right: 64, top: glassTopSafeVp() + 6 })
-          .hitTestBehavior(HitTestMode.Transparent)
-          .transition(
-            TransitionEffect.opacity(0)
-              .combine(TransitionEffect.scale({ x: 0.8, y: 0.8 }))
-              .animation({ curve: curves.springMotion(0.34, 0.84) })
-          )
-        }
       }
       .width('100%')
       .height('100%')
@@ -1727,8 +1703,46 @@ export struct PasswordsPanel {
     .bindToScrollable([this.listScroller, this.detailScroller])
     .backgroundColor($r('app.color.page_background'))
     .navDestination(this.buildPasswordDestination)
+    // 搜索回顶按钮挂 overlay：Navigation 内容层在 titleBar 之下，放内容
+    // Stack 会被标题栏渐变模糊压住发暗；overlay 渲染在组件全子树之上。
+    .overlay(this.SearchFabOverlay())
     .width('100%')
     .height('100%')
+  }
+
+  // 搜索回顶按钮：搜索框滚走后浮现于标题栏右侧、⋯ 菜单左侧；点击平滑回顶
+  // 并聚焦搜索框。详情推入时联动隐藏（detailOnTop），不浮在详情页上。
+  @Builder
+  private SearchFabOverlay(): void {
+    if (this.searchFabVisible && this.verified && this.items.length > 0 && !this.detailOnTop) {
+      Row() {
+        Button({ type: ButtonType.Circle }) {
+          Image($r('app.media.chromium_search'))
+            .width(18)
+            .height(18)
+            .fillColor($r('app.color.icon_primary'))
+        }
+        .width(40)
+        .height(40)
+        .backgroundColor($r('app.color.float_bar_bg'))
+        .border({ width: 0.5, color: $r('app.color.divider') })
+        .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+        .onClick(() => {
+          this.scrollToSearch();
+        })
+      }
+      .width('100%')
+      .height('100%')
+      .justifyContent(FlexAlign.End)
+      .alignItems(VerticalAlign.Top)
+      .padding({ right: 64, top: glassTopSafeVp() + 6 })
+      .hitTestBehavior(HitTestMode.Transparent)
+      .transition(
+        TransitionEffect.opacity(0)
+          .combine(TransitionEffect.scale({ x: 0.8, y: 0.8 }))
+          .animation({ curve: curves.springMotion(0.34, 0.84) })
+      )
+    }
   }
 
   // 1.0.160：详情页 destination（真路由栈推入）。编辑态是页内状态
