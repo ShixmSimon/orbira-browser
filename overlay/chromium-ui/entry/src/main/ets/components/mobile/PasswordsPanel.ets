@@ -1634,6 +1634,39 @@ export struct PasswordsPanel {
         // 导入模式弹窗 / 批量操作栏：悬浮层挂列表这层（viewport 固定）。
         this.ImportDialog()
         this.BatchActionBar()
+        // 搜索回顶按钮：搜索框滚走后浮现于内容层顶部右侧。放在内容 Stack
+        // 内（不用 overlay），全屏透明容器定位、容器本身透传点击，只按钮可点，
+        // 避免 overlay 整层拦截输入的历史回归。位置上移到标题栏模糊带之下，
+        // 保证清晰可见（不被渐变模糊压暗）。
+        if (this.searchFabVisible && this.verified && this.items.length > 0 && !this.detailOnTop) {
+          Row() {
+            Button({ type: ButtonType.Circle }) {
+              Image($r('app.media.chromium_search'))
+                .width(18)
+                .height(18)
+                .fillColor($r('app.color.icon_primary'))
+            }
+            .width(40)
+            .height(40)
+            .backgroundColor($r('app.color.float_bar_bg'))
+            .border({ width: 0.5, color: $r('app.color.divider') })
+            .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+            .onClick(() => {
+              this.scrollToSearch();
+            })
+          }
+          .width('100%')
+          .height('100%')
+          .justifyContent(FlexAlign.End)
+          .alignItems(VerticalAlign.Top)
+          .padding({ right: 16, top: glassTopSafeVp() + 56 })
+          .hitTestBehavior(HitTestMode.Transparent)
+          .transition(
+            TransitionEffect.opacity(0)
+              .combine(TransitionEffect.scale({ x: 0.8, y: 0.8 }))
+              .animation({ curve: curves.springMotion(0.34, 0.84) })
+          )
+        }
       }
       .width('100%')
       .height('100%')
@@ -1703,41 +1736,8 @@ export struct PasswordsPanel {
     .bindToScrollable([this.listScroller, this.detailScroller])
     .backgroundColor($r('app.color.page_background'))
     .navDestination(this.buildPasswordDestination)
-    // 搜索回顶按钮挂 overlay：Navigation 内容层在 titleBar 之下，放内容
-    // Stack 会被标题栏渐变模糊压住发暗；overlay 渲染在组件全子树之上。
-    // 注意：overlay 内容只放按钮本身（切勿用全屏容器包裹），否则 overlay
-    // 整层会拦截整页输入（1.0.182 全屏透明 Row 的回归）。
-    .overlay(this.SearchFabOverlay(), { align: Alignment.TopEnd, offset: { x: -64, y: glassTopSafeVp() + 6 } })
     .width('100%')
     .height('100%')
-  }
-
-  // 搜索回顶按钮：搜索框滚走后浮现于标题栏右侧、⋯ 菜单左侧；点击平滑回顶
-  // 并聚焦搜索框。详情推入时联动隐藏（detailOnTop），不浮在详情页上。
-  // overlay 内容只放按钮本身（无全屏容器），只覆盖按钮区域、不拦截整页输入。
-  @Builder
-  private SearchFabOverlay(): void {
-    if (this.searchFabVisible && this.verified && this.items.length > 0 && !this.detailOnTop) {
-      Button({ type: ButtonType.Circle }) {
-        Image($r('app.media.chromium_search'))
-          .width(18)
-          .height(18)
-          .fillColor($r('app.color.icon_primary'))
-      }
-      .width(40)
-      .height(40)
-      .backgroundColor($r('app.color.float_bar_bg'))
-      .border({ width: 0.5, color: $r('app.color.divider') })
-      .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
-      .onClick(() => {
-        this.scrollToSearch();
-      })
-      .transition(
-        TransitionEffect.opacity(0)
-          .combine(TransitionEffect.scale({ x: 0.8, y: 0.8 }))
-          .animation({ curve: curves.springMotion(0.34, 0.84) })
-      )
-    }
   }
 
   // 1.0.160：详情页 destination（真路由栈推入）。编辑态是页内状态
