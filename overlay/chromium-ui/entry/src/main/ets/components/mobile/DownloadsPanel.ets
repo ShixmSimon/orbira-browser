@@ -11,7 +11,7 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { BrowserCommandPayload, DownloadAction, DownloadItem, openDownloadedFile } from 'engine';
 import { formatVisitTime } from './PanelBridge';
-import { AuraSectionLabel } from './AuraKit';
+import { AuraSectionLabel, AuraSearchBar } from './AuraKit';
 import { GlassPage, glassHeaderInsetVp } from './GlassPage';
 import { curves } from '@kit.ArkUI';
 
@@ -406,30 +406,21 @@ export struct DownloadsPanel {
       } else {
         Scroll(this.listScroller) {
           Column() {
-            Row({ space: 8 }) {
-              Image($r('app.media.chromium_search'))
-                .width(16)
-                .height(16)
-                .fillColor($r('app.color.icon_secondary'))
-              TextInput({ text: this.searchText, placeholder: '搜索下载记录' })
-          .id('downloads_search_input')
-          .layoutWeight(1)
-                .height(38)
-                .fontSize(14)
-                .fontColor($r('app.color.text_primary'))
-                .placeholderColor($r('app.color.text_secondary'))
-                .backgroundColor(Color.Transparent)
-                .onChange((value: string) => {
-                  this.searchText = value;
-                  this.recomputeFiltered();
-                })
-            }
-            .width('100%')
-            .height(40)
-            .borderRadius(20)
-            .backgroundColor($r('app.color.surface_secondary'))
-            .padding({ left: 12, right: 12 })
-            .margin({ bottom: 10 })
+            AuraSearchBar({
+              placeholder: '搜索下载记录',
+              text: this.searchText,
+              showClear: true,
+              inputId: 'downloads_search_input',
+              onInput: (value: string): void => {
+                this.searchText = value;
+                this.recomputeFiltered();
+              },
+              onClear: (): void => {
+                this.searchText = '';
+                this.recomputeFiltered();
+              }
+            })
+              .margin({ bottom: 10 })
 
             if (this.filteredDownloads.length === 0) {
               Text('没有匹配的下载记录')

@@ -31,7 +31,8 @@ import {
   SavedPasswordsEvent
 } from 'engine';
 import { displayUrl, pickAndStageImportFile, saveExportedFile, deleteStagedFile } from './PanelBridge';
-import { AuraChevron, AuraSectionLabel } from './AuraKit';
+import { AuraChevron, AuraSectionLabel, AuraSiteIcon, AuraSearchBar } from './AuraKit';
+import { requestFavicons, parseFavicons, faviconData } from './FaviconKit';
 
 interface PanelEventPayload {
   kind?: string;
@@ -110,6 +111,8 @@ struct PasswordListRow {
   @Prop selected: boolean = false;
   @Prop isFirst: boolean = false;
   @Prop isLast: boolean = false;
+  // 站点图标（dataURL）由面板按需请求后注入；为空时 AuraSiteIcon 走占位（主机名色 + 首字母）。
+  @Prop iconData: string = '';
   onOpen: (id: string) => void = (_id: string): void => {};
   onToggle: (id: string) => void = (_id: string): void => {};
 
@@ -135,10 +138,7 @@ struct PasswordListRow {
           .backgroundColor(this.selected ? $r('app.color.accent_primary') : Color.Transparent)
           .justifyContent(FlexAlign.Center)
         } else {
-          Image($r('app.media.aura_lock'))
-            .width(22)
-            .height(22)
-            .fillColor($r('app.color.icon_primary'))
+          AuraSiteIcon({ url: this.origin, iconData: this.iconData })
         }
 
         Column({ space: 2 }) {
@@ -197,6 +197,9 @@ export struct PasswordsPanel {
   @StorageLink('auraPanelPasswordResult') @Watch('onResultPayload') resultJson: string = '';
   @StorageLink('auraPanelPasswordIo') @Watch('onIoPayload') ioJson: string = '';
   @StorageLink('auraPanelEvent') @Watch('onPanelEvent') panelEventJson: string = '';
+  // 站点图标：引擎回包统一落 'auraFavicons'（AuraShell 转存），本页只从该键读取。
+  @StorageLink('auraFavicons') @Watch('onFaviconsChanged') faviconsJson: string = '';
+  @State private faviconMap: Map<string, string> = new Map();
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
   onBack: () => void = (): void => {};
   onClose: () => void = (): void => {};
@@ -262,6 +265,7 @@ export struct PasswordsPanel {
       try {
         const cached = JSON.parse(this.passwordsJson) as SavedPasswordsEvent;
         this.items = (cached.items ?? []) as SavedPasswordItem[];
+        this.requestPasswordFavicons();
         this.recomputeFiltered();
         this.loading = false;
       } catch (error) {
@@ -318,6 +322,7 @@ export struct PasswordsPanel {
         return;
       }
       this.items = (payload.items ?? []) as SavedPasswordItem[];
+      this.requestPasswordFavicons();
       this.recomputeFiltered();
       this.loading = false;
       if (this.retryTimer !== -1) {
@@ -619,6 +624,22 @@ export struct PasswordsPanel {
   }
 
   // -- 详情 / 编辑 ------------------------------------------------------------
+
+  // 'auraFavicons' 更新（含其它页触发的回包）：重新解析，赋新对象触发重绘。
+  private onFaviconsChanged(): void {
+    this.faviconMap = parseFavicons(this.faviconsJson);
+  }
+
+  // 把当前密码条目的 origin 交给共享 FaviconKit 合批请求（去重 + 攒拍）。
+  private requestPasswordFavicons(): void {
+    const urls: string[] = [];
+    for (const item of this.items) {
+      if (item.origin && item.origin.length > 0) {
+        urls.push(item.origin);
+      }
+    }
+    requestFavicons(urls, this.onCommand);
+  }
 
   private openDetail(item: SavedPasswordItem): void {
     this.view = 'detail';
@@ -924,30 +945,21 @@ export struct PasswordsPanel {
 
           // 搜索框：随内容滚动（与旧版一致，位于大标题带之下）。
           ListItem() {
-            Row({ space: 8 }) {
-              Image($r('app.media.chromium_search'))
-                .width(16)
-                .height(16)
-                .fillColor($r('app.color.icon_secondary'))
-              TextInput({ text: this.searchText, placeholder: '搜索密码' })
-                .id('passwords_search_input')
-                .layoutWeight(1)
-                .height(38)
-                .fontSize(14)
-                .fontColor($r('app.color.text_primary'))
-                .placeholderColor($r('app.color.text_secondary'))
-                .backgroundColor(Color.Transparent)
-                .onChange((value: string) => {
-                  this.searchText = value;
-                  this.recomputeFiltered();
-                })
-            }
-            .width('100%')
-            .height(40)
-            .borderRadius(20)
-            .backgroundColor($r('app.color.surface_secondary'))
-            .padding({ left: 12, right: 12 })
-            .margin({ bottom: 10 })
+            AuraSearchBar({
+              placeholder: '搜索密码',
+              text: this.searchText,
+              showClear: true,
+              inputId: 'passwords_search_input',
+              onInput: (value: string): void => {
+                this.searchText = value;
+                this.recomputeFiltered();
+              },
+              onClear: (): void => {
+                this.searchText = '';
+                this.recomputeFiltered();
+              }
+            })
+              .margin({ bottom: 10 })
           }
 
           if (this.filteredPasswords.length === 0) {
@@ -966,6 +978,7 @@ export struct PasswordsPanel {
               PasswordListRow({
                 itemId: item.id,
                 origin: item.origin,
+                iconData: faviconData(item.origin, this.faviconMap),
                 username: item.username,
                 selectMode: this.selectMode,
                 selected: this.isSelectedPwd(item.id),

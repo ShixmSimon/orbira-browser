@@ -77,6 +77,12 @@ interface PanelEventPayload {
   revision?: number;
 }
 
+// 首页默认书签（首次运行时种入「首页」文件夹）。
+interface HomeSeedSite {
+  title: string;
+  url: string;
+}
+
 function formatOffset(value: number): string {
   return value > 0 ? `+${value}` : `${value}`;
 }
@@ -217,6 +223,8 @@ export struct HomeSurface {
   // 位次，排序换算要用它；磁贴渲染只取其中的 url 节点。
   private fullNodes: BookmarkNode[] = [];
   @State private homeFolderId: string = '';
+  // 主页默认书签（谷歌/必应/百度/GitHub）是否已一次性种入「首页」文件夹。
+  @State private homeBookmarksSeeded: boolean = false;
   @State private tilesError: boolean = false;
   // 绘制用的 url → data URL（引擎 PNG 转成的 data URL）。
   @State private favicons: Map<string, string> = new Map();
@@ -312,6 +320,9 @@ export struct HomeSurface {
     });
     // 种子：设置面板里点的「自定义主页布局」可能先于 HomeSurface 挂载发出信号，
     // @Watch 初值不触发，挂载时补开一次并消费信号（无痕不打开）。
+    HomePrefs.loadSeeded(context).then((seeded: boolean): void => {
+      this.homeBookmarksSeeded = seeded;
+    });
     const pendingLayout: number = (AppStorage.get('auraOpenHomeLayout') as number) ?? 0;
     if (pendingLayout > 0 && !this.incognito) {
       this.showSettings = true;
@@ -605,8 +616,36 @@ export struct HomeSurface {
       this.persistCache();
       this.requestFavicons();
       this.maybeMigrate();
+      // 首次运行且首页文件夹为空：种入谷歌/必应/百度/GitHub 四个默认书签。
+      this.maybeSeedDefaultBookmarks();
       return;
     }
+  }
+
+  // 主页默认书签：只在「从未种过」且「首页文件夹当前为空」时一次性写入四个站点，
+  // 写完后置 seeded 标志位，用户之后删掉也不会被反复补回。
+  private maybeSeedDefaultBookmarks(): void {
+    if (this.homeBookmarksSeeded || this.homeFolderId.length === 0 || this.tiles.length > 0) {
+      return;
+    }
+    const defaults: HomeSeedSite[] = [
+      { title: '谷歌', url: 'https://www.google.com' },
+      { title: '必应', url: 'https://www.bing.com' },
+      { title: '百度', url: 'https://www.baidu.com' },
+      { title: 'GitHub', url: 'https://github.com' }
+    ];
+    for (const site of defaults) {
+      this.onCommand({
+        command: 'addBookmark',
+        url: site.url,
+        title: site.title,
+        parentId: this.homeFolderId,
+        requestId: this.nextSeq()
+      });
+    }
+    this.homeBookmarksSeeded = true;
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    HomePrefs.saveSeeded(context, true);
   }
 
   /** 从全量子节点里取 url 磁贴（保持引擎回包顺序 = 文件夹位次）。 */

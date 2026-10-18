@@ -7,6 +7,8 @@
 import { BrowserCommandPayload, SiteSetting, SiteSettingType, SiteSettingValue } from 'engine';
 import { displayUrl } from './PanelBridge';
 import { glassHeaderInsetVp } from './GlassPage';
+import { AuraSiteIcon } from './AuraKit';
+import { requestFavicons, parseFavicons, faviconData } from './FaviconKit';
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
@@ -90,6 +92,9 @@ export struct SitePermissionsPanel {
   private listRequestId: number = 0;
   private detailRequestId: number = 0;
   private retryTimer: number = -1;
+  // 站点图标：引擎回包统一落 'auraFavicons'（AuraShell 转存），本页只从该键读取。
+  @StorageLink('auraFavicons') @Watch('onFaviconsChanged') faviconsJson: string = '';
+  @State private faviconMap: Map<string, string> = new Map();
 
   aboutToAppear(): void {
     // Seed from storage first: a @StorageLink does not fire @Watch for its
@@ -144,6 +149,7 @@ export struct SitePermissionsPanel {
         });
         hosts.sort();
         this.origins = hosts;
+        this.requestSiteFavicons();
         this.loading = false;
       } else if (payload.requestId === this.detailRequestId) {
         this.detailItems = items.filter((item: SiteSetting): boolean => item.origin === this.detailOrigin);
@@ -151,6 +157,16 @@ export struct SitePermissionsPanel {
     } catch (error) {
       this.loading = false;
     }
+  }
+
+  // 'auraFavicons' 更新（含其它页触发的回包）：重新解析，赋新对象触发重绘。
+  private onFaviconsChanged(): void {
+    this.faviconMap = parseFavicons(this.faviconsJson);
+  }
+
+  // 把当前可见网站的 origin 交给共享 FaviconKit 合批请求（去重 + 攒拍）。
+  private requestSiteFavicons(): void {
+    requestFavicons(this.origins, this.onCommand);
   }
 
   private openDetail(origin: string): void {
@@ -246,10 +262,7 @@ export struct SitePermissionsPanel {
                 ForEach(this.origins, (origin: string, index: number) => {
                   Column() {
                     Row({ space: 12 }) {
-                      Image($r('app.media.aura_globe'))
-                        .width(22)
-                        .height(22)
-                        .fillColor($r('app.color.icon_primary'))
+                      AuraSiteIcon({ url: origin, iconData: faviconData(origin, this.faviconMap) })
                       Column({ space: 2 }) {
                         Text(originHost(origin))
                           .fontSize(16)

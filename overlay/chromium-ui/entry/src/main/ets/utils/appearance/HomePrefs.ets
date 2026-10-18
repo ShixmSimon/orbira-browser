@@ -12,6 +12,7 @@ const STORE_NAME = 'shell_ui_prefs';
 const KEY_CUSTOM = 'homeCustom';
 const KEY_FOLDER_ID = 'homeFolderId';
 const KEY_MIGRATED = 'homeFolderMigrated';
+const KEY_SEEDED = 'homeBookmarksSeeded';
 
 export interface HomeCustom {
   // 背景图沙箱绝对路径（'' = 无背景，用主题底色）。
@@ -133,6 +134,31 @@ export class HomePrefs {
     try {
       const store = await preferences.getPreferences(context, STORE_NAME);
       await store.put(KEY_MIGRATED, value);
+      await store.flush();
+    } catch (error) {
+    }
+  }
+
+  // 主页默认书签是否已一次性种入（谷歌/必应/百度/GitHub）。只种一次，用户删了不重种。
+  static async loadSeeded(context: common.Context | undefined): Promise<boolean> {
+    if (!context) {
+      return true;
+    }
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      return Boolean(await store.get(KEY_SEEDED, false));
+    } catch (error) {
+      return true;
+    }
+  }
+
+  static async saveSeeded(context: common.Context | undefined, value: boolean): Promise<void> {
+    if (!context) {
+      return;
+    }
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      await store.put(KEY_SEEDED, value);
       await store.flush();
     } catch (error) {
     }

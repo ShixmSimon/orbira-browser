@@ -6,8 +6,9 @@
  * （转存到 'auraPanelEvent'），本页据此重拉。
  */
 import { BrowserCommandPayload, HistoryItem, HistoryVisitRef } from 'engine';
-import { displayUrl, dayGroupLabel, formatClock } from './PanelBridge';
-import { AuraSectionLabel } from './AuraKit';
+import { displayUrl, dayGroupLabel, formatClock, formatVisitTime } from './PanelBridge';
+import { AuraSectionLabel, AuraSiteIcon, AuraSearchBar } from './AuraKit';
+import { requestFavicons, parseFavicons, faviconData } from './FaviconKit';
 import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
 import { promptAction, curves } from '@kit.ArkUI';
 import { MoreMenuDialog, MoreMenuItemSpec } from './MoreMenuDialog';
@@ -52,6 +53,9 @@ export struct HistoryPanel {
   @State private searchText: string = '';
   // 搜索框随列表滚走后，标题栏右侧（⋯ 菜单旁）浮现搜索按钮（点它回顶 + 聚焦）。
   @State private searchFabVisible: boolean = false;
+  // 站点图标：引擎回包统一落 'auraFavicons'（AuraShell 转存），各页只从该键读取。
+  @StorageLink('auraFavicons') @Watch('onFaviconsChanged') faviconsJson: string = '';
+  @State private faviconMap: Map<string, string> = new Map();
 
   // 搜索框滚走后，点标题栏搜索按钮平滑回顶并聚焦搜索框。
   // 聚焦必须延迟到回顶动画结束之后：requestFocus 唤起输入法会触发重布局，
@@ -114,9 +118,26 @@ export struct HistoryPanel {
       this.groups = groupHistory(this.items);
       this.recomputeFiltered();
       this.loading = false;
+      this.requestHistoryFavicons();
     } catch (error) {
       this.loading = false;
     }
+  }
+
+  // 'auraFavicons' 更新（含其它页触发的回包）：重新解析，赋新对象触发重绘。
+  private onFaviconsChanged(): void {
+    this.faviconMap = parseFavicons(this.faviconsJson);
+  }
+
+  // 把当前历史条目的 url 交给共享 FaviconKit 合批请求（去重 + 攒拍）。
+  private requestHistoryFavicons(): void {
+    const urls: string[] = [];
+    for (const item of this.items) {
+      if (item.url.length > 0) {
+        urls.push(item.url);
+      }
+    }
+    requestFavicons(urls, this.onCommand);
   }
 
   private onPanelEvent(): void {
@@ -275,10 +296,7 @@ export struct HistoryPanel {
         if (this.selectMode) {
           this.SelectBoxHistory(this.historyKey(item))
         } else {
-          Image($r('app.media.aura_clock'))
-            .width(22)
-            .height(22)
-            .fillColor($r('app.color.icon_primary'))
+          AuraSiteIcon({ url: item.url, iconData: faviconData(item.url, this.faviconMap) })
         }
 
         Column({ space: 2 }) {
@@ -299,19 +317,11 @@ export struct HistoryPanel {
         .layoutWeight(1)
 
         if (!this.selectMode) {
-          Button({ type: ButtonType.Circle }) {
-            Image($r('app.media.aura_close'))
-              .width(18)
-              .height(18)
-              .fillColor($r('app.color.icon_secondary'))
-          }
-          .width(40)
-          .height(40)
-          .backgroundColor(Color.Transparent)
-          .accessibilityText('删除这条记录')
-          .onClick(() => {
-            this.removeItem(item);
-          })
+          Text(formatVisitTime(item.visitTime))
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
       }
       .width('100%')
@@ -332,6 +342,31 @@ export struct HistoryPanel {
       }
     }
     .width('100%')
+  }
+
+  @Builder
+  private HistoryGroupHeader(label: string, tightTop: boolean) {
+    AuraSectionLabel({ text: label, tightTop: tightTop })
+  }
+
+  // 左滑删除：end 动作（从右往左滑，右侧露出红色删除）。多选态返回空，避免误删。
+  @Builder
+  private HistoryDeleteBuilder(item: HistoryItem) {
+    if (!this.selectMode) {
+      Button({ type: ButtonType.Circle }) {
+        Image($r('app.media.aura_trash'))
+          .width(20)
+          .height(20)
+          .fillColor($r('app.color.on_accent'))
+      }
+      .width(48)
+      .height(48)
+      .backgroundColor($r('app.color.danger'))
+      .margin({ right: 16 })
+      .onClick((): void => {
+        this.removeItem(item);
+      })
+    }
   }
 
   // 重算过滤结果（写入 @State）：搜索词变化与数据源变化处都要调用。
@@ -496,34 +531,27 @@ export struct HistoryPanel {
         .layoutWeight(1)
         .justifyContent(FlexAlign.Center)
       } else {
-        Scroll(this.listScroller) {
-          Column() {
-            Row({ space: 8 }) {
-              Image($r('app.media.chromium_search'))
-                .width(16)
-                .height(16)
-                .fillColor($r('app.color.icon_secondary'))
-              TextInput({ text: this.searchText, placeholder: '搜索历史记录' })
-          .id('history_search_input')
-          .layoutWeight(1)
-                .height(38)
-                .fontSize(14)
-                .fontColor($r('app.color.text_primary'))
-                .placeholderColor($r('app.color.text_secondary'))
-                .backgroundColor(Color.Transparent)
-                .onChange((value: string) => {
-                  this.searchText = value;
-                  this.recomputeFiltered();
-                })
-            }
-            .width('100%')
-            .height(40)
-            .borderRadius(20)
-            .backgroundColor($r('app.color.surface_secondary'))
-            .padding({ left: 12, right: 12 })
-            .margin({ bottom: 10 })
+        List({ scroller: this.listScroller }) {
+          ListItem() {
+            AuraSearchBar({
+              placeholder: '搜索历史记录',
+              text: this.searchText,
+              showClear: true,
+              inputId: 'history_search_input',
+              onInput: (value: string): void => {
+                this.searchText = value;
+                this.recomputeFiltered();
+              },
+              onClear: (): void => {
+                this.searchText = '';
+                this.recomputeFiltered();
+              }
+            })
+          }
+          .margin({ bottom: 10 })
 
-            if (this.filteredGroups.length === 0) {
+          if (this.filteredGroups.length === 0) {
+            ListItem() {
               Text('没有匹配的历史记录')
                 .fontSize(14)
                 .fontColor($r('app.color.text_secondary'))
@@ -531,30 +559,30 @@ export struct HistoryPanel {
                 .textAlign(TextAlign.Center)
                 .margin({ top: 40 })
             }
-            ForEach(this.filteredGroups, (group: HistoryGroup, index: number) => {
-              AuraSectionLabel({ text: group.label, tightTop: index === 0 })
-              Column() {
-                ForEach(group.items, (item: HistoryItem, index: number) => {
-                  this.HistoryRow(item, index === group.items.length - 1)
-                }, (item: HistoryItem): string => `${item.url}|${item.visitTime}`)
-              }
-              .width('100%')
-              .borderRadius(16)
-              .backgroundColor($r('app.color.card_background'))
-              .clip(true)
-            // 键里带上条数：过滤后同组标签（如"今天"）条数变化时键不同，
-            // 强制 itemGenerator 重跑——否则 ForEach 复用旧组节点，看起来"搜索无效"。
-            }, (group: HistoryGroup): string => `${group.label}#${group.items.length}`)
           }
-          .width('100%')
-          // 大标题带：滚动内容穿过「历史」大标题时逐渐虚化（见 GlassPage 文件头）。
-          // 选择态末尾留白写在滚动内容里（不是视口），列表铺满全高无死区。
-          .padding({ top: glassHeaderInsetVp(), bottom: this.selectMode ? (50 + glassBottomInsetVp()) : 0 })
-        }
+
+          // 每组一个浮框卡片（ListItemGroup 带卡片底色 + 圆角 + 裁切），
+          // 组内每条记录是独立 ListItem，可左滑删除。
+          ForEach(this.filteredGroups, (group: HistoryGroup, index: number) => {
+            ListItemGroup({ header: (): void => { this.HistoryGroupHeader(group.label, index === 0); } }) {
+              ForEach(group.items, (item: HistoryItem, index: number) => {
+                ListItem() {
+                  this.HistoryRow(item, index === group.items.length - 1)
+                }
+                .swipeAction({ end: (): void => { this.HistoryDeleteBuilder(item); } })
+              }, (item: HistoryItem): string => `${item.url}|${item.visitTime}`)
+            }
+            .borderRadius(16)
+            .backgroundColor($r('app.color.card_background'))
+            .clip(true)
+            .margin({ bottom: 10 })
+          }, (group: HistoryGroup): string => `${group.label}#${group.items.length}`)
+          }
         .layoutWeight(1)
         .scrollBar(BarState.Off)
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .align(Alignment.TopStart)
+        .padding({ top: glassHeaderInsetVp(), bottom: this.selectMode ? (50 + glassBottomInsetVp()) : 0 })
         .onDidScroll(() => {
           // 搜索框随列表滚走后，标题栏右侧浮现搜索按钮（点它回顶 + 聚焦）。
           const off = this.listScroller.currentOffset().yOffset;

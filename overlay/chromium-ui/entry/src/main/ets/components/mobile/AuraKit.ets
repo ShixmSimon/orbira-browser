@@ -1,6 +1,9 @@
 /*
  * 共享件（卡片式视觉）。
- *
+ */
+import { firstLetterOfHost, placeholderTint } from './FaviconKit';
+
+/*
  * 规格（从真机截图提取）：
  *   页面底 = page_background（浅灰 #F2F3F5 / 深 #121214）
  *   卡片   = card_background（白 / #232326），圆角 16，左右留 16
@@ -105,6 +108,88 @@ export struct AuraNavIconRow {
       }
     }
     .width('100%')
+  }
+}
+
+// 站点图标：有 favicon（dataURL）则显示圆角图标；没有则按主机名稳定取色 +
+// 白字首字母占位（Chrome 的 fake favicon 做法，比灰底字母可分辨）。
+@Component
+export struct AuraSiteIcon {
+  @Prop url: string = '';
+  // dataURL（'data:image/png;base64,...'）或空串（走占位）。
+  @Prop iconData: string = '';
+  // 不能叫 size：与 CustomComponent 基类的 size(value) 属性方法冲突。
+  @Prop iconSize: number = 22;
+
+  build() {
+    if (this.iconData.length > 0) {
+      Image(this.iconData)
+        .width(this.iconSize)
+        .height(this.iconSize)
+        .borderRadius(this.iconSize * 0.22)
+        .objectFit(ImageFit.Cover)
+        .interpolation(ImageInterpolation.Medium)
+    } else {
+      Stack({ alignContent: Alignment.Center }) {
+        Text(firstLetterOfHost(this.url))
+          .fontSize(this.iconSize * 0.42)
+          .fontColor('#FFFFFF')
+          .fontWeight(FontWeight.Medium)
+      }
+      .width(this.iconSize)
+      .height(this.iconSize)
+      .borderRadius(this.iconSize * 0.22)
+      .backgroundColor(placeholderTint(this.url))
+    }
+  }
+}
+
+// 统一搜索框（沉浸光感）：glass_tint 半透底 + 发丝描边 + 柔影，呼应鸿蒙 7 设置。
+// 内容区只能用 glass_tint（真玻璃只在标题栏/弹窗），不叠 backgroundBlurStyle。
+// 通过 inputId 暴露给各页的「回顶聚焦」逻辑；showClear 控制右侧清除按钮。
+@Component
+export struct AuraSearchBar {
+  @Prop placeholder: string = '';
+  @Prop text: string = '';
+  @Prop showClear: boolean = false;
+  inputId: string = '';
+  onInput: (value: string) => void = (_value: string): void => {};
+  onClear: () => void = (): void => {};
+
+  build() {
+    Row({ space: 8 }) {
+      Image($r('app.media.chromium_search'))
+        .width(16)
+        .height(16)
+        .fillColor($r('app.color.icon_secondary'))
+      TextInput({ text: this.text, placeholder: this.placeholder })
+        .id(this.inputId)
+        .layoutWeight(1)
+        .height(38)
+        .fontSize(14)
+        .fontColor($r('app.color.text_primary'))
+        .placeholderColor($r('app.color.text_secondary'))
+        .backgroundColor(Color.Transparent)
+        .onChange((value: string): void => {
+          this.onInput(value);
+        })
+      if (this.showClear && this.text.length > 0) {
+        Image($r('app.media.aura_close'))
+          .width(18)
+          .height(18)
+          .fillColor($r('app.color.icon_secondary'))
+          .onClick((): void => {
+            this.onClear();
+          })
+      }
+    }
+    .width('100%')
+    .height(40)
+    .borderRadius(20)
+    .backgroundColor($r('app.color.glass_tint'))
+    .border({ width: 0.5, color: $r('app.color.divider') })
+    .shadow({ radius: 10, color: $r('app.color.shadow'), offsetY: 2 })
+    .padding({ left: 12, right: 12 })
   }
 }
 

@@ -22,7 +22,7 @@ import { ShellUiPrefs } from '../../utils/appearance/ShellUiPrefs';
 import { SearchEnginesPrefs } from '../../utils/appearance/SearchEnginesPrefs';
 import { HuaweiAccountInfo } from '../../utils/account/HuaweiAccountService';
 import { HuaweiAccountView } from './AccountPanel';
-import { AuraNavIconRow, AuraSectionLabel } from './AuraKit';
+import { AuraNavIconRow, AuraSectionLabel, AuraSearchBar } from './AuraKit';
 import { searchTemplateForSite } from './ShellUtils';
 import {
   BrowsingDataType,
@@ -976,38 +976,20 @@ export struct SettingsPanel {
   // 常驻搜索框：始终显示在设置列表顶部，输入即就地过滤（不单独开搜索页）。
   @Builder
   private SearchBar(searchInputId: string) {
-    Row({ space: 8 }) {
-      Image($r('app.media.aura_search'))
-        .width(20)
-        .height(20)
-        .fillColor($r('app.color.icon_secondary'))
-      TextInput({ placeholder: '搜索设置项', text: this.searchText })
-        .id(searchInputId)
-        .fontSize(16)
-        .fontColor($r('app.color.text_primary'))
-        .placeholderColor($r('app.color.text_secondary'))
-        .backgroundColor(Color.Transparent)
-        .layoutWeight(1)
-        .onChange((value: string): void => {
-          this.searchText = value;
-          this.searchFabVisible = false;
-        })
-      if (this.searchText.length > 0) {
-        Image($r('app.media.aura_close'))
-          .width(18)
-          .height(18)
-          .fillColor($r('app.color.icon_secondary'))
-          .onClick((): void => {
-            this.searchText = '';
-          })
+    AuraSearchBar({
+      placeholder: '搜索设置项',
+      text: this.searchText,
+      showClear: true,
+      inputId: searchInputId,
+      onInput: (value: string): void => {
+        this.searchText = value;
+        this.searchFabVisible = false;
+      },
+      onClear: (): void => {
+        this.searchText = '';
       }
-    }
-    .width('100%')
-    .height(44)
-    .padding({ left: 14, right: 14 })
-    .borderRadius(12)
-    .backgroundColor($r('app.color.card_background'))
-    .margin({ bottom: 8 })
+    })
+      .margin({ bottom: 8 })
   }
 
   @Builder

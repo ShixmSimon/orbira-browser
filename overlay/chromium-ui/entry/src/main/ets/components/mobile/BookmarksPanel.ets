@@ -18,7 +18,8 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { BookmarkNode, BrowserCommandPayload } from 'engine';
 import { HomePrefs } from '../../utils/appearance/HomePrefs';
 import { displayUrl, pickAndStageImportFile, saveExportedFile, deleteStagedFile } from './PanelBridge';
-import { AuraSectionLabel } from './AuraKit';
+import { AuraSectionLabel, AuraSiteIcon, AuraSearchBar } from './AuraKit';
+import { requestFavicons, parseFavicons, faviconData } from './FaviconKit';
 import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
 import { MoreMenuDialog, MoreMenuItemSpec } from './MoreMenuDialog';
 
@@ -180,6 +181,9 @@ export struct BookmarksPanel {
   @State private searchText: string = '';
   // 搜索框随列表滚走后，标题栏右侧（⋯ 菜单旁）浮现搜索按钮（点它回顶 + 聚焦）。
   @State private searchFabVisible: boolean = false;
+  // 站点图标：引擎回包统一落 'auraFavicons'（AuraShell 转存），本页只从该键读取。
+  @StorageLink('auraFavicons') @Watch('onFaviconsChanged') faviconsJson: string = '';
+  @State private faviconMap: Map<string, string> = new Map();
 
   // 搜索框滚走后，点标题栏搜索按钮平滑回顶并聚焦搜索框。
   // 聚焦必须延迟到回顶动画结束之后：requestFocus 唤起输入法会触发重布局，
@@ -293,6 +297,7 @@ export struct BookmarksPanel {
             break;
           }
         }
+        this.requestBookmarkFavicons();
       }
     } catch (error) {
     }
@@ -403,6 +408,7 @@ export struct BookmarksPanel {
       }
       this.loading = false;
       this.clearLoadTimers();
+      this.requestBookmarkFavicons();
     } catch (error) {
       this.loading = false;
     }
@@ -414,8 +420,35 @@ export struct BookmarksPanel {
     }
     try {
       this.recentNodes = JSON.parse(this.bookmarksJson) as BookmarkNode[];
+      this.requestBookmarkFavicons();
     } catch (error) {
     }
+  }
+
+  // 'auraFavicons' 更新（含其它页触发的回包）：重新解析，赋新对象触发重绘。
+  private onFaviconsChanged(): void {
+    this.faviconMap = parseFavicons(this.faviconsJson);
+  }
+
+  // 把当前可见书签的 url 交给共享 FaviconKit 合批请求（去重 + 攒拍）。
+  private requestBookmarkFavicons(): void {
+    const urls: string[] = [];
+    for (const node of this.currentNodes) {
+      if (node.url && node.url.length > 0) {
+        urls.push(node.url);
+      }
+    }
+    for (const node of this.recentNodes) {
+      if (node.url && node.url.length > 0) {
+        urls.push(node.url);
+      }
+    }
+    for (const node of this.searchResults) {
+      if (node.url && node.url.length > 0) {
+        urls.push(node.url);
+      }
+    }
+    requestFavicons(urls, this.onCommand);
   }
 
   private onPanelEvent(): void {
@@ -1221,10 +1254,7 @@ export struct BookmarksPanel {
         if (this.selectMode) {
           this.SelectBox(node.id)
         } else {
-          Image($r('app.media.aura_bookmark'))
-            .width(22)
-            .height(22)
-            .fillColor($r('app.color.icon_primary'))
+          AuraSiteIcon({ url: node.url ?? '', iconData: faviconData(node.url ?? '', this.faviconMap) })
         }
 
         Column({ space: 2 }) {
@@ -1760,38 +1790,29 @@ export struct BookmarksPanel {
       // 1.0.121 同类教训）；搜索框随内容滚动，输入时组件不重建、焦点不丢。
       Scroll(this.listScroller) {
       Column() {
-      Row({ space: 8 }) {
-        Image($r('app.media.chromium_search'))
-          .width(16)
-          .height(16)
-          .fillColor($r('app.color.icon_secondary'))
-              TextInput({ text: this.searchText, placeholder: '搜索书签' })
-          .id('bookmarks_search_input')
-          .layoutWeight(1)
-          .height(38)
-          .fontSize(14)
-          .fontColor($r('app.color.text_primary'))
-          .placeholderColor($r('app.color.text_secondary'))
-          .backgroundColor(Color.Transparent)
-          .onChange((value: string) => {
-            const wasSearching: boolean = this.searchText.trim().length > 0;
-            this.searchText = value;
-            this.runSearch(value);
-            // 搜索态 ↔ 普通态内容整体替换：归顶（旧版靠两个互斥 Scroll 重建
-            // 自然归零；合并后显式下发，且仅在切换瞬间，与旧行为一致）。
-            if (wasSearching !== (value.trim().length > 0)) {
-              setTimeout((): void => {
-                this.listScroller.scrollEdge(Edge.Top);
-              }, 0);
-            }
-          })
-      }
-      .width('100%')
-      .height(40)
-      .borderRadius(20)
-      .backgroundColor($r('app.color.surface_secondary'))
-      .padding({ left: 12, right: 12 })
-      .margin({ bottom: 12 })
+      AuraSearchBar({
+        placeholder: '搜索书签',
+        text: this.searchText,
+        showClear: true,
+        inputId: 'bookmarks_search_input',
+        onInput: (value: string): void => {
+          const wasSearching: boolean = this.searchText.trim().length > 0;
+          this.searchText = value;
+          this.runSearch(value);
+          // 搜索态 ↔ 普通态内容整体替换：归顶（旧版靠两个互斥 Scroll 重建
+          // 自然归零；合并后显式下发，且仅在切换瞬间，与旧行为一致）。
+          if (wasSearching !== (value.trim().length > 0)) {
+            setTimeout((): void => {
+              this.listScroller.scrollEdge(Edge.Top);
+            }, 0);
+          }
+        },
+        onClear: (): void => {
+          this.searchText = '';
+          this.runSearch('');
+        }
+      })
+        .margin({ bottom: 12 })
 
       if (this.searchText.trim().length > 0) {
         // 搜索：引擎全树匹配（searchBookmarks，命中带 path）。
