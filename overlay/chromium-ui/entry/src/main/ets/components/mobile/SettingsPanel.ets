@@ -194,11 +194,19 @@ export struct SettingsPanel {
   @State private searchFabVisible: boolean = false;
 
   // 搜索框滚走后，点标题栏搜索按钮平滑回顶并聚焦搜索框（主列表与过滤列表共用）。
+  // 聚焦必须延迟到回顶动画结束之后：requestFocus 唤起输入法会触发重布局，
+  // 打断进行中的回顶弹簧动画 —— 实测列表停在半路，搜索框压在视口上方露不出来。
+  // 两个输入框只聚焦当前可见的那个（隐藏组件 requestFocus 无效）。
   private scrollToSearch(): void {
     this.mainScroller.scrollTo({ xOffset: 0, yOffset: 0, animation: { duration: 320, curve: curves.springMotion(0.34, 0.84) } });
     this.filteredScroller.scrollTo({ xOffset: 0, yOffset: 0, animation: { duration: 320, curve: curves.springMotion(0.34, 0.84) } });
-    this.getUIContext().getFocusController().requestFocus('settings_main_search');
-    this.getUIContext().getFocusController().requestFocus('settings_filtered_search');
+    setTimeout((): void => {
+      if (this.searchText.trim().length === 0) {
+        this.getUIContext().getFocusController().requestFocus('settings_main_search');
+      } else {
+        this.getUIContext().getFocusController().requestFocus('settings_filtered_search');
+      }
+    }, 480);
   }
   // 渐变模糊滚动效果按官方要求 bindToScrollable。
   private mainScroller: Scroller = new Scroller();

@@ -182,13 +182,17 @@ export struct BookmarksPanel {
   @State private searchFabVisible: boolean = false;
 
   // 搜索框滚走后，点标题栏搜索按钮平滑回顶并聚焦搜索框。
+  // 聚焦必须延迟到回顶动画结束之后：requestFocus 唤起输入法会触发重布局，
+  // 打断进行中的回顶弹簧动画 —— 实测列表停在半路，搜索框压在视口上方露不出来。
   private scrollToSearch(): void {
     this.listScroller.scrollTo({
       xOffset: 0,
       yOffset: 0,
       animation: { duration: 320, curve: curves.springMotion(0.34, 0.84) }
     });
-    this.getUIContext().getFocusController().requestFocus('bookmarks_search_input');
+    setTimeout((): void => {
+      this.getUIContext().getFocusController().requestFocus('bookmarks_search_input');
+    }, 480);
   }
   @State private searchResults: BookmarkNode[] = [];
 
