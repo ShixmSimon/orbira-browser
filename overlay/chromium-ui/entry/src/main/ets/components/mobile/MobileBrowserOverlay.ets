@@ -443,6 +443,12 @@ export struct MobileBrowserOverlay {
   private keyboardRecoveryTimers: number[] = [];
   private readonly addressController: TextInputController = new TextInputController();
   private addressSelectionStart: number = 0;
+  // 「首字符替换整条」的基础串：进入编辑瞬间的原网址。常驻全选（selectAll）会
+  // 让输入框一直停在选中态 —— 系统选中菜单会吞掉第一次点按，表现为「取消」要点
+  // 两次（1.0.110 的老问题，1.0.113 又为了全选把它改回来）。改成：输入框里仍是
+  // 原网址（无选区），敲第一个字符就把整条换掉，效果一样但不再有选中态。
+  private addressBase: string = '';
+  private addressEdited: boolean = false;
   private addressSelectionEnd: number = 0;
   private addressEditEpoch: number = 0;
   private requestSeq: number = 0;
@@ -1785,12 +1791,12 @@ export struct MobileBrowserOverlay {
       .backgroundColor(Color.Transparent)
           .padding({ left: 14, right: 10 })
           .enterKeyType(EnterKeyType.Go)
-          // 1.0.113：恢复「点地址栏即全选整条网址」（1.0.110 曾为修「选中态下第一次
-          // 点外部被吃掉」而删掉，用户要求改回）。SDK 语义：initial state 全选文本。
-          .selectAll(true)
+          // 不用 selectAll：常驻选区的系统选中菜单会吞掉第一次点按（1.0.110 老
+          // 问题）。改成「首字符替换整条」，见 onAddressInput。
       .onChange((value: string): void => {
-        this.addressDraft = value;
-        this.scheduleAddressSuggest(value);
+        const next: string = this.onAddressInput(value);
+        this.addressDraft = next;
+        this.scheduleAddressSuggest(next);
       })
       .onTextSelectionChange((start: number, end: number): void => {
         this.addressSelectionStart = start;
@@ -1825,6 +1831,12 @@ export struct MobileBrowserOverlay {
   private cancelAddressEdit(): void {
     this.clearKeyboardRecoveryTimers();
     this.hideAddressSuggest();
+    // 先把输入框从编辑态摘出来（收起选区/光标），再关面板 —— 选区还在时第一次
+    // 点按会被输入框吃掉，表现为「取消要点两次」。
+    try {
+      this.addressController.stopEditing();
+    } catch (error) {
+    }
     const navigating: boolean = this.pendingControlsRebound || this.controlsRestoreTimer !== 0;
     this.cancelControlsRebound();
     // 先退出编辑态（UI 立即收起搜索面板），再异步交还浏览器控件——避免引擎
@@ -1860,11 +1872,11 @@ export struct MobileBrowserOverlay {
           .backgroundColor(Color.Transparent)
           .padding({ left: 16, right: 12 })
           .enterKeyType(EnterKeyType.Go)
-          // 1.0.113：恢复「点地址栏即全选整条网址」（1.0.110 曾删，用户要求改回）。
-          .selectAll(true)
+          // 同上：不用 selectAll，改「首字符替换整条」（见 onAddressInput）。
           .onChange((value: string) => {
-            this.addressDraft = value;
-            this.scheduleAddressSuggest(value);
+            const next: string = this.onAddressInput(value);
+            this.addressDraft = next;
+            this.scheduleAddressSuggest(next);
           })
           .onTextSelectionChange((start: number, end: number): void => {
             this.addressSelectionStart = start;
@@ -2349,11 +2361,11 @@ export struct MobileBrowserOverlay {
           .backgroundColor(Color.Transparent)
           .padding({ left: 16, right: 12 })
           .enterKeyType(EnterKeyType.Go)
-          // 1.0.113：恢复「点地址栏即全选整条网址」（1.0.110 曾删，用户要求改回）。
-          .selectAll(true)
+          // 同上：不用 selectAll，改「首字符替换整条」（见 onAddressInput）。
           .onChange((value: string) => {
-            this.addressDraft = value;
-            this.scheduleAddressSuggest(value);
+            const next: string = this.onAddressInput(value);
+            this.addressDraft = next;
+            this.scheduleAddressSuggest(next);
           })
           .onTextSelectionChange((start: number, end: number): void => {
             this.addressSelectionStart = start;
@@ -4220,6 +4232,9 @@ export struct MobileBrowserOverlay {
     this.hideAddressSuggest();
     this.addressEditEpoch += 1;
     this.addressDraft = this.browserState.url.startsWith('chrome://') ? '' : this.browserState.url;
+    // 「首字符替换整条」的基准（见 addressBase 注释）：此后第一次输入即换掉整条。
+    this.addressBase = this.addressDraft;
+    this.addressEdited = false;
     this.addressSelectionStart = 0;
     this.addressSelectionEnd = this.addressDraft.length;
     this.editingAddress = true;
@@ -4278,6 +4293,28 @@ export struct MobileBrowserOverlay {
   }
 
   // ---- 地址栏联想 ----
+
+  // 地址栏输入：没动过之前，敲第一个字符（或退格）就替换/清空整条网址——替代
+  // 常驻全选，既保留「直接打字换新网址」的手感，又不留选中态（选中菜单会吃掉
+  // 第一次点按，害得「取消」要点两次）。
+  private onAddressInput(value: string): string {
+    if (this.addressEdited || this.addressBase.length === 0) {
+      return value;
+    }
+    if (value === this.addressBase) {
+      return value; // 只是光标/选区变化，没真改内容
+    }
+    if (value.length > this.addressBase.length && value.startsWith(this.addressBase)) {
+      this.addressEdited = true;
+      return value.substring(this.addressBase.length);
+    }
+    if (value.length < this.addressBase.length && this.addressBase.startsWith(value)) {
+      this.addressEdited = true;
+      return ''; // 退格删到比原网址短 = 整条删掉
+    }
+    this.addressEdited = true;
+    return value;
+  }
 
   // 输入变化：轻防抖（130ms）后向引擎要联想（本地自动补全，回包流式）。
   // 非空即让列表可见（先落一条「搜索」兜底行），引擎结果到了再补齐。

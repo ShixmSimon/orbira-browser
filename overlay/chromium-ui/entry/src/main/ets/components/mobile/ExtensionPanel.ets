@@ -9,6 +9,7 @@ import { common } from '@kit.AbilityKit';
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
 import { BrowserCommandPayload, ExtensionActionItem, ExtensionDetailsEvent, ExtensionSiteAccess } from 'engine';
 import { glassHeaderInsetVp } from './GlassPage';
+import { ExtIconCache } from './ExtIconCache';
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
@@ -118,6 +119,8 @@ export struct ExtensionPanel {
   // 带次数上限防死循环。
   private iconCatchupTimer: number = -1;
   private iconRetryCount: number = 0;
+  // 解码失败的图标串（引擎偶发给坏串）：这些 id 不再画 Image，退化成字母块。
+  @State private brokenIconIds: string[] = [];
 
   aboutToAppear(): void {
     // Seed from storage first: a @StorageLink does not fire @Watch for its
@@ -126,6 +129,12 @@ export struct ExtensionPanel {
     this.onExtensionsPayload();
     this.onDeveloperModePayload();
     this.reload();
+    // 图标持久缓存：异步读盘，回来后给当前列表补一次（引擎还没重新生成完的
+    // 空图标直接用上次的）。
+    const host = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    ExtIconCache.hydrate(host).then((): void => {
+      this.items = this.mergeIconCache(this.items);
+    });
     // 开发者模式的当前值：开关在标题栏，打开面板就问一次引擎。
     this.onCommand({ command: 'getDeveloperMode' });
     this.retryTimer = setTimeout((): void => {
@@ -175,7 +184,12 @@ export struct ExtensionPanel {
 
   private reload(): void {
     this.requestSeq += 1;
-    this.onCommand({ command: 'getExtensionActions', requestId: this.requestSeq });
+    // 显式要 96px 的方形图标（省略时引擎按 32px 给，放到 40vp 的行里会糊）。
+    this.onCommand({
+      command: 'getExtensionActions',
+      requestId: this.requestSeq,
+      iconSizePx: 96
+    });
   }
 
   private onExtensionsPayload(): void {
@@ -183,10 +197,45 @@ export struct ExtensionPanel {
       return;
     }
     try {
-      this.items = JSON.parse(this.extensionsJson) as ExtensionActionItem[];
+      this.items = this.mergeIconCache(JSON.parse(this.extensionsJson) as ExtensionActionItem[]);
       this.scheduleIconCatchup();
     } catch (error) {
     }
+  }
+
+  // 图标空窗兜底：引擎给过一次的图标都存进 ExtIconCache（落盘持久）。回包里
+  // iconPngBase64 为空的项直接用缓存补上，非空的顺手记一笔——开关扩展时
+  // 图标不再时有时无。
+  private mergeIconCache(list: ExtensionActionItem[]): ExtensionActionItem[] {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    return list.map((entry: ExtensionActionItem): ExtensionActionItem => {
+      if (entry.iconPngBase64.length > 0) {
+        ExtIconCache.put(entry.id, entry.iconPngBase64, context);
+        return entry;
+      }
+      const cached = ExtIconCache.get(entry.id);
+      if (cached.length === 0) {
+        return entry;
+      }
+      // 逐字段重建（ArkTS 禁止对象展开）。
+      const patched: ExtensionActionItem = {
+        id: entry.id,
+        name: entry.name,
+        iconPngBase64: cached,
+        badgeText: entry.badgeText,
+        badgeColor: entry.badgeColor,
+        enabled: entry.enabled,
+        pinned: entry.pinned,
+        userEnabled: entry.userEnabled,
+        disableReasons: entry.disableReasons,
+        hasPopup: entry.hasPopup,
+        optionsUrl: entry.optionsUrl,
+        version: entry.version,
+        description: entry.description,
+        author: entry.author
+      } as ExtensionActionItem;
+      return patched;
+    });
   }
 
   private onDeveloperModePayload(): void {
@@ -696,16 +745,11 @@ export struct ExtensionPanel {
 
   @Builder
   private ExtensionIcon(item: ExtensionActionItem, size: number) {
+    // 首字母块**永远画在底下**，真实图标叠在上面：引擎偶发返回解不开的图标串时
+    // Image 解码失败只画空白，底下还有字母块兜底——不会出现「图标位置空一块」。
     // 1.0.160：停用（开发者模式关闭）的扩展图标置灰 + 压暗 —— 与桌面 Chrome
     // chrome://extensions 的停用态一致；此前停用也显示全彩图标，分不清启停。
-    if (iconSource(item).length > 0) {
-      Image(iconSource(item))
-        .width(size)
-        .height(size)
-        .borderRadius(size / 4)
-        .grayscale(item.userEnabled ? 0 : 1)
-        .opacity(item.userEnabled ? 1 : 0.45)
-    } else {
+    Stack({ alignContent: Alignment.Center }) {
       Text(extensionInitial(item.name))
         .width(size)
         .height(size)
@@ -716,7 +760,36 @@ export struct ExtensionPanel {
         .fontColor($r('app.color.text_primary'))
         .textAlign(TextAlign.Center)
         .opacity(item.userEnabled ? 1 : 0.45)
+
+      if (iconSource(item).length > 0 && !this.iconBroken(item.id)) {
+        Image(iconSource(item))
+          .width(size)
+          .height(size)
+          .borderRadius(size / 4)
+          .grayscale(item.userEnabled ? 0 : 1)
+          .opacity(item.userEnabled ? 1 : 0.45)
+          .onError((): void => {
+            // 这串解码不了：记下来，露出底下的字母块。
+            this.markIconBroken(item.id);
+          })
+      }
     }
+    .width(size)
+    .height(size)
+    .clip(true)
+  }
+
+  private iconBroken(id: string): boolean {
+    return this.brokenIconIds.indexOf(id) >= 0;
+  }
+
+  private markIconBroken(id: string): void {
+    if (this.iconBroken(id)) {
+      return;
+    }
+    this.brokenIconIds.push(id);
+    // 重新赋值触发 @State 更新（ArkUI 对数组原地修改不重渲染）。
+    this.brokenIconIds = this.brokenIconIds.slice();
   }
 
   // 标题栏交给 Navigation（HarmonyOS 7 之后只有 Navigation 标题栏 / 底部

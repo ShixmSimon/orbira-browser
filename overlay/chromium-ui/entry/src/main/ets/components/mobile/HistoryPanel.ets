@@ -165,8 +165,31 @@ export struct HistoryPanel {
     if (item.url.length === 0) {
       return;
     }
-    this.onCommand({ command: 'navigate', url: item.url });
+    // 历史里可能躺着畸形/失效的网址（被截断的、只剩 scheme 的）：直接下发导航会
+    // 把浏览器带进异常态，先拦一道并给提示。
+    const target = this.normalizeHistoryUrl(item.url);
+    if (target.length === 0) {
+      this.getUIContext().getPromptAction().showToast({
+        message: '这个网址失效了，打不开',
+        duration: 1800
+      });
+      return;
+    }
+    this.onCommand({ command: 'navigate', url: target });
     this.onClose();
+  }
+
+  // 有 scheme 就原样（要求 scheme 后面还有东西），没有 scheme 按主机名补 https。
+  private normalizeHistoryUrl(url: string): string {
+    const value = url.trim();
+    if (value.length === 0) {
+      return '';
+    }
+    const mark = value.indexOf('://');
+    if (mark < 0) {
+      return `https://${value}`;
+    }
+    return value.substring(mark + 3).length > 0 ? value : '';
   }
 
   private removeItem(item: HistoryItem): void {
