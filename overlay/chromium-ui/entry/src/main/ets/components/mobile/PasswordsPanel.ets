@@ -928,6 +928,7 @@ export struct PasswordsPanel {
                 .height(16)
                 .fillColor($r('app.color.icon_secondary'))
               TextInput({ text: this.searchText, placeholder: '搜索密码' })
+                .id('passwords_search_input')
                 .layoutWeight(1)
                 .height(38)
                 .fontSize(14)
@@ -1009,6 +1010,15 @@ export struct PasswordsPanel {
         .scrollBar(BarState.Off)
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .align(Alignment.TopStart)
+        .onDidScroll(() => {
+          // 搜索框随列表滚走后，在标题栏右侧（⋯ 菜单旁）浮现搜索按钮。
+          // onDidScroll 给的是每帧偏移量，这里直接读绝对位置更稳。
+          const off = this.listScroller.currentOffset().yOffset;
+          const show = off > glassHeaderInsetVp() + 20 && this.items.length > 0;
+          if (show !== this.searchFabVisible) {
+            this.searchFabVisible = show;
+          }
+        })
       }
 
       // 批量操作条改为悬浮胶囊（见 BatchActionBar()，挂 body Stack，不占流式高度）。
@@ -1377,6 +1387,8 @@ export struct PasswordsPanel {
   private listScroller: Scroller = new Scroller();
   private detailScroller: Scroller = new Scroller();
   @State private searchText: string = '';
+  // 搜索框滚走后，标题栏右侧浮现搜索按钮（点它回顶 + 聚焦）。
+  @State private searchFabVisible: boolean = false;
   // 导入模式弹窗（自绘）：先选增量/覆盖，再进文件选择器。
   @State private importDialogVisible: boolean = false;
   @State private importOverwrite: boolean = false;
@@ -1402,6 +1414,16 @@ export struct PasswordsPanel {
     }
     this.filteredPasswords = out;
     this.pwdDataSource.rebuild(out);
+  }
+
+  // 搜索框滚走后，点右上角搜索按钮平滑回顶并聚焦搜索框。
+  private scrollToSearch(): void {
+    this.listScroller.scrollTo({
+      xOffset: 0,
+      yOffset: 0,
+      animation: { duration: 320, curve: curves.springMotion(0.34, 0.84) }
+    });
+    this.getUIContext().getFocusController().requestFocus('passwords_search_input');
   }
 
     // 导入模式弹窗（自绘）：格式说明 + 增量/覆盖选择。
@@ -1606,6 +1628,36 @@ export struct PasswordsPanel {
         // 导入模式弹窗 / 批量操作栏：悬浮层挂列表这层（viewport 固定）。
         this.ImportDialog()
         this.BatchActionBar()
+        // 搜索回顶按钮：搜索框滚走后浮现于标题栏右侧、⋯ 菜单左侧；点击平滑回顶并聚焦搜索框。
+        if (this.searchFabVisible && this.verified && this.items.length > 0) {
+          Row() {
+            Button({ type: ButtonType.Circle }) {
+              Image($r('app.media.chromium_search'))
+                .width(18)
+                .height(18)
+                .fillColor($r('app.color.icon_primary'))
+            }
+            .width(40)
+            .height(40)
+            .backgroundColor($r('app.color.float_bar_bg'))
+            .border({ width: 0.5, color: $r('app.color.divider') })
+            .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+            .onClick(() => {
+              this.scrollToSearch();
+            })
+          }
+          .width('100%')
+          .height('100%')
+          .justifyContent(FlexAlign.End)
+          .alignItems(VerticalAlign.Top)
+          .padding({ right: 64, top: glassTopSafeVp() + 6 })
+          .hitTestBehavior(HitTestMode.Transparent)
+          .transition(
+            TransitionEffect.opacity(0)
+              .combine(TransitionEffect.scale({ x: 0.8, y: 0.8 }))
+              .animation({ curve: curves.springMotion(0.34, 0.84) })
+          )
+        }
       }
       .width('100%')
       .height('100%')
