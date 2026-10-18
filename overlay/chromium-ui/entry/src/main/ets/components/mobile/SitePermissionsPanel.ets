@@ -8,7 +8,7 @@ import { BrowserCommandPayload, SiteSetting, SiteSettingType, SiteSettingValue }
 import { displayUrl } from './PanelBridge';
 import { glassHeaderInsetVp } from './GlassPage';
 import { AuraSiteIcon } from './AuraKit';
-import { requestFavicons, parseFavicons, faviconData } from './FaviconKit';
+import { requestFavicons, ingestFavicons, snapshotFavicons, faviconData } from './FaviconKit';
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
@@ -100,6 +100,8 @@ export struct SitePermissionsPanel {
     // Seed from storage first: a @StorageLink does not fire @Watch for its
     // initial value, and a byte-identical engine reply raises no change
     // either, so a re-opened panel would otherwise stay on "loading".
+    // 站点图标同理：先吃一次已有回包，否则首帧全是占位色块。
+    this.onFaviconsChanged();
     this.onSettingsPayload();
     this.reloadList();
     this.retryTimer = setTimeout((): void => {
@@ -159,9 +161,14 @@ export struct SitePermissionsPanel {
     }
   }
 
-  // 'auraFavicons' 更新（含其它页触发的回包）：重新解析，赋新对象触发重绘。
+  // 'auraFavicons' 更新（含其它页触发的回包）：并进累积缓存后取整份快照，
+  // 赋新对象触发重绘。@StorageLink 的初值不触发 @Watch，故 aboutToAppear 也调一次。
   private onFaviconsChanged(): void {
-    this.faviconMap = parseFavicons(this.faviconsJson);
+    ingestFavicons(this.faviconsJson);
+    this.faviconMap = snapshotFavicons();
+    // 回包可能只覆盖一部分 url（引擎只回命中的）：把还缺的补问一次。
+    // Kit 内部按 url 记次数（≤3 次）并跳过已命中的，不会死循环。
+    this.requestSiteFavicons();
   }
 
   // 把当前可见网站的 origin 交给共享 FaviconKit 合批请求（去重 + 攒拍）。

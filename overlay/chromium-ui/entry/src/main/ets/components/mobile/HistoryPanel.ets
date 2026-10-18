@@ -6,9 +6,9 @@
  * （转存到 'auraPanelEvent'），本页据此重拉。
  */
 import { BrowserCommandPayload, HistoryItem, HistoryVisitRef } from 'engine';
-import { displayUrl, dayGroupLabel, formatClock, formatVisitTime } from './PanelBridge';
+import { displayUrl, dayGroupLabel, formatClock } from './PanelBridge';
 import { AuraSectionLabel, AuraSiteIcon, AuraSearchBar } from './AuraKit';
-import { requestFavicons, parseFavicons, faviconData } from './FaviconKit';
+import { requestFavicons, ingestFavicons, snapshotFavicons, faviconData } from './FaviconKit';
 import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
 import { promptAction, curves } from '@kit.ArkUI';
 import { MoreMenuDialog, MoreMenuItemSpec } from './MoreMenuDialog';
@@ -86,6 +86,8 @@ export struct HistoryPanel {
     // Seed from storage first: a @StorageLink does not fire @Watch for its
     // initial value, and a byte-identical engine reply raises no change
     // either, so a re-opened panel would otherwise stay on "loading".
+    // 站点图标同理：先吃一次已有回包，否则首帧全是占位色块。
+    this.onFaviconsChanged();
     this.onHistoryChanged();
     this.reload();
     this.retryTimer = setTimeout((): void => {
@@ -124,9 +126,14 @@ export struct HistoryPanel {
     }
   }
 
-  // 'auraFavicons' 更新（含其它页触发的回包）：重新解析，赋新对象触发重绘。
+  // 'auraFavicons' 更新（含其它页触发的回包）：并进累积缓存后取整份快照，
+  // 赋新对象触发重绘。@StorageLink 的初值不触发 @Watch，故 aboutToAppear 也调一次。
   private onFaviconsChanged(): void {
-    this.faviconMap = parseFavicons(this.faviconsJson);
+    ingestFavicons(this.faviconsJson);
+    this.faviconMap = snapshotFavicons();
+    // 回包可能只覆盖一部分 url（引擎只回命中的）：把还缺的补问一次。
+    // Kit 内部按 url 记次数（≤3 次）并跳过已命中的，不会死循环。
+    this.requestHistoryFavicons();
   }
 
   // 把当前历史条目的 url 交给共享 FaviconKit 合批请求（去重 + 攒拍）。
@@ -306,7 +313,7 @@ export struct HistoryPanel {
             .fontSize(16)
             .fontColor($r('app.color.text_primary'))
             .width('100%')
-          Text(`${displayUrl(item.url)} · ${formatClock(item.visitTime)}`)
+          Text(displayUrl(item.url))
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .fontSize(12)
@@ -317,11 +324,11 @@ export struct HistoryPanel {
         .layoutWeight(1)
 
         if (!this.selectMode) {
-          Text(formatVisitTime(item.visitTime))
+          // 右侧只留时刻（HH:MM）：分组标签已经写明「今天/昨天/日期」，重复日期没意义。
+          Text(formatClock(item.visitTime))
             .fontSize(12)
             .fontColor($r('app.color.text_secondary'))
             .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
       }
       .width('100%')
@@ -532,6 +539,15 @@ export struct HistoryPanel {
         .justifyContent(FlexAlign.Center)
       } else {
         List({ scroller: this.listScroller }) {
+          // 顶部占位：glassHeaderInsetVp() 的空白必须做成**滚动内容里的占位 Item**，
+          // 绝不能写成 List 本体的 .padding——那样会把滚动视口整体压到标题行下方，
+          // 内容永远进不了标题行区域，顶部渐变模糊（GRADIENT_BLUR）就不会出现。
+          ListItem() {
+            Row().width('100%').height(glassHeaderInsetVp())
+          }
+          .height(glassHeaderInsetVp())
+          .selectable(false)
+
           ListItem() {
             AuraSearchBar({
               placeholder: '搜索历史记录',
@@ -577,12 +593,20 @@ export struct HistoryPanel {
             .clip(true)
             .margin({ bottom: 10 })
           }, (group: HistoryGroup): string => `${group.label}#${group.items.length}`)
+
+          // 底部占位同理：多选操作条悬浮在内容之上，末条要留出空间不被压住。
+          if (this.selectMode) {
+            ListItem() {
+              Row().width('100%').height(50 + glassBottomInsetVp())
+            }
+            .height(50 + glassBottomInsetVp())
+            .selectable(false)
           }
+        }
         .layoutWeight(1)
         .scrollBar(BarState.Off)
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
         .align(Alignment.TopStart)
-        .padding({ top: glassHeaderInsetVp(), bottom: this.selectMode ? (50 + glassBottomInsetVp()) : 0 })
         .onDidScroll(() => {
           // 搜索框随列表滚走后，标题栏右侧浮现搜索按钮（点它回顶 + 聚焦）。
           const off = this.listScroller.currentOffset().yOffset;

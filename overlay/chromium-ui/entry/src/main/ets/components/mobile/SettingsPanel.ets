@@ -133,6 +133,9 @@ const SETTINGS_ENTRIES: SettingsEntry[] = [
 
   { id: 'darkMode', title: '深色模式', subtitle: '浅色、深色或跟随系统',
     keywords: ['dark', '深色', '夜间', '主题', 'theme', '外观'], section: '外观', kind: 'page' },
+  { id: 'home', title: '主页设置', subtitle: '主页风格、自定义主页布局与网址主页',
+    keywords: ['home', '主页', '首页', '主页布局', '主页风格', '自定义', '布局', '磁贴', '网址', 'chrome 风格', '简约风格'],
+    section: '外观', kind: 'page' },
   { id: 'hideStatusBarOnScroll', title: '上滑时隐藏状态栏', subtitle: '地址栏收起时一起隐藏，网页铺满全屏',
     keywords: ['状态栏', '全屏', '隐藏', '上滑'], section: '外观', kind: 'toggle' },
   { id: 'hideTopBarOnScroll', title: '滚动时隐藏地址栏', subtitle: '向下滚动时收起顶部地址栏',
@@ -159,7 +162,7 @@ const SETTINGS_ENTRIES: SettingsEntry[] = [
     section: '高级', kind: 'toggle' },
 
   { id: 'about', title: '关于 Orbira', subtitle: '版本、内核与开源协议',
-    keywords: ['about', '关于', '版本', 'version', '星轨', '开源', '简介', '项目', '主页', 'github', 'chromium-hmos'], section: '关于', kind: 'page' }
+    keywords: ['about', '关于', '版本', 'version', '星轨', '开源', '简介', '项目', 'github', 'chromium-hmos'], section: '关于', kind: 'page' }
 ];
 
 @Component
@@ -809,6 +812,8 @@ export struct SettingsPanel {
       this.openSubPage('clear');
     } else if (entry.id === 'darkMode') {
       this.openSubPage('appearance');
+    } else if (entry.id === 'home') {
+      this.openSubPage('home');
     } else if (entry.id === 'zoom') {
       this.openSubPage('zoom');
     } else if (entry.id === 'passwords') {

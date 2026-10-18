@@ -32,7 +32,7 @@ import {
 } from 'engine';
 import { displayUrl, pickAndStageImportFile, saveExportedFile, deleteStagedFile } from './PanelBridge';
 import { AuraChevron, AuraSectionLabel, AuraSiteIcon, AuraSearchBar } from './AuraKit';
-import { requestFavicons, parseFavicons, faviconData } from './FaviconKit';
+import { requestFavicons, ingestFavicons, snapshotFavicons, faviconData } from './FaviconKit';
 
 interface PanelEventPayload {
   kind?: string;
@@ -261,6 +261,9 @@ export struct PasswordsPanel {
   aboutToAppear(): void {
     // 缓存种子：上次的数据先显示（不闪"加载中"），再 reload 刷新。
     // 种子直接解析缓存（AppStorage 里的 requestId 是旧请求的，不走校验）。
+    // 站点图标同理：@StorageLink 的初值不触发 @Watch，先吃一次已有回包，
+    // 否则首帧全是占位色块。
+    this.onFaviconsChanged();
     if (this.passwordsJson.length > 0) {
       try {
         const cached = JSON.parse(this.passwordsJson) as SavedPasswordsEvent;
@@ -625,9 +628,14 @@ export struct PasswordsPanel {
 
   // -- 详情 / 编辑 ------------------------------------------------------------
 
-  // 'auraFavicons' 更新（含其它页触发的回包）：重新解析，赋新对象触发重绘。
+  // 'auraFavicons' 更新（含其它页触发的回包）：并进累积缓存后取整份快照，
+  // 赋新对象触发重绘。@StorageLink 的初值不触发 @Watch，故 aboutToAppear 也调一次。
   private onFaviconsChanged(): void {
-    this.faviconMap = parseFavicons(this.faviconsJson);
+    ingestFavicons(this.faviconsJson);
+    this.faviconMap = snapshotFavicons();
+    // 回包可能只覆盖一部分 url（引擎只回命中的）：把还缺的补问一次。
+    // Kit 内部按 url 记次数（≤3 次）并跳过已命中的，不会死循环。
+    this.requestPasswordFavicons();
   }
 
   // 把当前密码条目的 origin 交给共享 FaviconKit 合批请求（去重 + 攒拍）。

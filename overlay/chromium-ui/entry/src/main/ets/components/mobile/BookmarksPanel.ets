@@ -19,7 +19,7 @@ import { BookmarkNode, BrowserCommandPayload } from 'engine';
 import { HomePrefs } from '../../utils/appearance/HomePrefs';
 import { displayUrl, pickAndStageImportFile, saveExportedFile, deleteStagedFile } from './PanelBridge';
 import { AuraSectionLabel, AuraSiteIcon, AuraSearchBar } from './AuraKit';
-import { requestFavicons, parseFavicons, faviconData } from './FaviconKit';
+import { requestFavicons, ingestFavicons, snapshotFavicons, faviconData } from './FaviconKit';
 import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
 import { MoreMenuDialog, MoreMenuItemSpec } from './MoreMenuDialog';
 
@@ -251,6 +251,8 @@ export struct BookmarksPanel {
     this.windowH = dsp.height / dsp.densityPixels;
     // 用持久化的书签列表直接填充首屏（@StorageLink 跨挂载保留），避免「进页面
     // 就闪加载中」——已有缓存数据时静默重拉，只有真正首次无数据才走 loading。
+    // 站点图标同理：@StorageLink 的初值不触发 @Watch，先吃一次已有回包。
+    this.onFaviconsChanged();
     this.hydrateFromCache();
     this.onRecentChanged();
     // 「首页」文件夹 id：主页发现后会写进 AppStorage；书签页可能先于主页打开
@@ -425,9 +427,14 @@ export struct BookmarksPanel {
     }
   }
 
-  // 'auraFavicons' 更新（含其它页触发的回包）：重新解析，赋新对象触发重绘。
+  // 'auraFavicons' 更新（含其它页触发的回包）：并进累积缓存后取整份快照，
+  // 赋新对象触发重绘。@StorageLink 的初值不触发 @Watch，故 aboutToAppear 也调一次。
   private onFaviconsChanged(): void {
-    this.faviconMap = parseFavicons(this.faviconsJson);
+    ingestFavicons(this.faviconsJson);
+    this.faviconMap = snapshotFavicons();
+    // 回包可能只覆盖一部分 url（引擎只回命中的）：把还缺的补问一次。
+    // Kit 内部按 url 记次数（≤3 次）并跳过已命中的，不会死循环。
+    this.requestBookmarkFavicons();
   }
 
   // 把当前可见书签的 url 交给共享 FaviconKit 合批请求（去重 + 攒拍）。
