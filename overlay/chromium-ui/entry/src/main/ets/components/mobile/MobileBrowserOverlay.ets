@@ -1796,6 +1796,12 @@ export struct MobileBrowserOverlay {
       .onChange((value: string): void => {
         const next: string = this.onAddressInput(value);
         this.addressDraft = next;
+        // 单纯聚焦/回显不算输入：别一进地址栏就弹联想列表——那层透明捕获层会
+        // 吃掉第一次点按，表现为「取消要点两次」。
+        if (!this.addressEdited) {
+          this.hideAddressSuggest();
+          return;
+        }
         this.scheduleAddressSuggest(next);
       })
       .onTextSelectionChange((start: number, end: number): void => {
@@ -1876,6 +1882,12 @@ export struct MobileBrowserOverlay {
           .onChange((value: string) => {
             const next: string = this.onAddressInput(value);
             this.addressDraft = next;
+            // 单纯聚焦/回显不算输入：别一进地址栏就弹联想列表——那层透明捕获层
+            // 会吃掉第一次点按，表现为「取消要点两次」。
+            if (!this.addressEdited) {
+              this.hideAddressSuggest();
+              return;
+            }
             this.scheduleAddressSuggest(next);
           })
           .onTextSelectionChange((start: number, end: number): void => {
@@ -2365,6 +2377,12 @@ export struct MobileBrowserOverlay {
           .onChange((value: string) => {
             const next: string = this.onAddressInput(value);
             this.addressDraft = next;
+            // 单纯聚焦/回显不算输入：别一进地址栏就弹联想列表——那层透明捕获层
+            // 会吃掉第一次点按，表现为「取消要点两次」。
+            if (!this.addressEdited) {
+              this.hideAddressSuggest();
+              return;
+            }
             this.scheduleAddressSuggest(next);
           })
           .onTextSelectionChange((start: number, end: number): void => {
@@ -4242,11 +4260,8 @@ export struct MobileBrowserOverlay {
     // Pin both bars while the keyboard is up (SHELL_CONTRACT.md, "手机：滚动
     // 时收起地址栏和 dock", step 5).
     this.issueCommand({ command: 'setBrowserControlsState', state: 'shown', animate: true });
-    // 首帧聚焦（键盘弹出）。全选由三处 TextInput 的 .selectAll(true) 提供
-    // （1.0.113 改回，即 1.0.90 的原机制）；这里不再用 setTextSelection 二次设选区——
-    // 两条路同时设会多弹一次选中菜单，也会盖掉属性态。取消只收起编辑、还原网址，
-    // 与选中态无关。若真机出现「选中态下点 dock 按钮第一次没反应」（1.0.110 的老问题），
-    // 正解是改「首字符替换整条」（不保留常驻选区），而不是再删全选。
+    // 首帧聚焦（键盘弹出）。不再用常驻 .selectAll(true)（1.0.110/1.0.113 反复：
+    // 常驻选区会吞掉第一次点按），改「首字符替换整条」—— 见 onAddressInput。
     this.keyboardRecoveryTimers.push(setTimeout((): void => {
       if (!this.editingAddress) {
         return;
