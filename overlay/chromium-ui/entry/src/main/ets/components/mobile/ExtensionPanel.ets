@@ -6,6 +6,8 @@
  * 变更类事件的回音通过 'auraPanelEvent' 的 kind 过滤。
  */
 import { common } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
+import { image } from '@kit.ImageKit';
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
 import { BrowserCommandPayload, ExtensionActionItem, ExtensionDetailsEvent, ExtensionSiteAccess } from 'engine';
 import { glassHeaderInsetVp } from './GlassPage';
@@ -121,6 +123,12 @@ export struct ExtensionPanel {
   private iconRetryCount: number = 0;
   // 解码失败的图标串（引擎偶发给坏串）：这些 id 不再画 Image，退化成字母块。
   @State private brokenIconIds: string[] = [];
+  // 图标位图缓存：base64 在应用层解成 PixelMap 再交给 Image（比直接把
+  // data: URL 给 Image 稳——解码失败我们能立刻知道，且位图拿到手就不怕引擎
+  // 之后把 iconPngBase64 清空）。Map 不是 @State，靠 iconPixelsVersion 触发重绘。
+  private iconPixels: Map<string, image.PixelMap> = new Map();
+  private iconPixelSource: Map<string, string> = new Map();
+  @State private iconPixelsVersion: number = 0;
 
   aboutToAppear(): void {
     // Seed from storage first: a @StorageLink does not fire @Watch for its
@@ -199,8 +207,54 @@ export struct ExtensionPanel {
     try {
       this.items = this.mergeIconCache(JSON.parse(this.extensionsJson) as ExtensionActionItem[]);
       this.scheduleIconCatchup();
+      this.decodeIcons(this.items);
     } catch (error) {
     }
+  }
+
+  // 把每项的图标 base64 解成 PixelMap（异步）。解好的位图常驻内存，引擎之后
+  // 把 iconPngBase64 清空也不影响显示。
+  private decodeIcons(list: ExtensionActionItem[]): void {
+    for (const entry of list) {
+      const raw = entry.iconPngBase64;
+      if (raw.length === 0) {
+        continue;
+      }
+      if (this.iconPixels.has(entry.id) && this.iconPixelSource.get(entry.id) === raw) {
+        continue;
+      }
+      this.decodeOne(entry.id, raw);
+    }
+  }
+
+  private async decodeOne(id: string, raw: string): Promise<void> {
+    try {
+      const helper = new util.Base64Helper();
+      const bytes = helper.decodeSync(raw);
+      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      const source = image.createImageSource(buffer as ArrayBuffer);
+      const pixel = await source.createPixelMap({
+        desiredPixelFormat: image.PixelMapFormat.RGBA_8888
+      });
+      this.iconPixels.set(id, pixel);
+      this.iconPixelSource.set(id, raw);
+      if (this.iconBroken(id)) {
+        const kept: string[] = [];
+        for (const item of this.brokenIconIds) {
+          if (item !== id) {
+            kept.push(item);
+          }
+        }
+        this.brokenIconIds = kept;
+      }
+      this.iconPixelsVersion += 1;
+    } catch (error) {
+      this.markIconBroken(id);
+    }
+  }
+
+  private pixelMapOf(id: string): image.PixelMap | undefined {
+    return this.iconPixels.get(id);
   }
 
   // 图标空窗兜底：引擎给过一次的图标都存进 ExtIconCache（落盘持久）。回包里
@@ -761,7 +815,16 @@ export struct ExtensionPanel {
         .textAlign(TextAlign.Center)
         .opacity(item.userEnabled ? 1 : 0.45)
 
-      if (iconSource(item).length > 0 && !this.iconBroken(item.id)) {
+      // 版本号参与条件：位图解好时靠它触发重绘（Map 本身不是 @State）。
+      if (this.iconPixelsVersion >= 0 && this.pixelMapOf(item.id) !== undefined) {
+        Image(this.pixelMapOf(item.id))
+          .width(size)
+          .height(size)
+          .borderRadius(size / 4)
+          .grayscale(item.userEnabled ? 0 : 1)
+          .opacity(item.userEnabled ? 1 : 0.45)
+      } else if (iconSource(item).length > 0 && !this.iconBroken(item.id)) {
+        // 位图还没解好（或解不动）时先用 data: URL；解不动就露出字母块。
         Image(iconSource(item))
           .width(size)
           .height(size)
@@ -769,7 +832,6 @@ export struct ExtensionPanel {
           .grayscale(item.userEnabled ? 0 : 1)
           .opacity(item.userEnabled ? 1 : 0.45)
           .onError((): void => {
-            // 这串解码不了：记下来，露出底下的字母块。
             this.markIconBroken(item.id);
           })
       }
