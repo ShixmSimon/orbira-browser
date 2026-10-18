@@ -1,7 +1,7 @@
 /*
- * 手机自绘书签页 v3.1（2026-10-10）：分层书签树 + 文件夹管理。
+ * 手机自绘书签页：以「首页」文件夹为根的分层书签树 + 文件夹管理。
  *
- * 数据流：getBookmarks（parentId 省略 = 三个根文件夹；带 = 该文件夹子节点）
+ * 数据流：getBookmarks（parentId = 「首页」文件夹 id，即当前浏览层）
  * -> bookmarkList 事件（AuraShell 转存 'auraPanelBookmarkList'）——点文件夹
  * 进入（navStack 记路径）、返回钮逐级上退；搜索走 searchBookmarks（引擎
  * 按标题/网址匹配，命中带 path）。写入走版本 1-3 稳定命令：addBookmark /
@@ -10,7 +10,12 @@
  * （转存 'auraPanelEvent'）后重拉当前层。
  * ⚠️ 不要用 getBookmarksForSync/applyBookmarks（版本 4）：当前引擎 HAR 的
  * bookmarkApiVersion 还没实现它们，命令会被吞、页面永远"加载中"（实测）。
- * 标题栏 + = 添加书签 / 新建文件夹（两选项）；⋯ 菜单 = 导入/导出/多选。
+ *
+ * 页面根部不再是引擎的三个永久根（移动设备书签 / 书签栏 / 其他书签），而是
+ * 「首页」文件夹本身——主页磁贴读的也是这个文件夹，两处同源。引擎侧它仍挂在
+ * 移动设备书签下面（用户看不到）；id 由主页发现后写进 AppStorage
+ * 'auraHomeFolderId' + prefs，本页兜底自建（见 discoverHomeFolder）。
+ * 标题栏只有 ⋯：添加书签 / 新建文件夹 / 导入 / 导出 / 多选都在里面。
  */
 import { common } from '@kit.AbilityKit';
 import { display, promptAction, curves } from '@kit.ArkUI';
@@ -18,7 +23,7 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { BookmarkNode, BrowserCommandPayload } from 'engine';
 import { HomePrefs } from '../../utils/appearance/HomePrefs';
 import { displayUrl, pickAndStageImportFile, saveExportedFile, deleteStagedFile } from './PanelBridge';
-import { AuraSectionLabel, AuraSiteIcon, AuraSearchBar } from './AuraKit';
+import { AuraSiteIcon, AuraSearchBar } from './AuraKit';
 import { requestFavicons, ingestFavicons, snapshotFavicons, faviconData } from './FaviconKit';
 import { GlassPage, glassBottomInsetVp, glassHeaderInsetVp, glassTopSafeVp } from './GlassPage';
 import { MoreMenuDialog, MoreMenuItemSpec } from './MoreMenuDialog';
@@ -129,6 +134,8 @@ class FolderOptionDataSource implements IDataSource {
 const MAX_LOAD_RETRIES: number = 3;
 const LOAD_RETRY_MS: number = 700;
 const LOAD_SHOW_MS: number = 350;
+// 书签页根文件夹的标题：本页自己兜底建时用（正常由主页建好并写 id 进来）。
+const HOME_FOLDER_TITLE: string = '首页';
 
 @Component
 export struct BookmarksPanel {
@@ -150,20 +157,27 @@ export struct BookmarksPanel {
   onClose: () => void = (): void => {};
 
   @State private currentNodes: BookmarkNode[] = [];
+  // 当前层渲染用的扁平列表（文件夹在前、书签在后），整块内容共用一张浮框卡。
+  @State private contentRows: BookmarkNode[] = [];
   @State private recentNodes: BookmarkNode[] = [];
-  // 当前所在文件夹 id（'' = 根级）。
+  // 当前所在文件夹 id（'' = 书签页根，也就是「首页」文件夹本身）。
   @State private currentFolderId: string = '';
-  // 移动设备根（根级回包里 rootType==='mobile'；根级新建的默认落点）。
+  // 移动设备根（发现链里从根回包的 rootType==='mobile' 取到）。
   @State private mobileFolderId: string = '';
   // ⚠️ 初值必须是 false（2026-10-10 用户反馈「进页面直接显示加载中」）：
   // 引擎正常回包只要几十毫秒，loading=true 初值会让首帧就渲染出「加载中…」，
   // 看起来像卡了一下。真实逻辑见 loadLayer（延迟 LOAD_SHOW_MS 才显形）。
   @State private loading: boolean = false;
   private navStack: string[] = [];
-  // 回包匹配：只采用最新一次请求的回包（layer = 目录层，search = 搜索）。
-  private pendingKind: 'layer' | 'search' | 'collect' = 'layer';
+  // 回包匹配：只采用最新一次请求的回包（layer = 目录层，search = 搜索，
+  // collect = 「移动到」的整树收集，home = 找/建「首页」文件夹的发现链）。
+  private pendingKind: 'layer' | 'search' | 'collect' | 'home' = 'layer';
   private pendingSeq: number = 0;
   private requestSeq: number = 0;
+  // 「首页」发现链状态：root（取三个永久根）→ mobile（找文件夹）→ creating（缺则建）。
+  private homeStep: 'idle' | 'root' | 'mobile' | 'creating' = 'idle';
+  // 本次挂载内是否已尝试建过「首页」文件夹（防回包没反映时反复建）。
+  private homeCreateTried: boolean = false;
   private retryTimer: number = -1;
   private loadTimer: number = -1;
   private retryCount: number = 0;
@@ -232,6 +246,8 @@ export struct BookmarksPanel {
   private collectSeen: Set<string> = new Set();
   private collectOutstanding: number = 0;
   private collectStartSeq: number = 0;
+  // BFS 根（「首页」文件夹）的直接子项数，用于选择器里首页那行的「N 项」。
+  private collectRootKids: number = 0;
 
   // 批量管理：选择模式 + 已选 id 集合 + 批量移动标记。
   @State private selectMode: boolean = false;
@@ -240,8 +256,6 @@ export struct BookmarksPanel {
 
   // ⋯ 菜单项（原地 mutate，让「多选」按需出现）。
   private moreItems: MoreMenuItemSpec[] = [];
-  // + 按钮菜单项：添加书签 / 新建文件夹（原「手动添加书签」从 ⋯ 移到了这里）。
-  private plusItems: MoreMenuItemSpec[] = [];
 
   private listScroller: Scroller = new Scroller();
 
@@ -249,23 +263,24 @@ export struct BookmarksPanel {
     const dsp = display.getDefaultDisplaySync();
     this.windowW = dsp.width / dsp.densityPixels;
     this.windowH = dsp.height / dsp.densityPixels;
-    // 用持久化的书签列表直接填充首屏（@StorageLink 跨挂载保留），避免「进页面
-    // 就闪加载中」——已有缓存数据时静默重拉，只有真正首次无数据才走 loading。
-    // 站点图标同理：@StorageLink 的初值不触发 @Watch，先吃一次已有回包。
+    // 站点图标：@StorageLink 的初值不触发 @Watch，先吃一次已有回包。
     this.onFaviconsChanged();
-    this.hydrateFromCache();
     this.onRecentChanged();
-    // 「首页」文件夹 id：主页发现后会写进 AppStorage；书签页可能先于主页打开
-    // （进程重启后），从 prefs 捞一次兜底，捞到就补上根级置顶行。
-    if (this.homeFolderId.length === 0) {
-      const host = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
-      HomePrefs.loadFolderId(host).then((id: string): void => {
-        if (id.length > 0 && this.homeFolderId.length === 0) {
-          this.homeFolderId = id;
-        }
-      });
+    // 页面根 = 「首页」文件夹。id 通常已由主页写进 AppStorage；书签页可能先于
+    // 主页打开（进程重启后），从 prefs 捞一次兜底，都没有就走发现链（自建）。
+    if (this.homeFolderId.length > 0) {
+      this.hydrateFromCache();
+      this.loadLayer('');
+      return;
     }
-    this.loadLayer('');
+    const host = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    HomePrefs.loadFolderId(host).then((id: string): void => {
+      if (this.homeFolderId.length === 0 && id.length > 0) {
+        this.homeFolderId = id;
+      }
+      this.hydrateFromCache();
+      this.loadLayer('');
+    });
   }
 
   aboutToDisappear(): void {
@@ -278,27 +293,21 @@ export struct BookmarksPanel {
 
   /** 首屏 hydration：从持久化的 auraPanelBookmarkList 直接回填根层。
    *  @StorageLink 跨挂载保留，所以重进页面时通常已有缓存——直接填进 currentNodes
-   *  让 hadData=true，loadLayer 就不会闪「加载中」。仅回填根层（parentId 为空）；
-   *  搜索回包也走这个存储且无 parentId，但书签同源，短暂闪一下随即被 loadLayer
-   *  刷新，比「加载中」体验好。 */
+   *  让 hadData=true，loadLayer 就不会闪「加载中」。只认「首页」文件夹那一层
+   *  （parentId === homeFolderId）；搜索结果与其它层的回包不匹配，跳过。 */
   private hydrateFromCache(): void {
-    if (this.listJson.length === 0) {
+    if (this.listJson.length === 0 || this.homeFolderId.length === 0) {
       return;
     }
     try {
       const payload = JSON.parse(this.listJson) as BookmarkListPayload;
-      if ((payload.parentId ?? '').length > 0) {
+      if ((payload.parentId ?? '') !== this.homeFolderId) {
         return;
       }
       const nodes = payload.nodes ?? [];
       if (nodes.length > 0) {
         this.currentNodes = nodes;
-        for (const node of nodes) {
-          if (node.rootType === 'mobile') {
-            this.mobileFolderId = node.id;
-            break;
-          }
-        }
+        this.rebuildContentRows();
         this.requestBookmarkFavicons();
       }
     } catch (error) {
@@ -307,8 +316,19 @@ export struct BookmarksPanel {
 
   // -- 数据层 -----------------------------------------------------------------
 
-  /** 拉取某层：parentId 空 = 三个根文件夹，否则该文件夹的直接子节点。 */
+  /** '' 代表书签页根 —— 换成「首页」文件夹 id（引擎侧真实文件夹）。 */
+  private resolvedFolderId(id: string): string {
+    return id.length > 0 ? id : this.homeFolderId;
+  }
+
+  /** 拉取某层：parentId 空 = 书签页根（「首页」文件夹），否则该文件夹子节点。 */
   private loadLayer(parentId: string): void {
+    const target = this.resolvedFolderId(parentId);
+    if (target.length === 0) {
+      // 还不知道「首页」文件夹在哪：走发现链（根 → 移动设备书签 → 首页，缺则建）。
+      this.discoverHomeFolder();
+      return;
+    }
     this.clearLoadTimers();
     this.retryCount = 0;
     this.pendingKind = 'layer';
@@ -318,8 +338,7 @@ export struct BookmarksPanel {
     // 无数据时才等 LOAD_SHOW_MS 再显形——引擎正常回包（< 350ms）一个字的
     // 加载提示都不会闪，只有偶发吞命令（引擎真没回）才显形并触发重试。
     this.loading = false;
-    const hadData = this.currentNodes.length > 0 ||
-      (this.currentFolderId.length === 0 && this.recentNodes.length > 0);
+    const hadData = this.currentNodes.length > 0;
     if (!hadData) {
       const seq = this.pendingSeq;
       this.loadTimer = setTimeout((): void => {
@@ -330,11 +349,111 @@ export struct BookmarksPanel {
         }
       }, LOAD_SHOW_MS);
     }
-    if (parentId.length === 0) {
-      this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq });
-    } else {
-      this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq, parentId: parentId });
+    this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq, parentId: target });
+  }
+
+  // -- 「首页」文件夹发现链（页面根部） -----------------------------------------
+
+  /** 根 → 移动设备书签 → 「首页」文件夹；都没有就建一个。 */
+  private discoverHomeFolder(): void {
+    this.clearLoadTimers();
+    this.homeStep = 'root';
+    this.pendingKind = 'home';
+    this.requestSeq += 1;
+    this.pendingSeq = this.requestSeq;
+    this.loading = false;
+    this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq });
+  }
+
+  private requestMobileChildren(mobileId: string): void {
+    this.pendingKind = 'home';
+    this.requestSeq += 1;
+    this.pendingSeq = this.requestSeq;
+    this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq, parentId: mobileId });
+  }
+
+  private onHomePacket(nodes: BookmarkNode[]): void {
+    if (this.homeStep === 'root') {
+      let mobile = '';
+      for (const node of nodes) {
+        if (node.rootType === 'mobile') {
+          mobile = node.id;
+          break;
+        }
+      }
+      if (mobile.length === 0) {
+        this.pendingKind = 'layer';
+        this.homeStep = 'idle';
+        this.loading = false;
+        return;
+      }
+      this.mobileFolderId = mobile;
+      this.homeStep = 'mobile';
+      this.requestMobileChildren(mobile);
+      return;
     }
+    if (this.homeStep === 'mobile') {
+      let found = '';
+      for (const node of nodes) {
+        if (node.type === 'folder' &&
+          (node.title === HOME_FOLDER_TITLE || node.id === this.homeFolderId)) {
+          found = node.id;
+          break;
+        }
+      }
+      if (found.length > 0) {
+        this.adoptHomeFolder(found);
+        return;
+      }
+      if (!this.homeCreateTried && this.mobileFolderId.length > 0) {
+        this.homeCreateTried = true;
+        this.homeStep = 'creating';
+        this.requestSeq += 1;
+        this.pendingSeq = this.requestSeq;
+        this.onCommand({
+          command: 'createBookmarkFolder',
+          requestId: this.requestSeq,
+          parentId: this.mobileFolderId,
+          title: HOME_FOLDER_TITLE
+        });
+        // 建完回移动设备书签层再找一次（不依赖事件回包的时序）。
+        setTimeout((): void => {
+          if (this.homeStep === 'creating') {
+            this.homeStep = 'mobile';
+            this.requestMobileChildren(this.mobileFolderId);
+          }
+        }, 420);
+        return;
+      }
+      // 建也建不出来：放弃发现，别再无限重试。
+      this.pendingKind = 'layer';
+      this.homeStep = 'idle';
+      this.loading = false;
+      return;
+    }
+  }
+
+  private adoptHomeFolder(id: string): void {
+    this.homeStep = 'idle';
+    this.homeFolderId = id; // @StorageLink：同步写 AppStorage，主页也读这个键
+    const host = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    HomePrefs.saveFolderId(host, id);
+    this.currentFolderId = '';
+    this.loadLayer(id);
+  }
+
+  // 当前层渲染顺序：文件夹在前、书签在后（同一张浮框卡里）。
+  private rebuildContentRows(): void {
+    const folders: BookmarkNode[] = [];
+    const bookmarks: BookmarkNode[] = [];
+    for (const node of this.currentNodes) {
+      if (node.type === 'folder') {
+        folders.push(node);
+      } else {
+        bookmarks.push(node);
+      }
+    }
+    this.contentRows = folders.concat(bookmarks);
   }
 
   // 统一清理加载相关的两个定时器（延迟显示 + 重试）。
@@ -364,14 +483,14 @@ export struct BookmarksPanel {
       if (this.loading && this.pendingSeq === seq) {
         // 引擎没回：重发同一层。
         if (this.pendingKind === 'layer') {
-          const parentId = this.currentFolderId;
+          const parentId = this.resolvedFolderId(this.currentFolderId);
+          if (parentId.length === 0) {
+            this.discoverHomeFolder();
+            return;
+          }
           this.requestSeq += 1;
           this.pendingSeq = this.requestSeq;
-          if (parentId.length === 0) {
-            this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq });
-          } else {
-            this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq, parentId: parentId });
-          }
+          this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq, parentId: parentId });
           this.scheduleRetry();
         }
       }
@@ -387,8 +506,16 @@ export struct BookmarksPanel {
       if (this.pendingKind === 'collect') {
         // 文件夹收集：接受收集开始之后的任何回包（多层并发在途）。
         if ((payload.requestId ?? -1) >= this.collectStartSeq) {
-          this.onCollectPacket(payload.nodes ?? []);
+          this.onCollectPacket(payload.nodes ?? [], payload.parentId ?? '');
         }
+        return;
+      }
+      if (this.pendingKind === 'home') {
+        if ((payload.requestId ?? -1) !== this.pendingSeq) {
+          return;
+        }
+        this.clearLoadTimers();
+        this.onHomePacket(payload.nodes ?? []);
         return;
       }
       if ((payload.requestId ?? -1) !== this.pendingSeq) {
@@ -397,14 +524,7 @@ export struct BookmarksPanel {
       const nodes = payload.nodes ?? [];
       if (this.pendingKind === 'layer') {
         this.currentNodes = nodes;
-        if (this.currentFolderId.length === 0) {
-          for (const node of nodes) {
-            if (node.rootType === 'mobile') {
-              this.mobileFolderId = node.id;
-              break;
-            }
-          }
-        }
+        this.rebuildContentRows();
       } else {
         this.searchResults = nodes;
       }
@@ -498,22 +618,36 @@ export struct BookmarksPanel {
   // -- 「移动到」：BFS 收集全部文件夹 -------------------------------------------
 
   private openFolderPicker(): void {
+    if (this.homeFolderId.length === 0) {
+      this.getUIContext().getPromptAction().showToast({
+        message: '还在定位「首页」文件夹，请稍后再试',
+        duration: 1500
+      });
+      return;
+    }
     this.folderIds = [];
     this.folderParent.clear();
     this.folderTitle.clear();
     this.folderKids.clear();
     this.folderChildren.clear();
+    this.collectRootKids = 0;
     this.collectSeen.clear();
     this.collectSeen.add('');
     this.collectOutstanding = 1;
     this.collectStartSeq = this.requestSeq + 1;
     this.pendingKind = 'collect';
     this.requestSeq += 1;
-    this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq });
+    // 只收「首页」文件夹以下的子树（三个永久根不再露出）；首页自己由
+    // buildPickerOptions 补在列表首行，所以「移到首页」现在可选。
+    this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq, parentId: this.homeFolderId });
   }
 
-  private onCollectPacket(nodes: BookmarkNode[]): void {
+  private onCollectPacket(nodes: BookmarkNode[], packetParentId: string): void {
     this.collectOutstanding -= 1;
+    if (packetParentId.length > 0 && packetParentId === this.homeFolderId) {
+      // BFS 的根回包 = 「首页」文件夹自己的直接子项数（选择器里给首页标「N 项」）。
+      this.collectRootKids = nodes.length;
+    }
     for (const node of nodes) {
       if (node.type !== 'folder') {
         continue;
@@ -542,7 +676,7 @@ export struct BookmarksPanel {
     }
   }
 
-  /** 文件夹显示名：沿父链拼路径（移动设备书签 / 工作 / 账号）。 */
+  /** 文件夹显示名：沿父链拼路径（工作 / 账号）。链在「首页」处自然截断。 */
   private folderDisplayPath(id: string): string {
     const parts: string[] = [];
     let cursor = id;
@@ -573,6 +707,15 @@ export struct BookmarksPanel {
       this.collectDescendants(this.moveExcludeRoot, excluded);
     }
     const out: FolderOption[] = [];
+    // 「首页」= 书签页根，补在列表首行（BFS 从它开始，回包里不含它自己）。
+    if (this.homeFolderId.length > 0 && !excluded.has(this.homeFolderId)) {
+      out.push({
+        id: this.homeFolderId,
+        title: HOME_FOLDER_TITLE,
+        childCount: this.collectRootKids
+      } as FolderOption);
+      this.folderKids.set(this.homeFolderId, this.collectRootKids);
+    }
     for (const id of this.folderIds) {
       if (excluded.has(id)) {
         continue;
@@ -651,12 +794,12 @@ export struct BookmarksPanel {
     this.onClose();
   }
 
-  /** 新建书签/文件夹的父层：根级落到移动设备根，子层落到当前文件夹。 */
+  /** 新建书签/文件夹的父层：页面根级落到「首页」文件夹，子层落到当前文件夹。 */
   private targetParentId(): string {
     if (this.currentFolderId.length > 0) {
       return this.currentFolderId;
     }
-    return this.mobileFolderId;
+    return this.homeFolderId;
   }
 
   // -- 行菜单 -----------------------------------------------------------------
@@ -719,16 +862,11 @@ export struct BookmarksPanel {
     this.selectedIds = this.selectedIds.slice();
   }
 
-  // 当前视图可见的节点 id（根级含「最近添加」平铺区）。
+  // 当前视图可见的节点 id（整份浮框卡里的文件夹 + 书签）。
   private visibleNodeIds(): string[] {
     const ids: string[] = [];
-    for (const node of this.currentNodes) {
+    for (const node of this.contentRows) {
       ids.push(node.id);
-    }
-    if (this.currentFolderId.length === 0) {
-      for (const node of this.recentNodes) {
-        ids.push(node.id);
-      }
     }
     return ids;
   }
@@ -1009,12 +1147,23 @@ export struct BookmarksPanel {
     }
     this.pendingImportPath = path;
     this.requestSeq += 1;
-    this.onCommand({
-      command: 'importBookmarks',
-      requestId: this.requestSeq,
-      path: path,
-      title: '导入的书签'
-    });
+    // 导入到「首页」文件夹（页面根）：否则书签会落进看不见的永久根，用户找不到。
+    if (this.homeFolderId.length > 0) {
+      this.onCommand({
+        command: 'importBookmarks',
+        requestId: this.requestSeq,
+        path: path,
+        title: '导入的书签',
+        parentId: this.homeFolderId
+      });
+    } else {
+      this.onCommand({
+        command: 'importBookmarks',
+        requestId: this.requestSeq,
+        path: path,
+        title: '导入的书签'
+      });
+    }
   }
 
   private startExport(): void {
@@ -1037,6 +1186,20 @@ export struct BookmarksPanel {
   private showMoreSheet(): void {
     this.moreItems.length = 0;
     this.moreItems.push(
+      {
+        icon: $r('app.media.aura_bookmark'),
+        label: '添加书签',
+        action: (): void => {
+          this.openForm('addBookmark');
+        }
+      },
+      {
+        icon: $r('app.media.aura_folder'),
+        label: '新建文件夹',
+        action: (): void => {
+          this.openForm('addFolder');
+        }
+      },
       {
         icon: $r('app.media.aura_import'),
         label: '导入书签',
@@ -1062,44 +1225,9 @@ export struct BookmarksPanel {
     this.moreMenuDialog.open();
   }
 
-  // + 按钮：两种操作（添加书签 / 新建文件夹）。原「手动添加书签」从 ⋯ 菜单
-  // 移到这里，让 + 既管书签也管文件夹（用户要求）。
-  private showPlusSheet(): void {
-    this.plusItems.length = 0;
-    this.plusItems.push(
-      {
-        icon: $r('app.media.aura_bookmark'),
-        label: '添加书签',
-        action: (): void => {
-          this.openForm('addBookmark');
-        }
-      },
-      {
-        icon: $r('app.media.aura_folder'),
-        label: '新建文件夹',
-        action: (): void => {
-          this.openForm('addFolder');
-        }
-      }
-    );
-    this.plusMenuDialog.open();
-  }
-
   private moreMenuDialog: CustomDialogController = new CustomDialogController({
     builder: MoreMenuDialog({
       items: this.moreItems
-    }),
-    autoCancel: true,
-    customStyle: true,
-    maskColor: Color.Transparent,
-    alignment: DialogAlignment.TopEnd,
-    offset: { dx: -12, dy: glassTopSafeVp() + 62 }
-  });
-
-  // + 按钮的两选项菜单（添加书签 / 新建文件夹），与 ⋯ 菜单共用 MoreMenuDialog 样式。
-  private plusMenuDialog: CustomDialogController = new CustomDialogController({
-    builder: MoreMenuDialog({
-      items: this.plusItems
     }),
     autoCancel: true,
     customStyle: true,
@@ -1129,7 +1257,7 @@ export struct BookmarksPanel {
   }
 
   @Builder
-  private FolderRow(node: BookmarkNode) {
+  private FolderRow(node: BookmarkNode, index: number, total: number) {
     Column() {
       Row({ space: 12 }) {
         if (this.selectMode) {
@@ -1194,6 +1322,12 @@ export struct BookmarksPanel {
           this.openNode(node);
         }
       })
+
+      if (index < total - 1) {
+        Divider()
+          .color($r('app.color.divider'))
+          .margin({ left: 50 })
+      }
     }
     .width('100%')
     .onTouch((event: TouchEvent): void => {
@@ -1202,56 +1336,6 @@ export struct BookmarksPanel {
         this.menuPressY = event.touches[0].windowY;
       }
     })
-  }
-
-  // 根级置顶「首页」入口：直接跳进主页书签文件夹（HomeSurface 磁贴数据源）。
-  // 不进选择模式（跳转入口不参与批量勾选），样式与 FolderRow 完全同族。
-  @Builder
-  private HomeFolderRow() {
-    Column() {
-      Row({ space: 12 }) {
-        Column() {
-          Image($r('app.media.aura_home'))
-            .width(20)
-            .height(20)
-            .fillColor($r('app.color.text_primary'))
-        }
-        .width(38)
-        .height(38)
-        .borderRadius(10)
-        .backgroundColor($r('app.color.surface_secondary'))
-        .justifyContent(FlexAlign.Center)
-
-        Column({ space: 2 }) {
-          Text('首页')
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .fontSize(16)
-            .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.text_primary'))
-            .width('100%')
-          Text('这里的书签会显示在主页')
-            .fontSize(12)
-            .fontColor($r('app.color.text_secondary'))
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-
-        Image($r('app.media.aura_chevron'))
-          .width(16)
-          .height(16)
-          .fillColor($r('app.color.icon_secondary'))
-      }
-      .width('100%')
-      .constraintSize({ minHeight: 60 })
-      .padding({ left: 16, right: 12, top: 8, bottom: 8 })
-      .onClick(() => {
-        this.navStack.push(this.currentFolderId);
-        this.currentFolderId = this.homeFolderId;
-        this.loadLayer(this.homeFolderId);
-      })
-    }
-    .width('100%')
   }
 
   @Builder
@@ -1736,16 +1820,6 @@ export struct BookmarksPanel {
             ? [
               {
                 content: {
-                  icon: $r('app.media.aura_plus'),
-                  label: '添加',
-                  isEnabled: true,
-                  action: (): void => {
-                    this.showPlusSheet();
-                  }
-                }
-              },
-              {
-                content: {
                   icon: $r('app.media.chromium_search'),
                   label: '回到搜索',
                   action: (): void => {
@@ -1764,16 +1838,6 @@ export struct BookmarksPanel {
               }
             ]
             : [
-              {
-                content: {
-                  icon: $r('app.media.aura_plus'),
-                  label: '添加',
-                  isEnabled: true,
-                  action: (): void => {
-                    this.showPlusSheet();
-                  }
-                }
-              },
               {
                 content: {
                   icon: $r('app.media.aura_more'),
@@ -1851,57 +1915,34 @@ export struct BookmarksPanel {
           .textAlign(TextAlign.Center)
           .margin({ top: 40 })
       } else {
-        if (this.currentNodes.length === 0 && this.currentFolderId.length > 0) {
-          // 空文件夹提示（v3.1 重写时遗漏，用户反馈补回）。
+        if (this.contentRows.length === 0) {
+          // 空状态：页面根（「首页」）与子文件夹共用一套文案。
           Column({ space: 6 }) {
-            Text('这个文件夹是空的')
+            Text(this.currentFolderId.length > 0 ? '这个文件夹是空的' : '还没有书签')
               .fontSize(15)
               .fontColor($r('app.color.text_secondary'))
-            Text('右上角 + 可以添加书签或新建文件夹')
+            Text('点右上角 ⋯ 可以添加书签或新建文件夹')
               .fontSize(13)
               .fontColor($r('app.color.text_secondary'))
           }
           .width('100%')
           .margin({ top: 60 })
         } else {
-        // 根级置顶：主页书签（「首页」文件夹）入口 —— 主页磁贴显示的就是这里
-        // 的书签；文件夹由主页在手机书签根下自动创建维护。选择模式不出（这条
-        // 是跳转入口，不参与批量勾选）。
-        if (this.currentFolderId.length === 0 && !this.selectMode && this.homeFolderId.length > 0) {
-          this.HomeFolderRow()
-        }
-        // 当前层：根级 = 三个根文件夹；子层 = 该文件夹内容（文件夹在前）。
-        ForEach(this.currentNodes, (node: BookmarkNode, index: number) => {
-          if (node.type === 'folder') {
-            this.FolderRow(node)
-          }
-        }, (node: BookmarkNode): string =>
-          `f|${node.id}#${node.childCount ?? 0}|${node.title}`)
-
-        if (this.currentFolderId.length === 0 && this.recentNodes.length > 0) {
-          AuraSectionLabel({ text: '最近添加' })
+          // 文件夹与书签同处一张浮框卡（文件夹在前）——与历史/下载页内容区一致。
           Column() {
-            ForEach(this.recentNodes, (node: BookmarkNode, index: number) => {
-              this.BookmarkRow(node, index, this.recentNodes.length)
-            }, (node: BookmarkNode): string => `r|${node.id}|${node.title}|${node.url ?? ''}`)
-          }
-          .width('100%')
-          .borderRadius(16)
-          .backgroundColor($r('app.color.card_background'))
-          .clip(true)
-        } else if (this.currentFolderId.length > 0) {
-          Column() {
-            ForEach(this.currentNodes, (node: BookmarkNode, index: number) => {
-              if (node.type !== 'folder') {
-                this.BookmarkRow(node, index, this.currentNodes.length)
+            ForEach(this.contentRows, (node: BookmarkNode, index: number) => {
+              if (node.type === 'folder') {
+                this.FolderRow(node, index, this.contentRows.length)
+              } else {
+                this.BookmarkRow(node, index, this.contentRows.length)
               }
-            }, (node: BookmarkNode): string => `u|${node.id}|${node.title}|${node.url ?? ''}`)
+            }, (node: BookmarkNode): string =>
+              `${node.type === 'folder' ? 'f' : 'u'}|${node.id}|${node.title}|${node.url ?? ''}|${node.childCount ?? 0}`)
           }
           .width('100%')
           .borderRadius(16)
           .backgroundColor($r('app.color.card_background'))
           .clip(true)
-        }
         }
       }
       }
