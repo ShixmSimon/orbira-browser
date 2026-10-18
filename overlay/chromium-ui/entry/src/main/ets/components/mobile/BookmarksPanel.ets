@@ -136,6 +136,16 @@ const LOAD_RETRY_MS: number = 700;
 const LOAD_SHOW_MS: number = 350;
 // 书签页根文件夹的标题：本页自己兜底建时用（正常由主页建好并写 id 进来）。
 const HOME_FOLDER_TITLE: string = '首页';
+// 发现链：每一步等回包的超时，超时重发（引擎偶发吞命令）。
+const HOME_CHAIN_TIMEOUT_MS: number = 1200;
+const MAX_HOME_CHAIN_RETRIES: number = 3;
+// 用已知 id 取首页内容、却等不到内容时，隔多久回退到完整发现链重定位。
+const HOME_FALLBACK_MS: number = 1200;
+// 模块级序号抬升：每次挂载 +1000（上限 600000，避开主页的 700000 段）。
+// 原因：AppStorage.setOrCreate 存的是 JSON 字符串，**内容完全相同就不算变化
+// → @Watch 不触发**。requestSeq 每次挂载从 0 重来，第二次进页面请求号与上次
+// 撞车时，引擎明明回了包，面板却永远等在那儿（页面空、添加也落不了地）。
+let panelSeqBump: number = 0;
 
 @Component
 export struct BookmarksPanel {
@@ -162,6 +172,8 @@ export struct BookmarksPanel {
   @State private recentNodes: BookmarkNode[] = [];
   // 当前所在文件夹 id（'' = 书签页根，也就是「首页」文件夹本身）。
   @State private currentFolderId: string = '';
+  // 降级标记：「首页」定位不到时退回引擎根（显示三个永久根，老行为）。
+  @State private rootIsEngine: boolean = false;
   // 移动设备根（发现链里从根回包的 rootType==='mobile' 取到）。
   @State private mobileFolderId: string = '';
   // ⚠️ 初值必须是 false（2026-10-10 用户反馈「进页面直接显示加载中」）：
@@ -178,6 +190,18 @@ export struct BookmarksPanel {
   private homeStep: 'idle' | 'root' | 'mobile' | 'creating' = 'idle';
   // 本次挂载内是否已尝试建过「首页」文件夹（防回包没反映时反复建）。
   private homeCreateTried: boolean = false;
+  // 发现链超时重发（引擎偶发吞命令）+ 已知 id 取不到内容时的回退重定位。
+  private homeChainRetries: number = 0;
+  private homeChainTimer: number = -1;
+  private homeFallbackTimer: number = -1;
+  private homeRepaired: boolean = false;
+  // 定位还没完成时点的新建操作：定位成功后自动把表单打开。
+  private pendingFormMode: FormMode = '';
+  // 根层认不出 rootType 时的候选父文件夹（逐个找「首页」）。
+  private homeCandidates: string[] = [];
+  private homeCandidateIdx: number = 0;
+  // 「移动到」收集时的根（正常 = 「首页」；降级模式 = 移动设备书签）。
+  private pickerRootId: string = '';
   private retryTimer: number = -1;
   private loadTimer: number = -1;
   private retryCount: number = 0;
@@ -263,6 +287,11 @@ export struct BookmarksPanel {
     const dsp = display.getDefaultDisplaySync();
     this.windowW = dsp.width / dsp.densityPixels;
     this.windowH = dsp.height / dsp.densityPixels;
+    // 请求号跨挂载抬一段：避免回包 JSON 与上次逐字节相同（AppStorage 认为没变
+    // → @Watch 不触发）导致页面永远停在空态。
+    panelSeqBump = (panelSeqBump + 1000) % 600000;
+    this.requestSeq = panelSeqBump;
+    this.pendingSeq = panelSeqBump;
     // 站点图标：@StorageLink 的初值不触发 @Watch，先吃一次已有回包。
     this.onFaviconsChanged();
     this.onRecentChanged();
@@ -288,6 +317,7 @@ export struct BookmarksPanel {
       clearTimeout(this.retryTimer);
       this.retryTimer = -1;
     }
+    this.clearHomeTimers();
     this.cleanupPendingImport();
   }
 
@@ -316,15 +346,36 @@ export struct BookmarksPanel {
 
   // -- 数据层 -----------------------------------------------------------------
 
-  /** '' 代表书签页根 —— 换成「首页」文件夹 id（引擎侧真实文件夹）。 */
+  /** '' 代表书签页根 —— 换成「首页」文件夹 id；定位失败降级后则表示引擎根。 */
   private resolvedFolderId(id: string): string {
-    return id.length > 0 ? id : this.homeFolderId;
+    if (id.length > 0) {
+      return id;
+    }
+    return this.rootIsEngine ? '' : this.homeFolderId;
+  }
+
+  /** 发一次 getBookmarks：target 空 = 引擎根（三个永久根）。 */
+  private sendGetBookmarks(target: string, seq: number): void {
+    if (target.length === 0) {
+      this.onCommand({ command: 'getBookmarks', requestId: seq });
+    } else {
+      this.onCommand({ command: 'getBookmarks', requestId: seq, parentId: target });
+    }
+  }
+
+  /** 这条回包算不算数：请求号对得上，或者父层对得上（同一层被别人先要走了）。 */
+  private acceptsPacket(payload: BookmarkListPayload, expectedParent: string): boolean {
+    if ((payload.requestId ?? -1) === this.pendingSeq) {
+      return true;
+    }
+    const pid = payload.parentId ?? '';
+    return expectedParent.length > 0 && pid === expectedParent;
   }
 
   /** 拉取某层：parentId 空 = 书签页根（「首页」文件夹），否则该文件夹子节点。 */
   private loadLayer(parentId: string): void {
     const target = this.resolvedFolderId(parentId);
-    if (target.length === 0) {
+    if (target.length === 0 && !this.rootIsEngine) {
       // 还不知道「首页」文件夹在哪：走发现链（根 → 移动设备书签 → 首页，缺则建）。
       this.discoverHomeFolder();
       return;
@@ -349,20 +400,71 @@ export struct BookmarksPanel {
         }
       }, LOAD_SHOW_MS);
     }
-    this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq, parentId: target });
+    this.sendGetBookmarks(target, this.requestSeq);
+    // 明明有 id 却迟迟取不到根层内容（id 失效 / 引擎没回）：回退完整发现链
+    // 重定位一次。只做一次，免得反复兜圈子。
+    if (parentId.length === 0 && !this.homeRepaired && !this.rootIsEngine) {
+      if (this.homeFallbackTimer !== -1) {
+        clearTimeout(this.homeFallbackTimer);
+      }
+      this.homeFallbackTimer = setTimeout((): void => {
+        this.homeFallbackTimer = -1;
+        if (this.contentRows.length === 0 && !this.homeRepaired) {
+          this.homeRepaired = true;
+          this.discoverHomeFolder();
+        }
+      }, HOME_FALLBACK_MS);
+    }
   }
 
   // -- 「首页」文件夹发现链（页面根部） -----------------------------------------
 
+  private clearHomeTimers(): void {
+    if (this.homeChainTimer !== -1) {
+      clearTimeout(this.homeChainTimer);
+      this.homeChainTimer = -1;
+    }
+    if (this.homeFallbackTimer !== -1) {
+      clearTimeout(this.homeFallbackTimer);
+      this.homeFallbackTimer = -1;
+    }
+  }
+
+  /** 发现链每一步都装超时：引擎偶发吞命令时重发，别让页面干等。 */
+  private armHomeChainTimer(): void {
+    if (this.homeChainTimer !== -1) {
+      clearTimeout(this.homeChainTimer);
+    }
+    this.homeChainTimer = setTimeout((): void => {
+      this.homeChainTimer = -1;
+      if (this.pendingKind !== 'home') {
+        return;
+      }
+      if (this.homeChainRetries >= MAX_HOME_CHAIN_RETRIES) {
+        // 重试也拿不到：降级到引擎根，页面别空着。
+        this.abortHomeDiscovery();
+        return;
+      }
+      this.homeChainRetries += 1;
+      if (this.homeStep === 'mobile' && this.mobileFolderId.length > 0) {
+        this.requestMobileChildren(this.mobileFolderId);
+      } else {
+        this.discoverHomeFolder();
+      }
+    }, HOME_CHAIN_TIMEOUT_MS);
+  }
+
   /** 根 → 移动设备书签 → 「首页」文件夹；都没有就建一个。 */
   private discoverHomeFolder(): void {
     this.clearLoadTimers();
+    this.homeChainRetries = 0;
     this.homeStep = 'root';
     this.pendingKind = 'home';
     this.requestSeq += 1;
     this.pendingSeq = this.requestSeq;
     this.loading = false;
     this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq });
+    this.armHomeChainTimer();
   }
 
   private requestMobileChildren(mobileId: string): void {
@@ -370,22 +472,36 @@ export struct BookmarksPanel {
     this.requestSeq += 1;
     this.pendingSeq = this.requestSeq;
     this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq, parentId: mobileId });
+    this.armHomeChainTimer();
   }
 
   private onHomePacket(nodes: BookmarkNode[]): void {
     if (this.homeStep === 'root') {
       let mobile = '';
+      const candidates: string[] = [];
       for (const node of nodes) {
+        if (node.type !== 'folder') {
+          continue;
+        }
         if (node.rootType === 'mobile') {
           mobile = node.id;
           break;
         }
+        candidates.push(node.id);
       }
       if (mobile.length === 0) {
-        this.pendingKind = 'layer';
-        this.homeStep = 'idle';
-        this.loading = false;
-        return;
+        // 老引擎（bookmarkApiVersion < 2）的回包不带 rootType：认不出哪个是
+        // 移动设备书签，就把根层每个文件夹都当候选逐个找「首页」，别直接放弃。
+        if (candidates.length === 0) {
+          this.abortHomeDiscovery();
+          return;
+        }
+        this.homeCandidates = candidates;
+        this.homeCandidateIdx = 0;
+        mobile = candidates[0];
+      } else {
+        this.homeCandidates = [];
+        this.homeCandidateIdx = 0;
       }
       this.mobileFolderId = mobile;
       this.homeStep = 'mobile';
@@ -403,6 +519,14 @@ export struct BookmarksPanel {
       }
       if (found.length > 0) {
         this.adoptHomeFolder(found);
+        return;
+      }
+      // 还有别的候选根：换下一个接着找。
+      if (this.homeCandidateIdx + 1 < this.homeCandidates.length) {
+        this.homeCandidateIdx += 1;
+        const next: string = this.homeCandidates[this.homeCandidateIdx];
+        this.mobileFolderId = next;
+        this.requestMobileChildren(next);
         return;
       }
       if (!this.homeCreateTried && this.mobileFolderId.length > 0) {
@@ -426,20 +550,42 @@ export struct BookmarksPanel {
         return;
       }
       // 建也建不出来：放弃发现，别再无限重试。
-      this.pendingKind = 'layer';
-      this.homeStep = 'idle';
-      this.loading = false;
+      this.abortHomeDiscovery();
       return;
     }
   }
 
+  private abortHomeDiscovery(): void {
+    this.clearHomeTimers();
+    this.pendingKind = 'layer';
+    this.homeStep = 'idle';
+    this.loading = false;
+    // 定位不了就退回引擎根（显示三个永久根）：页面不能是死的，用户至少还能
+    // 进文件夹看内容、加书签（落点回到移动设备书签，老行为）。
+    this.rootIsEngine = true;
+    this.homeRepaired = true;
+    this.loadLayer('');
+  }
+
   private adoptHomeFolder(id: string): void {
+    this.clearHomeTimers();
     this.homeStep = 'idle';
     this.homeFolderId = id; // @StorageLink：同步写 AppStorage，主页也读这个键
     const host = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
     HomePrefs.saveFolderId(host, id);
     this.currentFolderId = '';
     this.loadLayer(id);
+    // 定位前点过「添加书签 / 新建文件夹」的，定位好了自动把表单弹出来。
+    if (this.pendingFormMode.length > 0) {
+      const mode: FormMode = this.pendingFormMode;
+      this.pendingFormMode = '';
+      this.openForm(mode);
+    }
+  }
+
+  // 空态诊断行：定位链路的状态快照（排查用）。
+  private diagText(): string {
+    return `诊断：「首页」${this.homeFolderId.length > 0 ? '已定位' : '未定位'}${this.rootIsEngine ? '（已降级到根）' : ''} · ${this.homeStep} · 本层 ${this.currentNodes.length} 项`;
   }
 
   // 当前层渲染顺序：文件夹在前、书签在后（同一张浮框卡里）。
@@ -484,13 +630,13 @@ export struct BookmarksPanel {
         // 引擎没回：重发同一层。
         if (this.pendingKind === 'layer') {
           const parentId = this.resolvedFolderId(this.currentFolderId);
-          if (parentId.length === 0) {
+          if (parentId.length === 0 && !this.rootIsEngine) {
             this.discoverHomeFolder();
             return;
           }
           this.requestSeq += 1;
           this.pendingSeq = this.requestSeq;
-          this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq, parentId: parentId });
+          this.sendGetBookmarks(parentId, this.requestSeq);
           this.scheduleRetry();
         }
       }
@@ -511,20 +657,45 @@ export struct BookmarksPanel {
         return;
       }
       if (this.pendingKind === 'home') {
-        if ((payload.requestId ?? -1) !== this.pendingSeq) {
+        const homeNodes = payload.nodes ?? [];
+        let take: boolean = (payload.requestId ?? -1) === this.pendingSeq;
+        if (!take && this.homeStep === 'root') {
+          // 根层回包（parentId 为空且带 rootType）：主页自己的根请求也能用，
+          // 数据一样，认下来可以让发现链继续往下走。
+          take = (payload.parentId ?? '').length === 0 &&
+            homeNodes.some((n: BookmarkNode): boolean => n.rootType !== undefined);
+        } else if (!take && this.homeStep === 'mobile') {
+          take = this.mobileFolderId.length > 0 &&
+            (payload.parentId ?? '') === this.mobileFolderId;
+        }
+        if (!take) {
           return;
         }
         this.clearLoadTimers();
-        this.onHomePacket(payload.nodes ?? []);
+        this.onHomePacket(homeNodes);
         return;
       }
-      if ((payload.requestId ?? -1) !== this.pendingSeq) {
+      // 序号对得上，或父层对得上（引擎/主页先一步回了同一层）都算数。
+      if (!this.acceptsPacket(payload, this.resolvedFolderId(this.currentFolderId))) {
         return;
       }
       const nodes = payload.nodes ?? [];
       if (this.pendingKind === 'layer') {
         this.currentNodes = nodes;
         this.rebuildContentRows();
+        if (this.rootIsEngine && this.currentFolderId.length === 0) {
+          // 降级模式下根层回包 = 三个永久根，从这里取移动设备根当新建落点。
+          for (const node of nodes) {
+            if (node.rootType === 'mobile') {
+              this.mobileFolderId = node.id;
+              break;
+            }
+          }
+        }
+        if (nodes.length > 0 && this.homeFallbackTimer !== -1) {
+          clearTimeout(this.homeFallbackTimer);
+          this.homeFallbackTimer = -1;
+        }
       } else {
         this.searchResults = nodes;
       }
@@ -618,13 +789,17 @@ export struct BookmarksPanel {
   // -- 「移动到」：BFS 收集全部文件夹 -------------------------------------------
 
   private openFolderPicker(): void {
-    if (this.homeFolderId.length === 0) {
+    // 降级模式（定位不到「首页」）下把移动设备书签当收集根，移动功能不至于残废。
+    const rootId = this.homeFolderId.length > 0 ? this.homeFolderId : this.mobileFolderId;
+    if (rootId.length === 0) {
+      this.discoverHomeFolder();
       this.getUIContext().getPromptAction().showToast({
-        message: '还在定位「首页」文件夹，请稍后再试',
+        message: '正在定位「首页」文件夹，请稍后再试',
         duration: 1500
       });
       return;
     }
+    this.pickerRootId = rootId;
     this.folderIds = [];
     this.folderParent.clear();
     this.folderTitle.clear();
@@ -639,12 +814,12 @@ export struct BookmarksPanel {
     this.requestSeq += 1;
     // 只收「首页」文件夹以下的子树（三个永久根不再露出）；首页自己由
     // buildPickerOptions 补在列表首行，所以「移到首页」现在可选。
-    this.onCommand({ command: 'getBookmarks', requestId: this.requestSeq, parentId: this.homeFolderId });
+    this.sendGetBookmarks(rootId, this.requestSeq);
   }
 
   private onCollectPacket(nodes: BookmarkNode[], packetParentId: string): void {
     this.collectOutstanding -= 1;
-    if (packetParentId.length > 0 && packetParentId === this.homeFolderId) {
+    if (packetParentId.length > 0 && packetParentId === this.pickerRootId) {
       // BFS 的根回包 = 「首页」文件夹自己的直接子项数（选择器里给首页标「N 项」）。
       this.collectRootKids = nodes.length;
     }
@@ -707,14 +882,15 @@ export struct BookmarksPanel {
       this.collectDescendants(this.moveExcludeRoot, excluded);
     }
     const out: FolderOption[] = [];
-    // 「首页」= 书签页根，补在列表首行（BFS 从它开始，回包里不含它自己）。
-    if (this.homeFolderId.length > 0 && !excluded.has(this.homeFolderId)) {
+    // 收集根（通常是「首页」）补在列表首行（BFS 从它开始，回包里不含它自己）。
+    const rootId = this.pickerRootId;
+    if (rootId.length > 0 && !excluded.has(rootId)) {
       out.push({
-        id: this.homeFolderId,
-        title: HOME_FOLDER_TITLE,
+        id: rootId,
+        title: rootId === this.homeFolderId ? HOME_FOLDER_TITLE : '移动设备书签',
         childCount: this.collectRootKids
       } as FolderOption);
-      this.folderKids.set(this.homeFolderId, this.collectRootKids);
+      this.folderKids.set(rootId, this.collectRootKids);
     }
     for (const id of this.folderIds) {
       if (excluded.has(id)) {
@@ -794,10 +970,14 @@ export struct BookmarksPanel {
     this.onClose();
   }
 
-  /** 新建书签/文件夹的父层：页面根级落到「首页」文件夹，子层落到当前文件夹。 */
+  /** 新建书签/文件夹的父层：页面根级落到「首页」文件夹，子层落到当前文件夹；
+   *  降级模式（rootIsEngine）回落点 = 移动设备书签。 */
   private targetParentId(): string {
     if (this.currentFolderId.length > 0) {
       return this.currentFolderId;
+    }
+    if (this.rootIsEngine) {
+      return this.mobileFolderId;
     }
     return this.homeFolderId;
   }
@@ -931,6 +1111,18 @@ export struct BookmarksPanel {
   // -- 表单弹窗（添加/编辑书签、新建/重命名文件夹） -----------------------------
 
   private openForm(mode: FormMode, node?: BookmarkNode): void {
+    if ((mode === 'addBookmark' || mode === 'addFolder') && !this.rootIsEngine &&
+      this.targetParentId().length === 0) {
+      // 还不知道「首页」文件夹在哪：先定位，好了自动把表单弹开（见 adoptHomeFolder）。
+      // 带着空 parentId 发出去，书签会掉进用户看不见的永久根。
+      this.pendingFormMode = mode;
+      this.discoverHomeFolder();
+      this.getUIContext().getPromptAction().showToast({
+        message: '正在定位书签位置，请稍候',
+        duration: 1500
+      });
+      return;
+    }
     this.editUuid = node !== undefined ? node.id : '';
     this.moveTargetId = '';
     this.formParentId = mode === 'addBookmark' || mode === 'addFolder'
@@ -1924,6 +2116,24 @@ export struct BookmarksPanel {
             Text('点右上角 ⋯ 可以添加书签或新建文件夹')
               .fontSize(13)
               .fontColor($r('app.color.text_secondary'))
+            // 根层为空时给一条状态快照 + 手动重定位入口：定位失败（id 失效 /
+            // 引擎没回）时页面不该死在这儿（排查用，稳定后去掉）。
+            if (this.currentFolderId.length === 0) {
+              Text(this.diagText())
+                .fontSize(11)
+                .fontColor($r('app.color.text_secondary'))
+                .margin({ top: 14 })
+              Text('重新定位「首页」文件夹')
+                .fontSize(13)
+                .fontColor($r('app.color.accent_primary'))
+                .margin({ top: 10 })
+                .padding({ left: 14, right: 14, top: 6, bottom: 6 })
+                .onClick(() => {
+                  this.rootIsEngine = false;
+                  this.homeRepaired = false;
+                  this.discoverHomeFolder();
+                })
+            }
           }
           .width('100%')
           .margin({ top: 60 })
