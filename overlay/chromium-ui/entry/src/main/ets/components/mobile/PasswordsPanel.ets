@@ -1632,41 +1632,10 @@ export struct PasswordsPanel {
         .backgroundColor($r('app.color.page_background'))
 
         // 导入模式弹窗 / 批量操作栏：悬浮层挂列表这层（viewport 固定）。
+        // （搜索回顶入口已上移到标题栏 menu 的「回到搜索」项，勿在此再加
+        // 内容层悬浮按钮/overlay——位置和命中都不如 menu，均翻过车。）
         this.ImportDialog()
         this.BatchActionBar()
-        // 搜索回顶按钮：搜索框滚走后浮现于内容层顶部右侧。放在内容 Stack
-        // 内（不用 overlay），全屏透明容器定位、容器本身透传点击，只按钮可点，
-        // 避免 overlay 整层拦截输入的历史回归。位置上移到标题栏模糊带之下，
-        // 保证清晰可见（不被渐变模糊压暗）。
-        if (this.searchFabVisible && this.verified && this.items.length > 0 && !this.detailOnTop) {
-          Row() {
-            Button({ type: ButtonType.Circle }) {
-              Image($r('app.media.chromium_search'))
-                .width(18)
-                .height(18)
-                .fillColor($r('app.color.icon_primary'))
-            }
-            .width(40)
-            .height(40)
-            .backgroundColor($r('app.color.float_bar_bg'))
-            .border({ width: 0.5, color: $r('app.color.divider') })
-            .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
-            .onClick(() => {
-              this.scrollToSearch();
-            })
-          }
-          .width('100%')
-          .height('100%')
-          .justifyContent(FlexAlign.End)
-          .alignItems(VerticalAlign.Top)
-          .padding({ right: 16, top: glassTopSafeVp() + 56 })
-          .hitTestBehavior(HitTestMode.Transparent)
-          .transition(
-            TransitionEffect.opacity(0)
-              .combine(TransitionEffect.scale({ x: 0.8, y: 0.8 }))
-              .animation({ curve: curves.springMotion(0.34, 0.84) })
-          )
-        }
       }
       .width('100%')
       .height('100%')
@@ -1687,6 +1656,9 @@ export struct PasswordsPanel {
             }
           }
         },
+        // 标题栏 menu：多选态显示「取消」；列表滚走搜索框后（searchFabVisible）
+        // 在 ⋯ 左侧加「回到搜索」项——由标题栏自身渲染，天然浮于渐变模糊带
+        // 之上且不拦截内容点击（内容层/overlay 两种挂法都翻过车，menu 是正解）。
         menu: this.selectMode
           ? {
             value: [
@@ -1701,19 +1673,42 @@ export struct PasswordsPanel {
               }
             ]
           }
-          : {
-            value: [
-              {
-                content: {
-                  icon: $r('app.media.aura_more'),
-                  label: '更多操作',
-                  action: (): void => {
-                    this.showMoreSheet();
+          : (this.searchFabVisible && this.verified)
+            ? {
+              value: [
+                {
+                  content: {
+                    icon: $r('app.media.chromium_search'),
+                    label: '回到搜索',
+                    action: (): void => {
+                      this.scrollToSearch();
+                    }
+                  }
+                },
+                {
+                  content: {
+                    icon: $r('app.media.aura_more'),
+                    label: '更多操作',
+                    action: (): void => {
+                      this.showMoreSheet();
+                    }
                   }
                 }
-              }
-            ]
-          }
+              ]
+            }
+            : {
+              value: [
+                {
+                  content: {
+                    icon: $r('app.media.aura_more'),
+                    label: '更多操作',
+                    action: (): void => {
+                      this.showMoreSheet();
+                    }
+                  }
+                }
+              ]
+            }
       },
       style: {
         // 官方渐变模糊滚动效果 + 沉浸光感材质（与 GlassPage 同一套）。
