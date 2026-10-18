@@ -87,6 +87,24 @@ function formatOffset(value: number): string {
   return value > 0 ? `+${value}` : `${value}`;
 }
 
+// 默认书签去重用的归一化键：去 scheme / 前导 www. / 尾斜杠 / path，只留主机名。
+// 让 https://www.baidu.com、https://baidu.com/、http://baidu.com 视为同一站点。
+function seedKey(url: string): string {
+  let host = url.trim().toLowerCase();
+  const schemeIndex = host.indexOf('://');
+  if (schemeIndex >= 0) {
+    host = host.substring(schemeIndex + 3);
+  }
+  const slashIndex = host.indexOf('/');
+  if (slashIndex >= 0) {
+    host = host.substring(0, slashIndex);
+  }
+  if (host.startsWith('www.')) {
+    host = host.substring(4);
+  }
+  return host;
+}
+
 function initialOf(node: BookmarkNode): string {
   const title = node.title.trim();
   if (title.length > 0) {
@@ -622,11 +640,18 @@ export struct HomeSurface {
     }
   }
 
-  // 主页默认书签：只在「从未种过」且「首页文件夹当前为空」时一次性写入四个站点，
-  // 写完后置 seeded 标志位，用户之后删掉也不会被反复补回。
+  // 主页默认书签：首次运行把谷歌/必应/百度/GitHub 补进「首页」文件夹——按归一化 URL
+  // 去重（已有同名站点跳过，不产生重复磁贴），补完置 seeded 标志位，用户之后删掉
+  // 也不会被反复补回。
   private maybeSeedDefaultBookmarks(): void {
-    if (this.homeBookmarksSeeded || this.homeFolderId.length === 0 || this.tiles.length > 0) {
+    if (this.homeBookmarksSeeded || this.homeFolderId.length === 0) {
       return;
+    }
+    const existing: string[] = [];
+    for (const node of this.fullNodes) {
+      if (node.type === 'url') {
+        existing.push(seedKey(node.url ?? ''));
+      }
     }
     const defaults: HomeSeedSite[] = [
       { title: '谷歌', url: 'https://www.google.com' },
@@ -635,6 +660,9 @@ export struct HomeSurface {
       { title: 'GitHub', url: 'https://github.com' }
     ];
     for (const site of defaults) {
+      if (existing.indexOf(seedKey(site.url)) >= 0) {
+        continue;
+      }
       this.onCommand({
         command: 'addBookmark',
         url: site.url,
