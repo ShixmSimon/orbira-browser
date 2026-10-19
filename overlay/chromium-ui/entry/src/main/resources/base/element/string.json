@@ -1,0 +1,24 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Chromium HarmonyOS Adapter 浏览器"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Chromium HarmonyOS Adapter 主入口"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Chromium HarmonyOS Adapter"
+    },
+    {
+      "name": "holding_hand_permission_reason",
+      "value": "用于根据握持位置调整浏览器快捷按钮"
+    },
+    {
+      "name": "extensional_device_permission_reason",
+      "value": "需要扩展设备权限以访问原生功能"
+    }
+  ]
+}

@@ -1,0 +1,155 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// The settings area of the shell services: routes the settings commands to
+// the file that implements each group, and answers getAboutInfo.
+//
+//   getAboutInfo {requestId}
+//     -> "aboutInfo" {requestId, chromiumVersion, engineCommit, userAgent,
+//                     bookmarkApiVersion, browsingApiVersion, jitEnabled,
+//                     passwordApiVersion, passwordSyncAuthorized}
+
+#include <string>
+#include <string_view>
+#include <utility>
+
+#include "base/command_line.h"
+#include "base/values.h"
+#include "base/version_info/version_info.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/ohos/shell_services_ohos.h"
+#include "chrome/browser/ui/ohos/shell_settings_ohos_internal.h"
+#include "components/embedder_support/user_agent_utils.h"
+
+// OHOS_ENGINE_COMMIT, the chromium-hmos commit this engine was built from,
+// written into the output directory's gen/ by ci-incremental-build.sh.
+#if __has_include("ohos_engine_commit.h")
+#include "ohos_engine_commit.h"
+#endif
+
+namespace chrome::ohos {
+
+namespace settings_internal {
+
+Profile* SettingsProfile(const ShellCommandContext& context) {
+  return context.profile ? context.profile->GetOriginalProfile() : nullptr;
+}
+
+void BroadcastPrefsChanged(const ShellCommandContext& context,
+                           base::ListValue keys) {
+  Profile* profile = SettingsProfile(context);
+  if (!profile) {
+    return;
+  }
+  base::DictValue event;
+  event.Set("event", "prefsChanged");
+  event.Set("keys", std::move(keys));
+  BroadcastToShell(profile, event.Clone());
+  // An incognito window reads through to the same settings, so it has to
+  // hear about the change as well.
+  if (context.profile != profile) {
+    BroadcastToShell(context.profile, std::move(event));
+  }
+}
+
+}  // namespace settings_internal
+
+namespace {
+
+using settings_internal::SettingsCommandHandler;
+
+void GetAboutInfo(const ShellCommandContext& context,
+                  const base::DictValue& command) {
+  base::DictValue event;
+  event.Set("event", "aboutInfo");
+  event.Set("requestId", ReadRequestId(command));
+  event.Set("chromiumVersion", version_info::GetVersionNumber());
+  // The chromium-hmos commit this engine was built from, as in its release
+  // tag (build-<engineCommit>). A build made outside CI does not know it and
+  // reports the Chromium revision it is cut from instead, as chromiumCommit
+  // always does.
+#if defined(OHOS_ENGINE_COMMIT)
+  event.Set("engineCommit", OHOS_ENGINE_COMMIT);
+#else
+  event.Set("engineCommit", version_info::GetLastChange());
+#endif
+  event.Set("chromiumCommit", version_info::GetLastChange());
+  event.Set("userAgent", embedder_support::GetUserAgent());
+  // What the bookmarks commands understand. 1 was the original set; 2 adds
+  // insertion positions, operation results, child counts, root types, batch
+  // moves and removals, URL lookup and path lookup; 3 adds import and export;
+  // 4 adds getBookmarksForSync and applyBookmarks, by UUID, for cloud sync.
+  // A shell reads it once at startup instead of probing each new command with
+  // a timeout.
+  event.Set("bookmarkApiVersion", 4);
+  // What the browsing commands understand. 1 was the set the browsing-UI
+  // round added -- permissions, load progress, tab ids, thumbnails, recently
+  // closed, desktop site, reader mode; 2 adds tab groups, which is groupId
+  // and openerId on each tab, newTab's groupId and background, activateTabById
+  // and closeTabById, and the openedInGroup event; 3 adds reading and
+  // restoring where the reader is in a page, for app continuation.
+  event.Set("browsingApiVersion", 3);
+  event.Set("urlProtectionApiVersion", 2);
+  event.Set("siteProtectionApiVersion", 1);
+  event.Set("ruleSourcesApiVersion", 1);
+  // What the password sync commands understand. 1 is passwordSyncAuthorize,
+  // getPasswordsForSync, applyPasswords and the passwordsChanged event. The
+  // shell offers password sync only from 1.
+  event.Set("passwordApiVersion", 1);
+  event.Set("passwordSyncAuthorized",
+            IsPasswordSyncAuthorized(context.profile));
+  // Whether V8 runs with its JIT this launch. The runner decides it before
+  // Chromium starts (the "AuraShell JIT available" line in its log) and,
+  // when the launch config asks for jitless or the process cannot map
+  // executable memory, starts every process with --jitless in --js-flags.
+  // That flag is the answer: renderers are given the same --js-flags.
+  const std::string js_flags =
+      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("js-flags");
+  event.Set("jitEnabled", js_flags.find("--jitless") == std::string::npos);
+  ReplyToShell(context, std::move(event));
+}
+
+struct SettingsCommand {
+  std::string_view name;
+  SettingsCommandHandler handler;
+};
+
+// Every settings command the shell may send. Adding one is one line here and
+// a handler in the file of its group.
+constexpr SettingsCommand kSettingsCommands[] = {
+    // Browsing data (shell_browsing_data_ohos.cc).
+    {"clearBrowsingData", &settings_internal::ClearBrowsingData},
+    {"getBrowsingDataCounts", &settings_internal::GetBrowsingDataCounts},
+    // Search engines (shell_search_engines_ohos.cc).
+    {"getSearchEngines", &settings_internal::GetSearchEngines},
+    {"setDefaultSearchEngine", &settings_internal::SetDefaultSearchEngine},
+    // Preferences (shell_prefs_ohos.cc).
+    {"getPrefs", &settings_internal::GetPrefs},
+    {"setPref", &settings_internal::SetPref},
+    // Site settings (shell_site_settings_ohos.cc).
+    {"getSiteSettings", &settings_internal::GetSiteSettings},
+    {"getSiteSettingsForOrigin", &settings_internal::GetSiteSettingsForOrigin},
+    {"setSiteSetting", &settings_internal::SetSiteSetting},
+    {"setDefaultSiteSetting", &settings_internal::SetDefaultSiteSetting},
+    {"resetSiteSettings", &settings_internal::ResetSiteSettings},
+    {"showBlockedPopups", &settings_internal::ShowBlockedPopups},
+    // About.
+    {"getAboutInfo", &GetAboutInfo},
+};
+
+}  // namespace
+
+bool HandleSettingsCommand(const ShellCommandContext& context,
+                           std::string_view name,
+                           const base::DictValue& command) {
+  for (const SettingsCommand& entry : kSettingsCommands) {
+    if (entry.name == name) {
+      entry.handler(context, command);
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace chrome::ohos

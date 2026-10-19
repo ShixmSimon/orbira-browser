@@ -1,0 +1,20 @@
+executable("format_tests") {
+  testonly = true
+  output_name = "ohos_url_protection_format_tests"
+  sources = [
+    "local_rules.cc",
+    "rule_update_format.cc",
+    "rule_update_format_test_main.cc",
+    "site_verdict_state_test.cc",
+    "subscription_rules.cc",
+    "subscription_rules_test.cc",
+  ]
+  deps = [
+    "//base",
+    "//base:i18n",
+    "//crypto",
+    "//net",
+    "//third_party/boringssl",
+    "//url",
+  ]
+}

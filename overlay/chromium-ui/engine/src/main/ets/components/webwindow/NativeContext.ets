@@ -1,0 +1,965 @@
+/*
+ * Copyright (c) 2024 Huawei Device Co., Ltd.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import { common } from '@kit.AbilityKit';
+import { TranslationStyle, TranslationResult, TranslationReleaseReason } from './TranslationTypes';
+import { DisplayBrightnessBridge, DisplayBrightnessNativePort } from '../../utils/DisplayBrightnessBridge';
+import { BluetoothBridge, BluetoothNativePort } from '../../utils/BluetoothBridge';
+import { UsbBridge, UsbNativePort } from '../../utils/UsbBridge';
+import { SystemServiceBridge, SystemServiceNativePort } from '../../utils/SystemServiceBridge';
+import { registerSystemServices } from '../../utils/SystemServices';
+import { AuraStartupConfig } from '../../utils/DeviceType';
+import {
+  BrowsingDataTimeRange,
+  BrowsingDataType,
+  DownloadAction,
+  HistoryVisitRef,
+  ShellAnchorRect,
+  ShellPrefKey,
+  SitePermissionDecision,
+  SiteSettingType,
+  SiteSettingValue,
+  SyncBookmarkOp,
+  SyncPasswordOp
+} from './ShellServiceTypes';
+
+export interface WindowRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface PointerEventPayload {
+  action: number;
+  pointerType: string;
+  dispatchSource?: string;
+  pointerId: number;
+  button: number;
+  sourceTool: number;
+  x: number;
+  y: number;
+  rootX?: number;
+  rootY?: number;
+  rootWindowRelative?: boolean;
+  deltaX: number;
+  deltaY: number;
+  timestamp: number;
+}
+
+export interface KeyEventPayload {
+  action: number;
+  keyCode: number;
+  keyText: string;
+  dispatchSource?: string;
+  sourceTool: number;
+  timestamp: number;
+}
+
+export interface BrowserTabState {
+  index: number;
+  active: boolean;
+  url: string;
+  title: string;
+  loading: boolean;
+  // Stable for the tab's life and never reused, unlike index, which shifts
+  // whenever a neighbour closes or moves. Name the tab by this in anything
+  // asynchronous -- a thumbnail arriving, a drag finishing. Empty on an
+  // engine older than browsingApiVersion 1.
+  id?: string;
+  // Making a sound right now. Separate from muted: a tab can be silenced
+  // before it ever makes one.
+  audible?: boolean;
+  // Silenced by the user.
+  muted?: boolean;
+  // The group this tab belongs to, or '' when it belongs to none. A group is
+  // a page and the pages it opened; on a phone the engine makes one whenever
+  // a page opens another, and on a tablet or a PC it never does. Tabs in a
+  // group are always next to each other and in the order they were opened.
+  // Empty on an engine older than browsingApiVersion 2.
+  groupId?: string;
+  // The `id` of the tab that opened this one, or '' when nothing did or when
+  // that tab has since closed. Survives a restart.
+  openerId?: string;
+  // Not loaded: discarded by the engine to save memory, or restored from the
+  // last session and not opened since. Title, icon and history are kept; the
+  // page loads again when the tab becomes active, so the shell should show it
+  // as loading rather than as a blank page. Absent on older engines.
+  discarded?: boolean;
+}
+
+export type PwaMenuItemType = 'command' | 'check' | 'radio' | 'separator' |
+  'buttonRow' | 'submenu' | 'actionableSubmenu' | 'highlighted' | 'title';
+
+export interface PwaMenuButtonState {
+  type: 'space' | 'button' | 'label';
+  commandId: number;
+  label: string;
+  enabled: boolean;
+  dismissesMenu: boolean;
+}
+
+export interface PwaMenuItemState {
+  type: PwaMenuItemType;
+  commandId: number;
+  label: string;
+  secondaryLabel: string;
+  minorText: string;
+  enabled: boolean;
+  checked: boolean;
+  groupId: number;
+  separatorType?: number;
+  children?: PwaMenuItemState[];
+  buttons?: PwaMenuButtonState[];
+}
+
+export interface BrowserStateSnapshot {
+  version: number;
+  mobileUi: boolean;
+  uiFamily: string;
+  ready: boolean;
+  tabCount: number;
+  activeTabIndex: number;
+  sidePanelVisible: boolean;
+  sidePanelEntryId: string;
+  focusedTarget: 'webContents' | 'sidePanel';
+  activationEpoch: number;
+  // The run before this one did not end cleanly and its tabs can be
+  // restored with restoreLastSession. Stays true until the shell answers.
+  lastSessionRestorable?: boolean;
+  tabs: BrowserTabState[];
+  // 0..1, and 1 whenever nothing is loading, so one progress bar needs no
+  // special case for the idle state.
+  loadProgress?: number;
+  // Whether the current tab is asking sites for their desktop pages.
+  requestDesktopSite?: boolean;
+  // Page zoom of the current tab, as a percentage; 100 is normal.
+  zoomPercent?: number;
+  // Whether the current tab is showing a distilled page.
+  inReaderMode?: boolean;
+  // Whether the distiller thinks the current page is an article. Drives
+  // whether the menu offers reader mode at all.
+  readerModeAvailable?: boolean;
+  // Whether this page may be installed as an app (installWebApp).
+  canInstallWebApp?: boolean;
+  url: string;
+  domain: string;
+  title: string;
+  loading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  isPwaWindow: boolean;
+  pwaAppId: string;
+  pwaStartUrl: string;
+}
+
+// What a long-press menu can offer. contextMenuRequested lists the ones that
+// apply in supportedActions; the shell sends one back in contextMenuAction.
+export type ContextMenuAction =
+  'openLinkInNewTab' | 'openLinkInIncognito' | 'copyLinkAddress' |
+  'copyLinkText' | 'saveLinkAs' | 'copyLinkToHighlight' |
+  'openImageInNewTab' | 'saveImageAs' | 'copyImage' | 'copyImageAddress' |
+  'toggleLoop' | 'toggleControls' | 'openMediaInNewTab' | 'saveMediaAs' |
+  'copyMediaAddress' | 'copyVideoFrame' | 'pictureInPicture' |
+  'copy' | 'cut' | 'paste' | 'pasteAsPlainText' | 'selectAll' | 'delete' |
+  'undo' | 'redo' | 'searchSelection' |
+  // Passwords. suggestPassword offers a generated one on a new-password
+  // field; selectSavedPassword opens the saved list through the ordinary
+  // autofill popup, which asks for the reader's identity first when
+  // passwordFillRequiresAuth is on.
+  'suggestPassword' | 'selectSavedPassword' | 'managePasswords' |
+  // Spelling. The numbered ones line up with spellSuggestions, and there are
+  // never more than five.
+  'spellSuggestion:0' | 'spellSuggestion:1' | 'spellSuggestion:2' |
+  'spellSuggestion:3' | 'spellSuggestion:4' | 'addToDictionary' |
+  // No Chromium command behind these two: the shell does the sharing itself,
+  // and imageToFile answers with contextMenuImageFile rather than doing
+  // anything to the page.
+  'shareLink' | 'imageToFile';
+
+// The long-pressed video or audio element's state.
+export interface ContextMenuMediaFlags {
+  paused: boolean;
+  muted: boolean;
+  loop: boolean;
+  canLoop: boolean;
+  controls: boolean;
+  canToggleControls: boolean;
+  canSave: boolean;
+  hasAudio: boolean;
+  inError: boolean;
+}
+
+export interface BrowserRuntimeEvent {
+  version: number;
+  event: 'pictureInPictureState' | 'systemPrintReady' | 'systemPrintFailed' | 'shareRequested' |
+    'castRequested' | 'filePickerRequested' | 'pwaInstalled' | 'pwaMenuModel' |
+    'pwaMenuClosed' | 'inputRecovered' | 'systemActionRequested' |
+    'permissionsRequested' | 'sitePermissionRequested' |
+    'shellAccelerator' | 'linkHovered' | 'tabThumbnails' |
+    'openedInGroup' | 'pageScrollSettled' | 'pageContinuation' |
+    'contextMenuImageFile' | 'contextMenuActionsChanged' |
+    'backHandled' | 'dropNotHandled' | 'browserChromeRequested' |
+    'gpuContextLost' | 'lastSessionRestorable' | 'lastSessionRestored' | 'extensionInstallFailed' |
+    'pageFullscreenChanged' | 'pullToRefresh' |
+    'extensionDetails' | 'extensionCommandFailed' |
+    'extensionUpdateCapabilities' | 'extensionUpdateProgress' |
+    'pageDragStarted' | 'pageDragEnded' |
+    'recentlyClosed' | 'recentlyClosedChanged' | 'extensionActions' |
+    'recentBookmarks' |
+    'extensionActionsChanged' |
+    'sitePermissionCancelled' |
+    'browserControlsRatio' | 'findResult' | 'pageText' |
+    'translationCapabilities' | 'translationState' | 'translationSessionResult' |
+    'translationBatch' | 'translationBatchResult' | 'translationWorkAvailable' |
+    'translationStateChanged' | 'translationSessionEnded' | 'translationBatchInvalidated' |
+    'contextMenuRequested' | 'externalUrlRequested' | 'popupBlocked' |
+    'fileOpenRequested' | 'dateTimePickerRequested' | 'dateTimePickerClosed' |
+    'selectPopupRequested' | 'selectPopupClosed' | 'contactsPickerRequested' |
+    'speechRecognitionRequested' | 'speechRecognitionStop' | 'speechRecognitionAbort' |
+    'webAppIcon' | 'webApps' | 'webAppUninstalled' |
+    'nfcScanStart' | 'nfcScanStop' | 'nfcWrite' | 'nfcWriteCancel' | 'nfcMakeReadOnly' |
+    // Profile data; read these through shellEvent<T>() (ShellServiceTypes).
+    'bookmarkList' | 'bookmarkCreated' | 'bookmarksChanged' |
+    'historyResults' | 'historyChanged' | 'autocompleteResults' | 'topSites' |
+    'downloadUpdated' | 'downloadList' |
+    'clearBrowsingDataDone' | 'browsingDataCounts' | 'searchEngines' |
+    'prefs' | 'prefsChanged' | 'siteSettings' | 'aboutInfo' | 'favicons' |
+    'urlProtectionState' | 'urlProtectionConfigResult' | 'urlProtectionStateChanged' |
+    'urlProtectionRulesUpdateResult' |
+    'protectionRuleSources' | 'protectionRuleSourceResult' | 'protectionRuleSourcesChanged' |
+    'siteProtectionState' | 'siteProtectionConfigResult' | 'siteProtectionStateChanged' |
+    'savedPasswords' | 'passwordRevealed' | 'passwordCommandResult' |
+    'passwordsExported' | 'passwordsImported' | 'savedPasswordsChanged';
+  // gpuContextLost: whether the engine could rebuild after the GPU lost
+  // its context. False means the picture will not come back on its own.
+  recovered?: boolean;
+  pipWidget?: number;
+  pipPlaying?: boolean;
+  // browserChromeRequested: which UI the reader asked for. The shell saves
+  // the setting and calls setBrowserChrome itself; the engine only asks.
+  mode?: 'shell' | 'native';
+  // contextMenuRequested: where the press was, in vp in the window.
+  x?: number;
+  y?: number;
+  // contextMenuRequested: the page context. Empty strings when absent.
+  linkUrl?: string;
+  linkText?: string;
+  srcUrl?: string;
+  mediaType?: 'image' | 'video' | 'audio' | 'none';
+  mediaFlags?: ContextMenuMediaFlags;
+  selectionText?: string;
+  isEditable?: boolean;
+  systemPasteAllowed?: boolean;
+  frameUrl?: string;
+  pageUrl?: string;
+  incognito?: boolean;
+  supportedActions?: ContextMenuAction[];
+  // contextMenuRequested, spelling: the word the spellchecker objected to and
+  // what it suggests instead, at most five. Both absent unless the renderer
+  // found something -- the spellchecker here is Hunspell and there is no
+  // Hunspell dictionary for Chinese in any Chromium build, so on a zh-CN
+  // device they never appear.
+  misspelledWord?: string;
+  spellSuggestions?: string[];
+  // openedInGroup: the `id` of the tab that was just opened into the group.
+  // The reader was left on the page they were on.
+  id?: string;
+  // backHandled: whether the page took the back gesture -- closed a dialog,
+  // left fullscreen. True means the shell should not also go back.
+  handled?: boolean;
+  // pageFullscreenChanged: whether the page has made itself fullscreen.
+  fullscreen?: boolean;
+  // contextMenuImageFile: where the long-pressed image was written, and what
+  // it is. Both empty when there was no image to write.
+  path?: string;
+  mimeType?: string;
+  // pageScrollSettled and pageContinuation: where the reader is in the page,
+  // in CSS pixels, and how big the document is. Divide to get a fraction that
+  // still means something on a screen of another width.
+  scrollX?: number;
+  scrollY?: number;
+  pageWidth?: number;
+  pageHeight?: number;
+  // browserControlsRatio: how much of the shell's top bar the page shows, 0-1.
+  ratio?: number;
+  // findResult: the match count, the active match (1-based; 0 for none) and
+  // whether this is the last update for the search.
+  matches?: number;
+  activeMatch?: number;
+  finalUpdate?: boolean;
+  // pageText: the page's visible text, at most 20000 characters.
+  // dropNotHandled: the dragged text, empty when none was dragged.
+  text?: string;
+  // pageDragStarted: what the page is dragging out. The engine's own
+  // window turns these into a system drag; a shell drawing its own page area
+  // would have to do the same.
+  html?: string;
+  operation?: 'copy' | 'move' | 'link' | 'none';
+  // dropNotHandled: what was dropped and the page would not take.
+  urls?: string[];
+  files?: DroppedFileRef[];
+  // pageDragEnded: whether the drag ended on something that accepted it.
+  dropped?: boolean;
+  // systemActionRequested: the system page to open.
+  // fileOpenRequested: open `path` as a file ('open') or a folder
+  // ('openFolder'), or show the file in the Files app ('reveal').
+  action?: 'huaweiAccount' | 'huaweiWallet' | 'defaultBrowser' | 'checkForUpdates' |
+    'open' | 'openFolder' | 'reveal';
+  // externalUrlRequested: `url` is the link for another app (an Android
+  // intent: link already turned into its scheme), empty when only the
+  // fallback is left; fallbackUrl is the web page to open if no app takes
+  // it, empty when there is none; initiator is the page's origin, empty when
+  // the browser itself asked (a mailto: in settings).
+  fallbackUrl?: string;
+  initiator?: string;
+  // popupBlocked: the page whose window.open() was stopped (pageUrl and
+  // origin), the popup it wanted, and how many it has had blocked. Answer
+  // with the showBlockedPopups command, or allow the origin with
+  // setSiteSetting { type: 'popups', setting: 'allow' }.
+  origin?: string;
+  popupUrl?: string;
+  count?: number;
+  // shareRequested: true when a page called navigator.share(); then `text`
+  // may be set and `url` may be empty.
+  fromPage?: boolean;
+  // systemPrintReady: the PDF that was printed.
+  // pageDragStarted: a picture being dragged out, already written into the
+  // engine's own dropped directory in the format the page loaded it in.
+  // Absent for anything else; `url` carries where the picture came from.
+  filePath?: string;
+  appId?: string;
+  title?: string;
+  url?: string;
+  pwaStartUrl?: string;
+  reason?: string;
+  requestId?: number;
+  permissions?: string[];
+  pickerType?: 'open' | 'openMultiple' | 'save' | 'folder' | 'none';
+  defaultName?: string;
+  suffixFilters?: string[];
+  fileTypeIndex?: number;
+  // filePickerRequested, from a page's <input type=file>: its accept list as
+  // written ('image/*', '.pdf'), and whether it asked for the camera or
+  // microphone instead of a file (the capture attribute). Empty and false
+  // for Chromium's own pickers.
+  acceptTypes?: string[];
+  capture?: boolean;
+  // dateTimePickerRequested (phone only): which picker, and the input's value,
+  // min and max as HTML value strings -- '2026-10-03',
+  // '2026-10-03T14:30', '2026-10', '14:30', '2026-W40' -- each empty when
+  // unset. Answer with dateTimePickerResult { requestId, value } in the same
+  // form ('' clears the input) or { requestId, canceled: true }.
+  // dateTimePickerClosed / selectPopupClosed: the page took the request with
+  // `requestId` back; close that picker without answering.
+  inputType?: 'date' | 'datetime-local' | 'month' | 'time' | 'week';
+  value?: string;
+  min?: string;
+  max?: string;
+  // selectPopupRequested (phone only): a <select>'s entries in order, which
+  // one is selected, and whether several may be. Answer with
+  // selectPopupResult { requestId, indices } -- indices into `options` -- or
+  // { requestId, canceled: true }.
+  options?: SelectPopupOption[];
+  selectedIndex?: number;
+  // selectPopupRequested, contactsPickerRequested: whether several may be
+  // chosen.
+  multiple?: boolean;
+  // Web NFC, for the document `requestId` of the page at `origin`:
+  // nfcScanStart / nfcScanStop -- start or stop reading tags. Answer
+  // nfcScanStart with nfcScanStarted { requestId } once reading, or with an
+  // errorType when the reader refused or NFC is off (the page's scan() then
+  // rejects); then each tag with nfcTagRead { requestId, serialNumber,
+  // ndefRecords } and later failures with nfcError { requestId, errorType,
+  // message }.
+  // nfcWrite { records, overwrite } / nfcMakeReadOnly -- wait for a tag, then
+  // answer nfcWriteResult { requestId, nfcOperation: 'push' | 'makeReadOnly',
+  // errorType?, message? }; nfcWriteCancel drops the pending one.
+  // errorType: notAllowed, notSupported, notReadable, invalidMessage,
+  // operationCancelled, ioError.
+  overwrite?: boolean;
+  ndefRecords?: WebNdefRecord[];
+  // webApps: the installed web apps, by title (answer to getWebApps).
+  apps?: InstalledWebApp[];
+  // webAppUninstalled: whether the app went.
+  ok?: boolean;
+  // contactsPickerRequested: what the page asked to know about each contact.
+  // Answer with contactsPickerResult { requestId, contacts } or
+  // { requestId, canceled: true }.
+  properties?: ('name' | 'email' | 'tel' | 'address' | 'icon')[];
+  // speechRecognitionRequested: a page's SpeechRecognition.start(); the
+  // shell runs the system recognizer (it captures the audio) and reports
+  // with speechRecognitionEvent { requestId, speechEvent, ... } until
+  // speechEvent 'end'.
+  // speechRecognitionStop: stop listening and report what was heard;
+  // speechRecognitionAbort: stop without a result -- both still end with
+  // 'end'.
+  language?: string;
+  continuous?: boolean;
+  interimResults?: boolean;
+  presentation?: 'popup' | 'sheet';
+  menuSessionId?: number;
+  items?: PwaMenuItemState[];
+  activated?: boolean;
+  activationEpoch?: number;
+  focusedTarget?: 'webContents' | 'sidePanel';
+  sidePanelEntryId?: string;
+  known?: boolean;
+  isDefault?: boolean;
+  huaweiWalletAvailable?: boolean;
+}
+
+// One NDEF record as Web NFC sees it (NDEFRecord): recordType is "text",
+// "url", "mime", "absolute-url", "smart-poster", "empty", "unknown", an
+// external type ("example.com:type") or a local one (":act"); data is the
+// payload as base64; records is the message a record holds (smart-poster,
+// external and local types). The shell turns these into NDEF bytes and back.
+export interface WebNdefRecord {
+  recordType: string;
+  mediaType?: string;
+  id?: string;
+  encoding?: string;
+  lang?: string;
+  data: string;
+  records?: WebNdefRecord[];
+}
+
+// An installed web app, in webApps.
+export interface InstalledWebApp {
+  appId: string;
+  title: string;
+  startUrl: string;
+  // False for an app a policy or the system installed.
+  canUninstall: boolean;
+}
+
+// A contact the user chose in the system picker, for contactsPickerResult.
+// Only the properties the request asked for need be filled; an address is
+// one line of text.
+export interface PickedContact {
+  name?: string[];
+  email?: string[];
+  tel?: string[];
+  address?: string[];
+}
+
+// One entry of a <select>: an option, an <optgroup> heading (not
+// selectable), or a separator (<hr>).
+export interface SelectPopupOption {
+  label: string;
+  type: 'option' | 'group' | 'separator';
+  enabled: boolean;
+  checked: boolean;
+}
+
+// A file that was dragged into the app. The engine has already copied it out
+// of the sending app -- the permission on the sender's URI lasts only as long
+// as the drop -- so `path` is an ordinary path this app can read.
+export interface DroppedFileRef {
+  path: string;
+  name?: string;
+  mimeType?: string;
+  size?: number;
+  // A JPEG of the same picture, for showing it. Present only for a format
+  // Chromium cannot decode but HarmonyOS can -- HEIC, which is what a photo
+  // dragged out of the gallery is. Upload uses `path`, the original: a page
+  // asking for the photo should get the photo, not our re-encoding of it.
+  viewPath?: string;
+}
+
+export interface BrowserCommandPayload {
+  command: string;
+  // Translation v1: use native-issued identities from getTranslationState/start.
+  sessionId?: string;
+  batchId?: string;
+  sourceLanguage?: string;
+  targetLanguage?: string;
+  style?: TranslationStyle;
+  prefetchViewportRatio?: number;
+  maxSegments?: number;
+  maxTextUnits?: number;
+  segments?: TranslationResult[];
+  showTranslation?: boolean;
+  reason?: TranslationReleaseReason;
+  retryable?: boolean;
+  // URL/site protection: native-issued identity and atomic policy revision.
+  contextId?: string;
+  tabId?: string;
+  navigationId?: string;
+  expectedRevision?: number;
+  provider?: 'local' | 'huawei' | 'both';
+  cloudConsent?: boolean;
+  siteEnabled?: boolean;
+  sourceId?: string;
+  name?: string;
+  recommendationId?: string;
+  format?: 'domains' | 'urls';
+  ruleType?: 'host_exact' | 'host_suffix' | 'url_exact';
+  pipWidget?: number;
+  pipAction?: 'play' | 'pause' | 'close' | 'restore' | 'state';
+  url?: string;
+  // contextMenuAction: the item chosen, one of the event's supportedActions.
+  // downloadAction: what to do with the download `id`.
+  action?: ContextMenuAction | DownloadAction;
+  // Profile data commands (docs/SHELL_CONTRACT.md, "Profile data").
+  // setDownloadDirectory: the directory URI from ShellDownloadDirectory.
+  uri?: string;
+  id?: string;
+  parentId?: string;
+  title?: string;
+  query?: string;
+  maxCount?: number;
+  beforeTime?: number;
+  beginTime?: number;
+  endTime?: number;
+  count?: number;
+  items?: HistoryVisitRef[];
+  types?: BrowsingDataType[];
+  timeRange?: BrowsingDataTimeRange;
+  keys?: ShellPrefKey[];
+  key?: ShellPrefKey;
+  value?: boolean | number | string;
+  origin?: string;
+  type?: SiteSettingType;
+  setting?: SiteSettingValue;
+  urls?: string[];
+  // moveBookmarks and removeBookmarks: the bookmarks to act on, in order.
+  // groupTabs: the tabs to put in one group, in order.
+  ids?: string[];
+  // groupTabs: for each tab in `ids`, the tab that opened it, or '' for none.
+  // Same length as `ids` or it is ignored. Only needed after a restart, when
+  // the engine cannot know: it tracks openers by session id and these tabs
+  // are new.
+  openerIds?: string[];
+  // applyBookmarks and applyPasswords: the writes, in order. Its `origin` is
+  // 'sync', for logs.
+  ops?: SyncBookmarkOp[] | SyncPasswordOp[];
+  // importBookmarks and exportBookmarks: an absolute path inside the app
+  // sandbox. The shell owns the system file picker and the copy in or out;
+  // the engine only reads and writes this path.
+  path?: string;
+  // passwordAuthGranted: how long the shell's verification counts, at most
+  // 60000.
+  validMs?: number;
+  // updatePassword: only the fields to change.
+  username?: string;
+  password?: string;
+  note?: string;
+  // importPasswords: replace a saved password for the same site and username
+  // with the imported one. Off by default: such rows are skipped.
+  overwrite?: boolean;
+  // moveTab: where the tab should end up, counting positions after the move.
+  toIndex?: number;
+  // setRequestDesktopSite: ask this tab's site for its desktop pages.
+  enabled?: boolean;
+  // setTabMuted: silence this tab, or let it speak again.
+  muted?: boolean;
+  // setZoom: the page zoom to apply, 25 to 500. Omitted means back to 100.
+  percent?: number;
+  // newTab: open into this group, at its end, opened by the current tab.
+  // Omitted opens an ordinary tab outside any group.
+  groupId?: string;
+  // newTab: leave the reader where they are. Default false.
+  background?: boolean;
+  // newTab: how far down the document the reader was on the device they came
+  // from, 0 to 1. Applied once, when the page has finished loading, and not at
+  // all if they scroll first.
+  scrollRatio?: number;
+  // closeTabById: after closing, go back to the tab that opened it, if that
+  // tab is still open. Omitted leaves the choice to Chromium's own rule.
+  returnToOpener?: boolean;
+  // getTabThumbnails: how wide the grid's cards are, so the capture is not
+  // bigger than it needs to be.
+  widthVp?: number;
+  // getTabThumbnails: the card's width over its height. The picture is the
+  // top of the page in that shape: 2/3 shows twice as much of the page as
+  // the default 4/3. Kept within 0.4..2.5.
+  aspect?: number;
+  // setAnchorRects: where the shell drew the buttons Chromium's bubbles point
+  // at, in this window's coordinates.
+  anchors?: ShellAnchorRect[];
+  // setExtensionPinned.
+  pinned?: boolean;
+  // restoreLastSession: true restores the tabs, false lets them go.
+  restore?: boolean;
+  // restoreLastSession: only the last session's main window, its tabs added
+  // with their history to this window (answered by lastSessionRestored
+  // { count }); without it every window of the last session comes back.
+  mainWindowOnly?: boolean;
+  // getExtensionActions: the edge of the square icon to render, in px.
+  // Omitted means 32.
+  iconSizePx?: number;
+  // setBrowserChrome: who draws the browser from now on.
+  // setExtensionSiteAccess: which sites the extension may read.
+  mode?: 'shell' | 'native' | 'onClick' | 'specificSites' | 'allSites';
+  // sitePermissionDecision: the answer to sitePermissionRequested.
+  decision?: SitePermissionDecision;
+  sizeVp?: number;
+  // setViewportInsets: how much of the page bottom the shell covers however
+  // the page scrolls, in vp. setBrowserControls: the height of the shell's
+  // bottom bar (a phone's dock) that hides with the top bar, in vp.
+  bottom?: number;
+  // setBrowserControls: the shell's top bar height, in vp; 0 for none.
+  top?: number;
+  // setBrowserControls: how much of the top bar stays on screen once it is
+  // fully collapsed, in vp; omitted or 0 lets it hide completely.
+  minTop?: number;
+  // setBrowserControlsState: which state to drive the controls to.
+  state?: 'shown' | 'hidden' | 'both';
+  // setBrowserControlsState: whether the transition animates.
+  animate?: boolean;
+  // uninstallExtension: false when the shell has asked the reader itself;
+  // true (the default) shows Chromium's own confirmation.
+  confirm?: boolean;
+  // findInPage: the text to find, and the direction to step in.
+  // insertText: what to put where the reader is typing. The shell reads the
+  // system pasteboard with a paste control and sends it here, because
+  // Chromium cannot read it -- that needs READ_PASTEBOARD, a restricted
+  // permission this app does not declare.
+  text?: string;
+  forward?: boolean;
+  index?: number;
+  requestId?: number;
+  // dragEvent: which part of the system drag this is.
+  stage?: 'enter' | 'move' | 'leave' | 'drop';
+  // dragEvent: where the finger is, in vp inside the page's own box -- not
+  // the window: the shell's bars are not part of the page.
+  // setSurfaceOffset (sent by WebWindow itself): where the page's box sits
+  // in the window, in vp.
+  x?: number;
+  y?: number;
+  // dragEvent: the dragged HTML, when the source offered any.
+  // pageDragFinished: nothing; the drag's ending is in `operation`.
+  html?: string;
+  // pageDragFinished: what the thing it landed on took.
+  operation?: 'copy' | 'move' | 'link' | 'none';
+  // dragEvent: the dragged files. Sent on `drop` only; while the finger is
+  // still down HarmonyOS says how many there are and nothing else.
+  files?: DroppedFileRef[];
+  paths?: string[];
+  fileTypeIndex?: number;
+  canceled?: boolean;
+  // selectPopupResult: the chosen entries, as indices into the event's
+  // `options`.
+  indices?: number[];
+  // contactsPickerResult: the chosen contacts; empty when none were.
+  contacts?: PickedContact[];
+  // nfcTagRead / nfcWriteResult / nfcError (see the nfc events).
+  ndefRecords?: WebNdefRecord[];
+  serialNumber?: string;
+  nfcOperation?: 'push' | 'makeReadOnly';
+  errorType?: 'notAllowed' | 'notSupported' | 'notReadable' | 'invalidMessage' | 'operationCancelled' | 'ioError';
+  message?: string;
+  // launchWebApp / exportWebAppIcon: the installed web app (pwaInstalled's
+  // appId). exportWebAppIcon writes <directory>/<appId>.png and answers
+  // with webAppIcon { requestId, appId, title, path } (path '' if none).
+  appId?: string;
+  directory?: string;
+  // speechRecognitionEvent: what happened (speechEvent) -- audioStart, soundStart,
+  // soundEnd, audioEnd, result (transcript, isFinal, confidence), error
+  // (error: a Web Speech error name such as 'no-speech' or 'not-allowed'),
+  // and always last, end.
+  speechEvent?: 'audioStart' | 'soundStart' | 'soundEnd' | 'audioEnd' | 'result' | 'error' | 'end';
+  transcript?: string;
+  isFinal?: boolean;
+  confidence?: number;
+  error?: string;
+  // passwordSyncAuthorize: true once the user has verified themselves to turn
+  // password sync on; false to turn it off.
+  granted?: string[] | boolean;
+  denied?: string[];
+  location?: 'allowed' | 'denied' | 'notDetermined';
+  presentation?: 'popup' | 'sheet';
+  anchorX?: number;
+  anchorY?: number;
+  anchorWidth?: number;
+  anchorHeight?: number;
+  menuSessionId?: number;
+  commandId?: number;
+  eventFlags?: number;
+  activationEpoch?: number;
+  focusedTarget?: 'webContents' | 'sidePanel';
+  sidePanelEntryId?: string;
+}
+
+export interface AuxiliaryWindowState {
+  version: number;
+  widget: number;
+  componentId: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  visible: boolean;
+  destroyed: boolean;
+  stackingOrder: number;
+  // Whether Chromium made this window modal. Absent when the engine could not
+  // tell -- an older engine, or a report sent before the widget had a
+  // delegate -- in which case the last known answer stands.
+  modal?: boolean;
+  // A popup, menu or tooltip Chromium placed next to page content: draw it
+  // at x/y, not where the shell would put a window of its own.
+  anchored?: boolean;
+  // Chromium's picture-in-picture window. It floats over the page with no
+  // close button of its own, which is also what a page's window.open() popup
+  // looks like -- but back should close the popup and leave the video alone,
+  // and the video wants a corner rather than the middle. Absent on an older
+  // engine and on every window that is not one.
+  pictureInPicture?: boolean;
+  windowRole: 'auxiliary' | 'pwa' | 'browser';
+  pwaAppId?: string;
+  title?: string;
+  url?: string;
+  pwaStartUrl?: string;
+  // Sent with a 'browser' event: whether the window's profile is incognito.
+  incognito?: boolean;
+}
+
+export interface INativeContext extends BluetoothNativePort, UsbNativePort, SystemServiceNativePort, DisplayBrightnessNativePort {
+  Initialize(xComponentId: string, configJson: string, onWindowAction: (action: string) => void): void;
+  OnSurfaceCreated(xComponentId: string): void;
+  OnSurfaceChanged(
+    xComponentId: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    density: number
+  ): void;
+  OnSurfaceDestroyed(xComponentId: string): void;
+  OnVisibilityChanged(xComponentId: string, visible: boolean): void;
+  OnFocusChanged(xComponentId: string, focused: boolean): void;
+  OnWindowIdChanged(xComponentId: string, windowId: number): void;
+  OnThemeFontChanged(xComponentId: string, fontId: string): void;
+  DispatchPointerEvent(xComponentId: string, eventJson: string): void;
+  DispatchKeyEvent(xComponentId: string, eventJson: string): boolean;
+  Navigate(xComponentId: string, url: string): void;
+  SetBrowserEventCallback(xComponentId: string, callback: (stateJson: string) => void): void;
+  SetBluetoothEventCallback(xComponentId: string, callback: (commandJson: string) => void): void;
+  CompleteBluetoothMessage(xComponentId: string, messageJson: string): void;
+  SetUsbEventCallback(xComponentId: string, callback: (commandJson: string) => void): void;
+  CompleteUsbMessage(xComponentId: string, messageJson: string): void;
+  ExecuteBrowserCommand(xComponentId: string, commandJson: string): boolean;
+  SetAuxiliaryWindowEventCallback(xComponentId: string, callback: (stateJson: string) => void): void;
+  DismissAuxiliaryWindow(xComponentId: string, widget: number): boolean;
+  Shutdown(xComponentId: string): void;
+}
+
+export class NativeContext {
+  private readonly xComponentId: string;
+  private nativeContext: INativeContext | null = null;
+  private displayBrightnessBridge: DisplayBrightnessBridge | null = null;
+  private bluetoothBridge: BluetoothBridge | null = null;
+  private usbBridge: UsbBridge | null = null;
+  private systemServiceBridge: SystemServiceBridge | null = null;
+  private onWindowAction: (action: string) => void = (_action: string): void => {};
+  private onBrowserState: (stateJson: string) => void = (_stateJson: string): void => {};
+  private onAuxiliaryWindowState: (stateJson: string) => void = (_stateJson: string): void => {};
+  // Set by callVoid when a native call is skipped or throws. Read by the caller
+  // to tell "engine never came up" apart from "engine is up but idle".
+  private lastError: string | null = null;
+
+  takeLastError(): string | null {
+    const e = this.lastError;
+    this.lastError = null;
+    return e;
+  }
+
+  constructor(xComponentId: string) {
+    this.xComponentId = xComponentId;
+  }
+
+  init(
+    context: INativeContext,
+    abilityContext: common.UIAbilityContext,
+    config: AuraStartupConfig,
+    onWindowAction: (action: string) => void,
+    onBrowserState: (stateJson: string) => void,
+    onAuxiliaryWindowState: (stateJson: string) => void
+  ): void {
+    this.nativeContext = context;
+    this.displayBrightnessBridge = new DisplayBrightnessBridge(context);
+    this.displayBrightnessBridge.start();
+    this.onWindowAction = onWindowAction;
+    this.onBrowserState = onBrowserState;
+    this.onAuxiliaryWindowState = onAuxiliaryWindowState;
+    this.bluetoothBridge = new BluetoothBridge(abilityContext, this.xComponentId, context);
+    this.usbBridge = new UsbBridge(this.xComponentId, context);
+    this.systemServiceBridge = new SystemServiceBridge(this.xComponentId, context);
+    registerSystemServices(this.systemServiceBridge, abilityContext);
+    this.callVoid('Initialize', () => {
+      this.nativeContext!.Initialize(this.xComponentId, JSON.stringify(config), this.onWindowAction);
+      this.nativeContext!.SetBrowserEventCallback(this.xComponentId, this.onBrowserState);
+      this.nativeContext!.SetAuxiliaryWindowEventCallback(this.xComponentId, this.onAuxiliaryWindowState);
+    });
+  }
+
+  UpdateConfiguration(config: AuraStartupConfig): void {
+    this.callVoid('UpdateConfiguration', () => {
+      this.nativeContext!.Initialize(this.xComponentId, JSON.stringify(config), this.onWindowAction);
+    });
+  }
+
+  OnSurfaceCreated(): void {
+    this.callVoid('OnSurfaceCreated', () => {
+      this.nativeContext!.OnSurfaceCreated(this.xComponentId);
+    });
+  }
+
+  OnSurfaceChanged(rect: WindowRect, density: number): void {
+    if (rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+
+    this.callVoid('OnSurfaceChanged', () => {
+      this.nativeContext!.OnSurfaceChanged(
+        this.xComponentId,
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        density
+      );
+    });
+  }
+
+  OnSurfaceDestroyed(): void {
+    this.callVoid('OnSurfaceDestroyed', () => {
+      this.nativeContext!.OnSurfaceDestroyed(this.xComponentId);
+    });
+  }
+
+  OnVisibilityChanged(visible: boolean): void {
+    if (visible) {
+      this.displayBrightnessBridge?.refresh();
+    }
+    this.callVoid('OnVisibilityChanged', () => {
+      this.nativeContext!.OnVisibilityChanged(this.xComponentId, visible);
+    });
+  }
+
+  OnFocusChanged(focused: boolean): void {
+    this.callVoid('OnFocusChanged', () => {
+      this.nativeContext!.OnFocusChanged(this.xComponentId, focused);
+    });
+  }
+
+  OnWindowIdChanged(windowId: number): void {
+    this.callVoid('OnWindowIdChanged', () => {
+      this.nativeContext!.OnWindowIdChanged(this.xComponentId, windowId);
+    });
+  }
+
+  OnThemeFontChanged(fontId: string): void {
+    this.callVoid('OnThemeFontChanged', () => {
+      this.nativeContext!.OnThemeFontChanged(this.xComponentId, fontId);
+    });
+  }
+
+  DispatchPointerEvent(event: PointerEventPayload): void {
+    this.callVoid('DispatchPointerEvent', () => {
+      this.nativeContext!.DispatchPointerEvent(this.xComponentId, JSON.stringify(event));
+    });
+  }
+
+  DispatchKeyEvent(event: KeyEventPayload): boolean {
+    if (!this.nativeContext) {
+      return false;
+    }
+
+    try {
+      return this.nativeContext.DispatchKeyEvent(this.xComponentId, JSON.stringify(event));
+    } catch (error) {
+      console.error('DispatchKeyEvent failed:', error);
+      return false;
+    }
+  }
+
+  Navigate(url: string): void {
+    if (!url || url.trim().length === 0) {
+      return;
+    }
+
+    this.callVoid('Navigate', () => {
+      this.nativeContext!.Navigate(this.xComponentId, url);
+    });
+  }
+
+  ExecuteBrowserCommand(commandJson: string): boolean {
+    if (!this.nativeContext || !commandJson || commandJson.trim().length === 0) {
+      return false;
+    }
+
+    try {
+      return this.nativeContext.ExecuteBrowserCommand(this.xComponentId, commandJson);
+    } catch (error) {
+      console.error('ExecuteBrowserCommand failed:', error);
+      return false;
+    }
+  }
+
+  DismissAuxiliaryWindow(widget: number): boolean {
+    if (!this.nativeContext || widget <= 0) {
+      return false;
+    }
+
+    try {
+      return this.nativeContext.DismissAuxiliaryWindow(this.xComponentId, widget);
+    } catch (error) {
+      console.error('DismissAuxiliaryWindow failed:', error);
+      return false;
+    }
+  }
+
+  destroy(): void {
+    if (!this.nativeContext) {
+      return;
+    }
+
+    this.displayBrightnessBridge?.destroy();
+    this.displayBrightnessBridge = null;
+    this.bluetoothBridge?.destroy();
+    this.bluetoothBridge = null;
+    this.usbBridge?.destroy();
+    this.usbBridge = null;
+    this.callVoid('Shutdown', () => {
+      this.nativeContext!.Shutdown(this.xComponentId);
+    });
+    this.nativeContext = null;
+    this.onWindowAction = (_action: string): void => {};
+    this.onBrowserState = (_stateJson: string): void => {};
+    this.onAuxiliaryWindowState = (_stateJson: string): void => {};
+  }
+
+  isInitialized(): boolean {
+    return this.nativeContext !== null;
+  }
+
+  private callVoid(name: string, invoke: () => void): void {
+    if (!this.nativeContext) {
+      console.error(`${name} skipped because native context is not initialized`);
+      this.lastError = `${name}: native context missing`;
+      return;
+    }
+
+    try {
+      invoke();
+    } catch (error) {
+      console.error(`${name} failed:`, error);
+      const e = error as Error;
+      this.lastError = `${name}: ${e && e.message ? e.message : String(error)}`;
+    }
+  }
+}
