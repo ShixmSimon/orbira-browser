@@ -1,0 +1,151 @@
+# Copyright 2026 The Chromium Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//gpu/vulkan/features.gni")
+
+visibility = [ "//ui/ozone/*" ]
+
+source_set("event_source") {
+  visibility += [ "//ohos_nweb/src/aura_shell:*" ]
+
+  sources = [
+    "ohos_event_source.cc",
+    "ohos_event_source.h",
+  ]
+
+  deps = [
+    "//base",
+    "//ui/events",
+    "//ui/events/platform",
+  ]
+}
+
+source_set("native_window_registry") {
+  visibility += [
+    "//ohos_nweb/src/aura_shell:*",
+    "//services/device/wake_lock/power_save_blocker:*",
+
+    # Losing the GPU context is noticed here, and the shell has to hear
+    # about it. Widened for that one call rather than for the header.
+    "//components/viz/service:*",
+    "//gpu/ipc/service:*",
+    "//gpu/command_buffer/service:*",
+  ]
+
+  sources = [
+    "ohos_buffer_color_policy.h",
+    "ohos_buffer_color_space.h",
+    "ohos_display_brightness.h",
+    "ohos_gpu_child_channel.cc",
+    "ohos_gpu_child_channel.h",
+    "ohos_native_window_registry.cc",
+    "ohos_native_window_registry.h",
+    "ohos_output_color.h",
+    "ohos_output_color_config.cc",
+    "ohos_output_color_config.h",
+    "ohos_phone_gpu_channel.cc",
+    "ohos_phone_gpu_channel.h",
+    "ohos_phone_gpu_presenter.cc",
+    "ohos_phone_gpu_presenter.h",
+    "ohos_phone_gpu_shared_buffer.cc",
+    "ohos_phone_gpu_shared_buffer.h",
+    "ohos_phone_gpu_shared_transport.cc",
+    "ohos_phone_gpu_shared_transport.h",
+    "ohos_phone_gpu_transport.cc",
+    "ohos_phone_gpu_transport.h",
+    "ohos_vsync_provider.cc",
+    "ohos_vsync_provider.h",
+  ]
+
+  # The GPU process's own native child and the channel that carries its
+  # windows: ohos_gpu_child_channel.h.
+  libs = [
+    "child_process",
+    "native_display_manager",
+    "hilog_ndk.z",
+    "ipc_capi",
+    "native_buffer",
+    "native_vsync",
+    "native_window",
+  ]
+
+  deps = [
+    "//base",
+    "//components/viz/common/resources:shared_image_format",
+    "//third_party/vulkan-headers/src:vulkan_headers",
+    "//ui/base",
+    "//ui/gfx",
+    "//ui/gfx/geometry",
+  ]
+}
+
+source_set("ohos") {
+  visibility += [ "//ohos_nweb/src/aura_shell:*" ]
+
+  sources = [
+    "ohos_clipboard.cc",
+    "ohos_clipboard.h",
+    "ohos_input_method.cc",
+    "ohos_input_method.h",
+    "ohos_native_pixmap.cc",
+    "ohos_native_pixmap.h",
+    "ohos_video_buffer_parcel.h",
+    "ohos_video_graphite_metadata.h",
+    "ohos_native_window_adapter.cc",
+    "ohos_native_window_adapter.h",
+    "ohos_platform_window.cc",
+    "ohos_platform_window.h",
+    "ohos_screen.cc",
+    "ohos_screen.h",
+    "ohos_surface_factory.cc",
+    "ohos_surface_factory.h",
+    "ozone_platform_ohos.cc",
+    "ozone_platform_ohos.h",
+  ]
+
+  defines = [ "OZONE_IMPLEMENTATION" ]
+
+  libs = [
+    "image_source",
+    "ipc_capi",
+    "native_buffer",
+    "native_display_manager",
+    "native_vsync",
+    "native_window",
+    "ohinputmethod",
+    "pasteboard",
+    "pixelmap",
+    "udmf",
+  ]
+
+  deps = [
+    ":event_source",
+    ":native_window_registry",
+    "//base",
+    "//components/viz/common/resources:shared_image_format",
+    "//skia",
+    "//ui/base",
+    "//ui/base/cursor",
+    "//ui/events",
+    "//ui/events/ozone/layout",
+    "//ui/events/platform",
+    "//ui/gfx/geometry",
+    "//ui/gl",
+    "//ui/ozone:ozone_base",
+    "//ui/ozone/common",
+    "//ui/ozone/platform/headless",
+    "//ui/platform_window",
+    "//ui/platform_window/stub",
+    "//ui/platform_window/wm",
+  ]
+
+  if (enable_vulkan) {
+    sources += [ "ohos_video_vulkan.cc", "ohos_video_vulkan.h" ]
+    # The Vulkan implementation this platform hands back. It lives with the
+    # other platforms' under //gpu/vulkan rather than here, so that the
+    # ladder in gpu/vulkan/init and this one stay recognisably the same
+    # shape.
+    deps += [ "//gpu/vulkan/ohos" ]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  global:
+    RegisterWebEngineModule;
+    ChromiumHarmonyOSNativeChildMain;
+    ChromiumHarmonyOSGpuChildOnConnect;
+    ChromiumHarmonyOSGpuChildMainProc;
+    ChromiumHarmonyOSStartHeadless;
+    ChromiumNWebRenderMain;
+    close;
+  local:
+    *;
+};

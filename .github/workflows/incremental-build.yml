@@ -1,0 +1,203 @@
+name: Incremental build
+
+# Builds the adapter on the self-hosted machine that already has the Chromium
+# tree, so a change can be compiled in minutes instead of the hours a fresh
+# checkout costs.
+
+on:
+  push:
+    branches: [hmos-154-adapter, hmos-154-dev, codex/phone-fork-renderers]
+    paths:
+      - 'overlay/**'
+      - 'patches/**'
+      - 'scripts/**'
+      - '.github/workflows/incremental-build.yml'
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Also build and upload the HAP'
+        type: boolean
+        default: true
+      crash_build_id:
+        description: 'Optional previous binary build ID for crash symbolization'
+        type: string
+        default: ''
+      crash_addresses:
+        description: 'Optional space-separated hex PCs, symbolized before rebuilding'
+        type: string
+        default: ''
+      publish_artifacts:
+        description: 'Publish packaged artifacts as a prerelease'
+        type: boolean
+        default: true
+
+# One build at a time, for real. A Chromium link peaks well past what this
+# machine has spare -- a second concurrent job does not queue politely, it
+# takes the host down. `concurrency` keeps separate workflow runs from
+# overlapping, and max-parallel covers the matrix case if one is ever added.
+concurrency:
+  group: chromium-build-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: [self-hosted, harmonyos-chromium]
+    timeout-minutes: 1440
+    strategy:
+      max-parallel: 1
+      matrix:
+        target: [ohos_arm64]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # apply_incremental_patch backs out the previously applied
+          # revision of an edited patch, which it finds in this
+          # repository's history. The default shallow clone has none.
+          fetch-depth: 0
+
+      - name: Symbolize previous native build
+        if: github.event_name == 'workflow_dispatch' && inputs.crash_build_id != ''
+        env:
+          CRASH_BUILD_ID: ${{ inputs.crash_build_id }}
+          CRASH_ADDRESSES: ${{ inputs.crash_addresses }}
+        run: bash scripts/symbolize-previous-native-build.sh
+
+      - name: Build
+        id: build
+        env:
+          # The host has 16 cores; at 8 half of them sat idle for hours
+          # (us 47, id 50) while memory stayed at 8 GB free with a 16 GB
+          # swap barely touched. The heaviest single compile measured
+          # 1.6 GB, so twelve fit, and a link that spikes past them has
+          # the swap to land in.
+          NINJA_JOBS: '12'
+          # The HAP is signed, and the signing material DevEco issued lives on
+          # the developer's machine, not here. This runner builds the engine
+          # and the engine HAR -- neither of which is signed -- and packaging
+          # the HAP stays where the key is.
+          SKIP_HAP: '1'
+          SKIP_PACKAGE: ${{ (github.event_name == 'workflow_dispatch' && !inputs.package) && '1' || '' }}
+        run: bash scripts/ci-incremental-build.sh
+
+      - name: Check native phishing rule validation
+        run: bash scripts/test-url-protection-native.sh
+
+      - name: Report
+        if: always()
+        run: |
+          echo '### Build result' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat build-status/latest.json >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo '{}' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          if [ -s build-status/errors.txt ]; then
+            echo '<details><summary>diagnostics</summary>' >> "$GITHUB_STEP_SUMMARY"
+            echo '' >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            head -80 build-status/errors.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo '</details>' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Locate verification HAR
+        id: verification-har
+        if: success() && github.event_name == 'workflow_dispatch' && !inputs.publish_artifacts
+        run: |
+          if [ -s build-status/har-path.txt ]; then
+            echo "path=$(cat build-status/har-path.txt)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload verification HAR
+        if: success() && steps.verification-har.outputs.path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-har-${{ github.sha }}
+          path: ${{ steps.verification-har.outputs.path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      # Text results go back through the repository: the other machine cannot
+      # compile, so compiler diagnostics are the whole point of this job.
+      # Results go to a branch of their own. Committing them onto the working
+      # branch means the runner and whoever is developing both write the same
+      # files, and every push then races: a rebase with conflicts in
+      # build-status/ for a human to resolve, over content nobody edits by hand.
+      # A dedicated branch is also easier to read -- its history is purely the
+      # build log.
+      - name: Publish build status
+        if: always()
+        run: |
+          git config user.name  'chromium-hmos runner'
+          git config user.email 'runner@localhost'
+          git checkout --orphan build-results 2>/dev/null || git checkout build-results
+          git reset
+          git add -f build-status/
+          git commit -m "build ${GITHUB_SHA::8} on ${GITHUB_REF_NAME}" || true
+          git push -f origin build-results || true
+
+      # The HAP is ~310 MB, far too large for the repository. It goes to a
+      # prerelease keyed on the commit, which the other machine downloads with
+      # `gh release download`.
+      # Whatever this build produced. Gated on the HAP alone, the whole step
+      # -- the HAR and the symbols with it -- stopped running the day a build
+      # legitimately made no HAP, which is every build on a machine that does
+      # not hold the signing key. Two builds went out with nothing to
+      # download before anyone noticed.
+      - name: Upload artifacts
+        if: >-
+          success() && (github.event_name != 'workflow_dispatch' || inputs.publish_artifacts)
+          && (hashFiles('build-status/hap-path.txt') != ''
+          || hashFiles('build-status/har-path.txt') != '')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="build-${GITHUB_SHA::8}"
+          gh release create "$tag" --prerelease --notes-file build-status/latest.json \
+            --title "build ${GITHUB_SHA::8}" 2>/dev/null || true
+
+          # The HAP when there is one, the HAR always. Both are named by a
+          # file the build wrote, and a build that made neither never gets
+          # here.
+          uploaded=""
+          for path_file in build-status/hap-path.txt build-status/har-path.txt; do
+            [ -s "$path_file" ] || continue
+            artifact=$(cat "$path_file")
+            [ -f "$artifact" ] || continue
+            gh release upload "$tag" "$artifact" --clobber
+            uploaded="${uploaded} ${artifact}"
+          done
+
+          # Ship the unstripped library too. A device crash reports only
+          # offsets into libweb_engine.so, and turning those into function
+          # names needs the symbols, which otherwise exist only on this
+          # machine -- every crash would have to round-trip through here
+          # before anyone could read it. This file carries DWARF, so it gives
+          # file and line as well as the symbol.
+          #
+          # 476 MB raw, ~138 MB gzipped, so it goes up compressed.
+          sym="${CHROMIUM_SRC:-/root/chromium-154/src}/out/ohos_arm64/exe.unstripped/libweb_engine.so"
+          if [ -f "$sym" ]; then
+            gzip -1 -c "$sym" > /tmp/libweb_engine.unstripped.so.gz
+            gh release upload "$tag" /tmp/libweb_engine.unstripped.so.gz --clobber
+            uploaded="${uploaded} /tmp/libweb_engine.unstripped.so.gz"
+          fi
+
+          # So the other side can tell a short download from a bad build, and
+          # tell two builds apart without opening them.
+          rm -f /tmp/SHA256SUMS
+          for artifact in ${uploaded}; do
+            ( cd "$(dirname "$artifact")" \
+              && sha256sum "$(basename "$artifact")" ) >> /tmp/SHA256SUMS
+          done
+          gh release upload "$tag" /tmp/SHA256SUMS --clobber
+          {
+            echo '### Artifacts'
+            echo '```'
+            cat /tmp/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -f /tmp/libweb_engine.unstripped.so.gz /tmp/SHA256SUMS

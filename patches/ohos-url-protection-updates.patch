@@ -1,0 +1,38 @@
+diff --git a/chrome/browser/BUILD.gn b/chrome/browser/BUILD.gn
+index e5cd1cbd..393d621e 100644
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -897,6 +897,10 @@ source_set("core") {
+       "ohos/url_protection/local_rules.h",
+       "ohos/url_protection/navigation_throttle.cc",
+       "ohos/url_protection/navigation_throttle.h",
++      "ohos/url_protection/rule_update_format.cc",
++      "ohos/url_protection/rule_update_format.h",
++      "ohos/url_protection/rule_updater.cc",
++      "ohos/url_protection/rule_updater.h",
+       "ui/ohos/shell_bookmarks_ohos.cc",
+       "ui/ohos/shell_browsing_data_counts_ohos.cc",
+       "ui/ohos/shell_browsing_data_ohos.cc",
+@@ -1722,6 +1726,10 @@ source_set("core") {
+       "//components/security_interstitials/content:security_interstitial_page",
+       "//crypto",
+     ]
++    deps += [
++      "//third_party/boringssl",
++      "//services/network/public/cpp",
++    ]
+     sources += [
+       "icon_loader_ohos.cc",
+       "memory_details_linux.cc",
+@@ -4381,3 +4389,11 @@ if (is_android) {
+     sources = [ "android/feedback/screenshot_mode.h" ]
+   }
+ }
++
++# The production URL-rule parser also runs on the CI host with signed fixtures.
++if (is_ohos) {
++  group("ohos_url_protection_host_tests") {
++    testonly = true
++    deps = [ "//chrome/browser/ohos/url_protection:format_tests($host_toolchain)" ]
++  }
++}

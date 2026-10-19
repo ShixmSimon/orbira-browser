@@ -1,0 +1,521 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "base/process/launch_ohos.h"
+
+#include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <cstdint>
+#include <iterator>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "AbilityKit/native_child_process.h"
+#include "base/base_paths.h"
+#include "base/command_line.h"
+#include "base/files/scoped_file.h"
+#include "base/json/json_reader.h"
+#include "base/json/json_writer.h"
+#include "base/location.h"
+#include "base/logging.h"
+#include "base/no_destructor.h"
+#include "base/path_service.h"
+#include "base/posix/eintr_wrapper.h"
+#include "base/process/fork_server_ohos.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/synchronization/lock.h"
+#include "base/threading/scoped_blocking_call.h"
+#include "base/time/time.h"
+#include "base/values.h"
+
+namespace base::internal {
+namespace {
+
+constexpr char kNativeChildEntry[] =
+    "libnweb_render.so:ChromiumNativeChildMain";
+
+OhosGpuChildLauncher g_gpu_child_launcher = nullptr;
+
+// These APIs appeared in API 20, with UID isolation added in API 21. Resolve
+// the entire set before creating anything: older devices must reject the
+// experiment, not silently run a renderer with the application's authority.
+const OhosIsolatedChildApi& GetIsolatedChildApi() {
+  static const OhosIsolatedChildApi api = [] {
+    OhosIsolatedChildApi result;
+    // Retained for the lifetime of the function pointers.
+    void* library = dlopen("libchild_process.so", RTLD_NOW | RTLD_LOCAL);
+    if (!library) {
+      return result;
+    }
+    result.create = reinterpret_cast<OhosIsolatedChildApi::Create>(
+        dlsym(library, "OH_Ability_CreateChildProcessConfigs"));
+    result.destroy = reinterpret_cast<OhosIsolatedChildApi::Destroy>(
+        dlsym(library, "OH_Ability_DestroyChildProcessConfigs"));
+    result.set_mode = reinterpret_cast<OhosIsolatedChildApi::SetMode>(
+        dlsym(library, "OH_Ability_ChildProcessConfigs_SetIsolationMode"));
+    result.set_uid = reinterpret_cast<OhosIsolatedChildApi::SetUid>(
+        dlsym(library, "OH_Ability_ChildProcessConfigs_SetIsolationUid"));
+    result.start = reinterpret_cast<OhosIsolatedChildApi::Start>(
+        dlsym(library, "OH_Ability_StartNativeChildProcessWithConfigs"));
+    return result;
+  }();
+  return api;
+}
+
+struct NativeChildExitInfo {
+  std::optional<int> signal;
+  TimeTicks signal_time;
+  ScopedFD pidfd;
+  bool exited = false;
+};
+
+struct NativeChildExitRegistry {
+  Lock lock;
+  std::map<ProcessHandle, NativeChildExitInfo> children GUARDED_BY(lock);
+};
+
+std::optional<bool> PollNativeChildExit(NativeChildExitInfo& child,
+                                        ProcessHandle handle) {
+  if (child.exited) {
+    return true;
+  }
+  if (!child.pidfd.is_valid()) {
+    return std::nullopt;
+  }
+  struct pollfd descriptor = {
+      .fd = child.pidfd.get(), .events = POLLIN, .revents = 0};
+  const int result = HANDLE_EINTR(poll(&descriptor, 1, 0));
+  if (result < 0 || (descriptor.revents & (POLLERR | POLLNVAL))) {
+    LOG(ERROR) << "OHOS native child pidfd poll failed pid=" << handle;
+    child.pidfd.reset();
+    return std::nullopt;
+  }
+  if (descriptor.revents & (POLLIN | POLLHUP)) {
+    child.exited = true;
+    child.pidfd.reset();
+    LOG(WARNING) << "OHOS native child pidfd observed exit pid=" << handle;
+  }
+  return child.exited;
+}
+
+NativeChildExitRegistry& GetNativeChildExitRegistry() {
+  static NoDestructor<NativeChildExitRegistry> registry;
+  return *registry;
+}
+
+void OnNativeChildProcessExit(int32_t pid, int32_t signal) {
+  NativeChildExitRegistry& registry = GetNativeChildExitRegistry();
+  {
+    AutoLock lock(registry.lock);
+    auto& child = registry.children[pid];
+    child.signal = signal;
+    child.signal_time = TimeTicks::Now();
+    child.exited = true;
+    child.pidfd.reset();
+  }
+  LOG(WARNING) << "OHOS native child exit pid=" << pid << " signal=" << signal;
+}
+
+bool EnsureNativeChildExitCallbackRegistered() {
+  using NativeChildExitCallback = void (*)(int32_t, int32_t);
+  using RegisterExitCallback =
+      Ability_NativeChildProcess_ErrCode (*)(NativeChildExitCallback);
+  static const RegisterExitCallback register_callback = [] {
+    void* library = dlopen("libchild_process.so", RTLD_NOW | RTLD_LOCAL);
+    return library ? reinterpret_cast<RegisterExitCallback>(dlsym(
+                         library,
+                         "OH_Ability_RegisterNativeChildProcessExitCallback"))
+                   : nullptr;
+  }();
+  // Separate from the registry lock: the platform can deliver an exit while
+  // registration is in flight. Only cache success, not a transient failure.
+  static NoDestructor<Lock> registration_lock;
+  static bool registered = false;
+  AutoLock lock(*registration_lock);
+  if (registered) {
+    return true;
+  }
+  if (!register_callback) {
+    return false;
+  }
+  const auto result = register_callback(&OnNativeChildProcessExit);
+  if (result != NCP_NO_ERROR) {
+    LOG(WARNING) << "OHOS native child exit callback unavailable result="
+                 << result << "; retaining IPC/pidfd exit detection";
+    return false;
+  }
+  registered = true;
+  LOG(WARNING) << "Registered OHOS native child exit callback";
+  return true;
+}
+
+void TrackNativeChild(ProcessHandle pid, TimeTicks launch_started) {
+  // appspawn owns the child, so waitpid/waitid cannot reap it. A pidfd can
+  // nevertheless be polled by this process, including across isolated UIDs.
+  // Keep it until exit is observed, then close it; no thread per renderer.
+  ScopedFD pidfd;
+#if defined(__NR_pidfd_open)
+  pidfd.reset(static_cast<int>(syscall(__NR_pidfd_open, pid, 0)));
+#else
+  errno = ENOSYS;
+#endif
+  const bool already_exited = !pidfd.is_valid() && errno == ESRCH;
+  if (!pidfd.is_valid() && !already_exited) {
+    PLOG(WARNING) << "OHOS native child pidfd unavailable pid=" << pid;
+  }
+  const bool has_pidfd = pidfd.is_valid();
+  NativeChildExitRegistry& registry = GetNativeChildExitRegistry();
+  {
+    AutoLock lock(registry.lock);
+    // Release descriptors for children whose IPC teardown never asked for
+    // termination status. Keep exit metadata for later status queries.
+    for (auto& [tracked_pid, tracked_child] : registry.children) {
+      if (tracked_pid != pid && tracked_child.pidfd.is_valid()) {
+        PollNativeChildExit(tracked_child, tracked_pid);
+      }
+    }
+    auto& child = registry.children[pid];
+    // Discard an old generation if the OS reused a PID, while preserving a
+    // fast exit notification delivered before the start API returned.
+    if (child.signal_time < launch_started) {
+      child = NativeChildExitInfo();
+    }
+    if (!child.exited) {
+      child.pidfd = std::move(pidfd);
+      child.exited = already_exited;
+    }
+  }
+  LOG(WARNING) << "OHOS native child tracking pid=" << pid
+               << " pidfd=" << has_pidfd;
+}
+
+bool EncodeOhosNativeChildParams(const std::vector<std::string>& argv,
+                                 const LaunchOptions& options,
+                                 std::string* encoded) {
+  ListValue encoded_argv;
+  for (const std::string& argument : argv) {
+    encoded_argv.Append(argument);
+  }
+
+  DictValue encoded_environment;
+  for (const auto& [key, value] : options.environment) {
+    encoded_environment.Set(key, value);
+  }
+
+  DictValue root;
+  root.Set("argv", std::move(encoded_argv));
+  root.Set("environment", std::move(encoded_environment));
+  root.Set("clearEnvironment", options.clear_environment);
+  root.Set("currentDirectory", options.current_directory.value());
+
+  FilePath resources_directory;
+  if (!PathService::Get(DIR_ASSETS, &resources_directory) ||
+      !resources_directory.IsAbsolute()) {
+    LOG(ERROR) << "OHOS native child process has no resources directory";
+    return false;
+  }
+  root.Set("resourcesDirectory", resources_directory.value());
+  return JSONWriter::Write(root, encoded);
+}
+
+}  // namespace
+
+Ability_NativeChildProcess_ErrCode StartOhosIsolatedRenderer(
+    const OhosIsolatedChildApi& api,
+    NativeChildProcess_Args args,
+    int32_t* pid) {
+  if (!pid) {
+    return NCP_ERR_INVALID_PARAM;
+  }
+  *pid = -1;
+  if (!api.create || !api.destroy || !api.set_mode || !api.set_uid ||
+      !api.start) {
+    LOG(ERROR) << "OHOS isolated renderer APIs unavailable; launch refused";
+    return NCP_ERR_NOT_SUPPORTED;
+  }
+  Ability_ChildProcessConfigs* configs = api.create();
+  if (!configs) {
+    return NCP_ERR_INTERNAL;
+  }
+  auto result = api.set_mode(configs, NCP_ISOLATION_MODE_ISOLATED);
+  if (result == NCP_NO_ERROR) {
+    result = api.set_uid(configs, true);
+  }
+  if (result == NCP_NO_ERROR) {
+    result = api.start(kNativeChildEntry, args, configs, pid);
+  }
+  api.destroy(configs);
+  return result;
+}
+
+Process LaunchProcessOhos(const std::vector<std::string>& argv,
+                          const LaunchOptions& options) {
+  if (argv.empty()) {
+    LOG(ERROR) << "OHOS native child process has an empty command line";
+    return Process();
+  }
+  if (options.pre_exec_delegate) {
+    // A delegate may establish a security boundary. Running the child without
+    // it would silently remove that boundary; the appspawn API cannot run it.
+    LOG(ERROR)
+        << "OHOS native child cannot run pre_exec_delegate; launch refused";
+    return Process();
+  }
+
+  CommandLine child_command_line(argv);
+  const std::string process_type =
+      child_command_line.GetSwitchValueASCII("type");
+  if (process_type == "gpu-process") {
+    child_command_line.CopySwitchesFrom(*CommandLine::ForCurrentProcess(),
+                                       {"ohos-startup-bundle-probe"});
+  }
+  const bool isolate_renderer =
+      CommandLine::ForCurrentProcess()->HasSwitch(kOhosIsolateRenderers) &&
+      process_type == "renderer";
+  child_command_line.RemoveSwitch(kOhosIsolatedRenderer);
+  if (isolate_renderer) {
+    child_command_line.AppendSwitch(kOhosIsolatedRenderer);
+    child_command_line.CopySwitchesFrom(*CommandLine::ForCurrentProcess(),
+                                       {"ohos-trap-diagnostics"});
+  }
+  std::string encoded_params;
+  if (!EncodeOhosNativeChildParams(child_command_line.argv(), options,
+                                   &encoded_params)) {
+    LOG(ERROR) << "Failed to serialize OHOS native child process arguments";
+    return Process();
+  }
+
+  const bool phone_fork =
+      CommandLine::ForCurrentProcess()->HasSwitch(kOhosPhoneFork);
+  if (phone_fork) {
+    if (isolate_renderer || options.wait ||
+        (process_type != "renderer" && process_type != "utility" &&
+         process_type != "gpu-process")) {
+      LOG(ERROR) << "OHOS phone fork unsupported launch policy; refused";
+      return Process();
+    }
+    const std::vector<std::pair<int, int>> fds(options.fds_to_remap.begin(),
+                                               options.fds_to_remap.end());
+    // GPU bootstrap also carries the private frame channel. These PIDs are
+    // owned by the fork server, never by the appspawn exit callback registry.
+    const ProcessId pid =
+        process_type == "gpu-process"
+            ? (g_gpu_child_launcher ? g_gpu_child_launcher(encoded_params, fds)
+                                    : kNullProcessId)
+            : LaunchOhosForkChild(encoded_params, fds);
+    if (pid <= 0) {
+      PLOG(ERROR) << "OHOS phone fork child launch failed";
+      return Process();
+    }
+    LOG(WARNING) << "OHOS phone fork child created pid=" << pid
+                 << " type=" << process_type
+                 << " (same UID; waiting for Chromium IPC bootstrap)";
+    return Process(pid);
+  }
+
+  const bool exit_callback_registered =
+      EnsureNativeChildExitCallbackRegistered();
+
+  if (process_type == "gpu-process") {
+    if (!g_gpu_child_launcher) {
+      LOG(ERROR) << "OHOS GPU process requested with no launcher for it";
+      return Process();
+    }
+    std::vector<std::pair<int, int>> gpu_fds(options.fds_to_remap.begin(),
+                                             options.fds_to_remap.end());
+    const TimeTicks launch_started = TimeTicks::Now();
+    const ProcessId gpu_pid = g_gpu_child_launcher(encoded_params, gpu_fds);
+    if (gpu_pid != kNullProcessId) {
+      TrackNativeChild(gpu_pid, launch_started);
+    }
+    return gpu_pid == kNullProcessId ? Process() : Process(gpu_pid);
+  }
+
+  // The NDK accepts at most 16 descriptors. Reject before constructing the
+  // list rather than relying on partial or platform-dependent processing.
+  const size_t resource_count =
+      isolate_renderer ? std::size(kOhosRendererResourceNames) : 0;
+  if (options.fds_to_remap.size() + resource_count > 16) {
+    LOG(ERROR) << "OHOS native child descriptor limit exceeded";
+    return Process();
+  }
+
+  std::vector<std::string> fd_names;
+  std::vector<int> fd_values;
+  std::vector<ScopedFD> resource_fds;
+  for (const auto& [source_fd, destination_fd] : options.fds_to_remap) {
+    fd_names.push_back(NumberToString(destination_fd));
+    fd_values.push_back(source_fd);
+  }
+  if (isolate_renderer) {
+    // Pass only these immutable files. Never grant directory access to the
+    // application's private files or relax their permissions for the child.
+    FilePath assets;
+    const std::string locale = child_command_line.GetSwitchValueASCII("lang");
+    if (locale.empty() ||
+        locale.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRS"
+                                 "TUVWXYZ0123456789-_") != std::string::npos ||
+        !PathService::Get(DIR_ASSETS, &assets)) {
+      LOG(ERROR) << "OHOS isolated renderer invalid resource configuration";
+      return Process();
+    }
+    const FilePath paths[] = {
+        assets.AppendASCII("icudtl.dat"),
+        assets.AppendASCII("locales").AppendASCII(locale + ".pak"),
+        assets.AppendASCII("chrome_100_percent.pak"),
+        assets.AppendASCII("chrome_200_percent.pak"),
+        assets.AppendASCII("resources.pak"),
+        assets.AppendASCII("snapshot_blob.bin")};
+    for (size_t i = 0; i < std::size(paths); ++i) {
+      ScopedFD fd(HANDLE_EINTR(
+          open(paths[i].value().c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW)));
+      struct stat info = {};
+      if (!fd.is_valid() || fstat(fd.get(), &info) != 0 ||
+          !S_ISREG(info.st_mode) || info.st_size <= 0) {
+        LOG(ERROR) << "OHOS isolated renderer resource open failed index=" << i
+                   << " errno=" << errno;
+        return Process();
+      }
+      fd_names.emplace_back(kOhosRendererResourceNames[i]);
+      fd_values.push_back(fd.get());
+      resource_fds.push_back(std::move(fd));
+    }
+  }
+
+  std::vector<NativeChildProcess_Fd> fd_nodes(fd_values.size());
+  for (size_t index = 0; index < fd_nodes.size(); ++index) {
+    fd_nodes[index].fdName = fd_names[index].data();
+    fd_nodes[index].fd = fd_values[index];
+    fd_nodes[index].next =
+        index + 1 < fd_nodes.size() ? &fd_nodes[index + 1] : nullptr;
+  }
+
+  NativeChildProcess_Args child_args = {
+      .entryParams = encoded_params.data(),
+      .fdList = {.head = fd_nodes.empty() ? nullptr : &fd_nodes.front()},
+  };
+  NativeChildProcess_Options child_options = {
+      .isolationMode = NCP_ISOLATION_MODE_NORMAL,
+      .reserved = 0,
+  };
+  int32_t pid = -1;
+  const TimeTicks launch_started = TimeTicks::Now();
+  const Ability_NativeChildProcess_ErrCode result =
+      isolate_renderer
+          ? StartOhosIsolatedRenderer(GetIsolatedChildApi(), child_args, &pid)
+          : OH_Ability_StartNativeChildProcess(kNativeChildEntry, child_args,
+                                               child_options, &pid);
+  if (result != NCP_NO_ERROR || pid <= 0) {
+    LOG(ERROR) << "OHOS native child process failed result=" << result;
+    return Process();
+  }
+  TrackNativeChild(pid, launch_started);
+  if (!exit_callback_registered) {
+    // Retry after the platform has completed process creation. Do not
+    // unregister another runtime's process-wide observer to take its place.
+    EnsureNativeChildExitCallbackRegistered();
+  }
+  if (isolate_renderer) {
+    // This records the requested launch policy, not a verified security test.
+    LOG(WARNING)
+        << "OHOS renderer started with isolated sandbox and UID requested"
+        << " pid=" << pid << " fds=" << fd_nodes.size();
+  }
+
+  if (options.wait) {
+    ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+    const pid_t waited_pid = HANDLE_EINTR(waitpid(pid, nullptr, 0));
+    DPCHECK(waited_pid == pid);
+  }
+  return Process(pid);
+}
+
+bool IsOhosIsolatedRenderer() {
+  const CommandLine* command_line = CommandLine::ForCurrentProcess();
+  return command_line->HasSwitch(kOhosIsolatedRenderer) &&
+         command_line->GetSwitchValueASCII("type") == "renderer";
+}
+
+void SetOhosGpuChildLauncher(OhosGpuChildLauncher launcher) {
+  g_gpu_child_launcher = launcher;
+}
+
+std::optional<int> GetOhosNativeChildExitSignal(ProcessHandle handle) {
+  NativeChildExitRegistry& registry = GetNativeChildExitRegistry();
+  AutoLock lock(registry.lock);
+  auto found = registry.children.find(handle);
+  return found == registry.children.end() ? std::nullopt : found->second.signal;
+}
+
+std::optional<bool> HasOhosNativeChildExited(ProcessHandle handle) {
+  NativeChildExitRegistry& registry = GetNativeChildExitRegistry();
+  AutoLock lock(registry.lock);
+  auto found = registry.children.find(handle);
+  if (found == registry.children.end()) {
+    return std::nullopt;
+  }
+  return PollNativeChildExit(found->second, handle);
+}
+
+bool DecodeOhosNativeChildParams(std::string_view encoded,
+                                 OhosNativeChildParams* params) {
+  if (!params) {
+    return false;
+  }
+
+  std::optional<DictValue> root = JSONReader::ReadDict(encoded, JSON_PARSE_RFC);
+  if (!root) {
+    return false;
+  }
+
+  const ListValue* encoded_argv = root->FindList("argv");
+  if (!encoded_argv || encoded_argv->empty()) {
+    return false;
+  }
+
+  OhosNativeChildParams decoded;
+  decoded.argv.reserve(encoded_argv->size());
+  for (const Value& argument : *encoded_argv) {
+    const std::string* value = argument.GetIfString();
+    if (!value) {
+      return false;
+    }
+    decoded.argv.push_back(*value);
+  }
+
+  if (const DictValue* environment = root->FindDict("environment")) {
+    for (const auto [key, value] : *environment) {
+      const std::string* environment_value = value.GetIfString();
+      if (!environment_value) {
+        return false;
+      }
+      decoded.environment.emplace(key, *environment_value);
+    }
+  }
+
+  decoded.clear_environment =
+      root->FindBool("clearEnvironment").value_or(false);
+  if (const std::string* current_directory =
+          root->FindString("currentDirectory")) {
+    decoded.current_directory = FilePath(*current_directory);
+  }
+  if (const std::string* resources_directory =
+          root->FindString("resourcesDirectory")) {
+    decoded.resources_directory = FilePath(*resources_directory);
+  }
+
+  *params = std::move(decoded);
+  return true;
+}
+
+}  // namespace base::internal

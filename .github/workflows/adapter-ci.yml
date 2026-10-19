@@ -1,0 +1,57 @@
+name: Adapter CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-publication:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify public tree
+        run: scripts/verify-public-tree.sh
+      - name: Check scripts
+        run: bash -n scripts/*.sh
+      - name: Check incremental patches in Chromium and DEPS checkouts
+        run: python3 scripts/tests/test-incremental-patches.py
+      - name: Check experimental OHOS fork server transport
+        run: scripts/test-ohos-fork-server.sh
+      - name: Check experimental phone GPU frame transport
+        run: scripts/test-ohos-phone-gpu.sh
+      - name: Check native extension update result semantics
+        run: scripts/test-extension-updates.sh
+      - name: Check memfd write-seal contract
+        run: python3 scripts/check-memfd-seals.py
+      - name: Check test-page media byte ranges
+        run: python3 scripts/tests/test-serve-test-pages.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check URL protection policy and SDK boundary
+        run: node --test scripts/tests/url-check-service.test.mjs
+      - name: Check phishing snapshot packaging
+        run: python3 scripts/tests/test-phishing-rules.py
+      - name: Check signed phishing update artifacts
+        run: |
+          python3 -m pip install 'cryptography>=45,<47'
+          python3 scripts/tests/test-phishing-updates.py
+      - name: Apply adapter to pinned Chromium
+        env:
+          REQUIRE_COMPATIBLE: '1'
+        run: >-
+          scripts/check-upstream-adapter.sh
+          154.0.8037.97
+          b510e9d7cd3a2fbd78d0ddc42234103206c5f78d
+      - name: Upload compatibility report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinned-adapter-report
+          path: upstream-compatibility.md

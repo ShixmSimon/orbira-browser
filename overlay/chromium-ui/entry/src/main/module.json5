@@ -1,0 +1,123 @@
+{
+  "module": {
+    "name": "entry",
+    "type": "entry",
+    "querySchemes": [
+      "wallet"
+    ],
+    "srcEntry": "./ets/abilitystage/ChromiumAdapterAbilityStage.ets",
+    "description": "$string:module_desc",
+    "mainElement": "EntryAbility",
+    "deviceTypes": [
+      "phone",
+      "tablet",
+      "2in1",
+      "car",
+      "tv"
+    ],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    "pages": "$profile:main_pages",
+    "abilities": [
+      {
+        "name": "EntryAbility",
+        "srcEntry": "./ets/entryability/EntryAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:chromium_hmos_layered_image",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:chromium_hmos_start_icon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true,
+        "backgroundModes": [
+          "audioPlayback"
+        ],
+        "continuable": true,
+        "continueType": [
+          "ChromiumPage"
+        ],
+        "skills": [
+          {
+            "entities": [
+              "entity.system.home"
+            ],
+            "actions": [
+              "ohos.want.action.home"
+            ]
+          },
+          {
+            "entities": [
+              "entity.system.browsable"
+            ],
+            "actions": [
+              "ohos.want.action.viewData"
+            ],
+            "uris": [
+              {
+                "scheme": "http"
+              },
+              {
+                "scheme": "https"
+              }
+            ]
+          }
+        ],
+        "supportWindowMode": [
+          "fullscreen",
+          "split",
+          "floating"
+        ],
+        "orientation": "auto_rotation_unspecified",
+        "launchType": "singleton"
+      },
+      {
+        "name": "PWASmallAppExperience",
+        "srcEntry": "./ets/pwaability/PWASmallAppExperience.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:chromium_hmos_layered_image",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:chromium_hmos_start_icon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": false,
+        "supportWindowMode": [
+          "fullscreen",
+          "split",
+          "floating"
+        ],
+        "orientation": "auto_rotation_unspecified",
+        "launchType": "specified",
+        "removeMissionAfterTerminate": true
+      }
+    ],
+    "extensionAbilities": [
+      {
+        "name": "EntryBackupAbility",
+        "srcEntry": "./ets/entrybackupability/EntryBackupAbility.ets",
+        "type": "backup",
+        "exported": false,
+        "metadata": [
+          {
+            "name": "ohos.extension.backup",
+            "resource": "$profile:backup_config"
+          }
+        ]
+      }
+    ],
+    "requestPermissions": [
+      {
+        // Also declared by the engine HAR; listed here so DevEco Studio's
+        // automatic signing puts the ACL into this app's profile.
+        "name": "ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY"
+      },
+      {
+        "name": "ohos.permission.DETECT_GESTURE",
+        "reason": "$string:holding_hand_permission_reason",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
+      }
+    ]
+  }
+}

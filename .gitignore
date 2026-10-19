@@ -1,0 +1,49 @@
+# Local signing material must never be committed.
+.signing/
+*.cer
+*.jks
+*.key
+*.p12
+*.p7b
+*.pem
+*.pfx
+*.keystore
+
+# Local SDKs, build output, packaged apps, and staged runtime files.
+ohos_sdk/
+out/
+*.app
+*.hap
+*.a
+*.o
+*.rlib
+*.so
+*.log
+*.ninja
+upstream-compatibility.md
+overlay/chromium-ui/.hvigor/
+overlay/chromium-ui/.idea/
+overlay/chromium-ui/entry/.cxx/
+overlay/chromium-ui/entry/.hvigor/
+overlay/chromium-ui/entry/build/
+overlay/chromium-ui/entry/libs/
+overlay/chromium-ui/entry/src/main/resources/rawfile/chromium/
+overlay/chromium-ui/engine/libs/
+overlay/chromium-ui/engine/src/main/resources/rawfile/chromium/
+
+# Local-only absolute links into the private SDK/toolchain checkout.
+/overlay/ohos/third_party/ohpm
+/overlay/third_party/ohos_ndk/sysroot
+/overlay/third_party/ohos_ndk/toolchains/llvm
+
+# Runner-produced build status; committed by CI on its own branch pushes.
+build-status/hap-path.txt
+
+# Written by the runner on every build and published to the build-results
+# branch. Keeping it out of the working branch stops the runner and whoever is
+# developing from racing on the same files.
+build-status/
+
+# Screenshots pulled off a device while debugging. Written over on every
+# capture, never worth keeping.
+/shot.jpeg

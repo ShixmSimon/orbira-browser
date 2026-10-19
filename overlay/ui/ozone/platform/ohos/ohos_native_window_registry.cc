@@ -1,0 +1,1164 @@
+#include "ui/ozone/platform/ohos/ohos_native_window_registry.h"
+
+#include <native_window/external_window.h>
+#include <algorithm>
+#include <atomic>
+#include <limits>
+#include <map>
+#include <set>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "base/location.h"
+#include "base/no_destructor.h"
+#include "base/observer_list_threadsafe.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
+#include "base/synchronization/condition_variable.h"
+#include "base/synchronization/lock.h"
+#include "base/time/time.h"
+#include "base/trace_event/trace_event.h"
+#include "ui/ozone/platform/ohos/ohos_gpu_child_channel.h"
+
+namespace ui {
+namespace {
+
+std::atomic_bool g_application_visible{true};
+
+using ApplicationVisibilityObserverList =
+    base::ObserverListThreadSafe<OhosApplicationVisibilityObserver>;
+
+ApplicationVisibilityObserverList& ApplicationVisibilityObservers() {
+  static base::NoDestructor<scoped_refptr<ApplicationVisibilityObserverList>>
+      observers(base::MakeRefCounted<ApplicationVisibilityObserverList>());
+  return **observers;
+}
+
+constexpr char kAuxiliarySurfacePrefix[] = "aura_aux_";
+constexpr char kPwaSurfacePrefix[] = "aura_pwa_";
+// A browser window the shell hosts full screen, like the first one.
+constexpr char kBrowserSurfacePrefix[] = "aura_win_";
+
+std::optional<gfx::AcceleratedWidget> ParseTargetedSurfaceWidget(
+    const std::string& component_id,
+    std::string_view prefix) {
+  if (!base::StartsWith(component_id, prefix, base::CompareCase::SENSITIVE)) {
+    return std::nullopt;
+  }
+
+  uint64_t value = 0;
+  if (!base::StringToUint64(component_id.substr(prefix.size()), &value) ||
+      value == 0 ||
+      value > std::numeric_limits<gfx::AcceleratedWidget>::max()) {
+    return std::nullopt;
+  }
+  return static_cast<gfx::AcceleratedWidget>(value);
+}
+
+std::optional<gfx::AcceleratedWidget> ParseAuxiliarySurfaceWidget(
+    const std::string& component_id) {
+  return ParseTargetedSurfaceWidget(component_id, kAuxiliarySurfacePrefix);
+}
+
+std::optional<gfx::AcceleratedWidget> ParsePwaSurfaceWidget(
+    const std::string& component_id) {
+  return ParseTargetedSurfaceWidget(component_id, kPwaSurfacePrefix);
+}
+
+std::optional<gfx::AcceleratedWidget> ParseBrowserSurfaceWidget(
+    const std::string& component_id) {
+  return ParseTargetedSurfaceWidget(component_id, kBrowserSurfacePrefix);
+}
+
+struct SurfaceRecord {
+  OhosNativeSurface surface;
+  gfx::AcceleratedWidget widget = gfx::kNullAcceleratedWidget;
+};
+
+struct LogicalWindowRecord {
+  gfx::Rect bounds;
+  bool visible = false;
+  bool auxiliary = false;
+  bool anchored = false;
+  uint64_t stacking_order = 0;
+  // Whether the shell has ever been told this window exists. True for every
+  // auxiliary window, and it stays true after one is promoted to a surface of
+  // its own -- a tab dragged out into its own window, or an incognito window
+  // the shell hosts itself. False for the first window, which the shell has
+  // always had and is never told about.
+  //
+  // What it decides: whether the shell may ask to close the window, and
+  // whether it hears that the window has gone. Both used to be decided by
+  // `auxiliary`, which stops being true the moment the shell gives the window
+  // a surface -- so exactly the windows the shell draws a close button on were
+  // the ones it could not close.
+  bool announced = false;
+};
+
+OhosLogicalWindowState MakeLogicalWindowState(gfx::AcceleratedWidget widget,
+                                              const LogicalWindowRecord& record,
+                                              bool destroyed = false) {
+  return {
+      .widget = widget,
+      .bounds = record.bounds,
+      .visible = record.visible,
+      .auxiliary = record.auxiliary,
+      .anchored = record.anchored,
+      .destroyed = destroyed,
+      .stacking_order = record.stacking_order,
+  };
+}
+
+class NativeWindowRegistry {
+ public:
+  NativeWindowRegistry() : surface_available_(&lock_) {}
+
+  void Register(const std::string& component_id,
+                void* window,
+                const gfx::Rect& bounds,
+                float density) {
+    OhosNativeSurfaceBoundsCallback bounds_callback;
+    std::optional<OhosNativeSurface> bound_surface;
+    {
+      base::AutoLock lock(lock_);
+      SurfaceRecord& record = surfaces_[component_id];
+      record.surface = {window, bounds, density};
+      if (record.widget != gfx::kNullAcceleratedWidget) {
+        auto bounds_it = bounds_callbacks_.find(record.widget);
+        if (bounds_it != bounds_callbacks_.end()) {
+          bounds_callback = bounds_it->second;
+          bound_surface = record.surface;
+        }
+      } else {
+        const std::optional<gfx::AcceleratedWidget> pwa_widget =
+            ParsePwaSurfaceWidget(component_id);
+        const std::optional<gfx::AcceleratedWidget> browser_widget =
+            pwa_widget ? std::nullopt
+                       : ParseBrowserSurfaceWidget(component_id);
+        // A window the shell hosts in a surface of its own is not auxiliary,
+        // whichever kind it is: leaving it marked so routes input and stacking
+        // as though it were a popup over the first window.
+        const std::optional<gfx::AcceleratedWidget> own_surface_widget =
+            pwa_widget ? pwa_widget : browser_widget;
+        const std::optional<gfx::AcceleratedWidget> requested_widget =
+            own_surface_widget ? own_surface_widget
+                               : ParseAuxiliarySurfaceWidget(component_id);
+        if (requested_widget) {
+          auto pending =
+              std::ranges::find(pending_widgets_, *requested_widget);
+          auto logical = logical_windows_.find(*requested_widget);
+          if (pending != pending_widgets_.end() &&
+              logical != logical_windows_.end() &&
+              logical->second.auxiliary) {
+            record.widget = *requested_widget;
+            pending_widgets_.erase(pending);
+            widget_bindings_[record.widget] = component_id;
+            if (own_surface_widget) {
+              // No longer a popup over the first window, but not gone either:
+              // the shell has just given it a surface of its own. This used to
+              // send the shell `destroyed` for the widget, meant to drop an
+              // auxiliary overlay -- but the event names the window by the
+              // surface the shell just made (aura_win_<w>, aura_pwa_<w>), so
+              // the shell closed the window it had opened, 7 ms after onLoad.
+              // A dragged-out tab vanished and an incognito window never
+              // stayed open. Nothing to tell the shell here.
+              logical->second.auxiliary = false;
+              logical->second.announced = true;
+            }
+          }
+        } else if (!pending_widgets_.empty()) {
+          record.widget = pending_widgets_.front();
+          pending_widgets_.erase(pending_widgets_.begin());
+          widget_bindings_[record.widget] = component_id;
+        }
+        if (record.widget != gfx::kNullAcceleratedWidget) {
+          auto bounds_it = bounds_callbacks_.find(record.widget);
+          if (bounds_it != bounds_callbacks_.end()) {
+            bounds_callback = bounds_it->second;
+            bound_surface = record.surface;
+          }
+        }
+      }
+      surface_available_.Broadcast();
+    }
+    if (bounds_callback && bound_surface) {
+      bounds_callback.Run(bound_surface->bounds, bound_surface->density);
+    }
+  }
+
+  void Update(const std::string& component_id,
+              void* window,
+              const gfx::Rect& bounds,
+              float density) {
+    OhosNativeSurfaceBoundsCallback callback;
+    {
+      base::AutoLock lock(lock_);
+      auto it = surfaces_.find(component_id);
+      if (it == surfaces_.end()) {
+        return;
+      }
+      if (window && it->second.surface.window != window) {
+        return;
+      }
+      it->second.surface.bounds = bounds;
+      it->second.surface.density = density;
+      auto callback_it = bounds_callbacks_.find(it->second.widget);
+      if (callback_it != bounds_callbacks_.end()) {
+        callback = callback_it->second;
+      }
+    }
+    if (callback) {
+      callback.Run(bounds, density);
+    }
+  }
+
+  void Unregister(const std::string& component_id, void* window) {
+    base::AutoLock lock(lock_);
+    auto it = surfaces_.find(component_id);
+    if (it == surfaces_.end() ||
+        (window && it->second.surface.window != window)) {
+      return;
+    }
+    if (it->second.widget != gfx::kNullAcceleratedWidget) {
+      // XComponent surfaces can be destroyed and recreated while their
+      // Chromium PlatformWindow remains alive. Preserve that binding so a
+      // pending popup widget cannot steal the replacement surface.
+      it->second.surface.window = nullptr;
+      it->second.surface.bounds = gfx::Rect();
+      return;
+    }
+    surfaces_.erase(it);
+  }
+
+  std::optional<OhosNativeSurface> Bind(gfx::AcceleratedWidget widget) {
+    base::AutoLock lock(lock_);
+    auto binding = widget_bindings_.find(widget);
+    if (binding != widget_bindings_.end()) {
+      auto surface = surfaces_.find(binding->second);
+      if (surface != surfaces_.end()) {
+        return surface->second.surface;
+      }
+    }
+
+    for (auto& [component_id, record] : surfaces_) {
+      if (record.widget == gfx::kNullAcceleratedWidget &&
+          record.surface.window) {
+        record.widget = widget;
+        widget_bindings_[widget] = component_id;
+        return record.surface;
+      }
+    }
+
+    if (!std::ranges::contains(pending_widgets_, widget)) {
+      pending_widgets_.push_back(widget);
+    }
+    return std::nullopt;
+  }
+
+  void Unbind(gfx::AcceleratedWidget widget) {
+    base::AutoLock lock(lock_);
+    auto binding = widget_bindings_.find(widget);
+    if (binding != widget_bindings_.end()) {
+      auto surface = surfaces_.find(binding->second);
+      if (surface != surfaces_.end()) {
+        surface->second.widget = gfx::kNullAcceleratedWidget;
+        if (!surface->second.surface.window) {
+          surfaces_.erase(surface);
+        }
+      }
+      widget_bindings_.erase(binding);
+    }
+    std::erase(pending_widgets_, widget);
+    expected_native_surfaces_.erase(widget);
+    bounds_callbacks_.erase(widget);
+  }
+
+  std::optional<OhosNativeSurface> Get(gfx::AcceleratedWidget widget,
+                                       bool take_reference = false) {
+    base::AutoLock lock(lock_);
+    auto binding = widget_bindings_.find(widget);
+    if (binding == widget_bindings_.end()) {
+      return std::nullopt;
+    }
+    auto surface = surfaces_.find(binding->second);
+    if (surface == surfaces_.end()) {
+      return std::nullopt;
+    }
+    if (take_reference && surface->second.surface.window &&
+        OH_NativeWindow_NativeObjectReference(surface->second.surface.window) !=
+            0) {
+      return std::nullopt;
+    }
+    return surface->second.surface;
+  }
+
+  void ExpectSurface(gfx::AcceleratedWidget widget) {
+    if (widget == gfx::kNullAcceleratedWidget) {
+      return;
+    }
+    base::AutoLock lock(lock_);
+    expected_native_surfaces_.insert(widget);
+  }
+
+  bool IsSurfaceExpected(gfx::AcceleratedWidget widget) {
+    base::AutoLock lock(lock_);
+    return expected_native_surfaces_.contains(widget);
+  }
+
+  bool IsAnchored(gfx::AcceleratedWidget widget) {
+    base::AutoLock lock(lock_);
+    auto it = logical_windows_.find(widget);
+    return it != logical_windows_.end() && it->second.anchored;
+  }
+
+  std::optional<OhosNativeSurface> WaitForSurface(
+      gfx::AcceleratedWidget widget,
+      base::TimeDelta timeout) {
+    base::AutoLock lock(lock_);
+    if (!expected_native_surfaces_.contains(widget)) {
+      return std::nullopt;
+    }
+
+    const base::TimeTicks deadline = base::TimeTicks::Now() + timeout;
+    while (true) {
+      auto binding = widget_bindings_.find(widget);
+      if (binding != widget_bindings_.end()) {
+        auto surface = surfaces_.find(binding->second);
+        if (surface != surfaces_.end() && surface->second.surface.window) {
+          return surface->second.surface;
+        }
+      }
+      const base::TimeDelta remaining = deadline - base::TimeTicks::Now();
+      if (remaining <= base::TimeDelta()) {
+        return std::nullopt;
+      }
+      surface_available_.TimedWait(remaining);
+    }
+  }
+
+  gfx::AcceleratedWidget GetWidgetForComponent(
+      const std::string& component_id) {
+    base::AutoLock lock(lock_);
+    auto surface = surfaces_.find(component_id);
+    return surface == surfaces_.end() ? gfx::kNullAcceleratedWidget
+                                      : surface->second.widget;
+  }
+
+  std::optional<std::string> GetComponentForWidget(
+      gfx::AcceleratedWidget widget) {
+    base::AutoLock lock(lock_);
+    auto binding = widget_bindings_.find(widget);
+    if (binding == widget_bindings_.end()) {
+      return std::nullopt;
+    }
+    return binding->second;
+  }
+
+  std::optional<OhosNativeSurface> GetPrimary() {
+    base::AutoLock lock(lock_);
+    auto main_surface = surfaces_.find("aura_shell");
+    if (main_surface != surfaces_.end() &&
+        main_surface->second.surface.window) {
+      return main_surface->second.surface;
+    }
+    std::optional<OhosNativeSurface> fallback;
+    for (const auto& entry : surfaces_) {
+      const SurfaceRecord& record = entry.second;
+      if (!record.surface.window) {
+        continue;
+      }
+      if (!fallback) {
+        fallback = record.surface;
+      }
+      auto logical = logical_windows_.find(record.widget);
+      if (logical == logical_windows_.end() || !logical->second.auxiliary) {
+        return record.surface;
+      }
+    }
+    return fallback;
+  }
+
+  void RegisterLogicalWindow(gfx::AcceleratedWidget widget,
+                             const gfx::Rect& bounds,
+                             bool anchored) {
+    if (widget == gfx::kNullAcceleratedWidget) {
+      return;
+    }
+    base::AutoLock lock(lock_);
+    logical_windows_[widget] = {
+        .bounds = bounds,
+        .visible = false,
+        .auxiliary = !widget_bindings_.contains(widget),
+        .anchored = anchored,
+        .stacking_order = ++next_stacking_order_,
+        .announced = !widget_bindings_.contains(widget),
+    };
+  }
+
+  void UnregisterLogicalWindow(gfx::AcceleratedWidget widget) {
+    OhosLogicalWindowStateCallback callback;
+    std::optional<OhosLogicalWindowState> state;
+    {
+      base::AutoLock lock(lock_);
+      auto it = logical_windows_.find(widget);
+      if (it != logical_windows_.end() && it->second.announced) {
+        state = MakeLogicalWindowState(widget, it->second, true);
+        callback = logical_window_state_callback_;
+      }
+      logical_windows_.erase(widget);
+      logical_window_close_callbacks_.erase(widget);
+      if (focused_widget_ == widget) {
+        focused_widget_ = gfx::kNullAcceleratedWidget;
+      }
+    }
+    if (callback && state) {
+      callback.Run(*state);
+    }
+  }
+
+  void UpdateLogicalWindowBounds(gfx::AcceleratedWidget widget,
+                                 const gfx::Rect& bounds) {
+    OhosLogicalWindowStateCallback callback;
+    std::optional<OhosLogicalWindowState> state;
+    {
+      base::AutoLock lock(lock_);
+      auto it = logical_windows_.find(widget);
+      if (it != logical_windows_.end()) {
+        it->second.bounds = bounds;
+        if (it->second.auxiliary && it->second.visible) {
+          state = MakeLogicalWindowState(widget, it->second);
+          callback = logical_window_state_callback_;
+        }
+      }
+    }
+    if (callback && state) {
+      callback.Run(*state);
+    }
+  }
+
+  void SetLogicalWindowVisible(gfx::AcceleratedWidget widget, bool visible) {
+    OhosLogicalWindowStateCallback callback;
+    std::optional<OhosLogicalWindowState> state;
+    {
+      base::AutoLock lock(lock_);
+      auto it = logical_windows_.find(widget);
+      if (it == logical_windows_.end()) {
+        return;
+      }
+      it->second.visible = visible;
+      if (visible) {
+        it->second.stacking_order = ++next_stacking_order_;
+      } else if (focused_widget_ == widget) {
+        focused_widget_ = gfx::kNullAcceleratedWidget;
+      }
+      if (it->second.auxiliary) {
+        state = MakeLogicalWindowState(widget, it->second);
+        callback = logical_window_state_callback_;
+      }
+    }
+    if (callback && state) {
+      callback.Run(*state);
+    }
+  }
+
+  void ActivateLogicalWindow(gfx::AcceleratedWidget widget) {
+    OhosLogicalWindowStateCallback callback;
+    std::optional<OhosLogicalWindowState> state;
+    {
+      base::AutoLock lock(lock_);
+      auto it = logical_windows_.find(widget);
+      if (it == logical_windows_.end()) {
+        return;
+      }
+      if (!AwaitsOwnSurface(widget, it->second)) {
+        focused_widget_ = widget;
+      }
+      it->second.stacking_order = ++next_stacking_order_;
+      if (it->second.auxiliary && it->second.visible) {
+        state = MakeLogicalWindowState(widget, it->second);
+        callback = logical_window_state_callback_;
+      }
+    }
+    if (callback && state) {
+      callback.Run(*state);
+    }
+  }
+
+  void DeactivateLogicalWindow(gfx::AcceleratedWidget widget) {
+    base::AutoLock lock(lock_);
+    if (focused_widget_ == widget) {
+      focused_widget_ = gfx::kNullAcceleratedWidget;
+    }
+  }
+
+  std::optional<gfx::Rect> GetLogicalWindowBounds(
+      gfx::AcceleratedWidget widget) {
+    base::AutoLock lock(lock_);
+    auto it = logical_windows_.find(widget);
+    if (it == logical_windows_.end()) {
+      return std::nullopt;
+    }
+    return it->second.bounds;
+  }
+
+  gfx::AcceleratedWidget GetFocusedLogicalWindow() {
+    base::AutoLock lock(lock_);
+    return focused_widget_;
+  }
+
+  bool IsPrimaryLogicalWindow(gfx::AcceleratedWidget widget) {
+    base::AutoLock lock(lock_);
+    auto binding = widget_bindings_.find(widget);
+    if (binding == widget_bindings_.end()) {
+      return false;
+    }
+    auto surface = surfaces_.find(binding->second);
+    return surface != surfaces_.end() && surface->second.surface.window &&
+           !ParseAuxiliarySurfaceWidget(binding->second).has_value();
+  }
+
+  // A top-level window still waiting for the surface the shell is to make
+  // for it. Nothing of it is on screen, so it must not take input: a second
+  // browser window whose surface never came was a full-screen auxiliary on
+  // top of everything, and every touch and key went to it.
+  bool AwaitsOwnSurface(gfx::AcceleratedWidget widget,
+                        const LogicalWindowRecord& record) const
+      EXCLUSIVE_LOCKS_REQUIRED(lock_) {
+    return !record.anchored && expected_native_surfaces_.contains(widget) &&
+           !widget_bindings_.contains(widget);
+  }
+
+  gfx::AcceleratedWidget GetWidgetAtScreenPoint(const gfx::Point& point) {
+    base::AutoLock lock(lock_);
+    // Ranked by tier first, then by stacking order. An auxiliary window's
+    // XComponent lives in an ArkUI overlay drawn above the browser's own, so
+    // it is on top wherever the two overlap -- whatever the activation history
+    // says. Stacking order alone got that wrong: it is bumped every time a
+    // window is activated, the browser window is activated far more often
+    // than a status bar that never takes focus, and a press on the screen
+    // share bar's Stop button was handed to the browser underneath instead.
+    gfx::AcceleratedWidget target = gfx::kNullAcceleratedWidget;
+    std::pair<bool, uint64_t> target_rank{false, 0};
+    for (const auto& [widget, record] : logical_windows_) {
+      if (!record.visible || record.bounds.IsEmpty() ||
+          !record.bounds.Contains(point) || AwaitsOwnSurface(widget, record)) {
+        continue;
+      }
+      const std::pair<bool, uint64_t> rank{record.auxiliary,
+                                           record.stacking_order};
+      if (rank >= target_rank) {
+        target = widget;
+        target_rank = rank;
+      }
+    }
+    if (target != gfx::kNullAcceleratedWidget) {
+      return target;
+    }
+
+    // Keep surface-only callers working during early startup before the
+    // corresponding PlatformWindow has registered its logical bounds.
+    for (const auto& [component_id, record] : surfaces_) {
+      if (record.widget != gfx::kNullAcceleratedWidget &&
+          record.surface.bounds.Contains(point)) {
+        return record.widget;
+      }
+    }
+    return gfx::kNullAcceleratedWidget;
+  }
+
+  void SetBoundsCallback(gfx::AcceleratedWidget widget,
+                         OhosNativeSurfaceBoundsCallback callback) {
+    std::optional<OhosNativeSurface> surface;
+    {
+      base::AutoLock lock(lock_);
+      if (callback) {
+        bounds_callbacks_[widget] = callback;
+        auto binding = widget_bindings_.find(widget);
+        if (binding != widget_bindings_.end()) {
+          auto surface_it = surfaces_.find(binding->second);
+          if (surface_it != surfaces_.end()) {
+            surface = surface_it->second.surface;
+          }
+        }
+      } else {
+        bounds_callbacks_.erase(widget);
+      }
+    }
+    if (callback && surface) {
+      callback.Run(surface->bounds, surface->density);
+    }
+  }
+
+  void UpdateDisplayMetrics(const gfx::Size& pixel_size, float density) {
+    if (pixel_size.IsEmpty() || density <= 0.0f) {
+      return;
+    }
+
+    OhosDisplayMetricsChangedCallback callback;
+    {
+      base::AutoLock lock(lock_);
+      display_metrics_ = OhosDisplayMetrics{pixel_size, density};
+      callback = display_metrics_changed_callback_;
+    }
+    if (callback) {
+      callback.Run(pixel_size, density);
+    }
+  }
+
+  std::optional<OhosDisplayMetrics> GetDisplayMetrics() {
+    base::AutoLock lock(lock_);
+    return display_metrics_;
+  }
+
+  void SetDisplayMetricsChangedCallback(
+      OhosDisplayMetricsChangedCallback callback) {
+    std::optional<OhosDisplayMetrics> metrics;
+    {
+      base::AutoLock lock(lock_);
+      display_metrics_changed_callback_ = callback;
+      metrics = display_metrics_;
+    }
+    if (callback && metrics) {
+      callback.Run(metrics->pixel_size, metrics->density);
+    }
+  }
+
+  void UpdateCursorScreenPoint(const gfx::Point& point) {
+    base::AutoLock lock(lock_);
+    cursor_screen_point_ = point;
+  }
+
+  gfx::Point GetCursorScreenPoint() {
+    base::AutoLock lock(lock_);
+    return cursor_screen_point_;
+  }
+
+  void SetApplicationWindowId(int32_t window_id) {
+    if (window_id <= 0) {
+      return;
+    }
+    base::AutoLock lock(lock_);
+    application_window_id_ = window_id;
+  }
+
+  int32_t GetApplicationWindowId() {
+    base::AutoLock lock(lock_);
+    return application_window_id_;
+  }
+
+  void SetApplicationWindowIdForComponent(const std::string& component_id,
+                                          int32_t window_id) {
+    if (component_id.empty() || window_id <= 0) {
+      return;
+    }
+    base::AutoLock lock(lock_);
+    application_window_ids_[component_id] = window_id;
+    if (component_id == "aura_shell" || application_window_id_ <= 0) {
+      application_window_id_ = window_id;
+    }
+  }
+
+  int32_t GetApplicationWindowIdForWidget(gfx::AcceleratedWidget widget) {
+    base::AutoLock lock(lock_);
+    auto binding = widget_bindings_.find(widget);
+    if (binding == widget_bindings_.end()) {
+      return application_window_id_;
+    }
+    auto window_id = application_window_ids_.find(binding->second);
+    return window_id == application_window_ids_.end() ? application_window_id_
+                                                      : window_id->second;
+  }
+
+  void SetWindowActionCallback(const std::string& component_id,
+                               OhosWindowActionCallback callback) {
+    base::AutoLock lock(lock_);
+    if (callback) {
+      window_action_callbacks_[component_id] = std::move(callback);
+    } else {
+      window_action_callbacks_.erase(component_id);
+    }
+  }
+
+  bool RequestWindowAction(gfx::AcceleratedWidget widget,
+                           OhosWindowAction action) {
+    OhosWindowActionCallback callback;
+    {
+      base::AutoLock lock(lock_);
+      auto binding = widget_bindings_.find(widget);
+      if (binding == widget_bindings_.end()) {
+        return false;
+      }
+      auto callback_it = window_action_callbacks_.find(binding->second);
+      if (callback_it == window_action_callbacks_.end()) {
+        return false;
+      }
+      callback = callback_it->second;
+    }
+    callback.Run(action);
+    return true;
+  }
+
+  void SetLogicalWindowStateCallback(OhosLogicalWindowStateCallback callback) {
+    std::vector<OhosLogicalWindowState> visible_windows;
+    {
+      base::AutoLock lock(lock_);
+      logical_window_state_callback_ = callback;
+      if (callback) {
+        for (const auto& [widget, record] : logical_windows_) {
+          if (record.auxiliary && record.visible) {
+            visible_windows.push_back(MakeLogicalWindowState(widget, record));
+          }
+        }
+      }
+    }
+    if (callback) {
+      for (const OhosLogicalWindowState& state : visible_windows) {
+        callback.Run(state);
+      }
+    }
+  }
+
+  void SetLogicalWindowCloseCallback(gfx::AcceleratedWidget widget,
+                                     OhosLogicalWindowCloseCallback callback) {
+    base::AutoLock lock(lock_);
+    if (callback) {
+      logical_window_close_callbacks_[widget] = std::move(callback);
+    } else {
+      logical_window_close_callbacks_.erase(widget);
+    }
+  }
+
+  void SetDragCallback(gfx::AcceleratedWidget widget,
+                       OhosDragCallback callback) {
+    base::AutoLock lock(lock_);
+    if (callback) {
+      drag_callbacks_[widget] = std::move(callback);
+    } else {
+      drag_callbacks_.erase(widget);
+    }
+  }
+
+  int DispatchDragEvent(gfx::AcceleratedWidget widget, OhosDragEvent event) {
+    OhosDragCallback callback;
+    {
+      base::AutoLock lock(lock_);
+      auto found = drag_callbacks_.find(widget);
+      if (found == drag_callbacks_.end()) {
+        return 0;
+      }
+      callback = found->second;
+    }
+    // Run outside the lock: it ends in the drop target, which reaches into
+    // the page and can take a while.
+    return callback.Run(std::move(event));
+  }
+
+  void SetDragOutCallback(OhosDragOutCallback callback) {
+    base::AutoLock lock(lock_);
+    drag_out_callback_ = std::move(callback);
+  }
+
+  bool StartDragOut(OhosDragOutRequest request) {
+    OhosDragOutCallback callback;
+    {
+      base::AutoLock lock(lock_);
+      callback = drag_out_callback_;
+    }
+    return callback ? callback.Run(std::move(request)) : false;
+  }
+
+  bool RequestCloseLogicalWindow(gfx::AcceleratedWidget widget) {
+    OhosLogicalWindowCloseCallback callback;
+    {
+      base::AutoLock lock(lock_);
+      auto logical = logical_windows_.find(widget);
+      auto close_callback = logical_window_close_callbacks_.find(widget);
+      // Any window the shell knows about, not only one it has not been given a
+      // surface for. The close itself is Chromium's: the request reaches
+      // OnCloseRequest on the platform window, which is the same path a title
+      // bar's close button takes, so the tabs close in order, the session
+      // records them and the window is torn down properly.
+      if (logical == logical_windows_.end() || !logical->second.announced ||
+          close_callback == logical_window_close_callbacks_.end()) {
+        return false;
+      }
+      callback = close_callback->second;
+    }
+    callback.Run();
+    return true;
+  }
+
+  std::vector<OhosGpuChildWidgetState> SnapshotForGpuChild() {
+    base::AutoLock lock(lock_);
+    std::set<gfx::AcceleratedWidget> widgets(expected_native_surfaces_);
+    for (const auto& [widget, component_id] : widget_bindings_) {
+      widgets.insert(widget);
+    }
+    for (const auto& [widget, record] : logical_windows_) {
+      widgets.insert(widget);
+    }
+    std::vector<OhosGpuChildWidgetState> states;
+    for (gfx::AcceleratedWidget widget : widgets) {
+      OhosGpuChildWidgetState state{.widget = widget};
+      auto binding = widget_bindings_.find(widget);
+      if (binding != widget_bindings_.end()) {
+        auto surface = surfaces_.find(binding->second);
+        if (surface != surfaces_.end()) {
+          state.window = surface->second.surface.window;
+          state.bounds = surface->second.surface.bounds;
+          state.density = surface->second.surface.density;
+        }
+        auto window_id = application_window_ids_.find(binding->second);
+        state.application_window_id =
+            window_id == application_window_ids_.end()
+                ? application_window_id_
+                : window_id->second;
+      } else {
+        state.application_window_id = application_window_id_;
+      }
+      auto logical = logical_windows_.find(widget);
+      state.anchored =
+          logical != logical_windows_.end() && logical->second.anchored;
+      state.expected = expected_native_surfaces_.contains(widget);
+      states.push_back(state);
+    }
+    return states;
+  }
+
+ private:
+  base::Lock lock_;
+  base::ConditionVariable surface_available_;
+  std::map<std::string, SurfaceRecord> surfaces_ GUARDED_BY(lock_);
+  std::map<gfx::AcceleratedWidget, std::string> widget_bindings_
+      GUARDED_BY(lock_);
+  std::vector<gfx::AcceleratedWidget> pending_widgets_ GUARDED_BY(lock_);
+  std::set<gfx::AcceleratedWidget> expected_native_surfaces_
+      GUARDED_BY(lock_);
+  std::map<gfx::AcceleratedWidget, OhosDragCallback> drag_callbacks_
+      GUARDED_BY(lock_);
+  // One for the whole process: the app side that starts a system drag is the
+  // same one whatever window asked for it.
+  OhosDragOutCallback drag_out_callback_ GUARDED_BY(lock_);
+  std::map<gfx::AcceleratedWidget, OhosNativeSurfaceBoundsCallback>
+      bounds_callbacks_ GUARDED_BY(lock_);
+  std::map<gfx::AcceleratedWidget, LogicalWindowRecord> logical_windows_
+      GUARDED_BY(lock_);
+  gfx::AcceleratedWidget focused_widget_ GUARDED_BY(lock_) =
+      gfx::kNullAcceleratedWidget;
+  uint64_t next_stacking_order_ GUARDED_BY(lock_) = 0;
+  std::optional<OhosDisplayMetrics> display_metrics_ GUARDED_BY(lock_);
+  OhosDisplayMetricsChangedCallback display_metrics_changed_callback_
+      GUARDED_BY(lock_);
+  gfx::Point cursor_screen_point_ GUARDED_BY(lock_);
+  int32_t application_window_id_ GUARDED_BY(lock_) = 0;
+  std::map<std::string, int32_t> application_window_ids_ GUARDED_BY(lock_);
+  std::map<std::string, OhosWindowActionCallback> window_action_callbacks_
+      GUARDED_BY(lock_);
+  OhosLogicalWindowStateCallback logical_window_state_callback_
+      GUARDED_BY(lock_);
+  std::map<gfx::AcceleratedWidget, OhosLogicalWindowCloseCallback>
+      logical_window_close_callbacks_ GUARDED_BY(lock_);
+};
+
+NativeWindowRegistry& GetRegistry() {
+  static base::NoDestructor<NativeWindowRegistry> registry;
+  return *registry;
+}
+
+}  // namespace
+
+// Every call below that changes what a GPU process would need to know tells
+// ForwardOhosSurfacesToGpuChild, which sends the change when the GPU runs in
+// a native child of its own and returns at once when it does not. The
+// lookups the GPU side makes read the mirror that process keeps instead of
+// this registry, which is empty there: the windows arrive in the browser.
+
+void RegisterOhosNativeSurface(const std::string& component_id,
+                               void* window,
+                               const gfx::Rect& bounds,
+                               float density) {
+  GetRegistry().Register(component_id, window, bounds, density);
+  ForwardOhosSurfacesToGpuChild();
+}
+
+void UpdateOhosNativeSurface(const std::string& component_id,
+                             void* window,
+                             const gfx::Rect& bounds,
+                             float density) {
+  GetRegistry().Update(component_id, window, bounds, density);
+  ForwardOhosSurfacesToGpuChild();
+}
+
+void UnregisterOhosNativeSurface(const std::string& component_id,
+                                 void* window) {
+  GetRegistry().Unregister(component_id, window);
+  ForwardOhosSurfacesToGpuChild();
+}
+
+std::optional<OhosNativeSurface> BindOhosNativeSurface(
+    gfx::AcceleratedWidget widget) {
+  std::optional<OhosNativeSurface> surface = GetRegistry().Bind(widget);
+  ForwardOhosSurfacesToGpuChild();
+  return surface;
+}
+
+void UnbindOhosNativeSurface(gfx::AcceleratedWidget widget) {
+  GetRegistry().Unbind(widget);
+  ForwardOhosSurfacesToGpuChild();
+}
+
+std::optional<OhosNativeSurface> GetOhosNativeSurface(
+    gfx::AcceleratedWidget widget) {
+  if (IsOhosGpuChildProcess()) {
+    return GetOhosGpuChildSurface(widget);
+  }
+  return GetRegistry().Get(widget);
+}
+
+std::optional<OhosNativeSurface> AcquireOhosNativeSurfaceForPhoneGpu(
+    gfx::AcceleratedWidget widget) {
+  if (IsOhosGpuChildProcess())
+    return AcquireOhosGpuChildSurface(widget);
+  return GetRegistry().Get(widget, true);
+}
+
+void ExpectOhosNativeSurface(gfx::AcceleratedWidget widget) {
+  GetRegistry().ExpectSurface(widget);
+  ForwardOhosSurfacesToGpuChild();
+}
+
+bool IsOhosNativeSurfaceExpected(gfx::AcceleratedWidget widget) {
+  if (IsOhosGpuChildProcess()) {
+    return IsOhosGpuChildSurfaceExpected(widget);
+  }
+  return GetRegistry().IsSurfaceExpected(widget);
+}
+
+bool IsOhosAnchoredWindow(gfx::AcceleratedWidget widget) {
+  if (IsOhosGpuChildProcess()) {
+    return IsOhosGpuChildAnchored(widget);
+  }
+  return GetRegistry().IsAnchored(widget);
+}
+
+std::optional<OhosNativeSurface> WaitForOhosNativeSurface(
+    gfx::AcceleratedWidget widget,
+    base::TimeDelta timeout) {
+  if (IsOhosGpuChildProcess()) {
+    return WaitForOhosGpuChildSurface(widget, timeout);
+  }
+  return GetRegistry().WaitForSurface(widget, timeout);
+}
+
+std::vector<OhosGpuChildWidgetState> SnapshotOhosSurfacesForGpuChild() {
+  return GetRegistry().SnapshotForGpuChild();
+}
+
+gfx::AcceleratedWidget GetOhosAcceleratedWidgetForNativeSurface(
+    const std::string& component_id) {
+  return GetRegistry().GetWidgetForComponent(component_id);
+}
+
+std::optional<std::string> GetOhosNativeSurfaceComponentIdForWidget(
+    gfx::AcceleratedWidget widget) {
+  return GetRegistry().GetComponentForWidget(widget);
+}
+
+std::optional<OhosNativeSurface> GetPrimaryOhosNativeSurface() {
+  return GetRegistry().GetPrimary();
+}
+
+void RegisterOhosLogicalWindow(gfx::AcceleratedWidget widget,
+                               const gfx::Rect& bounds,
+                               bool anchored) {
+  GetRegistry().RegisterLogicalWindow(widget, bounds, anchored);
+  ForwardOhosSurfacesToGpuChild();
+}
+
+void UnregisterOhosLogicalWindow(gfx::AcceleratedWidget widget) {
+  GetRegistry().UnregisterLogicalWindow(widget);
+  ForwardOhosSurfacesToGpuChild();
+}
+
+void UpdateOhosLogicalWindowBounds(gfx::AcceleratedWidget widget,
+                                   const gfx::Rect& bounds) {
+  GetRegistry().UpdateLogicalWindowBounds(widget, bounds);
+}
+
+void SetOhosLogicalWindowVisible(gfx::AcceleratedWidget widget, bool visible) {
+  GetRegistry().SetLogicalWindowVisible(widget, visible);
+}
+
+void ActivateOhosLogicalWindow(gfx::AcceleratedWidget widget) {
+  GetRegistry().ActivateLogicalWindow(widget);
+}
+
+void DeactivateOhosLogicalWindow(gfx::AcceleratedWidget widget) {
+  GetRegistry().DeactivateLogicalWindow(widget);
+}
+
+std::optional<gfx::Rect> GetOhosLogicalWindowBounds(
+    gfx::AcceleratedWidget widget) {
+  return GetRegistry().GetLogicalWindowBounds(widget);
+}
+
+gfx::AcceleratedWidget GetOhosFocusedLogicalWindow() {
+  return GetRegistry().GetFocusedLogicalWindow();
+}
+
+bool IsOhosPrimaryLogicalWindow(gfx::AcceleratedWidget widget) {
+  return GetRegistry().IsPrimaryLogicalWindow(widget);
+}
+
+gfx::AcceleratedWidget GetOhosAcceleratedWidgetAtScreenPoint(
+    const gfx::Point& point) {
+  return GetRegistry().GetWidgetAtScreenPoint(point);
+}
+
+void SetOhosNativeSurfaceBoundsCallback(
+    gfx::AcceleratedWidget widget,
+    OhosNativeSurfaceBoundsCallback callback) {
+  GetRegistry().SetBoundsCallback(widget, std::move(callback));
+}
+
+void UpdateOhosDisplayMetrics(const gfx::Size& pixel_size, float density) {
+  GetRegistry().UpdateDisplayMetrics(pixel_size, density);
+}
+
+std::optional<OhosDisplayMetrics> GetOhosDisplayMetrics() {
+  return GetRegistry().GetDisplayMetrics();
+}
+
+void SetOhosDisplayMetricsChangedCallback(
+    OhosDisplayMetricsChangedCallback callback) {
+  GetRegistry().SetDisplayMetricsChangedCallback(std::move(callback));
+}
+
+void UpdateOhosCursorScreenPoint(const gfx::Point& point) {
+  GetRegistry().UpdateCursorScreenPoint(point);
+}
+
+gfx::Point GetOhosCursorScreenPoint() {
+  return GetRegistry().GetCursorScreenPoint();
+}
+
+void SetOhosApplicationWindowId(int32_t window_id) {
+  GetRegistry().SetApplicationWindowId(window_id);
+  ForwardOhosSurfacesToGpuChild();
+}
+
+int32_t GetOhosApplicationWindowId() {
+  return GetRegistry().GetApplicationWindowId();
+}
+
+void SetOhosApplicationWindowIdForNativeSurface(const std::string& component_id,
+                                                int32_t window_id) {
+  GetRegistry().SetApplicationWindowIdForComponent(component_id, window_id);
+  ForwardOhosSurfacesToGpuChild();
+}
+
+int32_t GetOhosApplicationWindowIdForWidget(gfx::AcceleratedWidget widget) {
+  if (IsOhosGpuChildProcess()) {
+    return GetOhosGpuChildApplicationWindowId(widget);
+  }
+  return GetRegistry().GetApplicationWindowIdForWidget(widget);
+}
+
+void SetOhosWindowActionCallback(const std::string& component_id,
+                                 OhosWindowActionCallback callback) {
+  GetRegistry().SetWindowActionCallback(component_id, std::move(callback));
+}
+
+bool RequestOhosWindowAction(gfx::AcceleratedWidget widget,
+                             OhosWindowAction action) {
+  return GetRegistry().RequestWindowAction(widget, action);
+}
+
+void SetOhosLogicalWindowStateCallback(
+    OhosLogicalWindowStateCallback callback) {
+  GetRegistry().SetLogicalWindowStateCallback(std::move(callback));
+}
+
+void SetOhosLogicalWindowCloseCallback(
+    gfx::AcceleratedWidget widget,
+    OhosLogicalWindowCloseCallback callback) {
+  GetRegistry().SetLogicalWindowCloseCallback(widget, std::move(callback));
+}
+
+namespace {
+
+OhosGpuContextLostCallback& GpuContextLostCallback() {
+  static base::NoDestructor<OhosGpuContextLostCallback> callback;
+  return *callback;
+}
+
+}  // namespace
+
+void SetOhosGpuContextLostCallback(OhosGpuContextLostCallback callback) {
+  GpuContextLostCallback() = std::move(callback);
+}
+
+void NotifyOhosGpuContextLost(bool recovered) {
+  // Called on whichever thread noticed the loss. The callback is the one
+  // that knows where it has to run, and posts itself there.
+  const OhosGpuContextLostCallback& callback = GpuContextLostCallback();
+  if (callback.is_null()) {
+    return;
+  }
+  callback.Run(recovered);
+}
+
+bool RequestCloseOhosLogicalWindow(gfx::AcceleratedWidget widget) {
+  return GetRegistry().RequestCloseLogicalWindow(widget);
+}
+
+OhosDragEvent::OhosDragEvent() = default;
+OhosDragEvent::OhosDragEvent(OhosDragEvent&&) = default;
+OhosDragEvent& OhosDragEvent::operator=(OhosDragEvent&&) = default;
+OhosDragEvent::~OhosDragEvent() = default;
+
+void SetOhosDragCallback(gfx::AcceleratedWidget widget,
+                         OhosDragCallback callback) {
+  GetRegistry().SetDragCallback(widget, std::move(callback));
+}
+
+int DispatchOhosDragEvent(gfx::AcceleratedWidget widget, OhosDragEvent event) {
+  return GetRegistry().DispatchDragEvent(widget, std::move(event));
+}
+
+void SetOhosDragOutCallback(OhosDragOutCallback callback) {
+  GetRegistry().SetDragOutCallback(std::move(callback));
+}
+
+void SetOhosApplicationVisible(bool visible) {
+  if (g_application_visible.exchange(visible, std::memory_order_relaxed) !=
+      visible) {
+    TRACE_EVENT_INSTANT("media", "OhosApplicationVisibilityChanged", "visible",
+                        visible);
+    ApplicationVisibilityObservers().Notify(
+        FROM_HERE,
+        &OhosApplicationVisibilityObserver::OnOhosApplicationVisibilityChanged,
+        visible);
+  }
+}
+
+bool IsOhosApplicationVisible() {
+  return g_application_visible.load(std::memory_order_relaxed);
+}
+
+void AddOhosApplicationVisibilityObserver(
+    OhosApplicationVisibilityObserver* observer) {
+  ApplicationVisibilityObservers().AddObserver(observer);
+}
+
+void RemoveOhosApplicationVisibilityObserver(
+    OhosApplicationVisibilityObserver* observer) {
+  ApplicationVisibilityObservers().RemoveObserver(observer);
+}
+
+bool StartOhosDragOut(OhosDragOutRequest request) {
+  return GetRegistry().StartDragOut(std::move(request));
+}
+
+}  // namespace ui

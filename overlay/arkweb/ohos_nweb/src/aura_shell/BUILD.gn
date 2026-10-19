@@ -1,0 +1,144 @@
+# Copyright (c) 2026
+# Licensed under the Apache License, Version 2.0.
+
+import("//build/config/ohos/config.gni")
+import("//testing/test.gni")
+
+config("aura_shell_config") {
+  include_dirs = [
+    "//ohos_nweb/include",
+    "//ohos_nweb/src",
+  ]
+  include_dirs += ohos_src_includes
+
+  defines = [ "USING_CHROMIUM_INCLUDES" ]
+}
+
+source_set("aura_shell_core") {
+  visibility = [
+    ":aura_shell_api",
+    ":aura_shell_smoke_tests",
+    "//cef:*",
+  ]
+
+  configs += [ ":aura_shell_config" ]
+
+  sources = [
+    "ohos_aura_input_router.cc",
+    "ohos_aura_input_router.h",
+    "ohos_aura_shell_host.cc",
+    "ohos_aura_shell_host.h",
+    "ohos_aura_shell_types.h",
+    "ohos_aura_xcomponent_bridge.cc",
+    "ohos_aura_xcomponent_bridge.h",
+    "ohos_chrome_main_runner.cc",
+    "ohos_chrome_main_runner.h",
+    "ohos_mcp_server.cc",
+    "ohos_mcp_server.h",
+    "ohos_startup_bundle_probe.h",
+  ]
+
+  deps = [
+    "//base",
+    "//chrome:chrome_main_runner",
+    "//chrome/browser:core",
+    "//ui/events",
+    "//ui/ozone/platform/ohos:event_source",
+    "//ui/ozone/platform/ohos:native_window_registry",
+  ]
+}
+
+source_set("aura_shell_api") {
+  visibility = [ "//cef:*" ]
+
+  configs += [ ":aura_shell_config" ]
+
+  sources = [
+    "ohos_aura_shell_napi.cc",
+    "ohos_aura_shell_napi.h",
+    "ohos_nweb_render_main.cc",
+  ]
+
+  deps = [
+    ":aura_shell_core",
+    "//base",
+    "//components/ohos_accessibility",
+    "//components/ohos_system_service",
+    "//device/bluetooth",
+    "//ui/ozone/platform/ohos:native_window_registry",
+  ]
+
+  if (target_cpu == "arm64") {
+    libs = [
+      "${ohos_sysroot}usr/lib/aarch64-linux-ohos/libace_napi.z.so",
+      "${ohos_sysroot}usr/lib/aarch64-linux-ohos/libace_ndk.z.so",
+    ]
+  }
+}
+
+executable("chromium_hap_shell") {
+  sources = [ "ohos_web_render_main.cc" ]
+
+  deps = [ "//chrome:chrome_main_runner" ]
+}
+
+executable("web_render") {
+  sources = [ "ohos_web_render_main.cc" ]
+
+  deps = [ "//chrome:chrome_main_runner" ]
+}
+
+executable("libnweb_render") {
+  output_name = "libnweb_render"
+  output_extension = "so"
+
+  allocator_version_script = "libnweb_render_allocator.map"
+  inputs = [ allocator_version_script ]
+  ldflags = [
+    "-shared",
+    "-Wl,-soname,libnweb_render.so",
+    "-Wl,--version-script=" +
+        rebase_path(allocator_version_script, root_build_dir),
+  ]
+
+  configs += [ ":aura_shell_config" ]
+
+  # NativeChildProcess loads this library by name. Keep the ABI entry points
+  # here, while the single Chromium runtime lives in libweb_engine.so.
+  sources = [ "ohos_nweb_render_shim.cc" ]
+
+  if (target_cpu == "arm64") {
+    libs = [
+      "dl",
+      "${ohos_sysroot}usr/lib/aarch64-linux-ohos/libhilog_ndk.z.so",
+    ]
+  }
+}
+
+test("aura_shell_smoke_tests") {
+  configs += [ ":aura_shell_config" ]
+
+  sources = [
+    "//media/gpu/ohos/ohos_video_shared_image_cache.h",
+    "//media/gpu/ohos/ohos_video_shared_image_cache_unittest.cc",
+    "//ui/ozone/platform/ohos/ohos_native_pixmap_unittest.cc",
+    "ohos_aura_shell_unittest.cc",
+    "ohos_renderer_isolation_unittest.cc",
+  ]
+
+  deps = [
+    ":aura_shell_core",
+    "//base",
+    "//base/test:test_support",
+    "//gpu/command_buffer/client",
+    "//gpu/command_buffer/common",
+    "//testing/gtest",
+    "//testing/gtest:gtest_main",
+    "//ui/base",
+    "//ui/ozone/platform/ohos",
+  ]
+
+  if (target_cpu == "arm64") {
+    libs = [ "${ohos_sysroot}usr/lib/aarch64-linux-ohos/libhilog_ndk.z.so" ]
+  }
+}
