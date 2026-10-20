@@ -1384,6 +1384,44 @@ void SetRequestDesktopSite(content::WebContents* contents, bool enabled) {
   controller.LoadOriginalRequestURL();
 }
 
+// Hosts the shell wants opened as desktop sites, kept in sync by its
+// "setDesktopSites" command. The shell owns the persistent copy; the engine
+// only needs the current list so it can apply it to every tab, including tabs
+// the shell never navigates itself (background tabs opened by an extension).
+std::set<std::string>& DesktopSiteHosts() {
+  static base::NoDestructor<std::set<std::string>> hosts;
+  return *hosts;
+}
+
+bool& DesktopSiteEverywhere() {
+  static base::NoDestructor<bool> everywhere(false);
+  return *everywhere;
+}
+
+void SetDesktopSites(const std::string* sites, bool everywhere) {
+  DesktopSiteEverywhere() = everywhere;
+  std::set<std::string>& hosts = DesktopSiteHosts();
+  hosts.clear();
+  if (!sites) {
+    return;
+  }
+  for (const std::string& line :
+       base::SplitString(*sites, "\n", base::TRIM_WHITESPACE,
+                         base::SPLIT_WANT_NONEMPTY)) {
+    hosts.insert(base::ToLowerASCII(line));
+  }
+}
+
+bool IsDesktopSiteHost(const GURL& url) {
+  if (DesktopSiteEverywhere()) {
+    return true;
+  }
+  if (!url.SchemeIsHTTPOrHTTPS()) {
+    return false;
+  }
+  return DesktopSiteHosts().count(base::ToLowerASCII(url.host())) > 0;
+}
+
 // Anchor rectangles the shell reported, per window. Small, rewritten whenever
 // the shell's layout changes, and read when a bubble is about to be shown.
 using AnchorRects = std::map<std::string, gfx::Rect>;
@@ -3275,6 +3313,22 @@ class TabStateWatcher : public content::WebContentsObserver {
   void OnAudioStateChanged(bool audible) override {
     RequestBrowserStateUpdate();
   }
+
+  // Applies the shell's per-site desktop choice to every tab, active or not.
+  // A tab opened by an extension never passes through the shell's navigate
+  // command, so this is the only place that can give it a desktop user agent.
+  void DidStartNavigation(content::NavigationHandle* handle) override {
+    if (!handle->IsInOutermostMainFrame()) {
+      return;
+    }
+    content::WebContents* contents = web_contents();
+    if (!contents || !IsDesktopSiteHost(handle->GetURL())) {
+      return;
+    }
+    contents->SetUserAgentOverride(AuraShellDesktopSiteUserAgent(),
+                                   /*override_in_new_tabs=*/false);
+    handle->SetIsOverridingUserAgent(true);
+  }
 };
 
 // Watches one window's tab strip, and the active tab in it, for anything the
@@ -4736,6 +4790,9 @@ void ExecuteBrowserCommandOnUiThread(gfx::AcceleratedWidget widget,
     }
   } else if (*name == "setRequestDesktopSite" && active) {
     SetRequestDesktopSite(active, command.FindBool("enabled").value_or(false));
+  } else if (*name == "setDesktopSites") {
+    SetDesktopSites(command.FindString("sites"),
+                    command.FindBool("allSites").value_or(false));
   } else if (*name == "setTabMuted") {
     content::WebContents* target = FindTabById(tabs, command.FindString("id"));
     if (!target) {
