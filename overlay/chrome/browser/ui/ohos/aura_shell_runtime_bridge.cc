@@ -3326,33 +3326,43 @@ class TabStateWatcher : public content::WebContentsObserver {
     if (!contents) {
       return;
     }
+    // Whether this navigation already had an override, i.e. whether the user
+    // agent was the desktop one before this observer could set it. A
+    // browser-initiated navigation picks its user agent earlier, so false
+    // here means this load goes out with the mobile agent.
+    const bool had_override =
+        !contents->GetUserAgentOverride().ua_string_override.empty();
     if (!IsDesktopSiteHost(handle->GetURL())) {
+      pending_heal_ = false;
       // Leaving a desktop site also leaves its user agent behind, or every
       // later site in this tab would keep asking for desktop pages.
-      if (!contents->GetUserAgentOverride().ua_string_override.empty()) {
+      if (had_override) {
         contents->SetUserAgentOverride(blink::UserAgentOverride(),
                                        /*override_in_new_tabs=*/false);
       }
       return;
     }
+    pending_heal_ = !had_override;
     contents->SetUserAgentOverride(AuraShellDesktopSiteUserAgent(),
                                    /*override_in_new_tabs=*/false);
     handle->SetIsOverridingUserAgent(true);
   }
 
-  // A browser-initiated navigation picks its user agent before this observer
-  // runs, so the first load can still be the mobile one. If that happened,
-  // load once more: the override set above is in place by now.
+  // When the load above went out before the override was in place, it is the
+  // mobile page that just arrived. Load it once more: the override is set by
+  // now, so the second load asks for the desktop page. One reload per host
+  // and tab keeps a redirect chain from looping.
   void DidFinishNavigation(content::NavigationHandle* handle) override {
+    if (!pending_heal_) {
+      return;
+    }
+    pending_heal_ = false;
     if (!handle->IsInOutermostMainFrame() || !handle->HasCommitted() ||
         handle->IsErrorPage()) {
       return;
     }
     content::WebContents* contents = web_contents();
     if (!contents || !IsDesktopSiteHost(handle->GetURL())) {
-      return;
-    }
-    if (!contents->GetUserAgentOverride().ua_string_override.empty()) {
       return;
     }
     const std::string host = base::ToLowerASCII(handle->GetURL().host());
@@ -3366,6 +3376,8 @@ class TabStateWatcher : public content::WebContentsObserver {
   }
 
  private:
+  // Set when the navigation that just started may have used the mobile agent.
+  bool pending_heal_ = false;
   // Hosts this tab already reloaded once to pick up the desktop agent.
   std::set<std::string> healed_hosts_;
 };
