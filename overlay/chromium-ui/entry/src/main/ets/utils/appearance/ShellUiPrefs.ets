@@ -35,6 +35,12 @@ const KEY_VULKAN_ENABLED = 'vulkanEnabled';
 // 走引擎已编入的 Dawn/WebGPU（ohos-dawn-webgpu.patch）。外壳注入命令行即开，
 // 无需重编；与 ANGLE 后端（gles/vulkan）互不干扰。改动需重启应用才能生效。
 const KEY_WEBGPU_ENABLED = 'webgpuEnabled';
+// 1.0.190「桌面版网站」按站点持久化：被用户强制设为桌面版的站点 host 列表
+// （\n 分隔，复用 URL 列表的解析/拼接，避免 ArkTS 侧 JSON 体操）。再打开这些
+// 站点会自动用桌面形状 UA（去 Mobile），不用每次手动切。
+const KEY_DESKTOP_SITES = 'desktopSites';
+// 全局默认 UA：'mobile'（默认，手机浏览体验）或 'desktop'（所有站点用桌面 UA）。
+const KEY_UA_DEFAULT = 'uaDefault';
 
 export class ShellUiPrefs {
   static async loadHideStatusBar(context: common.Context): Promise<boolean> {
@@ -304,6 +310,48 @@ export class ShellUiPrefs {
     try {
       const store = await preferences.getPreferences(context, STORE_NAME);
       await store.put(KEY_WEBGPU_ENABLED, value);
+      await store.flush();
+    } catch (error) {
+    }
+  }
+
+  // 1.0.190「桌面版网站」站点名单：\n 分隔的 host 列表（与网址主页共用解析）。
+  static async loadDesktopSites(context: common.Context): Promise<string[]> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      const raw = await store.get(KEY_DESKTOP_SITES, '');
+      return ShellUiPrefs.parseUrlList(typeof raw === 'string' ? raw : '');
+    } catch (error) {
+      return [];
+    }
+  }
+
+  // 写前对 host 去重、丢空行、保顺序（parseUrlList 已做），调用方负责传入干净数组。
+  static async saveDesktopSites(context: common.Context, list: string[]): Promise<void> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      await store.put(KEY_DESKTOP_SITES, ShellUiPrefs.joinUrlList(list));
+      await store.flush();
+    } catch (error) {
+    }
+  }
+
+  // 1.0.190 全局默认 UA。只认 'desktop'，其余一律回退 'mobile'（写脏值不至于
+  // 让整个浏览器变成桌面版）。改动在下次导航生效，无需重启。
+  static async loadUaDefault(context: common.Context): Promise<string> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      const value = await store.get(KEY_UA_DEFAULT, 'mobile');
+      return value === 'desktop' ? 'desktop' : 'mobile';
+    } catch (error) {
+      return 'mobile';
+    }
+  }
+
+  static async saveUaDefault(context: common.Context, value: string): Promise<void> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      await store.put(KEY_UA_DEFAULT, value === 'desktop' ? 'desktop' : 'mobile');
       await store.flush();
     } catch (error) {
     }

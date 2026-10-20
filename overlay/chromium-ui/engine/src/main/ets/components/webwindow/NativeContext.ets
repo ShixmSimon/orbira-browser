@@ -501,6 +501,11 @@ export interface BrowserCommandPayload {
   pipWidget?: number;
   pipAction?: 'play' | 'pause' | 'close' | 'restore' | 'state';
   url?: string;
+  // setDesktopSites: hosts the shell wants opened as desktop sites, one per
+  // line; allSites opens every host that way. The engine keeps this list only
+  // in memory, because the shell owns the persistent copy.
+  sites?: string;
+  allSites?: boolean;
   // contextMenuAction: the item chosen, one of the event's supportedActions.
   // downloadAction: what to do with the download `id`.
   action?: ContextMenuAction | DownloadAction;

@@ -265,6 +265,11 @@ export struct SettingsPanel {
   // 1.0.146「WebGPU 加速」：默认 false。开启后页面可用 navigator.gpu。
   // 与 ANGLE 后端（gles/vulkan）互不干扰，外壳注入命令行即开，改动需重启生效。
   @StorageLink('auraWebGpuEnabled') webgpuEnabled: boolean = false;
+  // 1.0.190「桌面版网站」：全局 UA 默认（'mobile' | 'desktop'）与站点名单
+  // （\n 分隔的 host）。两者决定 WebWindow 是否在该站点用桌面形状 UA。
+  @StorageLink('auraUaDefault') uaDefault: string = 'mobile';
+  @StorageLink('auraDesktopSites') desktopSitesRaw: string = '';
+  private desktopSitesScroller: Scroller = new Scroller();
   private requestSeq: number = 0;
   private retryTimer: number = -1;
 
@@ -887,6 +892,9 @@ export struct SettingsPanel {
     if (name === 'home') {
       return '主页设置';
     }
+    if (name === 'desktopSites') {
+      return '桌面版网站';
+    }
     return '设置';
   }
 
@@ -912,6 +920,9 @@ export struct SettingsPanel {
     }
     if (name === 'home') {
       return [this.homeScroller];
+    }
+    if (name === 'desktopSites') {
+      return [this.desktopSitesScroller];
     }
     return [];
   }
@@ -1079,6 +1090,41 @@ export struct SettingsPanel {
               value: '',
               onTap: (): void => {
                 this.onOpenExtensions();
+              }
+            })
+          }
+          .width('100%')
+          .padding({ left: 0, right: 0, top: 2, bottom: 2 })
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
+
+          this.SectionLabel('网站', true)
+          Column() {
+            this.ShellToggleRow($r('app.media.aura_desktop'), '默认使用桌面版网站', '所有网站以桌面版打开',
+              this.uaDefault === 'desktop', (isOn: boolean): void => {
+                const value: string = isOn ? 'desktop' : 'mobile';
+                AppStorage.setOrCreate('auraUaDefault', value);
+                const ctx = this.getUIContext().getHostContext() as common.Context | undefined;
+                if (ctx) {
+                  ShellUiPrefs.saveUaDefault(ctx, value);
+                }
+                // 立即作用于当前标签：切换 UA 后重载，与桌面版开关的原生行为一致。
+                this.onCommand({
+                  command: 'setDesktopSites',
+                  sites: String(AppStorage.get('auraDesktopSites') ?? ''),
+                  allSites: isOn
+                });
+                this.onCommand({ command: 'setRequestDesktopSite', enabled: isOn });
+                this.onCommand({ command: 'reload' });
+              })
+            this.CardDivider()
+            SettingsNavRow({
+              icon: $r('app.media.aura_desktop'),
+              label: '已设为桌面版的网站',
+              value: this.desktopSiteCountLabel(),
+              onTap: (): void => {
+                this.pushPage('desktopSites');
               }
             })
           }
@@ -2270,6 +2316,8 @@ export struct SettingsPanel {
           this.LegalView()
         } else if (name === 'home') {
           this.HomeStyleView()
+        } else if (name === 'desktopSites') {
+          this.DesktopSitesView()
         }
       }
       .width('100%')
@@ -2331,7 +2379,90 @@ export struct SettingsPanel {
     })
   }
 
-  build() {
+  // 1.0.190「已设为桌面版的网站」管理页：列出被强制桌面版的 host，可逐个移除。
+  @Builder
+  private DesktopSitesView() {
+    Column() {
+      Scroll(this.desktopSitesScroller) {
+        Column() {
+          AuraSectionLabel({ text: '这些网站会以桌面版打开', tightTop: true })
+          if (ShellUiPrefs.parseUrlList(this.desktopSitesRaw).length === 0) {
+            Column() {
+              Text('还没有站点。\n在浏览器菜单里对某个网站开启「桌面版网站」即可加入此处，' +
+                '重开该站仍会显示桌面版。')
+                .fontSize(13)
+                .fontColor($r('app.color.text_secondary'))
+                .width('100%')
+            }
+            .width('100%')
+            .layoutWeight(1)
+            .justifyContent(FlexAlign.Center)
+          } else {
+            ForEach(ShellUiPrefs.parseUrlList(this.desktopSitesRaw), (host: string): void => {
+              Row({ space: 12 }) {
+                Image($r('app.media.aura_desktop'))
+                  .width(22)
+                  .height(22)
+                  .fillColor($r('app.color.icon_primary'))
+                Text(host)
+                  .fontSize(15)
+                  .fontColor($r('app.color.text_primary'))
+                  .layoutWeight(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .maxLines(1)
+                Button('移除')
+                  .height(32)
+                  .fontSize(13)
+                  .onClick((): void => {
+                    this.removeDesktopSite(host);
+                  })
+              }
+              .width('100%')
+              .constraintSize({ minHeight: 56 })
+              .padding({ left: 16, right: 16 })
+              .borderRadius(10)
+              .backgroundColor($r('app.color.surface_secondary'))
+            }, (host: string): string => host)
+          }
+        }
+        .width('100%')
+        .padding({ top: glassHeaderInsetVp() })
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .scrollBar(BarState.Off)
+      .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+      .align(Alignment.TopStart)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  private desktopSiteCountLabel(): string {
+    const n: number = ShellUiPrefs.parseUrlList(this.desktopSitesRaw).length;
+    return n > 0 ? `${n} 个网站` : '';
+  }
+
+  private removeDesktopSite(host: string): void {
+    const list: string[] = ShellUiPrefs.parseUrlList(this.desktopSitesRaw);
+    const idx: number = list.indexOf(host);
+    if (idx >= 0) {
+      list.splice(idx, 1);
+    }
+    const joined: string = ShellUiPrefs.joinUrlList(list);
+    AppStorage.setOrCreate('auraDesktopSites', joined);
+    const ctx = this.getUIContext().getHostContext() as common.Context | undefined;
+    if (ctx) {
+      ShellUiPrefs.saveDesktopSites(ctx, list);
+    }
+    this.onCommand({
+      command: 'setDesktopSites',
+      sites: joined,
+      allSites: String(AppStorage.get('auraUaDefault') ?? 'mobile') === 'desktop'
+    });
+  }
+
+build() {
     // 1.0.159：面板自己持有 HdsNavigation + NavPathStack（与 ExtensionPanel
     // 1.0.157 同套路）。主面板是 Navigation 内容、常驻挂载 —— 二级页返回时
     // 主列表滚动位置天然保留；二级页作为 NavDestination 推入，系统默认走

@@ -3770,6 +3770,83 @@ export struct MobileBrowserOverlay {
       message: enabled ? '已请求桌面版网站' : '已回到移动版网站',
       duration: 2000
     });
+    // 1.0.190：把当前站点写进/移出「桌面版网站」持久化名单，重开该站仍用桌面 UA。
+    this.persistDesktopSite(enabled);
+  }
+
+  // 将当前标签的 host 加入或移出桌面版网站名单，并落盘 + 同步 AppStorage
+  // （WebWindow 据此在下次导航前自动下发桌面 UA）。
+  private persistDesktopSite(enabled: boolean): void {
+    const url: string = this.browserState?.url ?? '';
+    const host: string = this.hostOf(url);
+    if (!host) {
+      return;
+    }
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    const raw = String(AppStorage.get('auraDesktopSites') ?? '');
+    const list: string[] = ShellUiPrefs.parseUrlList(raw);
+    const idx: number = list.indexOf(host);
+    if (enabled) {
+      if (idx < 0) {
+        list.push(host);
+      }
+    } else {
+      if (idx >= 0) {
+        list.splice(idx, 1);
+      }
+    }
+    const joined: string = ShellUiPrefs.joinUrlList(list);
+    AppStorage.setOrCreate('auraDesktopSites', joined);
+    if (context) {
+      ShellUiPrefs.saveDesktopSites(context, list);
+    }
+    // 同步给引擎：引擎按这份名单在每次导航时决定 UA，脚本后台新开的标签也靠它。
+    this.issueCommand({
+      command: 'setDesktopSites',
+      sites: joined,
+      allSites: String(AppStorage.get('auraUaDefault') ?? 'mobile') === 'desktop'
+    });
+  }
+
+  // 无依赖地从 URL 取出 host（去协议/路径/端口/userinfo），http(s) 之外的非常规
+  // scheme 返回空串，避免误匹配桌面名单。
+  private hostOf(url: string): string {
+    if (!url || url.length === 0) {
+      return '';
+    }
+    let rest: string = url;
+    const protoIdx: number = rest.indexOf('://');
+    if (protoIdx >= 0) {
+      rest = rest.substring(protoIdx + 3);
+    } else {
+      const colon: number = rest.indexOf(':');
+      if (colon >= 0) {
+        rest = rest.substring(colon + 1);
+      }
+    }
+    let end: number = rest.length;
+    const slash: number = rest.indexOf('/');
+    const q: number = rest.indexOf('?');
+    const hPos: number = rest.indexOf('#');
+    if (slash >= 0 && slash < end) {
+      end = slash;
+    }
+    if (q >= 0 && q < end) {
+      end = q;
+    }
+    if (hPos >= 0 && hPos < end) {
+      end = hPos;
+    }
+    let host: string = rest.substring(0, end);
+    const port: number = host.lastIndexOf(':');
+    if (port >= 0) {
+      host = host.substring(0, port);
+    }
+    const at: number = host.lastIndexOf('@');
+    if (at >= 0) {
+      host = host.substring(at + 1);
+    }
+    return host;
   }
 
   @Builder

@@ -317,6 +317,14 @@ struct AuraShell {
           AppStorage.setOrCreate('auraHomeUrl', list[0]);
         }
       });
+      // 1.0.190「桌面版网站」站点名单与全局 UA 默认：启动期灌入 AppStorage，
+      // 供 WebWindow 在导航前推导桌面 UA、设置面板展示/管理。
+      ShellUiPrefs.loadDesktopSites(context).then((list: string[]): void => {
+        AppStorage.setOrCreate('auraDesktopSites', ShellUiPrefs.joinUrlList(list));
+      });
+      ShellUiPrefs.loadUaDefault(context).then((value: string): void => {
+        AppStorage.setOrCreate('auraUaDefault', value);
+      });
     }
     // 1.0.121：冷启动预热（见 navCover 注释）。
     this.armNavCover(this.startUrl ?? '');
