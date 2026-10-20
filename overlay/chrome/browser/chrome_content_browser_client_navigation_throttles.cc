@@ -9,7 +9,6 @@
 #include "build/build_config.h"
 #if BUILDFLAG(IS_OHOS)
 #include "chrome/browser/ohos/url_protection/navigation_throttle.h"
-#include "chrome/browser/ui/ohos/aura_shell_runtime_bridge.h"
 #endif
 #include "build/buildflag.h"
 #include "chrome/browser/actor/actor_navigation_throttle.h"
@@ -286,38 +285,6 @@ void MaybeCreateAndAddVisitedLinkNavigationThrottle(
 
 }  // namespace
 
-#if BUILDFLAG(IS_OHOS)
-namespace {
-// Gives a navigation the desktop user agent before its request goes out.
-// A NavigationThrottle sees every navigation of every WebContents, so this
-// also covers tabs an extension opens in the background -- tabs that never
-// pass through the shell's own navigation path.
-class DesktopSiteUserAgentThrottle : public content::NavigationThrottle {
- public:
-  explicit DesktopSiteUserAgentThrottle(
-      content::NavigationThrottleRegistry& registry)
-      : content::NavigationThrottle(registry) {}
-
-  ThrottleCheckResult WillStartRequest() override {
-    content::NavigationHandle* handle = navigation_handle();
-    content::WebContents* contents = handle->GetWebContents();
-    if (handle->IsInOutermostMainFrame() && contents &&
-        chrome::ohos::IsAuraShellDesktopSite(handle->GetURL())) {
-      contents->SetUserAgentOverride(
-          chrome::ohos::AuraShellDesktopSiteUserAgent(),
-          /*override_in_new_tabs=*/false);
-      handle->SetIsOverridingUserAgent(true);
-    }
-    return PROCEED;
-  }
-
-  const char* GetNameForLogging() override {
-    return "DesktopSiteUserAgentThrottle";
-  }
-};
-}  // namespace
-#endif  // BUILDFLAG(IS_OHOS)
-
 void CreateAndAddChromeThrottlesForNavigation(
     content::NavigationThrottleRegistry& registry) {
   content::NavigationHandle& handle = registry.GetNavigationHandle();
@@ -345,8 +312,6 @@ void CreateAndAddChromeThrottlesForNavigation(
 
 #if BUILDFLAG(IS_OHOS)
   chrome::ohos::url_protection::NavigationThrottle::MaybeCreateAndAdd(registry);
-  registry.AddThrottle(
-      std::make_unique<DesktopSiteUserAgentThrottle>(registry));
 #endif
 
   DSEPrewarmNavigationThrottle::MaybeCreateAndAdd(registry);
