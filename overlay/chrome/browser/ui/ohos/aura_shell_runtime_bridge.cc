@@ -294,6 +294,11 @@ std::unique_ptr<ScopedKeepAlive>& WindowlessKeepAlive() {
 }  // namespace
 namespace {
 
+// Attaches a desktop-site TabStateWatcher to a WebContents; forward-declared
+// here so the browser-state snapshot loop below can call it before its
+// definition further down.
+void WatchTabState(content::WebContents* contents);
+
 constexpr int kMaxBrowserLookupAttempts = 50;
 constexpr base::TimeDelta kBrowserLookupDelay = base::Milliseconds(100);
 constexpr base::TimeDelta kThemeFontRendererRestartDelay =
@@ -2992,7 +2997,12 @@ std::string BuildBrowserStateJson(std::string_view ui_family,
   // store is exactly that tab. Creating the observer twice is a no-op, so
   // this costs a map lookup per tab.
   for (int index = 0; index < tabs->count(); ++index) {
-    chrome::ohos::WatchChromeWebStoreUserAgent(tabs->GetWebContentsAt(index));
+    content::WebContents* const tab = tabs->GetWebContentsAt(index);
+    chrome::ohos::WatchChromeWebStoreUserAgent(tab);
+    // The desktop-sites list must reach every tab, including one an extension
+    // just opened, as early as the store watcher above, so its first
+    // navigation already carries the desktop user agent.
+    WatchTabState(tab);
   }
 
   // The GPU losing its context is noticed far from here, in the code that
@@ -3303,10 +3313,11 @@ class ScopedBrowserStateUpdate {
 // Watches one tab, active or not, for what the tab list reports of every tab:
 // its title and whether it is making a sound. The tab strip hears of both too,
 // but only after Chromium's 200 ms UI coalescing.
-class TabStateWatcher : public content::WebContentsObserver {
+class TabStateWatcher
+    : public content::WebContentsObserver,
+      public content::WebContentsUserData<TabStateWatcher> {
  public:
-  explicit TabStateWatcher(content::WebContents* contents)
-      : content::WebContentsObserver(contents) {}
+  ~TabStateWatcher() override = default;
 
   void TitleWasSet(content::NavigationEntry* entry) override {
     RequestBrowserStateUpdate();
@@ -3344,7 +3355,31 @@ class TabStateWatcher : public content::WebContentsObserver {
                                    /*override_in_new_tabs=*/false);
     handle->SetIsOverridingUserAgent(true);
   }
+
+ private:
+  friend class content::WebContentsUserData<TabStateWatcher>;
+
+  explicit TabStateWatcher(content::WebContents* contents)
+      : content::WebContentsObserver(contents),
+        content::WebContentsUserData<TabStateWatcher>(*contents) {}
+
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
 };
+
+WEB_CONTENTS_USER_DATA_KEY_IMPL(TabStateWatcher);
+
+// Attaches a TabStateWatcher to `contents` if none is there yet. Every tab,
+// not just the active one: a tab an extension opens in the background reaches
+// its first navigation before the shell's navigate command, and even before
+// the tab strip change that WatchEveryTab() waits for, so the watcher must be
+// on it from the moment the snapshot loop first sees the tab. CreateForWeb-
+// Contents is a no-op on a tab that already has one.
+void WatchTabState(content::WebContents* contents) {
+  if (!contents) {
+    return;
+  }
+  TabStateWatcher::CreateForWebContents(contents);
+}
 
 // Watches one window's tab strip, and the active tab in it, for anything the
 // browser state reports.
@@ -3458,30 +3493,17 @@ class BrowserStateWatcher : public TabStripModelObserver,
     }
   }
 
-  // One TabStateWatcher per tab in the strip, no more and no fewer.
+  // One TabStateWatcher per tab in the strip. The watcher lives on the
+  // WebContents as user data, so it is created with the tab and destroyed with
+  // it; here we only make sure each current tab has one.
   void WatchEveryTab() {
-    std::map<content::WebContents*, std::unique_ptr<TabStateWatcher>> watched;
     for (int index = 0; index < tabs_->count(); ++index) {
-      content::WebContents* contents = tabs_->GetWebContentsAt(index);
-      if (!contents) {
-        continue;
-      }
-      auto existing = tab_watchers_.find(contents);
-      // A watcher whose tab is gone watches nothing, and a new tab at the
-      // same address needs a new one.
-      if (existing != tab_watchers_.end() && existing->second->web_contents()) {
-        watched.emplace(contents, std::move(existing->second));
-      } else {
-        watched.emplace(contents, std::make_unique<TabStateWatcher>(contents));
-      }
+      WatchTabState(tabs_->GetWebContentsAt(index));
     }
-    tab_watchers_ = std::move(watched);
   }
 
   const raw_ptr<TabStripModel> tabs_;
   raw_ptr<zoom::ZoomController> zoom_ = nullptr;
-  std::map<content::WebContents*, std::unique_ptr<TabStateWatcher>>
-      tab_watchers_;
 };
 
 std::map<TabStripModel*, std::unique_ptr<BrowserStateWatcher>>&
@@ -4572,6 +4594,7 @@ void ExecuteBrowserCommandOnUiThread(gfx::AcceleratedWidget widget,
       // place that knows a navigation is about to start, and a watcher
       // attached afterwards has already missed the only event it wanted.
       chrome::ohos::WatchChromeWebStoreUserAgent(active);
+      WatchTabState(active);
       // The shell sends this only when its address bar is submitted, so it
       // says so. Debug URLs such as chrome://gpu-lose-context/ act only on a
       // navigation from the address bar (HandleDebugURL), and so does the
