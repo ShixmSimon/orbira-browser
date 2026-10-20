@@ -1394,8 +1394,8 @@ std::set<std::string>& DesktopSiteHosts() {
 }
 
 bool& DesktopSiteEverywhere() {
-  static base::NoDestructor<bool> everywhere(false);
-  return *everywhere;
+  static bool everywhere = false;
+  return everywhere;
 }
 
 void SetDesktopSites(const std::string* sites, bool everywhere) {
