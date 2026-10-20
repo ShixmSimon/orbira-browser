@@ -1220,6 +1220,7 @@ struct AuraShell {
           if (state.ready) {
             this.configureBrowserControls();
             this.restoreSavedTabs();
+            this.syncDesktopSites();
           }
           this.currentTabCastSession.update(state);
           this.knockShareSession.update(state);
@@ -2202,6 +2203,31 @@ struct AuraShell {
       command: 'getSearchEngines',
       requestId: this.searchEnginesRequestSeq
     });
+  }
+
+  // 引擎只在内存里保存桌面站点名单，持久化在外壳。启动时补发几次：命令通道
+  // 刚接上时会吞命令（真机实测），而脚本后台新开的标签不经过外壳导航，只能
+  // 靠这里把名单送进引擎。
+  private desktopSitesRetries: number = 0;
+
+  private syncDesktopSites(): void {
+    const sites: string = String(AppStorage.get('auraDesktopSites') ?? '');
+    const allSites: boolean =
+      String(AppStorage.get('auraUaDefault') ?? 'mobile') === 'desktop';
+    if (sites.length === 0 && !allSites) {
+      return;
+    }
+    this.executeBrowserCommand({
+      command: 'setDesktopSites',
+      sites: sites,
+      allSites: allSites
+    });
+    if (this.desktopSitesRetries < 2) {
+      this.desktopSitesRetries += 1;
+      setTimeout((): void => {
+        this.syncDesktopSites();
+      }, 1500);
+    }
   }
 
   // 启动兜底重发：每 1.5s 检查一次、最多 8 次（约 12s）。重发全部幂等，

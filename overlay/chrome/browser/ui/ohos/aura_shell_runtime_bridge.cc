@@ -3318,6 +3318,11 @@ class TabStateWatcher : public content::WebContentsObserver {
   // Applies the shell's per-site desktop choice to every tab, active or not.
   // A tab opened by an extension never passes through the shell's navigate
   // command, so this is the only place that can give it a desktop user agent.
+  //
+  // Order matters: SetIsOverridingUserAgent() rebuilds the User-Agent header
+  // from the WebContents override, so setting the override first means the
+  // very first request already carries the desktop agent. No reload is
+  // needed, which keeps a script's background tab on its original timing.
   void DidStartNavigation(content::NavigationHandle* handle) override {
     if (!handle->IsInOutermostMainFrame()) {
       return;
@@ -3326,60 +3331,19 @@ class TabStateWatcher : public content::WebContentsObserver {
     if (!contents) {
       return;
     }
-    // Whether this navigation already had an override, i.e. whether the user
-    // agent was the desktop one before this observer could set it. A
-    // browser-initiated navigation picks its user agent earlier, so false
-    // here means this load goes out with the mobile agent.
-    const bool had_override =
-        !contents->GetUserAgentOverride().ua_string_override.empty();
     if (!IsDesktopSiteHost(handle->GetURL())) {
-      pending_heal_ = false;
       // Leaving a desktop site also leaves its user agent behind, or every
       // later site in this tab would keep asking for desktop pages.
-      if (had_override) {
+      if (!contents->GetUserAgentOverride().ua_string_override.empty()) {
         contents->SetUserAgentOverride(blink::UserAgentOverride(),
                                        /*override_in_new_tabs=*/false);
       }
       return;
     }
-    pending_heal_ = !had_override;
     contents->SetUserAgentOverride(AuraShellDesktopSiteUserAgent(),
                                    /*override_in_new_tabs=*/false);
     handle->SetIsOverridingUserAgent(true);
   }
-
-  // When the load above went out before the override was in place, it is the
-  // mobile page that just arrived. Load it once more: the override is set by
-  // now, so the second load asks for the desktop page. One reload per host
-  // and tab keeps a redirect chain from looping.
-  void DidFinishNavigation(content::NavigationHandle* handle) override {
-    if (!pending_heal_) {
-      return;
-    }
-    pending_heal_ = false;
-    if (!handle->IsInOutermostMainFrame() || !handle->HasCommitted() ||
-        handle->IsErrorPage()) {
-      return;
-    }
-    content::WebContents* contents = web_contents();
-    if (!contents || !IsDesktopSiteHost(handle->GetURL())) {
-      return;
-    }
-    const std::string host = base::ToLowerASCII(handle->GetURL().host());
-    if (!healed_hosts_.insert(host).second) {
-      return;
-    }
-    contents->SetUserAgentOverride(AuraShellDesktopSiteUserAgent(),
-                                   /*override_in_new_tabs=*/false);
-    contents->GetController().Reload(content::ReloadType::NORMAL,
-                                     /*check_for_repost=*/false);
-  }
-
- private:
-  // Set when the navigation that just started may have used the mobile agent.
-  bool pending_heal_ = false;
-  // Hosts this tab already reloaded once to pick up the desktop agent.
-  std::set<std::string> healed_hosts_;
 };
 
 // Watches one window's tab strip, and the active tab in it, for anything the
