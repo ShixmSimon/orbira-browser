@@ -3323,13 +3323,51 @@ class TabStateWatcher : public content::WebContentsObserver {
       return;
     }
     content::WebContents* contents = web_contents();
-    if (!contents || !IsDesktopSiteHost(handle->GetURL())) {
+    if (!contents) {
+      return;
+    }
+    if (!IsDesktopSiteHost(handle->GetURL())) {
+      // Leaving a desktop site also leaves its user agent behind, or every
+      // later site in this tab would keep asking for desktop pages.
+      if (!contents->GetUserAgentOverride().ua_string_override.empty()) {
+        contents->SetUserAgentOverride(blink::UserAgentOverride(),
+                                       /*override_in_new_tabs=*/false);
+      }
       return;
     }
     contents->SetUserAgentOverride(AuraShellDesktopSiteUserAgent(),
                                    /*override_in_new_tabs=*/false);
     handle->SetIsOverridingUserAgent(true);
   }
+
+  // A browser-initiated navigation picks its user agent before this observer
+  // runs, so the first load can still be the mobile one. If that happened,
+  // load once more: the override set above is in place by now.
+  void DidFinishNavigation(content::NavigationHandle* handle) override {
+    if (!handle->IsInOutermostMainFrame() || !handle->HasCommitted() ||
+        handle->IsErrorPage()) {
+      return;
+    }
+    content::WebContents* contents = web_contents();
+    if (!contents || !IsDesktopSiteHost(handle->GetURL())) {
+      return;
+    }
+    if (!contents->GetUserAgentOverride().ua_string_override.empty()) {
+      return;
+    }
+    const std::string host = base::ToLowerASCII(handle->GetURL().host());
+    if (!healed_hosts_.insert(host).second) {
+      return;
+    }
+    contents->SetUserAgentOverride(AuraShellDesktopSiteUserAgent(),
+                                   /*override_in_new_tabs=*/false);
+    contents->GetController().Reload(content::ReloadType::NORMAL,
+                                     /*check_for_repost=*/false);
+  }
+
+ private:
+  // Hosts this tab already reloaded once to pick up the desktop agent.
+  std::set<std::string> healed_hosts_;
 };
 
 // Watches one window's tab strip, and the active tab in it, for anything the
