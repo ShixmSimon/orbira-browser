@@ -191,6 +191,7 @@
 #include "content/public/browser/media_capture_devices.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/overscroll_configuration.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/document_service.h"
