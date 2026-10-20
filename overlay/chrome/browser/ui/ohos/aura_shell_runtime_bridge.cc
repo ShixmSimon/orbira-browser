@@ -3342,17 +3342,33 @@ class TabStateWatcher
     if (!contents) {
       return;
     }
+    const std::string current =
+        contents->GetUserAgentOverride().ua_string_override;
+    const std::string desktop =
+        AuraShellDesktopSiteUserAgent().ua_string_override;
     if (!IsDesktopSiteHost(handle->GetURL())) {
       // Leaving a desktop site also leaves its user agent behind, or every
-      // later site in this tab would keep asking for desktop pages.
-      if (!contents->GetUserAgentOverride().ua_string_override.empty()) {
+      // later site in this tab would keep asking for desktop pages. Only the
+      // agent this watcher installed is taken back: a store navigation in
+      // flight may have installed the store's own string in the same tick,
+      // and clearing everything would strip it.
+      if (current == desktop) {
         contents->SetUserAgentOverride(blink::UserAgentOverride(),
                                        /*override_in_new_tabs=*/false);
+        SetAuraShellUserAgentPinned(contents, false);
       }
       return;
     }
-    contents->SetUserAgentOverride(AuraShellDesktopSiteUserAgent(),
-                                   /*override_in_new_tabs=*/false);
+    if (current != desktop) {
+      contents->SetUserAgentOverride(AuraShellDesktopSiteUserAgent(),
+                                     /*override_in_new_tabs=*/false);
+    }
+    // The browser-state poll rewrites a tab's user agent back to the
+    // device's unless the tab is pinned, and it runs on every title change
+    // and audio blip. Unpinned, the desktop agent was reverted within a poll
+    // of being set, the next redirect went out with the phone one, and the
+    // tab oscillated -- loading slowly, many times over, and arriving mobile.
+    SetAuraShellUserAgentPinned(contents, true);
     handle->SetIsOverridingUserAgent(true);
   }
 
