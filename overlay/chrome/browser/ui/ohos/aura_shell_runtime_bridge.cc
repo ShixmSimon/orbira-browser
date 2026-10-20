@@ -5055,6 +5055,10 @@ constexpr char kDesktopSiteCpu[] = "x86_64";
 constexpr char kDesktopSiteArchitecture[] = "x86";
 #endif
 
+bool IsAuraShellDesktopSite(const GURL& url) {
+  return IsDesktopSiteHost(url);
+}
+
 blink::UserAgentOverride AuraShellDesktopSiteUserAgent() {
   blink::UserAgentOverride desktop;
   desktop.ua_string_override =

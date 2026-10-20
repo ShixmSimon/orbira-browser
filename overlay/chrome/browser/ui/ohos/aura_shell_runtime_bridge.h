@@ -23,6 +23,8 @@ class BrowserWindowInterface;
 class GURL;
 class Profile;
 
+class GURL;
+
 namespace content {
 class RenderFrameHost;
 class WebContents;
@@ -265,6 +267,11 @@ bool IsAuraShellUserAgentPinned(content::WebContents* contents);
 // is Chrome's desktop Linux string, as Chrome for Android's desktop site is,
 // with client hints to match.
 blink::UserAgentOverride AuraShellDesktopSiteUserAgent();
+
+// Whether the shell asked for this URL to be opened as a desktop site. Used by
+// the navigation throttle so every tab gets the right user agent before its
+// request goes out, including tabs an extension opens in the background.
+bool IsAuraShellDesktopSite(const GURL& url);
 
 void OnAuraShellTopControlsShownRatio(content::WebContents* contents,
                                       float ratio);
