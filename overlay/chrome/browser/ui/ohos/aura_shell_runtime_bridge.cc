@@ -363,6 +363,10 @@ struct RuntimeBridgeState {
   std::map<gfx::AcceleratedWidget, uintptr_t> controls_shown_for
       GUARDED_BY(lock);
   float last_shown_ratio GUARDED_BY(lock) = -1.0f;
+  // Until this time, a ratio that drops is the fresh renderer settling, not
+  // the reader scrolling: following it pulled the shell's top bar up for a
+  // moment on every load and refresh (the "bar jumps" report, 2026-10-21).
+  base::TimeTicks controls_ratio_hold_until GUARDED_BY(lock);
   bool pending_shutdown GUARDED_BY(lock) = false;
 
   bool IsCameraForeground() const EXCLUSIVE_LOCKS_REQUIRED(lock) {
@@ -1182,6 +1186,26 @@ bool ApplyUserAgentToWebContents(content::WebContents* contents,
   if (!contents) {
     return false;
   }
+  // Internal pages (chrome://, chrome-extension://, file://) are laid out and
+  // scripted for the device and must never take a site's desktop agent. The
+  // home and navigate commands already clear any override before reaching
+  // them, and DidStartNavigation leaves their agent alone. Applying the "every
+  // site" desktop agent to, say, the new-tab page and reloading it to take
+  // effect is what thrashed it: an internal page drops the override on reload,
+  // so the next state poll set it again and reloaded once more -- a tight
+  // reload ping-pong on the home screen -- and that reload racing a pending
+  // extension-page navigation aborted it (ERR_ABORTED), which is the "tap an
+  // extension tile on the home screen, bounced straight back to home" bug.
+  // Leave internal pages on the device agent and never reload them for UA.
+  const GURL& visible = contents->GetVisibleURL();
+  if (!visible.is_valid() || !visible.SchemeIsHTTPOrHTTPS()) {
+    // Diagnostic (1.0.219): the state poll fires far more often than a
+    // navigation; one line per skipped internal page pins down whether any
+    // caller still tries to reach internal pages through here.
+    LOG(WARNING) << "OHOS UA: internal page skipped url=" << visible.spec()
+                 << " mobile=" << mobile << " reload=" << reload;
+    return false;
+  }
   // Someone asked for this tab's user agent by name -- "desktop site", or
   // the web store, which cannot install anything to a mobile one. Following
   // the device here would undo that, and did: this runs on every state poll,
@@ -1201,6 +1225,10 @@ bool ApplyUserAgentToWebContents(content::WebContents* contents,
   // loaded every restored tab at once, behind the user's back.
   if (reload && contents->GetController().GetLastCommittedEntry() &&
       !contents->GetController().NeedsReload()) {
+    // Diagnostic (1.0.219): the only browser-side UA reload. If the new tab
+    // page ping-pongs again, this line names or clears this call site.
+    LOG(WARNING) << "OHOS UA: reload for agent change url="
+                 << contents->GetVisibleURL().spec();
     contents->GetController().Reload(content::ReloadType::NORMAL,
                                      /*check_for_repost=*/false);
   }
@@ -1394,6 +1422,11 @@ void SetRequestDesktopSite(content::WebContents* contents, bool enabled) {
 // "setDesktopSites" command. The shell owns the persistent copy; the engine
 // only needs the current list so it can apply it to every tab, including tabs
 // the shell never navigates itself (background tabs opened by an extension).
+// Defined further down, beside the desktop user agent it compares against.
+// |before| is the host list this call replaced.
+void ReleaseStaleDesktopSiteOverrides(const std::set<std::string>& before,
+                                      bool was_everywhere);
+
 std::set<std::string>& DesktopSiteHosts() {
   static base::NoDestructor<std::set<std::string>> hosts;
   return *hosts;
@@ -1405,25 +1438,40 @@ bool& DesktopSiteEverywhere() {
 }
 
 void SetDesktopSites(const std::string* sites, bool everywhere) {
+  const bool was_everywhere = DesktopSiteEverywhere();
   DesktopSiteEverywhere() = everywhere;
   std::set<std::string>& hosts = DesktopSiteHosts();
+  // Kept so the tabs this list used to cover can be told apart from the ones
+  // the reader turned into desktop sites by hand.
+  const std::set<std::string> before = hosts;
   hosts.clear();
-  if (!sites) {
-    return;
+  if (sites) {
+    for (const std::string& line :
+         base::SplitString(*sites, "\n", base::TRIM_WHITESPACE,
+                           base::SPLIT_WANT_NONEMPTY)) {
+      hosts.insert(base::ToLowerASCII(line));
+    }
   }
-  for (const std::string& line :
-       base::SplitString(*sites, "\n", base::TRIM_WHITESPACE,
-                         base::SPLIT_WANT_NONEMPTY)) {
-    hosts.insert(base::ToLowerASCII(line));
-  }
+  // The list decides what an open tab should be, not only the next
+  // navigation: a host leaving the list would otherwise leave its tab pinned
+  // to the desktop agent, and state polls skip pinned tabs by design.
+  LOG(WARNING) << "OHOS desktop sites: parsed=" << hosts.size()
+               << " before=" << before.size()
+               << " everywhere=" << everywhere
+               << " was_everywhere=" << was_everywhere;
+  ReleaseStaleDesktopSiteOverrides(before, was_everywhere);
 }
 
 bool IsDesktopSiteHost(const GURL& url) {
-  if (DesktopSiteEverywhere()) {
-    return true;
-  }
+  // Ahead of the "every site" switch on purpose: with that switch on, an
+  // internal page such as chrome://newtab matched as well and took the
+  // desktop override, which laid the new tab page out at desktop width and
+  // left it scaled.
   if (!url.SchemeIsHTTPOrHTTPS()) {
     return false;
+  }
+  if (DesktopSiteEverywhere()) {
+    return true;
   }
   return DesktopSiteHosts().count(base::ToLowerASCII(url.host())) > 0;
 }
@@ -3342,11 +3390,49 @@ class TabStateWatcher
     if (!contents) {
       return;
     }
+    // Navigation audit, one line per main-frame navigation: which URL, who
+    // started it (renderer or browser), how, and which agent was in effect.
+    // This is what tells a "the tab went back on its own" report apart from
+    // "something never navigated at all".
+    LOG(WARNING) << "OHOS nav start: url=" << handle->GetURL().spec()
+                 << " renderer=" << handle->IsRendererInitiated()
+                 << " same_doc=" << handle->IsSameDocument()
+                 << " transition=" << static_cast<int>(handle->GetPageTransition())
+                 << " ua=" << (contents->GetUserAgentOverride()
+                                       .ua_string_override.empty()
+                                   ? "device"
+                                   : "override");
     const std::string current =
         contents->GetUserAgentOverride().ua_string_override;
     const std::string desktop =
         AuraShellDesktopSiteUserAgent().ua_string_override;
     if (!IsDesktopSiteHost(handle->GetURL())) {
+      // Internal pages (chrome://, chrome-extension://) always get the device
+      // agent -- including this very navigation: a desktop override left on
+      // the WebContents (a previous desktop page in this tab, or an actor
+      // that set it after the navigate command cleared it) rides along on
+      // the navigation otherwise, and the new tab page then commits WITH the
+      // desktop agent (2026-10-21 logs: "nav start ... ua=override" on
+      // chrome://new-tab-page-third-party). Marking the HANDLE, not clearing
+      // the WebContents here, matters: clearing mid-navigation makes
+      // NavigationController reload the page the tab is still on, which
+      // cancels this navigation (ERR_ABORTED) -- the store's own watcher
+      // marks the handle the same way for the opposite direction.
+      if (current == desktop) {
+        handle->SetIsOverridingUserAgent(false);
+        LOG(WARNING) << "OHOS nav start: device agent forced for internal page";
+      }
+      // With the "every site" switch on there is no such thing as leaving a
+      // desktop site: every http(s) page is a desktop one, and internal pages
+      // (chrome://, chrome-extension://) get the device agent before they are
+      // navigated to -- see the navigate and home commands. Clearing the
+      // override here would make NavigationController reload the page the tab
+      // is still on, cancelling the navigation in flight (ERR_ABORTED): the
+      // first cold-start tap on an extension tile opened it and was pulled
+      // straight back to the new tab page.
+      if (DesktopSiteEverywhere()) {
+        return;
+      }
       // Leaving a desktop site also leaves its user agent behind, or every
       // later site in this tab would keep asking for desktop pages. Only the
       // agent this watcher installed is taken back: a store navigation in
@@ -3370,6 +3456,35 @@ class TabStateWatcher
     // tab oscillated -- loading slowly, many times over, and arriving mobile.
     SetAuraShellUserAgentPinned(contents, true);
     handle->SetIsOverridingUserAgent(true);
+  }
+
+  // Second half of the audit: whether a navigation finished, and how it ended.
+  // A navigation that starts and never finishes (no line here) is a different
+  // bug from one that finishes and gets replaced (two starts, one finish).
+  void DidFinishNavigation(content::NavigationHandle* handle) override {
+    if (!handle->IsInOutermostMainFrame()) {
+      return;
+    }
+    LOG(WARNING) << "OHOS nav finish: url=" << handle->GetURL().spec()
+                 << " committed=" << handle->HasCommitted()
+                 << " error=" << static_cast<int>(handle->GetNetErrorCode());
+    if (!handle->HasCommitted()) {
+      return;
+    }
+    // A page that has just arrived starts with its bars shown, and the fresh
+    // renderer reports its controls at the bottom for a frame or two before
+    // the page's own offset lands. Show the bars here promptly and hold the
+    // drops off the shell for a moment, so the top bar does not step up and
+    // back on every load and every pull-to-refresh reload.
+    content::WebContents* contents = web_contents();
+    if (!contents) {
+      return;
+    }
+    ShowBrowserControls(contents);
+    RuntimeBridgeState& state = GetState();
+    base::AutoLock lock(state.lock);
+    state.controls_ratio_hold_until =
+        base::TimeTicks::Now() + base::Milliseconds(250);
   }
 
  private:
@@ -3651,6 +3766,13 @@ void UpdateBrowserStateOnUiThread(uint64_t generation,
                            shown_entry != entry_id;
                 shown_entry = entry_id;
               }
+              // A new view must be told once that the bars are shown: this is
+              // not just cosmetic state, the call also syncs the renderer's
+              // visual properties/controls offset, and without it the new
+              // page's first frames carry the previous view's offset and the
+              // top bar bobs on every load (measured on 1.0.221, which tried
+              // to skip this when the bars looked shown already -- the jump
+              // then appeared even with the "desktop site" switch off).
               if (switched) {
                 LOG(WARNING) << "OHOS browser controls: showing on new view";
                 ShowBrowserControls(active);
@@ -3851,6 +3973,11 @@ void NavigateOnUiThread(gfx::AcceleratedWidget widget,
                         ui::PageTransition transition,
                         int attempt) {
   ScopedBrowserStateUpdate update_state;
+  // Every navigation the shell asks for passes here; paired with the
+  // nav start/finish audit in TabStateWatcher, this says whether a "go home"
+  // ever reached the browser at all.
+  LOG(WARNING) << "OHOS nav request: url=" << url.spec()
+               << " transition=" << transition << " attempt=" << attempt;
   BrowserWindowInterface* browser = FindBrowserForWidget(widget);
   if (!browser) {
     if (attempt >= kMaxBrowserLookupAttempts) {
@@ -4027,6 +4154,12 @@ void OnPullToRefresh(content::WebContents* contents,
     event.Set("distance", static_cast<double>(value));
   } else if (state == "release") {
     event.Set("refresh", refresh);
+    // Diagnostic (1.0.220): Chromium reloads the page itself when the release
+    // is far enough -- this line is the only trace of that reload, which
+    // otherwise looks like a page "going back on its own" in the nav audit.
+    if (refresh) {
+      LOG(WARNING) << "OHOS pull-to-refresh: release triggers reload";
+    }
   }
   DispatchRuntimeEvent(GetBrowserWidget(browser), std::move(event));
 }
@@ -4040,15 +4173,29 @@ void ApplyPullToRefresh(bool enabled) {
 }
 
 void ApplyUiFamilyOnUiThread(std::string ui_family) {
+  // Idempotent per family: the browser-init path (FindBrowser... below) and
+  // the shell's ui_family command can both land here with the same value --
+  // 2026-10-21 logs show TWO applications per process start, and each one
+  // re-notifies touch UI and re-runs the theme/font reload over every tab,
+  // which is the reload that killed extension navigations mid-flight and
+  // the layout shift that bounced the top bar on every tap.
+  static base::NoDestructor<std::string> last_applied;
+  if (ui_family == *last_applied) {
+    return;
+  }
+  *last_applied = ui_family;
+  LOG(WARNING) << "OHOS ui family applying: " << ui_family;
   ScopedBrowserStateUpdate update_state;
   const bool mobile = IsMobileUiFamily(ui_family);
   ApplyPullToRefresh(ui_family == "mobile_phone");
   const bool use_touch_ui = ui_family != "aura_pc";
   ui::TouchUiController* controller = ui::TouchUiController::Get();
-  if (controller->touch_ui() == use_touch_ui) {
-    controller->OnTabletModeToggled(!use_touch_ui);
+  // Only notify on an actual change. The old force-flip-then-flip-back ran
+  // the touch-UI observers twice on every application even when nothing
+  // changed, and one of those observers ends in a reload of every tab.
+  if (controller->touch_ui() != use_touch_ui) {
+    controller->OnTabletModeToggled(use_touch_ui);
   }
-  controller->OnTabletModeToggled(use_touch_ui);
 
   ApplyUserAgentToAllTabs(mobile, /*reload=*/true);
 
@@ -4591,11 +4738,43 @@ void ExecuteBrowserCommandOnUiThread(gfx::AcceleratedWidget widget,
              active->GetController().CanGoForward()) {
     active->GetController().GoForward();
   } else if (*name == "reload" && active) {
-    active->GetController().Reload(content::ReloadType::NORMAL,
-                                   /*check_for_repost=*/false);
+    // Diagnostic (1.0.219): shell-driven reloads must be tellable from
+    // engine-initiated ones when a page "goes back on its own".
+    LOG(WARNING) << "OHOS cmd: reload url="
+                 << active->GetVisibleURL().spec();
+    // A reload that arrives while the tab is already navigating somewhere new
+    // cancels that navigation: the shell's state-driven reload is a beat late
+    // (~40 ms after the tap on our logs), and the reader watches an extension
+    // page bounce straight back to the new tab -- the "needs two taps" report.
+    // Reload means reload what is on screen; a tab with a different
+    // destination pending is not that.
+    content::NavigationEntry* pending = active->GetController().GetPendingEntry();
+    if (pending && pending->GetURL() != active->GetLastCommittedURL()) {
+      LOG(WARNING) << "OHOS cmd: reload ignored, navigation in flight to "
+                   << pending->GetURL().spec();
+    } else {
+      active->GetController().Reload(content::ReloadType::NORMAL,
+                                     /*check_for_repost=*/false);
+    }
   } else if (*name == "stop" && active) {
     active->Stop();
   } else if (*name == "home") {
+    // An internal page must not start out with a site's desktop agent. The
+    // request carries whatever override is in effect when it is created, and
+    // TabStateWatcher only gets to clear it in DidStartNavigation -- by then
+    // the User-Agent header is already decided, so the new tab page loaded as
+    // a desktop page and handed off to the default search engine instead of
+    // drawing. Clear it here, before the navigation exists.
+    if (active) {
+      SetAuraShellUserAgentPinned(active, false);
+      active->SetUserAgentOverride(blink::UserAgentOverride(),
+                                   /*override_in_new_tabs=*/false);
+      if (content::NavigationEntry* entry =
+              active->GetController().GetLastCommittedEntry()) {
+        entry->SetIsOverridingUserAgent(false);
+      }
+    }
+    LOG(WARNING) << "OHOS home: cleared override before newtab";
     NavigateOnUiThread(widget, GURL("chrome://newtab/"),
                        ui::PAGE_TRANSITION_TYPED, 0);
   } else if (*name == "pwaHome") {
@@ -4606,6 +4785,25 @@ void ExecuteBrowserCommandOnUiThread(gfx::AcceleratedWidget widget,
   } else if (*name == "navigate") {
     const std::string* url = command.FindString("url");
     if (url && GURL(*url).is_valid()) {
+      const GURL target(*url);
+      // Internal pages (chrome://, chrome-extension://, file://) are laid out
+      // and scripted for the device, never for a site's desktop agent. Clear
+      // it here, before the navigation exists: clearing it once the
+      // navigation is running makes NavigationController reload the page the
+      // tab is still on, which cancels the navigation in flight
+      // (ERR_ABORTED). That is why the first tap on an extension tile did
+      // nothing and the second one worked -- by then the override was
+      // already gone.
+      if (!target.SchemeIsHTTPOrHTTPS() && active) {
+        SetAuraShellUserAgentPinned(active, false);
+        active->SetUserAgentOverride(blink::UserAgentOverride(),
+                                     /*override_in_new_tabs=*/false);
+        if (content::NavigationEntry* entry =
+                active->GetController().GetLastCommittedEntry()) {
+          entry->SetIsOverridingUserAgent(false);
+        }
+        LOG(WARNING) << "OHOS navigate: cleared override for internal page";
+      }
       // Before the navigation, not after a later snapshot: this is the one
       // place that knows a navigation is about to start, and a watcher
       // attached afterwards has already missed the only event it wanted.
@@ -4616,7 +4814,7 @@ void ExecuteBrowserCommandOnUiThread(gfx::AcceleratedWidget widget,
       // navigation from the address bar (HandleDebugURL), and so does the
       // rest of Chromium that asks how a URL was entered.
       NavigateOnUiThread(
-          widget, GURL(*url),
+          widget, target,
           ui::PageTransitionFromInt(ui::PAGE_TRANSITION_TYPED |
                                     ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
           0);
@@ -4921,6 +5119,9 @@ void ExecuteBrowserCommandOnUiThread(gfx::AcceleratedWidget widget,
 }
 
 void ReloadAllTabsAfterThemeFontChange() {
+  // Diagnostic (1.0.219): if the new tab page ever reloads on its own, this
+  // line tells whether the font-change path was the hand on the trigger.
+  LOG(WARNING) << "OHOS font change: reload all tabs";
   GlobalBrowserCollection* browsers = GlobalBrowserCollection::GetInstance();
   if (!browsers) {
     return;
@@ -4933,8 +5134,19 @@ void ReloadAllTabsAfterThemeFontChange() {
         // A tab with no page in it gets the new font when it loads; see
         // ApplyUserAgentToWebContents().
         if (contents && !contents->GetController().NeedsReload()) {
-          contents->GetController().Reload(content::ReloadType::NORMAL,
-                                           /*check_for_repost=*/false);
+          // Same rule as the reload command: never cancel a navigation that
+          // is already on its way somewhere else. The page reloads with the
+          // new font on its own next load.
+          content::NavigationEntry* pending =
+              contents->GetController().GetPendingEntry();
+          if (pending && pending->GetURL() != contents->GetLastCommittedURL()) {
+            LOG(WARNING) << "OHOS font change: skipped reload, navigation in "
+                            "flight to "
+                         << pending->GetURL().spec();
+          } else {
+            contents->GetController().Reload(content::ReloadType::NORMAL,
+                                             /*check_for_repost=*/false);
+          }
         }
       }
     }
@@ -5094,10 +5306,6 @@ constexpr char kDesktopSiteCpu[] = "x86_64";
 constexpr char kDesktopSiteArchitecture[] = "x86";
 #endif
 
-bool IsAuraShellDesktopSite(const GURL& url) {
-  return IsDesktopSiteHost(url);
-}
-
 blink::UserAgentOverride AuraShellDesktopSiteUserAgent() {
   blink::UserAgentOverride desktop;
   desktop.ua_string_override =
@@ -5154,6 +5362,86 @@ blink::UserAgentOverride AuraShellDesktopSiteUserAgent() {
 }
 
 namespace {
+
+void ReleaseStaleDesktopSiteOverrides(const std::set<std::string>& before,
+                                      bool was_everywhere) {
+  GlobalBrowserCollection* browsers = GlobalBrowserCollection::GetInstance();
+  if (!browsers) {
+    return;
+  }
+  const std::string desktop_ua =
+      AuraShellDesktopSiteUserAgent().ua_string_override;
+  browsers->ForEach([&desktop_ua, &before,
+                     was_everywhere](BrowserWindowInterface* browser) {
+    TabStripModel* tabs = browser->GetTabStripModel();
+    // Not an installed web app's window, for the same reason as
+    // ApplyUserAgentToAllTabs: its session service rejects these overrides.
+    if (!tabs ||
+        browser->GetType() == BrowserWindowInterface::Type::TYPE_APP ||
+        browser->GetType() == BrowserWindowInterface::Type::TYPE_APP_POPUP) {
+      return true;
+    }
+    for (int index = 0; index < tabs->count(); ++index) {
+      content::WebContents* contents = tabs->GetWebContentsAt(index);
+      if (!contents) {
+        continue;
+      }
+      // Pinned: only a tab whose agent was set on purpose is a candidate.
+      const bool pinned = IsAuraShellUserAgentPinned(contents);
+      const GURL& url = contents->GetLastCommittedURL();
+      const std::string host = base::ToLowerASCII(url.host());
+      // The store's own string, while the tab is on the store. Not this
+      // list's to undo, and the store put it there. On the way out the store
+      // puts the desktop agent back, so from then on the strings agree and
+      // |was_listed| below is what decides.
+      const bool ua_match =
+          contents->GetUserAgentOverride().ua_string_override == desktop_ua;
+      // Still covered by the list as it now stands.
+      const bool hit = IsDesktopSiteHost(url);
+      // This tab is a desktop site for some other reason unless the list used
+      // to cover it: either the reader picked it from the menu -- a choice
+      // this list was never told about, so it has no business taking it back
+      // -- or the web store installed its own agent and put the desktop one
+      // back on the way out.
+      const bool was_listed = was_everywhere || before.count(host) > 0;
+      LOG(WARNING) << "OHOS desktop sweep: host=" << host
+                   << " pinned=" << pinned << " ua_match=" << ua_match
+                   << " hit=" << hit << " was_listed=" << was_listed;
+      // Internal pages never carry the list's agent: hit is false for them
+      // by design, yet was_everywhere makes was_listed true, so a pinned
+      // internal page reads as "the list used to cover it" and the release
+      // fires -- unpinning, clearing, and reloading the new tab page on
+      // every state sync. 2026-10-21 logs: that release reload is one leg
+      // of the extension-tile bounce. The list never granted an internal
+      // page, so it never gets to take one back either.
+      if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS()) {
+        continue;
+      }
+      if (!pinned || !ua_match || hit || !was_listed) {
+        continue;
+      }
+      // Unpinned first, then the same steps the menu's own "desktop site"
+      // toggle takes -- that path takes effect immediately, while a plain
+      // reload did not: the page stayed as the desktop agent had rendered it.
+      // No override at all rather than one naming the device, so nothing has
+      // to be inferred about which UI this is.
+      SetAuraShellUserAgentPinned(contents, false);
+      contents->SetUserAgentOverride(blink::UserAgentOverride(),
+                                     /*override_in_new_tabs=*/false);
+      // LoadOriginalRequestURL, not Reload: a server that redirected us to
+      // its mobile host gets another say, instead of replaying the redirect
+      // the desktop agent produced.
+      if (content::NavigationEntry* entry =
+              contents->GetController().GetLastCommittedEntry()) {
+        entry->SetIsOverridingUserAgent(false);
+        // Diagnostic (1.0.219): names the release that turns into a reload.
+        LOG(WARNING) << "OHOS desktop sweep: releasing host=" << host;
+        contents->GetController().LoadOriginalRequestURL();
+      }
+    }
+    return true;
+  });
+}
 
 // Tabs whose controls are all the way hidden. A WebContents drops its mark
 // when it goes away.
@@ -5287,6 +5575,21 @@ void OnAuraShellTopControlsShownRatio(content::WebContents* contents,
               : 1.0f;
       const float shell_min = min / top;
       ratio = shell_min + normalised * (1.0f - shell_min);
+    }
+  }
+  // Right after a load the renderer reports its controls at the bottom for a
+  // frame or two before the page's own offset lands. Following that drop
+  // pulled the shell's top bar up and back on every load and refresh -- the
+  // "address bar jumps" report. Drops only: a showing ratio still passes, so
+  // a page that legitimately wants the bars back is not held off.
+  {
+    RuntimeBridgeState& state = GetState();
+    base::AutoLock lock(state.lock);
+    if (ratio < state.last_shown_ratio &&
+        base::TimeTicks::Now() < state.controls_ratio_hold_until) {
+      LOG(WARNING) << "OHOS browser controls: dropped settling ratio " << ratio
+                   << " (last " << state.last_shown_ratio << ")";
+      return;
     }
   }
   // Before the early return below: a new view after a navigation reports the
@@ -5625,6 +5928,13 @@ bool PostBrowserCommand(gfx::AcceleratedWidget widget,
 
 bool ExecuteAuraShellBrowserCommand(gfx::AcceleratedWidget widget,
                                     const std::string& command_json) {
+  // Diagnostic (1.0.221): every shell command passes through here; a 'reload'
+  // that the shell's own send sites never logged (2026-10-21) shows up with
+  // its exact payload, batch or single. Filtered so scroll/state traffic does
+  // not flood the log.
+  if (command_json.find("reload") != std::string::npos) {
+    LOG(WARNING) << "OHOS cmd json: " << command_json.substr(0, 240);
+  }
   std::optional<base::Value> parsed =
       base::JSONReader::Read(command_json, base::JSON_PARSE_RFC);
   if (!parsed) {

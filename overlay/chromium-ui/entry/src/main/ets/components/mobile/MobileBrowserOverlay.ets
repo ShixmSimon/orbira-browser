@@ -1711,7 +1711,7 @@ export struct MobileBrowserOverlay {
   }
 
   // 底栏中段：锁 + 域名（整块是一个 Button：阻断点穿；点按进编辑态=搜索框）。
-  // 单行居中，超长省略——呈现「域名在条带正中」的观感。
+  // Chrome 手机版样式：整体左对齐（锁贴左、省略号贴右），不做域名居中。
   @Builder
   private ChromeBarAddress() {
     Button({ type: ButtonType.Normal, stateEffect: false }) {
@@ -1733,15 +1733,18 @@ export struct MobileBrowserOverlay {
           .fontSize(15)
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
-          .textAlign(TextAlign.Center)
+          .textAlign(TextAlign.Start)
+          .layoutWeight(1)
       }
       .width('100%')
       .height(40)
-      .justifyContent(FlexAlign.Center)
+      .clip(true)
     }
     .layoutWeight(1)
     .height(40)
+    .padding({ left: 6, right: 6 })
     .backgroundColor(Color.Transparent)
+    .clip(true)
     .accessibilityText('地址栏')
     .hitTestBehavior(HitTestMode.Default)
     .onClick((): void => this.beginAddressEdit())
@@ -1941,10 +1944,14 @@ export struct MobileBrowserOverlay {
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
           .textAlign(TextAlign.Start)
+          .layoutWeight(1)
       }
       .layoutWeight(1)
       .height(40)
-      .padding({ left: 16, right: 12 })
+      // 锁到胶囊左沿 = 这个 left padding。16vp 实测观感「锁离左沿很远」
+      // （1.0.211~1.0.216 一直改的是底置 ChromeBarAddress，顶置 dock 实际
+      // 渲染的是本胶囊，用户四次反馈「没起作用」的真因）。
+      .padding({ left: 10, right: 12 })
       .borderRadius(20)
       .backgroundColor($r('app.color.glass_tint'))
       .border({ width: 0.5, color: $r('app.color.divider') })
@@ -2461,6 +2468,7 @@ export struct MobileBrowserOverlay {
               .fontWeight(FontWeight.Medium)
               .fontColor($r('app.color.text_primary'))
               .textAlign(TextAlign.Start)
+              .layoutWeight(1)
           }
           .width('100%')
         }
@@ -3659,7 +3667,9 @@ export struct MobileBrowserOverlay {
     ).animation({ curve: curves.springMotion(0.3, 0.72) }))
   }
 
-  // 第一行：连接状态。锁形图标 + 域名 + " · 连接安全/不安全"。
+  // 第一行：连接状态。锁形图标 + 域名 + " · 连接安全/不安全"，行尾一枚刷新
+  // 钮（地址栏没空位了，刷新收进菜单首行：紧挨"当前网址"语义最顺，也不打乱
+  // 下方菜单项分组与底部五个入口）。
   @Builder
   private MenuHeader() {
     Row({ space: 10 }) {
@@ -3675,10 +3685,26 @@ export struct MobileBrowserOverlay {
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
+      Button({ type: ButtonType.Circle, stateEffect: false }) {
+        Image(this.browserState.loading ?
+          $r('app.media.aura_close') : $r('app.media.aura_reload'))
+          .width(18)
+          .height(18)
+          .fillColor($r('app.color.text_secondary'))
+      }
+      .width(30)
+      .height(30)
+      .backgroundColor(Color.Transparent)
+      .accessibilityText(this.browserState.loading ? '停止' : '刷新')
+      .hitTestBehavior(HitTestMode.Default)
+      .onClick((): void => {
+        this.closeMenuCard();
+        this.issueCommand({ command: this.browserState.loading ? 'stop' : 'reload' });
+      })
     }
     .width('100%')
     .height(44)
-    .padding({ left: 18, right: 16 })
+    .padding({ left: 18, right: 10 })
   }
 
   @Builder
@@ -4678,6 +4704,14 @@ export struct MobileBrowserOverlay {
   }
 
   private issueCommand(command: BrowserCommandPayload): void {
+    // 1.0.220 取证：reload/home/navigate 会杀掉进行中的导航（磁贴弹回家族），
+    // 命令侧不留日志时没法分清"谁发的 reload"。只记关键命令，别刷屏。
+    const name: string = command.command;
+    if (name === 'reload' || name === 'stop' || name === 'home' ||
+      name === 'navigate' || name === 'back' || name === 'forward') {
+      console.info(`[aura] cmd sent: ${name}` +
+        (command.url ? ` url=${command.url}` : ''));
+    }
     this.onCommand(command);
   }
 

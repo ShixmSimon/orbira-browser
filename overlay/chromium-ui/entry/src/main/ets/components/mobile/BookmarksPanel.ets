@@ -209,6 +209,9 @@ export struct BookmarksPanel {
   private pickerRootId: string = '';
   private retryTimer: number = -1;
   private loadTimer: number = -1;
+  // 一次性延时回调（聚焦 / 建夹后复查 / 搜索态归顶）：统一登记，销毁时清掉，
+  // 避免面板已销毁后回调仍写状态。
+  private miscTimers: number[] = [];
   private retryCount: number = 0;
   private pendingImportPath: string = '';
   private pendingExportPath: string = '';
@@ -237,9 +240,9 @@ export struct BookmarksPanel {
       yOffset: 0,
       animation: { duration: 320, curve: curves.springMotion(0.34, 0.84) }
     });
-    setTimeout((): void => {
+    this.miscTimers.push(setTimeout((): void => {
       this.getUIContext().getFocusController().requestFocus('bookmarks_search_input');
-    }, 480);
+    }, 480));
   }
   @State private searchResults: BookmarkNode[] = [];
 
@@ -322,6 +325,10 @@ export struct BookmarksPanel {
       clearTimeout(this.retryTimer);
       this.retryTimer = -1;
     }
+    for (const id of this.miscTimers) {
+      clearTimeout(id);
+    }
+    this.miscTimers = [];
     this.clearHomeTimers();
     this.cleanupPendingImport();
   }
@@ -567,12 +574,12 @@ export struct BookmarksPanel {
         title: HOME_FOLDER_TITLE
       });
       // 建完回这一层再找一次（不依赖事件回包的时序）。
-      setTimeout((): void => {
+      this.miscTimers.push(setTimeout((): void => {
         if (this.homeStep === 'creating') {
           this.homeStep = 'mobile';
           this.requestMobileChildren(this.mobileFolderId);
         }
-      }, 420);
+      }, 420));
       return;
     }
     // 建不出来也照样把书签页显示出来（「首页」缺失只影响主页磁贴）。
@@ -2130,9 +2137,9 @@ export struct BookmarksPanel {
           // 搜索态 ↔ 普通态内容整体替换：归顶（旧版靠两个互斥 Scroll 重建
           // 自然归零；合并后显式下发，且仅在切换瞬间，与旧行为一致）。
           if (wasSearching !== (value.trim().length > 0)) {
-            setTimeout((): void => {
+            this.miscTimers.push(setTimeout((): void => {
               this.listScroller.scrollEdge(Edge.Top);
-            }, 0);
+            }, 0));
           }
         },
         onClear: (): void => {

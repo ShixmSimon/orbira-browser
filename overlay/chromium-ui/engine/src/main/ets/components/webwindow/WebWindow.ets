@@ -1447,6 +1447,12 @@ export struct WebWindow {
   // 是否应为该 URL 请求桌面版网站：全局默认 desktop 一律 true；否则看 host 是否
   // 在持久化的桌面版网站名单里（精确匹配）。
   private shouldUseDesktopSite(url: string): boolean {
+    // 内部页永远不按桌面站点处理：桌面版默认开着时这里的无条件 true 会把
+    // chrome://、chrome-extension:// 也算进名单，驱动 UA 注入与自愈对内部页
+    // 动手（见 maybeHealDesktopSite 的注释）。与引擎侧护栏同一约定。
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      return false;
+    }
     const def = String(AppStorage.get('auraUaDefault') ?? 'mobile');
     if (def === 'desktop') {
       return true;
@@ -1616,6 +1622,15 @@ export struct WebWindow {
     }
     const url: string = state.url ?? '';
     if (url.length === 0 || state.requestDesktopSite === true) {
+      return;
+    }
+    // 内部页（chrome://、chrome-extension://）永远以设备 UA 渲染，与引擎侧
+    // ApplyUserAgentToWebContents 的护栏同一约定。桌面版默认开着时
+    // shouldUseDesktopSite 对它们也返回 true —— 自愈于是对扩展页补发
+    // setRequestDesktopSite + reload，把刚提交的导航顶掉：桌面版开着时
+    // 「扩展磁贴要点两次」「地址栏跳一下」的最终源头（2026-10-21 日志：
+    // 每次导航提交后 30~90ms 一条裸 reload，绕过命令通道无日志）。
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
       return;
     }
     if (!this.shouldUseDesktopSite(url)) {

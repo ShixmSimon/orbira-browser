@@ -170,8 +170,12 @@ struct AuraShell {
   // 让 HomeSurface 暂时让位给原生 popup；返回键、离开主页、或收到引擎的
   // extensionPopupClosed 事件（popup widget 销毁）时清零恢复。native 侧
   // ExtensionPopupCloseWatcher 监听 popup widget 销毁并派发该事件，所以
-  // 关闭后主页立即回来（1.0.175）。8 秒超时仍是兜底：万一事件没到，也不
-  // 会让引擎原生 NTP 一直露底。
+  // 关闭后主页立即回来（1.0.175）——这条才是日常路径，popup 想开多久开多久。
+  // 定时器不是「自动关闭」而是最后防线：只在上面几条都没能触发的极端情况
+  // （比如 popup widget 泄漏、事件丢失）下把主页层放回来，否则 HomeSurface
+  // 会永久让位、主页磁贴再也出不来。10 分钟远超任何正常驻留时长，日常不会
+  // 碰到（1.0.175 定 8 秒时误按「页面很快就该 done」来设，实际是 popup 的
+  // 存活时长，于是开着看内容的 popup 到点就被主页盖住，1.0.208 修正）。
   @StorageLink('auraPopupHomeHold') @Watch('onPopupHomeHoldChanged') popupHomeHold: number = 0;
   private popupHoldTimer: number = -1;
 
@@ -185,7 +189,9 @@ struct AuraShell {
         if (this.popupHomeHold > 0) {
           AppStorage.setOrCreate('auraPopupHomeHold', 0);
         }
-      }, 8000);
+        // 10 分钟：见字段注释。这里恢复的是「主页层」，popup 本身由用户或
+        // 引擎关闭，走到这一支说明关闭事件没送达。
+      }, 600000);
     } else if (this.popupHoldTimer !== -1) {
       clearTimeout(this.popupHoldTimer);
       this.popupHoldTimer = -1;
@@ -222,10 +228,15 @@ struct AuraShell {
   private homeHoldTimer: number = -1;
   // 兜底定时器的续命次数（加载中不撤防，见 holdHomeForPaint 注释）。
   private homeHoldExtensions: number = 0;
+  // 「秒开页」的快速撤防确认（见 onBrowserState 的 homeHold 分支）。
+  private homeHoldQuickTimer: number = -1;
   // 1.0.68：「主页键」立即铺主页层（1.0.68）：按下后引擎要过一两帧才 commit URL，这
   // 一两帧里引擎已清成白底 → "回主页闪一下"（真机反馈）。按下即挂 HomeSurface
   // 盖住，URL 落成 chrome://newtab 后（或 1.2s 兜底）撤防。
   @State private homeReturnCover: boolean = false;
+  // 「回主页又弹回原网页」的自愈重试：兜底撤防时若引擎还没把 tab 带回新标签
+  // 页，重发一次 home。只重试一次，防引擎真不可用时永久捂住主页层。
+  private homeRetryDone: boolean = false;
   private homeReturnTimer: number = -1;
   // 1.0.120：导航预热层。跳去某个真网址时（冷启动的「网址主页」/ 主页键的
   // 自定义主页），引擎会把画面清掉、而新页要一两帧才画出来，中间露的就是引擎
@@ -1180,6 +1191,16 @@ struct AuraShell {
             }
           }
           const wasNewTab: boolean = this.isNewTabPage();
+          // 诊断：url 翻转时打一条（回主页后又被弹回原网页的排查线：主页键按下
+          // 之后这条日志若始终不出现 chrome://newtab，就是引擎没执行导航）。
+          {
+            const nextUrl: string = state.url ?? '';
+            const prevUrl: string = this.browserState.url ?? '';
+            if (nextUrl !== prevUrl) {
+              console.info('[aura] url ' + prevUrl + ' -> ' + nextUrl +
+                ' loading=' + state.loading);
+            }
+          }
           this.browserState = state;
           // 记下引擎原生新标签页的标题：失败导航后要靠它认出「画面还停在
           // 新标签页」（见 isNewTabPage）。
@@ -1211,6 +1232,38 @@ struct AuraShell {
             this.homeHoldSawLoading = true;
           } else if (this.homeHoldSawLoading) {
             this.releaseHomeHold();
+          } else if (this.homeHoldQuickTimer === -1) {
+            // url 已离开主页、却一次 loading 都没见过：本地页（扩展页
+            // chrome-extension://、错误页之类）秒开，中间那帧 loading=true
+            // 根本不会出现。此前只有 8s 兜底能撤防 —— 真机表现就是
+            // 「点扩展磁贴像没反应，要再点一次」（2026-10-21 录屏）。
+            // 250ms 后再确认一次：真网址这期间必然已经 loading=true，不会误撤。
+            this.homeHoldQuickTimer = setTimeout((): void => {
+              this.homeHoldQuickTimer = -1;
+              if (!this.homeHold || this.isNewTabPage()) {
+                return;
+              }
+              if (!this.browserState.loading) {
+                this.releaseHomeHold();
+                return;
+              }
+              // 桌面版开着时本地页（扩展选项页等）也可能被拖到秒级才画完：
+              // 期间主页全屏捂着、地址栏虽已更新但页面纹丝不动，读起来就是
+              // 「点了没反应，要再点一次」（19:40 录屏）。本地页最多再捂
+              // 800ms 就让位 —— 一帧过渡底色，好过「没反应」。http(s) 慢站
+              // 维持原判据（等 loading 结束 / 8s 兜底续命），避免回归
+              // 「失败加载先闪 Chromium 新标签页」（见 holdHomeForPaint 注释）。
+              const pendingUrl: string = this.browserState.url ?? '';
+              if (pendingUrl.startsWith('chrome-extension://') ||
+                pendingUrl.startsWith('chrome://')) {
+                this.homeHoldQuickTimer = setTimeout((): void => {
+                  this.homeHoldQuickTimer = -1;
+                  if (this.homeHold && !this.isNewTabPage()) {
+                    this.releaseHomeHold();
+                  }
+                }, 800);
+              }
+            }, 250);
           }
         }
           if (!this.systemPermissionReported) {
@@ -1326,6 +1379,8 @@ struct AuraShell {
                 }
                 // 主页键：立刻把主页层铺上，盖住引擎回主页那一瞬的白底
                 //（见 homeReturnCover 注释）。
+                console.info('[aura] home key url=' + (this.browserState.url ?? '') +
+                  ' back=' + this.browserState.canGoBack);
                 this.beginHomeReturnCover();
               }
               // 1.0.142：从内置主页（引擎原生新标签页）的地址栏提交一个网址时，
@@ -1576,6 +1631,14 @@ struct AuraShell {
     });
 
   private executeBrowserCommand(command: BrowserCommandPayload): void {
+    // 1.0.220 取证：进引擎前的最终漏斗。reload 会杀进行中的导航，命令侧
+    // 必须留痕才能分清发送者（面板/顶栏/自愈逻辑）。只记关键命令。
+    const name: string = command.command;
+    if (name === 'reload' || name === 'stop' || name === 'home' ||
+      name === 'navigate' || name === 'ui_family') {
+      console.info(`[aura] cmd exec: ${name}` +
+        (command.url ? ` url=${command.url}` : ''));
+    }
     this.commandChannel.send(command);
   }
 
@@ -1743,8 +1806,18 @@ struct AuraShell {
       this.sawControlsRatio = true;
       const ratio = event.ratio ?? 1;
       if (ratio !== this.lastControlsRatio) {
+        const prev: number = this.lastControlsRatio;
         this.lastControlsRatio = ratio;
         AppStorage.setOrCreate('auraBrowserControlsRatio', ratio);
+        // 1.0.218 诊断：偶发「滚回顶部后底栏不回弹、停在顶部仍全隐」（视频
+        // ff404023，同操作在 604a41cb 里正常）。ratio 由引擎按滚动增量驱动，
+        // 页面停在顶部时应为 1；落 0 即复现现场。只在跨过隐/显阈值时打一条，
+        // 避免正常滚动刷屏。
+        const wasHidden: boolean = prev >= 0 && prev < 0.05;
+        const isHidden: boolean = ratio < 0.05;
+        if (wasHidden !== isHidden) {
+          console.info(`[aura] controls ratio ${prev} -> ${ratio}`);
+        }
       }
       return;
     }
@@ -1888,7 +1961,7 @@ struct AuraShell {
         }));
       return;
     }
-    // 原生扩展 popup 关闭：立刻收回主页盖层，不必再等 8 秒兜底超时
+    // 原生扩展 popup 关闭：立刻收回主页盖层，不必再等兜底超时
     // （@Watch('onPopupHomeHoldChanged') 见 popupHomeHold 声明处）。
     if (event.event === 'extensionPopupClosed') {
       AppStorage.setOrCreate('auraPopupHomeHold', 0);
@@ -2210,19 +2283,34 @@ struct AuraShell {
   // 靠这里把名单送进引擎。
   private desktopSitesRetries: number = 0;
 
+  private desktopSitesSynced: boolean = false;
+
   private syncDesktopSites(): void {
+    // 只在启动时跑一轮：onBrowserState 每次状态更新都会进 ready 分支，
+    // 不加闸门会不断重排重试，形成命令洪水（页面反复加载、脚本卡死）。
+    // 重试耗尽同样要停：名单为空（没配桌面站点、总开关也没开）时闸门永远
+    // 落不下来，缺这一条会每次状态轮询都白跑一遍。
+    if (this.desktopSitesSynced || this.desktopSitesRetries >= 3) {
+      return;
+    }
     const sites: string = String(AppStorage.get('auraDesktopSites') ?? '');
     const allSites: boolean =
       String(AppStorage.get('auraUaDefault') ?? 'mobile') === 'desktop';
-    if (sites.length === 0 && !allSites) {
-      return;
+    // 不在这里 return：名单是异步从 preferences 读进来的，第一次调用时可能还是
+    // 空的。始终留着重试，等它读出来再送一次。
+    if (sites.length > 0 || allSites) {
+      // 只记长度与总开关，不打名单：内容是本机配置，排查时也用不上。
+      console.info(`[aura] setDesktopSites len=${sites.length} all=${allSites}`);
+      this.executeBrowserCommand({
+        command: 'setDesktopSites',
+        sites: sites,
+        allSites: allSites
+      });
+      // 闸门只在名单真的发出去之后才落。放在发送判断之前会让重试的第二跳被
+      // 开头闸门挡死：名单异步读出前闸门已关，迟到的名单永远补发不了。
+      this.desktopSitesSynced = true;
     }
-    this.executeBrowserCommand({
-      command: 'setDesktopSites',
-      sites: sites,
-      allSites: allSites
-    });
-    if (this.desktopSitesRetries < 2) {
+    if (this.desktopSitesRetries < 3) {
       this.desktopSitesRetries += 1;
       setTimeout((): void => {
         this.syncDesktopSites();
@@ -2353,6 +2441,10 @@ struct AuraShell {
     this.homeHold = true;
     this.homeHoldSawLoading = false;
     this.homeHoldExtensions = 0;
+    if (this.homeHoldQuickTimer !== -1) {
+      clearTimeout(this.homeHoldQuickTimer);
+      this.homeHoldQuickTimer = -1;
+    }
     this.armHomeHoldTimer(8000);
   }
 
@@ -2380,6 +2472,10 @@ struct AuraShell {
       clearTimeout(this.homeHoldTimer);
       this.homeHoldTimer = -1;
     }
+    if (this.homeHoldQuickTimer !== -1) {
+      clearTimeout(this.homeHoldQuickTimer);
+      this.homeHoldQuickTimer = -1;
+    }
   }
 
   // 主页键：立即铺主页层（见 homeReturnCover 注释）。1.2s 兜底撤防，防止
@@ -2391,12 +2487,27 @@ struct AuraShell {
     }
     this.homeReturnTimer = setTimeout((): void => {
       this.homeReturnTimer = -1;
+      if (!this.homeReturnCover) {
+        return;
+      }
+      // url 还停在原网页 = 引擎的 newtab 导航没落地（用户报「按主页键回到主页
+      // 之后又被弹回之前的网页」：主页层只是被这 1.2s 假捂着，到点撤防就露出
+      // 原页面）。撤防前先重发一次 home 再捂一拍；只重试一次。
+      if (!this.isNewTabPage() && !this.homeRetryDone) {
+        this.homeRetryDone = true;
+        console.info('[aura] home retry: url still ' + (this.browserState.url ?? ''));
+        this.executeBrowserCommand({ command: 'home' });
+        this.beginHomeReturnCover();
+        return;
+      }
+      this.homeRetryDone = false;
       this.homeReturnCover = false;
     }, 1200);
   }
 
   private releaseHomeReturnCover(): void {
     this.homeReturnCover = false;
+    this.homeRetryDone = false;
     if (this.homeReturnTimer !== -1) {
       clearTimeout(this.homeReturnTimer);
       this.homeReturnTimer = -1;

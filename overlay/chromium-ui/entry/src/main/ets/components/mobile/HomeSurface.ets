@@ -27,6 +27,14 @@ import { HomeCache, HomeCacheData } from '../../utils/appearance/HomeCache';
 const HOME_FOLDER_TITLE: string = '首页';
 // 主页的请求序号段（书签面板从 0 起；以此区分谁的回包）。
 const HOME_SEQ_BASE: number = 700000;
+// 主页序号在这段里循环（[700000, 900000)），始终高于书签面板的 600000 上限。
+const HOME_SEQ_SPAN: number = 200000;
+// 模块级序号抬升：每次挂载 +1000（同 BookmarksPanel 的 panelSeqBump）。
+// 原因：AppStorage.setOrCreate 存的是 JSON 字符串，**内容完全相同就不算变化
+// → @Watch 不触发**。主页每次按主页键都会销毁重建，homeSeq 若从 700000 重来，
+// 请求号与上一轮撞车 → 回包 JSON 与上次逐字节相同 → 引擎回了包但主页收不到，
+// 磁贴一直空着，要等 1.6s 超时重试才补上（表现为「书签不显示/延迟出现」）。
+let homeSeqBump: number = HOME_SEQ_BASE;
 // 发现链 / 磁贴刷新的兜底时间。
 const CHAIN_TIMEOUT_MS: number = 1600;
 const REFRESH_DEBOUNCE_MS: number = 260;
@@ -243,6 +251,9 @@ export struct HomeSurface {
   @State private homeFolderId: string = '';
   // 主页默认书签（谷歌/必应/百度/GitHub）是否已一次性种入「首页」文件夹。
   @State private homeBookmarksSeeded: boolean = false;
+  // seeded 标志位是否已从偏好读回来。读回来之前一律不种：书签回包可能先到，
+  // 那时 homeBookmarksSeeded 还是 false，会被当成"没种过"而补回用户删掉的站。
+  private homeSeedLoaded: boolean = false;
   @State private tilesError: boolean = false;
   // 绘制用的 url → data URL（引擎 PNG 转成的 data URL）。
   @State private favicons: Map<string, string> = new Map();
@@ -310,11 +321,19 @@ export struct HomeSurface {
   private fastTilePath: boolean = false;
   // 本轮发现链里是否已建过「首页」文件夹（防列表暂未反映时重复创建）。
   private createdInChain: boolean = false;
+  // 「首页」文件夹回包为空时是否已重试过一次。引擎刚起步（书签模型还没加载完）
+  // 会先回一个空列表，若此时把空结果当真，缓存会被写空、磁贴就空了；只可疑
+  // 一次，重试仍空就认（用户确实把书签删光了）。
+  private emptyTilesRetried: boolean = false;
 
   aboutToAppear(): void {
     const dsp = display.getDefaultDisplaySync();
     this.windowW = dsp.width / dsp.densityPixels;
     this.windowH = dsp.height / dsp.densityPixels;
+    // 请求号跨挂载抬一段：避免回包 JSON 与上一轮逐字节相同（AppStorage 认为没变
+    // → @Watch 不触发），磁贴要等超时重试才出现。
+    homeSeqBump = HOME_SEQ_BASE + ((homeSeqBump - HOME_SEQ_BASE + 1000) % HOME_SEQ_SPAN);
+    this.homeSeq = homeSeqBump;
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
     // 第一件事：把上次的磁贴与图标画出来（同步读文件，不等引擎回包）。
     this.applyCache(context);
@@ -340,6 +359,9 @@ export struct HomeSurface {
     // @Watch 初值不触发，挂载时补开一次并消费信号（无痕不打开）。
     HomePrefs.loadSeeded(context).then((seeded: boolean): void => {
       this.homeBookmarksSeeded = seeded;
+      this.homeSeedLoaded = true;
+      // 偏好可能晚于书签回包：标志位到位后补判一次，避免漏种/误种。
+      this.maybeSeedDefaultBookmarks();
     });
     const pendingLayout: number = (AppStorage.get('auraOpenHomeLayout') as number) ?? 0;
     if (pendingLayout > 0 && !this.incognito) {
@@ -373,6 +395,9 @@ export struct HomeSurface {
         if (nodes.length > 0) {
           this.fullNodes = nodes;
           this.rebuildTiles();
+          // 记住「上次这份文件夹不是空的」：后面若收到空回包就能判断那是可疑的
+          // 假空（引擎书签模型还没就位），而不是用户把书签删光了。
+          this.cacheTilesJson = cached.tilesJson;
         }
       } catch (error) {
       }
@@ -541,6 +566,7 @@ export struct HomeSurface {
     this.step = step;
     this.waitingParent = parentId;
     this.waitingSeq = this.nextSeq();
+    console.info(`[aura] home req step=${step} seq=${this.waitingSeq}`);
     this.onCommand({ command: 'getBookmarks', requestId: this.waitingSeq, parentId: parentId });
     this.armChainTimer();
   }
@@ -624,6 +650,15 @@ export struct HomeSurface {
     }
 
     if (this.step === 'tiles') {
+      // 可疑的空回包：上次的「首页」文件夹不是空的（缓存里还有内容），引擎多半
+      // 只是书签模型还没加载完就先回了空列表。别当真——不落缓存、不收尾，等
+      // 超时重发一次（只重试一次，仍空就认，用户可能真把书签删光了）。
+      if (nodes.length === 0 && this.cacheTilesJson.length > 0 && !this.emptyTilesRetried) {
+        this.emptyTilesRetried = true;
+        this.armChainTimer();
+        return;
+      }
+      this.emptyTilesRetried = false;
       this.fullNodes = nodes;
       this.rebuildTiles();
       this.step = 'done';
@@ -644,7 +679,9 @@ export struct HomeSurface {
   // 去重（已有同名站点跳过，不产生重复磁贴），补完置 seeded 标志位，用户之后删掉
   // 也不会被反复补回。
   private maybeSeedDefaultBookmarks(): void {
-    if (this.homeBookmarksSeeded || this.homeFolderId.length === 0) {
+    // 偏好没读回来之前不种：回包先到时 homeBookmarksSeeded 还是 false，
+    // 会被当成"没种过"而把用户删掉的默认站补回来。
+    if (!this.homeSeedLoaded || this.homeBookmarksSeeded || this.homeFolderId.length === 0) {
       return;
     }
     const existing: string[] = [];

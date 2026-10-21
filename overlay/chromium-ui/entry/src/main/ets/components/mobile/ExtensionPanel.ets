@@ -467,8 +467,8 @@ export struct ExtensionPanel {
     // chrome-extension:// 页都能承载它——唯独主页不行：外壳的 HomeSurface
     // 盖层铺满全屏，会把 popup 压在底下，点了像没反应。所以只在主页
     // （新标签页）请求 HomeSurface 让位（auraPopupHomeHold），返回键、离开
-    // 主页或 8 秒超时（AuraShell 的 onPopupHomeHoldChanged）时恢复；其余
-    // 场景一律放行。
+    // 主页或兜底超时（AuraShell 的 onPopupHomeHoldChanged，10 分钟，只在
+    // popup 关闭事件丢失时才轮到它）时恢复；其余场景一律放行。
     // 1.0.148 起守卫只管真有 popup 的扩展（item.hasPopup，引擎按
     // action.default_popup 下发）；没有 popup 的（调姬助手这类）一直放行。
     if (item.hasPopup && this.isNewTabUrl(this.currentUrl)) {
