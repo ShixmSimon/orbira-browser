@@ -154,7 +154,13 @@ export struct SitePermissionsPanel {
         this.requestSiteFavicons();
         this.loading = false;
       } else if (payload.requestId === this.detailRequestId) {
-        this.detailItems = items.filter((item: SiteSetting): boolean => item.origin === this.detailOrigin);
+        // 详情回包的 origin 是 url::Origin::Serialize()（https 默认端口 443
+        // 被省略，如 "https://m.baidu.com"），而列表传给详情的 origin 是
+        // ContentSettingsPattern 字符串（含端口，如 "https://m.baidu.com:443"）
+        // —— 字符串严格相等必不成立，按 origin 过滤会把回包整个滤空。
+        // requestId 匹配已保证这是详情请求自己的回包（引擎只回该 origin
+        // 的逐类生效值），直接采用。
+        this.detailItems = items;
       }
     } catch (error) {
       this.loading = false;
