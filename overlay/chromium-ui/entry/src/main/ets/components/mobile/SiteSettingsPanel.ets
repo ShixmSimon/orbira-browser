@@ -305,7 +305,7 @@ export struct SiteSettingsPanel {
       content: {
         title: { mainTitle: '网站设置' },
         backIcon: {
-          icon: $r('app.media.aura_back'),
+          icon: $r('sys.symbol.chevron_backward'),
           isEnabled: true,
           action: (): void => {
             this.onBack();

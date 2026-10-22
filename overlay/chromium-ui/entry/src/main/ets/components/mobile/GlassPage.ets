@@ -83,10 +83,9 @@ export struct GlassBackButton {
 
   build() {
     Column() {
-      Image($r('app.media.aura_back'))
-        .width(22)
-        .height(22)
-        .fillColor($r('app.color.icon_primary'))
+      SymbolGlyph($r('sys.symbol.chevron_backward'))
+        .fontSize(22)
+        .fontColor([ $r('app.color.icon_primary') ])
     }
     .width(44)
     .height(44)
@@ -204,7 +203,7 @@ export struct GlassPage {
       content: {
         title: { mainTitle: this.title },
         backIcon: {
-          icon: $r('app.media.aura_back'),
+          icon: $r('sys.symbol.chevron_backward'),
           isEnabled: true,
           action: (): void => {
             this.onBack();

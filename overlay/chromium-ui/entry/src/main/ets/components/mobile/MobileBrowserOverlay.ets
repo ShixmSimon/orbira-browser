@@ -1964,6 +1964,7 @@ export struct MobileBrowserOverlay {
             }
           }
           .height(40)
+          .padding({ left: 6 })
           .backgroundColor(Color.Transparent)
           .hitTestBehavior(HitTestMode.Default)
           .accessibilityText('网站设置')
@@ -2327,11 +2328,10 @@ export struct MobileBrowserOverlay {
   @Builder
   private EdgeButton(action: MobileEdgeAction) {
     Button({ type: ButtonType.Circle, stateEffect: true }) {
-      Image(action === MobileEdgeAction.BACK ?
-        $r('app.media.aura_arrow_back') : $r('app.media.aura_more'))
-        .width(24)
-        .height(24)
-        .fillColor($r('app.color.icon_primary'))
+      SymbolGlyph(action === MobileEdgeAction.BACK ?
+        $r('sys.symbol.chevron_backward') : $r('sys.symbol.more'))
+        .fontSize(24)
+        .fontColor([ $r('app.color.icon_primary') ])
     }
     .width(52)
     .height(52)
@@ -2491,28 +2491,8 @@ export struct MobileBrowserOverlay {
           this.cancelAddressEdit();
         })
       } else {
-        // Back chevron inside the bar, dimmed when there is nowhere to go.
-        Button({ type: ButtonType.Circle, stateEffect: true }) {
-          Image($r('app.media.aura_arrow_back'))
-            .width(20)
-            .height(20)
-            .fillColor($r('app.color.icon_primary'))
-        }
-        .width(34)
-        .height(34)
-        .margin({ left: 3 })
-        .backgroundColor(Color.Transparent)
-        .opacity(this.browserState.canGoBack ? 1 : 0.4)
-        .enabled(this.browserState.canGoBack)
-        .scale(this.roundScale('barBack'))
-        .onTouch((event: TouchEvent): void => {
-          this.handleRoundTouch(event, 'barBack');
-        })
-        .accessibilityText('返回')
-        .onClick(() => {
-          this.issueCommand({ command: 'back' });
-        })
-
+        // 1.0.242：地址栏不再放返回键 —— 与底栏「返回」重复，且鸿蒙/华为浏览器
+        // 地址栏本无后退键。底栏保留 返回+前进（统一为系统 chevron 符号）。
         Row({ space: 6 }) {
           // 锁图标：点按打开"网站设置"（方案A），不再进入编辑态。
           Button({ type: ButtonType.Normal, stateEffect: false }) {
@@ -2529,6 +2509,7 @@ export struct MobileBrowserOverlay {
             }
           }
           .height(40)
+          .padding({ left: 6 })
           .backgroundColor(Color.Transparent)
           .hitTestBehavior(HitTestMode.Default)
           .accessibilityText('网站设置')
@@ -2813,11 +2794,11 @@ export struct MobileBrowserOverlay {
 
   @Builder
   private BottomDockContent() {
-      this.DockButton($r('app.media.aura_arrow_back'), '返回', this.browserState.canGoBack,
+      this.DockSymbolButton($r('sys.symbol.chevron_backward'), '返回', this.browserState.canGoBack,
         (): void => {
           this.issueCommand({ command: 'back' });
         })
-      this.DockButton($r('app.media.aura_arrow_forward'), '前进', this.browserState.canGoForward,
+      this.DockSymbolButton($r('sys.symbol.chevron_forward'), '前进', this.browserState.canGoForward,
         (): void => {
           this.issueCommand({ command: 'forward' });
         })
@@ -2868,6 +2849,27 @@ export struct MobileBrowserOverlay {
         .width(22)
         .height(22)
         .fillColor($r('app.color.icon_primary'))
+    }
+    .layoutWeight(1)
+    .height(DOCK_BAR_HEIGHT_VP)
+    .backgroundColor(Color.Transparent)
+    .opacity(usable ? 1 : 0.4)
+    .enabled(usable)
+    .scale({ x: this.pressedDock === label ? 0.82 : 1, y: this.pressedDock === label ? 0.82 : 1 })
+    .accessibilityText(label)
+    .onTouch((event: TouchEvent): void => {
+      this.handleDockTouch(event, label);
+    })
+    .onClick(action)
+  }
+
+  // 与 DockButton 同构，但图标用系统符号（chevron 方向键），与面板/HDS 返回钮一致。
+  @Builder
+  private DockSymbolButton(symbol: Resource, label: string, usable: boolean, action: () => void) {
+    Button({ type: ButtonType.Normal, stateEffect: true }) {
+      SymbolGlyph(symbol)
+        .fontSize(22)
+        .fontColor([ $r('app.color.icon_primary') ])
     }
     .layoutWeight(1)
     .height(DOCK_BAR_HEIGHT_VP)
@@ -5015,10 +5017,17 @@ struct DockMaterialPlate {
           .borderRadius(6)
           .border({ width: 1.8, color: $r('app.color.icon_primary') })
       } else {
-        Image(this.slotIcon(slot))
-          .width(22)
-          .height(22)
-          .fillColor($r('app.color.icon_primary'))
+        if (slot === '返回' || slot === '前进') {
+          SymbolGlyph(slot === '返回' ?
+            $r('sys.symbol.chevron_backward') : $r('sys.symbol.chevron_forward'))
+            .fontSize(22)
+            .fontColor([ $r('app.color.icon_primary') ])
+        } else {
+          Image(this.slotIcon(slot))
+            .width(22)
+            .height(22)
+            .fillColor($r('app.color.icon_primary'))
+        }
       }
     }
     // 固有宽度 65 是防塌缩保险（浮动条自动测量路径要靠它；barWidth 已
@@ -5048,10 +5057,10 @@ struct DockMaterialPlate {
 
   private slotIcon(slot: string): Resource {
     if (slot === '返回') {
-      return $r('app.media.aura_arrow_back');
+      return $r('sys.symbol.chevron_backward');
     }
     if (slot === '前进') {
-      return $r('app.media.aura_arrow_forward');
+      return $r('sys.symbol.chevron_forward');
     }
     if (slot === '主页') {
       return $r('app.media.aura_home');

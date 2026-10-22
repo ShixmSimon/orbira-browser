@@ -2323,7 +2323,7 @@ export struct SettingsPanel {
       content: {
         title: { mainTitle: this.subPageTitle(name) },
         backIcon: {
-          icon: $r('app.media.aura_back'),
+          icon: $r('sys.symbol.chevron_backward'),
           isEnabled: true,
           action: (): void => {
             this.popPage();
@@ -2476,7 +2476,7 @@ build() {
       content: {
         title: { mainTitle: '设置' },
         backIcon: {
-          icon: $r('app.media.aura_back'),
+          icon: $r('sys.symbol.chevron_backward'),
           isEnabled: true,
           action: (): void => {
             this.onBack();

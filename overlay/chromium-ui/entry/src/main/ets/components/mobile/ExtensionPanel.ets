@@ -607,7 +607,7 @@ export struct ExtensionPanel {
       content: {
         title: { mainTitle: this.detailName },
         backIcon: {
-          icon: $r('app.media.aura_back'),
+          icon: $r('sys.symbol.chevron_backward'),
           isEnabled: true,
           action: (): void => {
             this.closeDetail();
@@ -1384,7 +1384,7 @@ export struct ExtensionPanel {
       content: {
         title: { mainTitle: '扩展程序' },
         backIcon: {
-          icon: $r('app.media.aura_back'),
+          icon: $r('sys.symbol.chevron_backward'),
           isEnabled: true,
           action: (): void => {
             this.onBack();

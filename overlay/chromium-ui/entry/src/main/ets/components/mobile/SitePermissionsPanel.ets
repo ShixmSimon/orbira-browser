@@ -337,7 +337,7 @@ export struct SitePermissionsPanel {
       content: {
         title: { mainTitle: '网站权限' },
         backIcon: {
-          icon: $r('app.media.aura_back'),
+          icon: $r('sys.symbol.chevron_backward'),
           isEnabled: true,
           action: (): void => {
             this.onBack();
@@ -466,7 +466,7 @@ export struct SitePermissionsPanel {
       content: {
         title: { mainTitle: originHost(this.detailOrigin) },
         backIcon: {
-          icon: $r('app.media.aura_back'),
+          icon: $r('sys.symbol.chevron_backward'),
           isEnabled: true,
           action: (): void => {
             this.backToList();

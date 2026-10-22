@@ -1669,7 +1669,7 @@ export struct PasswordsPanel {
       content: {
         title: { mainTitle: this.selectMode ? `已选 ${this.selectedPwdIds.length} 项` : '密码' },
         backIcon: {
-          icon: $r('app.media.aura_back'),
+          icon: $r('sys.symbol.chevron_backward'),
           isEnabled: true,
           action: (): void => {
             // 多选态返回先退出多选；否则退出整个密码页（详情的返回由
@@ -1783,7 +1783,7 @@ export struct PasswordsPanel {
         content: {
           title: { mainTitle: '密码详情' },
           backIcon: {
-            icon: $r('app.media.aura_back'),
+            icon: $r('sys.symbol.chevron_backward'),
             isEnabled: true,
             action: (): void => {
               this.closeDetail();
