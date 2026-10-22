@@ -3742,7 +3742,9 @@ export struct MobileBrowserOverlay {
     // 底部安全区：贴屏幕底沿（含底部横条），盖住 chrome-bottom 悬浮 dock
     // （遮罩之下，参考浏览器同行为）。
     .padding({ bottom: this.bottomSafeVp })
-    .shadow({ radius: 20, color: $r('app.color.shadow'), offsetY: -4 })
+    // 不加阴影：sheet 贴屏幕底只露顶边，shadow（暗色主题 #66000000）会在
+    // 顶边糊成一条黑带（1.0.231 真机截图：左上角黑条真身）。底部通栏面板
+    // 靠自身底色与遮罩的对比分层，不需要投影。
     // 入场：从屏幕外下方滑上（子节点入场动效，不受 if 根退场规则限制）；
     // 退场由外层 if 根的整体淡出承担（铁律：子节点退场会被原子删除）。
     .transition(TransitionEffect.asymmetric(
@@ -3965,16 +3967,38 @@ export struct MobileBrowserOverlay {
     return host;
   }
 
+  // 查找栏顶边距：贴在当前顶部 chrome 之下（chrome 顶置 dock / 简约顶栏），
+  // 主页界面与 chrome 底置时顶部无 chrome，只留状态栏。查找栏是瞬态浮层，
+  // 按 chrome 全高锚定（滚动收起时上方留空页，可接受，避免浮层跟着晃）。
+  private findBarTopMarginVp(): number {
+    const topChromeH: number = this.homeStyle === 'chrome'
+      ? (this.chromeDockAtTop() ? CHROME_DOCK_EXTENT_VP : 0)
+      : (this.isHomeSurface() ? 0 : TOP_BAR_EXTENT_VP);
+    return this.topSafeVp + topChromeH + 8;
+  }
+
+  // 查找栏（1.0.232 重做）：紧凑浮动卡，外边距贴顶部 chrome 下沿。
+  // 旧实现把 topSafeVp+6 的 padding 塞进条子自身且满幅无圆角——整条
+  // surface_floating 背景从屏幕 y=0 开始，盖住状态栏和顶部 dock，只有最底部
+  // 一行有用（用户报「高度很大、上边空着、位置不合适、不美观」）。现在条子
+  // 只包内容（≈52vp）：圆角 14 + 投影 + 输入框药丸底，参考 Chrome 手机版。
   @Builder
   private FindBar() {
-    Row({ space: 8 }) {
+    Row({ space: 6 }) {
+      Image($r('app.media.chromium_search'))
+        .width(18)
+        .height(18)
+        .fillColor($r('app.color.icon_secondary'))
+        .margin({ left: 6 })
+
       TextInput({ text: this.findQuery, placeholder: '在页面中查找' })
         .layoutWeight(1)
-        .height(40)
+        .height(36)
         .fontSize(14)
         .fontColor($r('app.color.text_primary'))
         .placeholderColor($r('app.color.text_secondary'))
-        .backgroundColor(Color.Transparent)
+        .backgroundColor($r('app.color.surface_secondary'))
+        .borderRadius(18)
         .enterKeyType(EnterKeyType.Done)
         .onChange((value: string) => {
           this.findQuery = value;
@@ -4031,7 +4055,10 @@ export struct MobileBrowserOverlay {
       })
     }
     .width('100%')
-    .padding({ left: 12, right: 8, top: this.topSafeVp + 6, bottom: 6 })
+    .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+    // 浮动卡：左右各 10vp 边距，顶边距由 findBarTopMarginVp() 贴 chrome 下沿。
+    .margin({ left: 10, right: 10, top: this.findBarTopMarginVp() })
+    .borderRadius(14)
     .backgroundColor($r('app.color.surface_floating'))
     .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
     .transition(TransitionEffect.asymmetric(
