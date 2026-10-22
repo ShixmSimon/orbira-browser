@@ -4093,7 +4093,12 @@ export struct MobileBrowserOverlay {
     .width('100%')
     .height('100%')
     .padding({ top: this.findBarTopMarginVp() })
-    .hitTestBehavior(HitTestMode.None)
+    // 容器用 Transparent（dock 同款成熟形态：容器穿透、控件 Default 拦点击）。
+    // ⚠️ 不能用 HitTestMode.None：引擎命中实现（CheckChildHitTestResult）对
+    // None 节点的子树收集与 ArkUI 文档语义不一致，卡片整棵子树不被命中 →
+    // ❌/↑/↓ 全部点穿到网页（1.0.235 真机视频复现；1.0.234 只补了响应区
+    // 窄带没治到它）。
+    .hitTestBehavior(HitTestMode.Transparent)
     .transition(TransitionEffect.asymmetric(
       TransitionEffect.opacity(0).animation({ duration: 180, curve: Curve.FastOutSlowIn }),
       TransitionEffect.opacity(0).animation({ duration: 200, curve: Curve.Friction })
