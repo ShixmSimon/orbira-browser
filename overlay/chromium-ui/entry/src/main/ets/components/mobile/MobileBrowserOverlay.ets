@@ -4097,7 +4097,9 @@ export struct MobileBrowserOverlay {
     // 与 buildChromeTouchRegions 的 findVisible 窄带同一 y。
     .position({ x: 0, y: this.findBarTopMarginVp() })
     .padding({ left: 12, right: 8 })
-    .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 12, bottomRight: 12 })
+    // 四角全圆 12：查找条与 chrome 之间有 8vp 间隙，顶角直角会显得像一块
+    // 贴错的板子（1.0.239 真机截图反馈「上边没有圆角」）。
+    .borderRadius(12)
     .backgroundColor($r('app.color.surface_floating'))
     .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
     .hitTestBehavior(HitTestMode.Default)
