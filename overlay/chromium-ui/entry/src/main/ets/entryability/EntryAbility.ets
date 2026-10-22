@@ -455,11 +455,18 @@ export default class EntryAbility extends UIAbility {
 
   private restoreBrowserProfile(): void {
     BrowserProfileService.load(this.context)
-      .then((state: BrowserProfileState): void => {
-        AppStorage.setOrCreate(AURA_ONBOARDING_COMPLETE_KEY, state.onboardingComplete);
-        AppStorage.setOrCreate(AURA_PROFILE_ID_KEY, state.profileId);
-        AppStorage.setOrCreate(AURA_PROFILE_KIND_KEY, state.profileKind);
-        AppStorage.setOrCreate(AURA_SYNC_MODE_KEY, state.syncMode);
+      .then(async (state: BrowserProfileState): Promise<void> => {
+        let resolved: BrowserProfileState = state;
+        // 1.0.235：首次安装不再弹「选择浏览器资料的保存方式」——直接默认
+        // 本机 Profile（数据只留本机不上传），静默完成 onboarding；账号绑定
+        // 留给日后的同步设置入口，不在启动路径上打断用户。
+        if (!state.onboardingComplete) {
+          resolved = await BrowserProfileService.completeLocalOnboarding(this.context);
+        }
+        AppStorage.setOrCreate(AURA_ONBOARDING_COMPLETE_KEY, resolved.onboardingComplete);
+        AppStorage.setOrCreate(AURA_PROFILE_ID_KEY, resolved.profileId);
+        AppStorage.setOrCreate(AURA_PROFILE_KIND_KEY, resolved.profileKind);
+        AppStorage.setOrCreate(AURA_SYNC_MODE_KEY, resolved.syncMode);
         AppStorage.setOrCreate(AURA_ONBOARDING_READY_KEY, true);
       })
       .catch((error: Error): void => {
