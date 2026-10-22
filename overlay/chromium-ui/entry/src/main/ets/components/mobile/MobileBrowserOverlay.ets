@@ -2110,29 +2110,32 @@ export struct MobileBrowserOverlay {
         this.FindBar()
       }
 
-      // ⋮ 菜单：一块悬浮卡片贴在 dock 上方靠右。不铺遮罩，这里也只留
-      // 一层透明点击层，点到卡片外面就收起来。（2026-10-10 两次实测 bindMenu
-      // —— 1×1 锚点与 dock 真实锚点 —— 都把整屏点击拖死，系统菜单这条路
+      // ⋮ 菜单（1.0.231）：悬浮小卡 →「底部通栏 sheet」。整屏浅遮罩 + 贴底
+      // 上滑面板（参考主流浏览器形态）。无论 ⋮ 在顶/底 dock，sheet 恒从屏幕
+      // 底部弹出——sheet 属于屏幕、不属于按钮；顶置时顶部锚定在状态栏带附近
+      // 拥挤（本项目有状态栏重叠返工史），底部是拇指热区。
+      // 退场动效挂 if 根（铁律：子节点退场会被整树原子删除，只有 if 分支根
+      // 节点的退场能播）；sheet 的上滑是子节点入场动效（入场不受该限制）。
+      // （2026-10-10 两次实测 bindMenu 都把整屏点击拖死，系统菜单这条路
       // 在本应用封死，别再试。）
       if (this.menuCardVisible) {
-        Stack({ alignContent: (this.homeStyle === 'chrome' && this.chromeDockAtTop())
-          ? Alignment.TopEnd : Alignment.BottomEnd }) {
+        Stack({ alignContent: Alignment.Bottom }) {
+          // 浅遮罩：点按收起。18% 黑——页面仍可见，聚焦感比全透明强。
           Column()
             .width('100%')
             .height('100%')
-            .backgroundColor(Color.Transparent)
+            .backgroundColor('rgba(0, 0, 0, 0.18)')
             .onClick(() => {
               this.closeMenuCard();
             })
 
-          this.MenuCard()
+          this.MenuBottomSheet()
         }
         .width('100%')
         .height('100%')
-        // 退场动效（1.0.68）：挂 if 分支根节点才能播（子节点退场会被整树原子删除）。
         .transition(TransitionEffect.asymmetric(
-          TransitionEffect.opacity(1),
-          TransitionEffect.opacity(0).animation({ duration: 300, curve: Curve.Friction })
+          TransitionEffect.opacity(0).animation({ duration: 220, curve: Curve.FastOutSlowIn }),
+          TransitionEffect.opacity(0).animation({ duration: 240, curve: Curve.Friction })
         ))
       }
 
@@ -3622,13 +3625,89 @@ export struct MobileBrowserOverlay {
   }
 
   @Builder
-  private MenuCard() {
-    Column() {
+  // ⋮ 菜单（1.0.231）：底部通栏 sheet。自绘（menu_glass 全不透明底色 +
+  // 顶部圆角 + 阴影），内容从上到下：
+  //   把手（点按收起）→ 域名/连接安全/刷新行 → 5列×2行功能网格 →
+  //   分隔线 → 按页状态列表（加入书签 / 阅读模式 / 无痕）。
+  // 布局原则：页面级动作（书签/历史/下载/扩展/设置/主页/分享/查找/打印/
+  // 桌面版）进网格——通栏后每格 ≈66vp（原悬浮卡 43vp）；只对当前页有意义
+  // 的项（加入书签/阅读模式/无痕）留下方列表。主页界面隐藏页级项
+  // （与原悬浮卡一致）。所有点击行为与原卡相同。
+  // 命名避坑：MenuSheet 一名已被标签页切换的 bindSheet 占用（见 2057 行），
+  // 本 builder 必须叫 MenuBottomSheet。
+  private MenuBottomSheet() {
+    Column({ space: 0 }) {
+      // 把手：点按收起（与点遮罩等价）。进场时随面板从底部滑入。
+      Row() {
+        Column()
+          .width(36)
+          .height(4)
+          .borderRadius(2)
+          .backgroundColor($r('app.color.icon_secondary'))
+      }
+      .width('100%')
+      .height(28)
+      .hitTestBehavior(HitTestMode.Default)
+      .onClick((): void => this.closeMenuCard())
+
       if (!this.isHomeSurface()) {
         this.MenuHeader()
         this.MenuSeparator()
       }
 
+      // 功能网格 5×2（通栏 ≈66vp/格，图标 22 + 12sp 文字从容放下）。
+      Column({ space: 8 }) {
+        Row({ space: 6 }) {
+          this.PanelEntryButton('书签', $r('app.media.chromium_bookmark'), (): void => {
+            this.openBookmarksPanel();
+          })
+          this.PanelEntryButton('历史', $r('app.media.chromium_history'), (): void => {
+            this.openHistoryPanel();
+          })
+          this.PanelEntryButton('下载', $r('app.media.chromium_download'), (): void => {
+            this.openDownloadsPanel();
+          })
+          this.PanelEntryButton('扩展', $r('app.media.aura_extensions'), (): void => {
+            this.openExtensionPanelPage();
+          })
+          this.PanelEntryButton('设置', $r('app.media.chromium_settings'), (): void => {
+            this.openSettingsPanelPage();
+          })
+        }
+        .width('100%')
+
+        if (!this.isHomeSurface()) {
+          Row({ space: 6 }) {
+            this.PanelEntryButton('主页', $r('app.media.aura_home'), (): void => {
+              this.closeMenuCard();
+              this.issueCommand({ command: 'home' });
+            })
+            this.PanelEntryButton('分享', $r('app.media.aura_share'), (): void => {
+              this.closeMenuCard();
+              this.shareCurrentPage();
+            })
+            this.PanelEntryButton('查找', $r('app.media.chromium_search'), (): void => {
+              this.closeMenuCard();
+              this.findVisible = true;
+            })
+            this.PanelEntryButton('打印', $r('app.media.chromium_print'), (): void => {
+              this.closeMenuCard();
+              this.issueCommand({ command: 'print' });
+            })
+            this.PanelEntryButton('桌面版', $r('app.media.aura_desktop'), (): void => {
+              this.closeMenuCard();
+              this.toggleDesktopSite();
+            })
+          }
+          .width('100%')
+        }
+      }
+      .width('100%')
+      .padding({ left: 12, right: 12, top: 6, bottom: 10 })
+
+      this.MenuSeparator()
+
+      // 按页状态列表：加入书签 / 阅读模式（引擎可用时）/ 无痕开关。
       if (!this.isHomeSurface()) {
         // 引擎的状态里没有"当前页是否已收藏"这项（native 有 bookmarked，
         // 但 HAR 的 BrowserStateSnapshot 还没声明），所以这一项只做加入。
@@ -3644,21 +3723,7 @@ export struct MobileBrowserOverlay {
               this.issueCommand({ command: 'toggleReaderMode' });
             })
         }
-        this.MenuItem($r('app.media.aura_share'), '分享 / 发送到我的设备', '', (): void => {
-          this.closeMenuCard();
-          this.shareCurrentPage();
-        })
-        this.MenuItem($r('app.media.chromium_search'), '在页面中查找', '', (): void => {
-          this.closeMenuCard();
-          this.findVisible = true;
-        })
-        this.MenuItem($r('app.media.chromium_print'), '打印', '', (): void => {
-          this.closeMenuCard();
-          this.issueCommand({ command: 'print' });
-        })
-        this.MenuSeparator()
       }
-
       if (this.incognito) {
         this.MenuItem($r('app.media.aura_incognito'), '退出无痕', '', (): void => {
           this.closeMenuCard();
@@ -3670,58 +3735,20 @@ export struct MobileBrowserOverlay {
           this.enterIncognito();
         })
       }
-      if (!this.isHomeSurface()) {
-        this.MenuItem($r('app.media.aura_desktop'), '桌面版网站',
-          this.browserState.requestDesktopSite === true ? '开' : '', (): void => {
-            this.closeMenuCard();
-            this.toggleDesktopSite();
-          })
-      }
-
-      this.MenuSeparator()
-
-      // 五个面板入口等宽平铺（1.0.87：扩展从顶栏搬到这里 —— 顶栏只留地址栏）。
-      // 卡片内宽 258-2*8-4*6 = 218vp → 每格 ≈43vp，22 图标 + 12sp 文字放得下。
-      Row({ space: 6 }) {
-        this.PanelEntryButton('书签', $r('app.media.chromium_bookmark'), (): void => {
-          this.openBookmarksPanel();
-        })
-        this.PanelEntryButton('历史', $r('app.media.chromium_history'), (): void => {
-          this.openHistoryPanel();
-        })
-        this.PanelEntryButton('下载', $r('app.media.chromium_download'), (): void => {
-          this.openDownloadsPanel();
-        })
-        this.PanelEntryButton('扩展', $r('app.media.aura_extensions'), (): void => {
-          this.openExtensionPanelPage();
-        })
-        this.PanelEntryButton('设置', $r('app.media.chromium_settings'), (): void => {
-          this.openSettingsPanelPage();
-        })
-      }
-      .width('100%')
-      .padding({ left: 8, right: 8, top: 10, bottom: 12 })
     }
-    .width(MENU_CARD_WIDTH_VP)
-    .borderRadius(22)
-    // 菜单卡直接叠在网页上，没有遮罩。底色 menu_glass **全不透明**（用户定案
-    // 2026-10-10：真玻璃四条路全堵，那就不要透）——浅 #F7F7F8 / 深 #29292C。
-    // ⚠️ 2026-10-10 两次真机实测（1×1 锚点 / dock 真实锚点）：bindMenu 一挂
-    // 上去整屏点击就失效 —— 系统菜单这条路在本应用彻底封死，别再试；
-    // 网页上方的浮层一律自绘（底色 menu_glass + 圆角/阴影/出入场动画）。
+    .width('100%')
+    .borderRadius({ topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 })
     .backgroundColor($r('app.color.menu_glass'))
-    .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
-    // Chrome 顶置/主页：菜单卡贴在顶部 dock 之下（靠上）；其余（Chrome 底置 / 简约）贴底。
-    .margin(this.homeStyle === 'chrome' && this.chromeDockAtTop()
-      ? { right: 14, top: CHROME_DOCK_EXTENT_VP + this.topSafeVp + 8 }
-      : { right: 14, bottom: 82 + this.bottomSafeVp })
+    // 底部安全区：贴屏幕底沿（含底部横条），盖住 chrome-bottom 悬浮 dock
+    // （遮罩之下，参考浏览器同行为）。
+    .padding({ bottom: this.bottomSafeVp })
+    .shadow({ radius: 20, color: $r('app.color.shadow'), offsetY: -4 })
+    // 入场：从屏幕外下方滑上（子节点入场动效，不受 if 根退场规则限制）；
+    // 退场由外层 if 根的整体淡出承担（铁律：子节点退场会被原子删除）。
     .transition(TransitionEffect.asymmetric(
-      TransitionEffect.opacity(0)
-        .combine(TransitionEffect.translate({ y: 20 }))
-        .combine(TransitionEffect.scale({ x: 0.9, y: 0.9 })),
-      TransitionEffect.opacity(0)
-        .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 }))
-    ).animation({ curve: curves.springMotion(0.3, 0.72) }))
+      TransitionEffect.translate({ y: 420 }).animation({ duration: 300, curve: Curve.FastOutSlowIn }),
+      TransitionEffect.opacity(1)
+    ))
   }
 
   // 第一行：连接状态。锁形图标 + 域名 + " · 连接安全/不安全"，行尾一枚刷新
