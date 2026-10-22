@@ -3993,114 +3993,100 @@ export struct MobileBrowserOverlay {
     return this.topSafeVp + topChromeH + 8;
   }
 
-  // 查找栏（1.0.232 重做）：紧凑浮动卡，外边距贴顶部 chrome 下沿。
-  // 旧实现把 topSafeVp+6 的 padding 塞进条子自身且满幅无圆角——整条
-  // surface_floating 背景从屏幕 y=0 开始，盖住状态栏和顶部 dock，只有最底部
-  // 一行有用（用户报「高度很大、上边空着、位置不合适、不美观」）。现在条子
-  // 只包内容（≈52vp）：圆角 14 + 投影 + 输入框药丸底，参考 Chrome 手机版。
-  // ⚠️ 根 Stack 未给 alignContent（默认 Center）：卡片不能直接当 Stack 子组件
-  // （会被垂直居中——用户报「查找框在中间位置」的真因），必须套一层满幅透明
-  // 包裹用 padding 贴顶；包裹层 hitTest None 不挡页面（查找时页面照常可看可滚，
-  // findVisible 不在模态响应区名单里是有意设计），卡片自身 Default 拦点击。
-  // 退场动效挂 if 根（铁律：子节点退场会被整树原子删除）；卡片的上滑是
-  // 子节点入场动效（入场不受该限制）。
+  // 查找栏（1.0.237）：回到 ≤1.0.231 验证过的「直挂根 Stack + 自身 Default」
+  // 结构——那个结构从未有穿透报告；1.0.233 引入包裹层后穿透出现，1.0.234 补
+  // 响应区窄带、1.0.236 换 Transparent 都没断掉（包裹层即真凶，删除）。
+  // 位置：根 Stack 未给 alignContent（默认 Center），直接子组件会被垂直居中
+  // （1.0.232「查找框在中间位置」真因）→ 用 position() 绝对定位贴 chrome
+  // 下沿，不靠包裹层 padding。命中：卡片自身 Default 消费 + 响应区
+  // findVisible 窄带（1.0.234）双保险；卡外空隙照常落网页。
+  // 退场动效挂 if 根（铁律：子节点退场会被整树原子删除）；卡片 -24 下滑是
+  // 自身入场动效（入场不受该限制）。
   @Builder
   private FindBar() {
-    Column() {
-      Row({ space: 6 }) {
-        Image($r('app.media.chromium_search'))
-          .width(18)
-          .height(18)
-          .fillColor($r('app.color.icon_secondary'))
-          .margin({ left: 6 })
+    Row({ space: 6 }) {
+      Image($r('app.media.chromium_search'))
+        .width(18)
+        .height(18)
+        .fillColor($r('app.color.icon_secondary'))
+        .margin({ left: 6 })
 
-        TextInput({ text: this.findQuery, placeholder: '在页面中查找' })
-          .layoutWeight(1)
-          .height(36)
-          .fontSize(14)
-          .fontColor($r('app.color.text_primary'))
-          .placeholderColor($r('app.color.text_secondary'))
-          .backgroundColor($r('app.color.surface_secondary'))
-          .borderRadius(18)
-          .enterKeyType(EnterKeyType.Done)
-          .onChange((value: string) => {
-            this.findQuery = value;
-            if (value.trim().length > 0) {
-              this.issueCommand({ command: 'findInPage', text: value });
-            }
-          })
-          .onSubmit(() => {
-            this.findNext(true);
-          })
-
-        Text(this.findMatches() > 0 ? `${this.findActiveMatch()}/${this.findMatches()}` : '')
-          .fontSize(12)
-          .fontColor($r('app.color.text_secondary'))
-
-        Button({ type: ButtonType.Circle }) {
-          Text('↑')
-            .fontSize(16)
-            .fontColor($r('app.color.icon_primary'))
-        }
-        .width(34)
-        .height(34)
-        .backgroundColor(Color.Transparent)
-        .accessibilityText('上一个')
-        .onClick(() => {
-          this.findNext(false);
+      TextInput({ text: this.findQuery, placeholder: '在页面中查找' })
+        .layoutWeight(1)
+        .height(36)
+        .fontSize(14)
+        .fontColor($r('app.color.text_primary'))
+        .placeholderColor($r('app.color.text_secondary'))
+        .backgroundColor($r('app.color.surface_secondary'))
+        .borderRadius(18)
+        .enterKeyType(EnterKeyType.Done)
+        .onChange((value: string) => {
+          this.findQuery = value;
+          if (value.trim().length > 0) {
+            this.issueCommand({ command: 'findInPage', text: value });
+          }
         })
-
-        Button({ type: ButtonType.Circle }) {
-          Text('↓')
-            .fontSize(16)
-            .fontColor($r('app.color.icon_primary'))
-        }
-        .width(34)
-        .height(34)
-        .backgroundColor(Color.Transparent)
-        .accessibilityText('下一个')
-        .onClick(() => {
+        .onSubmit(() => {
           this.findNext(true);
         })
 
-        Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.chromium_close'))
-            .width(18)
-            .height(18)
-            .fillColor($r('app.color.icon_secondary'))
-        }
-        .width(34)
-        .height(34)
-        .backgroundColor(Color.Transparent)
-        .accessibilityText('结束查找')
-        .onClick(() => {
-          this.closeFindBar();
-        })
+      Text(this.findMatches() > 0 ? `${this.findActiveMatch()}/${this.findMatches()}` : '')
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+
+      Button({ type: ButtonType.Circle }) {
+        Text('↑')
+          .fontSize(16)
+          .fontColor($r('app.color.icon_primary'))
       }
-      .width('100%')
-      .padding({ left: 8, right: 8, top: 6, bottom: 6 })
-      .margin({ left: 10, right: 10 })
-      .borderRadius(14)
-      .backgroundColor($r('app.color.surface_floating'))
-      .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
-      .hitTestBehavior(HitTestMode.Default)
-      .transition(TransitionEffect.asymmetric(
-        TransitionEffect.opacity(0)
-          .combine(TransitionEffect.translate({ y: -24 })),
-        TransitionEffect.opacity(1)
-      ).animation({ duration: 200, curve: Curve.Friction }))
+      .width(34)
+      .height(34)
+      .backgroundColor(Color.Transparent)
+      .accessibilityText('上一个')
+      .onClick(() => {
+        this.findNext(false);
+      })
+
+      Button({ type: ButtonType.Circle }) {
+        Text('↓')
+          .fontSize(16)
+          .fontColor($r('app.color.icon_primary'))
+      }
+      .width(34)
+      .height(34)
+      .backgroundColor(Color.Transparent)
+      .accessibilityText('下一个')
+      .onClick(() => {
+        this.findNext(true);
+      })
+
+      Button({ type: ButtonType.Circle }) {
+        Image($r('app.media.chromium_close'))
+          .width(18)
+          .height(18)
+          .fillColor($r('app.color.icon_secondary'))
+      }
+      .width(34)
+      .height(34)
+      .backgroundColor(Color.Transparent)
+      .accessibilityText('结束查找')
+      .onClick(() => {
+        this.closeFindBar();
+      })
     }
     .width('100%')
-    .height('100%')
-    .padding({ top: this.findBarTopMarginVp() })
-    // 容器用 Transparent（dock 同款成熟形态：容器穿透、控件 Default 拦点击）。
-    // ⚠️ 不能用 HitTestMode.None：引擎命中实现（CheckChildHitTestResult）对
-    // None 节点的子树收集与 ArkUI 文档语义不一致，卡片整棵子树不被命中 →
-    // ❌/↑/↓ 全部点穿到网页（1.0.235 真机视频复现；1.0.234 只补了响应区
-    // 窄带没治到它）。
-    .hitTestBehavior(HitTestMode.Transparent)
+    .height(48)
+    // position 绝对定位（绕开根 Stack 默认 Center 对齐），贴 chrome 下沿；
+    // 与 buildChromeTouchRegions 的 findVisible 窄带同一 y。
+    .position({ x: 0, y: this.findBarTopMarginVp() })
+    .padding({ left: 12, right: 8 })
+    .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 12, bottomRight: 12 })
+    .backgroundColor($r('app.color.surface_floating'))
+    .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+    .hitTestBehavior(HitTestMode.Default)
     .transition(TransitionEffect.asymmetric(
-      TransitionEffect.opacity(0).animation({ duration: 180, curve: Curve.FastOutSlowIn }),
+      TransitionEffect.opacity(0)
+        .combine(TransitionEffect.translate({ y: -24 })),
       TransitionEffect.opacity(0).animation({ duration: 200, curve: Curve.Friction })
     ))
   }
