@@ -1739,15 +1739,21 @@ export struct MobileBrowserOverlay {
       .hitTestBehavior(HitTestMode.Default)
       .onClick((): void => this.openSiteSettings())
 
+      // 域名：Button 内容必须包一层 width('100%') 的 Row（同 TopBarContent
+      // 2492-2513 的成熟写法）——Button 默认居中内容，裸 Text 的
+      // textAlign(Start) 只在自己盒子里生效，域名会被居中而非靠左。
       Button({ type: ButtonType.Normal, stateEffect: false }) {
-        Text(this.displayDomain())
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .textAlign(TextAlign.Start)
-          .layoutWeight(1)
+        Row({ space: 6 }) {
+          Text(this.displayDomain())
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.text_primary'))
+            .textAlign(TextAlign.Start)
+            .layoutWeight(1)
+        }
+        .width('100%')
       }
       .layoutWeight(1)
       .height(40)
@@ -1757,7 +1763,10 @@ export struct MobileBrowserOverlay {
       .hitTestBehavior(HitTestMode.Default)
       .onClick((): void => this.beginAddressEdit())
     }
-    .width('100%')
+    // 用 layoutWeight(1) 占剩余宽度，绝不能用 width('100%')：它是底栏 Row
+    // 里 home/刷新/标签/菜单的同级兄弟，100% 会把兄弟全挤成 0 宽
+    // （用户报「刷新/设置按钮改没了」的真因）。
+    .layoutWeight(1)
     .height(40)
     .padding({ left: 6, right: 6 })
     .backgroundColor(Color.Transparent)
@@ -1960,15 +1969,20 @@ export struct MobileBrowserOverlay {
           .accessibilityText('网站设置')
           .onClick((): void => this.openSiteSettings())
 
+          // 域名：Button 内容包一层 width('100%') 的 Row（同 TopBarContent）——
+          // Button 默认居中内容，裸 Text 的 textAlign(Start) 不生效。
           Button({ type: ButtonType.Normal, stateEffect: false }) {
-            Text(this.displayDomain())
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .fontSize(15)
-              .fontWeight(FontWeight.Medium)
-              .fontColor($r('app.color.text_primary'))
-              .textAlign(TextAlign.Start)
-              .layoutWeight(1)
+            Row({ space: 6 }) {
+              Text(this.displayDomain())
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .fontSize(15)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary'))
+                .textAlign(TextAlign.Start)
+                .layoutWeight(1)
+            }
+            .width('100%')
           }
           .layoutWeight(1)
           .height(40)
