@@ -2189,20 +2189,36 @@ export struct MobileBrowserOverlay {
   // 矩形"，因此只会与 Transparent 组合出现（行为与旧实现一致）。
   private buildChromeTouchRegions(): Array<Rectangle> {
     const regions: Array<Rectangle> = [];
-    // 模态层（七页面板 / ⋮ 悬浮菜单卡 / 长按菜单 / 地址栏联想列表 / 查找栏）
-    // 在场：整屏归它，直接全屏响应区，顺带把网页挡在后面（菜单卡/联想列表点外
+    // 模态层（七页面板 / ⋮ 悬浮菜单卡 / 长按菜单 / 地址栏联想列表）在场：
+    // 整屏归它，直接全屏响应区，顺带把网页挡在后面（菜单卡/联想列表点外
     // 收起时不再误点页面）。
-    // ⚠️ 1.0.233~1.0.237 四连败的教训：查找栏曾试图用「非模态 + 第二条窄带
-    // region」留在页面可滚形态——包裹层 None（233）/补窄带（234）/Transparent
-    // （236）/删包裹层+position（237）全部无效 → 本引擎 fork 对多 region 数组
-    // 的处理不可信，**单全屏 region + 根 Default 是唯一有完备先例的可靠形态**
-    // （菜单卡/长按菜单/联想/面板全靠它）。代价：查找期间页面不可点滚
-    // （关栏即恢复）——可接受，换取点击绝不穿透。
     if (this.panelPage !== 'none' || this.menuCardVisible || this.homeTileMenuVisible ||
-      this.homeUrlFormVisible || this.contextMenuJson.length > 0 || this.suggestListActive() ||
-      this.findVisible) {
+      this.homeUrlFormVisible || this.contextMenuJson.length > 0 || this.suggestListActive()) {
       const full: Rectangle = { x: 0, y: 0, width: '100%', height: '100%' };
       regions.push(full);
+      return regions;
+    }
+    // 查找栏（1.0.239）：**根 Default + 单条 region**——命中契约注释里的正解
+    // 形态（「条带内命中即阻断、条带外整棵 overlay 判 OUT_OF_REGION、触摸正常
+    // 落到网页」）。查找期间：chrome + 查找栏这一条带拦点击（含卡片按钮，不
+    // 穿透），**页面其余部分照常可点可滚**（用户要的交互：边看高亮边翻页）。
+    // ⚠️ 1.0.233~1.0.238 七连败复盘：多 region 数组在本引擎不可信（先 push
+    // 的会被丢——234/236/237 的查找窄带都是被丢的那条），所以 chrome 与查找
+    // 栏必须**合并成一条连续 region**；1.0.238 的「全屏 region 全锁页面」
+    // 则是把正解形态做过了头（用户指出查找期间页面应可滚）。
+    if (this.findVisible) {
+      // 查找栏底沿 = 顶边距 + 卡高 48 + 余量 4。
+      const findBottom: number = this.findBarTopMarginVp() + 48 + 4;
+      // 顶部有 chrome（chrome 顶置 / 简约网页页）→ chrome 与查找栏连续，
+      // 一条 region 从屏幕顶到查找栏底；chrome 底置时两者不连续（查找栏在
+      // 顶、dock 在底），只保查找栏一条（查找期间 dock 暂让位，可接受）。
+      const chromeOnTop: boolean = this.homeStyle === 'chrome'
+        ? this.chromeDockAtTop() : !this.isHomeSurface();
+      if (chromeOnTop) {
+        regions.push({ x: 0, y: 0, width: '100%', height: findBottom });
+      } else {
+        regions.push({ x: 0, y: this.findBarTopMarginVp(), width: '100%', height: 52 });
+      }
       return regions;
     }
     // Chrome 风格：整条 dock 占据顶或底，作为唯一可交互条带（不再有独立顶栏）。
@@ -2296,10 +2312,12 @@ export struct MobileBrowserOverlay {
   // 整屏阻断网页。联想列表此前漏配（region 全屏但模式仍 Transparent），
   // 真机实测 2026-10-10：点联想行「abcam」，同一触摸又穿到下方网页、点中
   // Bing 的「学术」标签并跳页——列表点选/点外收起都会透传。补上即与面板
-  // 同款（面板/菜单证明不穿透的组合）。查找栏 1.0.233~1.0.237 四连败后
-  // （包裹层/窄带 region/Transparent/position 全部无效）于 1.0.238 归队
-  // 模态名单——本引擎只有「单全屏 region + 根 Default」这一种被反复验证
-  // 不穿透的组合。
+  // 同款（面板/菜单证明不穿透的组合）。查找栏 1.0.233~1.0.238 七连败后
+  // （包裹层/多 region 窄带/Transparent/position/全锁页面逐一试过）定案：
+  // 根保持 Default（与 region 模态条件一致），但 region 收窄为「chrome +
+  // 查找栏」单条连续带（见 buildChromeTouchRegions 1.0.239 分支）——条带内
+  // 阻断且卡片按钮不穿透，条带外 OUT_OF_REGION 落网页，查找期间页面照常
+  // 可点可滚。
   const modal: boolean = this.panelPage !== 'none' ||
     this.menuCardVisible || this.contextMenuJson.length > 0 ||
     this.suggestListActive() || this.findVisible;
@@ -3995,9 +4013,10 @@ export struct MobileBrowserOverlay {
   // 响应区窄带、1.0.236 换 Transparent 都没断掉（包裹层即真凶，删除）。
   // 位置：根 Stack 未给 alignContent（默认 Center），直接子组件会被垂直居中
   // （1.0.232「查找框在中间位置」真因）→ 用 position() 绝对定位贴 chrome
-  // 下沿，不靠包裹层 padding。命中（1.0.238 归队模态）：findVisible 进模态
-  // 名单 → 根 Default + 单全屏 region，卡片自身 Default 消费——与菜单卡/联想
-  // 列表同一套被反复验证不穿透的组合。查找期间页面不可点滚（关栏即恢复）。
+  // 下沿，不靠包裹层 padding。命中（1.0.239 定案）：findVisible → 根
+  // Default + 「chrome + 查找栏」单条连续 region（1.0.233~238 七连败证明
+  // 多 region 数组不可信、全屏 region 又锁死过头）——条带内卡片按钮消费
+  // 不穿透，条带外 OUT_OF_REGION 落网页，查找期间页面照常可点可滚。
   // 退场动效挂 if 根（铁律：子节点退场会被整树原子删除）；卡片 -24 下滑是
   // 自身入场动效（入场不受该限制）。
   @Builder
