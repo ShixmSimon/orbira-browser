@@ -2198,6 +2198,19 @@ export struct MobileBrowserOverlay {
       regions.push(full);
       return regions;
     }
+    // 查找卡条带（1.0.233 真机：查找卡贴到 chrome 下沿后落在 chrome 条带之外，
+    // 整棵 overlay 对该触摸判 OUT_OF_REGION → 卡上按钮点击直接穿到网页）。
+    // 只加卡片自身的一条窄带、不加全屏：查找时页面保持可看可滚是有意设计
+    // （findVisible 不进上面的模态名单）。卡片高 = 36 输入框 + 上下 6 padding
+    // = 48，留 4vp 余量。
+    if (this.findVisible && this.viewportHeightVp > 0) {
+      regions.push({
+        x: 0,
+        y: this.findBarTopMarginVp(),
+        width: '100%',
+        height: 52
+      });
+    }
     // Chrome 风格：整条 dock 占据顶或底，作为唯一可交互条带（不再有独立顶栏）。
     if (this.homeStyle === 'chrome') {
       if (this.chromeDockAtTop()) {
