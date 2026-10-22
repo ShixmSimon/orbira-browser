@@ -141,7 +141,10 @@ export struct ExtensionPanel {
     // 空图标直接用上次的）。
     const host = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
     ExtIconCache.hydrate(host).then((): void => {
+      // 1.0.241：重开后从磁盘缓存补回的 base64 也要重新解成 PixelMap（否则只能
+      // 走 data: URL 回退；且不清 broken 标记时，上次卡住的坏图会残留）。
       this.items = this.mergeIconCache(this.items);
+      this.decodeIcons(this.items);
     });
     // 开发者模式的当前值：开关在标题栏，打开面板就问一次引擎。
     this.onCommand({ command: 'getDeveloperMode' });
@@ -219,6 +222,14 @@ export struct ExtensionPanel {
       const raw = entry.iconPngBase64;
       if (raw.length === 0) {
         continue;
+      }
+      // 1.0.241：只要拿到非空图标就撤销该 id 的「坏图」标记——引擎启停扩展后
+      // 会异步重生成图标，空窗里可能回过一次解不开的串把 id 标成 broken；若不再
+      // 给重试机会，图标会一直只显示字母块、直到重开面板才恢复（装机反馈
+      // 「图标时有时无、退出重进才恢复」的根因之一）。每来一份新非空 base64 都
+      // 清一次，让下方解码 / data: URL 回退重新尝试，自己愈合。
+      if (this.iconBroken(entry.id)) {
+        this.clearIconBroken(entry.id);
       }
       if (this.iconPixels.has(entry.id) && this.iconPixelSource.get(entry.id) === raw) {
         continue;
@@ -852,6 +863,20 @@ export struct ExtensionPanel {
     this.brokenIconIds.push(id);
     // 重新赋值触发 @State 更新（ArkUI 对数组原地修改不重渲染）。
     this.brokenIconIds = this.brokenIconIds.slice();
+  }
+
+  // 撤销坏图标记（1.0.241）：新非空 base64 到达时调用，给解码/回退一次重试机会。
+  private clearIconBroken(id: string): void {
+    if (!this.iconBroken(id)) {
+      return;
+    }
+    const kept: string[] = [];
+    for (const item of this.brokenIconIds) {
+      if (item !== id) {
+        kept.push(item);
+      }
+    }
+    this.brokenIconIds = kept;
   }
 
   // 标题栏交给 Navigation（HarmonyOS 7 之后只有 Navigation 标题栏 / 底部
