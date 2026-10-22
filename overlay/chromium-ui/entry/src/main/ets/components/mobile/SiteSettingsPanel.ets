@@ -203,29 +203,31 @@ export struct SiteSettingsPanel {
           .layoutWeight(1)
           .justifyContent(FlexAlign.Center)
         } else {
-          // 头部：站点信息
-          Row({ space: 12 }) {
-            AuraSiteIcon({ url: this.origin, iconData: faviconData(this.origin, this.faviconMap) })
-            Column({ space: 2 }) {
-              Text(displayUrl(this.origin))
-                .fontSize(16)
-                .fontWeight(FontWeight.Medium)
-                .fontColor($r('app.color.text_primary'))
-                .maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis })
-                .width('100%')
-              Text('网站设置')
-                .fontSize(12)
-                .fontColor($r('app.color.text_secondary'))
-            }
-            .alignItems(HorizontalAlign.Start)
-            .layoutWeight(1)
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 12, bottom: 12 })
-
           Scroll(this.scroller) {
             Column() {
+              // 头部：站点信息。必须在 Scroll 内容层里——外层 Column 顶部直达
+              // 屏幕物理边缘（ignoreLayoutSafeArea TOP），只有这里的
+              // glassHeaderInsetVp() 内缩能把内容压到标题栏之下（顶部内缩铁律）。
+              Row({ space: 12 }) {
+                AuraSiteIcon({ url: this.origin, iconData: faviconData(this.origin, this.faviconMap) })
+                Column({ space: 2 }) {
+                  Text(displayUrl(this.origin))
+                    .fontSize(16)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor($r('app.color.text_primary'))
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .width('100%')
+                  Text('网站设置')
+                    .fontSize(12)
+                    .fontColor($r('app.color.text_secondary'))
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+
               Column() {
                 ForEach(ALL_TYPES, (t: SiteTypeInfo, index: number) => {
                   Column() {

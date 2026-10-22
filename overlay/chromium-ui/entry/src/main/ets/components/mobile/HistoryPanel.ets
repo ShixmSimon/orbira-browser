@@ -376,7 +376,14 @@ export struct HistoryPanel {
 
   @Builder
   private HistoryGroupHeader(label: string, tightTop: boolean) {
-    AuraSectionLabel({ text: label, tightTop: tightTop })
+    // 组头左缘与行内站点图标对齐：行内容在卡片内缩 16，组头自身只缩 4，
+    // 这里再垫 12（16 页边 + 12 + 4 = 32 = 页边 + 行内缩）才与图标对齐
+    //（用户反馈组头「离左边太紧」）。
+    Column() {
+      AuraSectionLabel({ text: label, tightTop: tightTop })
+    }
+    .width('100%')
+    .padding({ left: 12 })
   }
 
   // 左滑删除：end 动作（从右往左滑，右侧露出红色删除）。多选态返回空，避免误删。
