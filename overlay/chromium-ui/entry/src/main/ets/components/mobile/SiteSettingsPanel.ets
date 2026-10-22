@@ -5,7 +5,7 @@
  * 允许→询问→禁止→默认 间循环并写入例外（setSiteSetting），从而让
  * "网站权限"全局列表出现该站。头部显示站点图标 + 域名 + "网站设置"。
  */
-import { BrowserCommandPayload, SiteSetting, SiteSettingValue } from 'engine';
+import { BrowserCommandPayload, SiteSetting, SiteSettingType, SiteSettingValue, SiteSettingsEvent } from 'engine';
 import { displayUrl } from './PanelBridge';
 import { glassHeaderInsetVp } from './GlassPage';
 import { AuraSiteIcon } from './AuraKit';
@@ -26,8 +26,14 @@ const VALUE_LABELS: Record<string, string> = {
 
 const CYCLE_ORDER: SiteSettingValue[] = ['allow', 'ask', 'block', 'default'];
 
+// 权限类型行（显式 interface：ArkTS 禁内联对象类型）。
+interface SiteTypeInfo {
+  type: SiteSettingType;
+  label: string;
+}
+
 // 完整权限类型清单（与"网站权限"详情页 typeLabel 保持一致）。
-const ALL_TYPES: { type: string; label: string }[] = [
+const ALL_TYPES: SiteTypeInfo[] = [
   { type: 'location', label: '位置' },
   { type: 'camera', label: '相机' },
   { type: 'microphone', label: '麦克风' },
@@ -115,13 +121,13 @@ export struct SiteSettingsPanel {
       return;
     }
     try {
-      const payload = JSON.parse(this.settingsJson) as { requestId?: number; items?: SiteSetting[] };
+      const payload = JSON.parse(this.settingsJson) as SiteSettingsEvent;
       if (payload.requestId !== this.requestId) {
         return;
       }
       // 初始化完整类型清单（default），再用回包覆盖实际值。
       const map: Map<string, SiteSettingValue> = new Map();
-      ALL_TYPES.forEach((t: { type: string; label: string }): void => {
+      ALL_TYPES.forEach((t: SiteTypeInfo): void => {
         map.set(t.type, 'default');
       });
       (payload.items ?? []).forEach((item: SiteSetting): void => {
@@ -150,7 +156,7 @@ export struct SiteSettingsPanel {
     requestFavicons([this.origin], this.onCommand);
   }
 
-  private cycle(type: string): void {
+  private cycle(type: SiteSettingType): void {
     const current = this.settings.get(type) ?? 'default';
     const value = nextValue(current);
     // 乐观更新：立即翻转，再重新拉取确认。
@@ -221,7 +227,7 @@ export struct SiteSettingsPanel {
           Scroll(this.scroller) {
             Column() {
               Column() {
-                ForEach(ALL_TYPES, (t: { type: string; label: string }, index: number) => {
+                ForEach(ALL_TYPES, (t: SiteTypeInfo, index: number) => {
                   Column() {
                     Row() {
                       Text(t.label)
@@ -253,7 +259,7 @@ export struct SiteSettingsPanel {
                     }
                   }
                   .width('100%')
-                }, (t: { type: string; label: string }): string => t.type)
+                }, (t: SiteTypeInfo): string => t.type)
               }
               .width('100%')
               .borderRadius(16)

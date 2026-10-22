@@ -602,8 +602,10 @@ export struct HistoryPanel {
 
           // 每组一个浮框卡片（ListItemGroup 带卡片底色 + 圆角 + 裁切），
           // 组内每条记录是独立 ListItem，可左滑删除。
+          // 首组不用 tightTop：搜索框已在标题栏和组头之间，4vp 顶距会把
+          // 「今天」贴死在搜索框下（用户反馈「离上边边缘有点近」）。
           ForEach(this.filteredGroups, (group: HistoryGroup, index: number) => {
-            ListItemGroup({ header: (): void => { this.HistoryGroupHeader(group.label, index === 0); } }) {
+            ListItemGroup({ header: (): void => { this.HistoryGroupHeader(group.label, false); } }) {
               ForEach(group.items, (item: HistoryItem, index: number) => {
                 ListItem() {
                   this.HistoryRow(item, index === group.items.length - 1)
