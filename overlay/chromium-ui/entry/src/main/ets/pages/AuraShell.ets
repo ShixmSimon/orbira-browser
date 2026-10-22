@@ -1191,16 +1191,6 @@ struct AuraShell {
             }
           }
           const wasNewTab: boolean = this.isNewTabPage();
-          // 诊断：url 翻转时打一条（回主页后又被弹回原网页的排查线：主页键按下
-          // 之后这条日志若始终不出现 chrome://newtab，就是引擎没执行导航）。
-          {
-            const nextUrl: string = state.url ?? '';
-            const prevUrl: string = this.browserState.url ?? '';
-            if (nextUrl !== prevUrl) {
-              console.info('[aura] url ' + prevUrl + ' -> ' + nextUrl +
-                ' loading=' + state.loading);
-            }
-          }
           this.browserState = state;
           // 记下引擎原生新标签页的标题：失败导航后要靠它认出「画面还停在
           // 新标签页」（见 isNewTabPage）。
@@ -1379,8 +1369,6 @@ struct AuraShell {
                 }
                 // 主页键：立刻把主页层铺上，盖住引擎回主页那一瞬的白底
                 //（见 homeReturnCover 注释）。
-                console.info('[aura] home key url=' + (this.browserState.url ?? '') +
-                  ' back=' + this.browserState.canGoBack);
                 this.beginHomeReturnCover();
               }
               // 1.0.142：从内置主页（引擎原生新标签页）的地址栏提交一个网址时，
@@ -1632,13 +1620,6 @@ struct AuraShell {
 
   private executeBrowserCommand(command: BrowserCommandPayload): void {
     // 1.0.220 取证：进引擎前的最终漏斗。reload 会杀进行中的导航，命令侧
-    // 必须留痕才能分清发送者（面板/顶栏/自愈逻辑）。只记关键命令。
-    const name: string = command.command;
-    if (name === 'reload' || name === 'stop' || name === 'home' ||
-      name === 'navigate' || name === 'ui_family') {
-      console.info(`[aura] cmd exec: ${name}` +
-        (command.url ? ` url=${command.url}` : ''));
-    }
     this.commandChannel.send(command);
   }
 
@@ -1809,15 +1790,6 @@ struct AuraShell {
         const prev: number = this.lastControlsRatio;
         this.lastControlsRatio = ratio;
         AppStorage.setOrCreate('auraBrowserControlsRatio', ratio);
-        // 1.0.218 诊断：偶发「滚回顶部后底栏不回弹、停在顶部仍全隐」（视频
-        // ff404023，同操作在 604a41cb 里正常）。ratio 由引擎按滚动增量驱动，
-        // 页面停在顶部时应为 1；落 0 即复现现场。只在跨过隐/显阈值时打一条，
-        // 避免正常滚动刷屏。
-        const wasHidden: boolean = prev >= 0 && prev < 0.05;
-        const isHidden: boolean = ratio < 0.05;
-        if (wasHidden !== isHidden) {
-          console.info(`[aura] controls ratio ${prev} -> ${ratio}`);
-        }
       }
       return;
     }
@@ -2299,8 +2271,6 @@ struct AuraShell {
     // 不在这里 return：名单是异步从 preferences 读进来的，第一次调用时可能还是
     // 空的。始终留着重试，等它读出来再送一次。
     if (sites.length > 0 || allSites) {
-      // 只记长度与总开关，不打名单：内容是本机配置，排查时也用不上。
-      console.info(`[aura] setDesktopSites len=${sites.length} all=${allSites}`);
       this.executeBrowserCommand({
         command: 'setDesktopSites',
         sites: sites,
@@ -2495,7 +2465,6 @@ struct AuraShell {
       // 原页面）。撤防前先重发一次 home 再捂一拍；只重试一次。
       if (!this.isNewTabPage() && !this.homeRetryDone) {
         this.homeRetryDone = true;
-        console.info('[aura] home retry: url still ' + (this.browserState.url ?? ''));
         this.executeBrowserCommand({ command: 'home' });
         this.beginHomeReturnCover();
         return;

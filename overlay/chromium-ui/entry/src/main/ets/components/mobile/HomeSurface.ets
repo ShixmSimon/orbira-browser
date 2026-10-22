@@ -566,7 +566,6 @@ export struct HomeSurface {
     this.step = step;
     this.waitingParent = parentId;
     this.waitingSeq = this.nextSeq();
-    console.info(`[aura] home req step=${step} seq=${this.waitingSeq}`);
     this.onCommand({ command: 'getBookmarks', requestId: this.waitingSeq, parentId: parentId });
     this.armChainTimer();
   }

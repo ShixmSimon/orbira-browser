@@ -134,7 +134,7 @@ const SETTINGS_ENTRIES: SettingsEntry[] = [
   { id: 'darkMode', title: '深色模式', subtitle: '浅色、深色或跟随系统',
     keywords: ['dark', '深色', '夜间', '主题', 'theme', '外观'], section: '外观', kind: 'page' },
   { id: 'home', title: '主页设置', subtitle: '主页风格、自定义主页布局与网址主页',
-    keywords: ['home', '主页', '首页', '主页布局', '主页风格', '自定义', '布局', '磁贴', '网址', 'chrome 风格', '简约风格'],
+    keywords: ['home', '主页', '首页', '主页布局', '主页风格', '自定义', '布局', '磁贴', '网址', 'chrome 风格', '经典风格', '简约'],
     section: '外观', kind: 'page' },
   { id: 'hideStatusBarOnScroll', title: '上滑时隐藏状态栏', subtitle: '地址栏收起时一起隐藏，网页铺满全屏',
     keywords: ['状态栏', '全屏', '隐藏', '上滑'], section: '外观', kind: 'toggle' },
@@ -1099,40 +1099,6 @@ export struct SettingsPanel {
           .backgroundColor($r('app.color.card_background'))
           .clip(true)
 
-          this.SectionLabel('网站', true)
-          Column() {
-            this.ShellToggleRow($r('app.media.aura_desktop'), '默认使用桌面版网站', '所有网站以桌面版打开',
-              this.uaDefault === 'desktop', (isOn: boolean): void => {
-                const value: string = isOn ? 'desktop' : 'mobile';
-                AppStorage.setOrCreate('auraUaDefault', value);
-                const ctx = this.getUIContext().getHostContext() as common.Context | undefined;
-                if (ctx) {
-                  ShellUiPrefs.saveUaDefault(ctx, value);
-                }
-                // 立即作用于当前标签：切换 UA 后重载，与桌面版开关的原生行为一致。
-                this.onCommand({
-                  command: 'setDesktopSites',
-                  sites: String(AppStorage.get('auraDesktopSites') ?? ''),
-                  allSites: isOn
-                });
-                this.onCommand({ command: 'setRequestDesktopSite', enabled: isOn });
-                this.onCommand({ command: 'reload' });
-              })
-            this.CardDivider()
-            SettingsNavRow({
-              icon: $r('app.media.aura_desktop'),
-              label: '已设为桌面版的网站',
-              value: this.desktopSiteCountLabel(),
-              onTap: (): void => {
-                this.pushPage('desktopSites');
-              }
-            })
-          }
-          .width('100%')
-          .padding({ left: 0, right: 0, top: 2, bottom: 2 })
-          .borderRadius(16)
-          .backgroundColor($r('app.color.card_background'))
-          .clip(true)
 
           this.SectionLabel('外观')
           Column() {
@@ -1149,7 +1115,7 @@ export struct SettingsPanel {
             SettingsNavRow({
               icon: $r('app.media.aura_home'),
               label: '主页设置',
-              value: this.homeStyle === 'chrome' ? 'Chrome 风格' : '简约风格',
+              value: this.homeStyle === 'chrome' ? 'Chrome 风格' : '经典风格',
               onTap: (): void => {
                 this.pushPage('home');
               }
@@ -1238,7 +1204,7 @@ export struct SettingsPanel {
           .backgroundColor($r('app.color.card_background'))
           .clip(true)
 
-          this.SectionLabel('隐私与安全')
+          this.SectionLabel('网站')
           Column() {
             SettingsNavRow({
               icon: $r('app.media.aura_globe'),
@@ -1259,6 +1225,41 @@ export struct SettingsPanel {
                 }
               })
             this.CardDivider()
+            this.ShellToggleRow($r('app.media.aura_desktop'), '默认使用桌面版网站', '所有网站以桌面版打开',
+              this.uaDefault === 'desktop', (isOn: boolean): void => {
+                const value: string = isOn ? 'desktop' : 'mobile';
+                AppStorage.setOrCreate('auraUaDefault', value);
+                const ctx = this.getUIContext().getHostContext() as common.Context | undefined;
+                if (ctx) {
+                  ShellUiPrefs.saveUaDefault(ctx, value);
+                }
+                // 立即作用于当前标签：切换 UA 后重载，与桌面版开关的原生行为一致。
+                this.onCommand({
+                  command: 'setDesktopSites',
+                  sites: String(AppStorage.get('auraDesktopSites') ?? ''),
+                  allSites: isOn
+                });
+                this.onCommand({ command: 'setRequestDesktopSite', enabled: isOn });
+                this.onCommand({ command: 'reload' });
+              })
+            this.CardDivider()
+            SettingsNavRow({
+              icon: $r('app.media.aura_view_list'),
+              label: '已设为桌面版的网站',
+              value: this.desktopSiteCountLabel(),
+              onTap: (): void => {
+                this.pushPage('desktopSites');
+              }
+            })
+          }
+          .width('100%')
+          .padding({ left: 0, right: 0, top: 2, bottom: 2 })
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
+
+          this.SectionLabel('隐私与安全')
+          Column() {
             SettingsNavRow({
               icon: $r('app.media.aura_lock'),
               label: '密码',
@@ -1283,16 +1284,6 @@ export struct SettingsPanel {
                 this.pushPage('clear');
               }
             })
-          }
-          .width('100%')
-          .padding({ left: 0, right: 0, top: 2, bottom: 2 })
-          .borderRadius(16)
-          .backgroundColor($r('app.color.card_background'))
-          .clip(true)
-
-          this.SectionLabel('下载')
-          Column() {
-            this.ToggleRow($r('app.media.aura_download'), '下载前询问', 'downloadAskWhereToSave')
           }
           .width('100%')
           .padding({ left: 0, right: 0, top: 2, bottom: 2 })
@@ -1336,6 +1327,8 @@ export struct SettingsPanel {
                   ShellUiPrefs.saveWebGpuEnabled(context, on);
                 }
               })
+            this.CardDivider()
+            this.ToggleRow($r('app.media.aura_download'), '下载前询问', 'downloadAskWhereToSave')
           }
           .width('100%')
           .padding({ left: 0, right: 0, top: 2, bottom: 2 })
@@ -2039,7 +2032,7 @@ export struct SettingsPanel {
         Column({ space: 16 }) {
           this.SectionLabel('选择主页风格', true)
           Row({ space: 12 }) {
-            this.HomeStyleCard('minimal', '简约风格', '保留顶部地址栏与状态栏，底部独立 dock', $r('app.media.home_style_minimal'))
+            this.HomeStyleCard('minimal', '经典风格', '保留顶部地址栏与状态栏，底部独立 dock', $r('app.media.home_style_minimal'))
             this.HomeStyleCard('chrome', 'Chrome 风格', '地址栏融入 dock，主页更聚焦', $r('app.media.home_style_chrome'))
           }
           .width('100%')

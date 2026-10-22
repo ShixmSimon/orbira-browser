@@ -816,7 +816,6 @@ export struct MobileBrowserOverlay {
         requestId: this.requestSeq,
         ids: ids
       });
-      console.info(`[aura] tab thumbnails retry: ${ids.length} ids, no aspect`);
     }, 2000);
   }
 
@@ -1723,8 +1722,8 @@ export struct MobileBrowserOverlay {
             .color($r('app.color.accent_primary'))
         } else {
           Image($r('app.media.aura_lock'))
-            .width(13)
-            .height(13)
+            .width(15)
+            .height(15)
             .fillColor($r('app.color.icon_secondary'))
         }
         Text(this.displayDomain())
@@ -1933,8 +1932,8 @@ export struct MobileBrowserOverlay {
             .color($r('app.color.accent_primary'))
         } else {
           Image($r('app.media.aura_lock'))
-            .width(14)
-            .height(14)
+            .width(15)
+            .height(15)
             .fillColor($r('app.color.icon_secondary'))
         }
         Text(this.displayDomain())
@@ -2302,8 +2301,7 @@ export struct MobileBrowserOverlay {
         .hitTestBehavior(HitTestMode.None)
 
       Row({ space: 8 }) {
-        // Main pill: back chevron + lock + URL + reload, like the reference
-        // browser's single-capsule address bar.
+        // Main pill: back chevron + lock + URL + reload, all in one capsule.
         Row() {
           this.TopBarContent()
         }
@@ -2449,8 +2447,8 @@ export struct MobileBrowserOverlay {
                 .color($r('app.color.accent_primary'))
             } else {
               Image($r('app.media.aura_lock'))
-                .width(14)
-                .height(14)
+                .width(15)
+                .height(15)
                 .fillColor($r('app.color.icon_secondary'))
             }
             if (this.incognito) {
@@ -3587,7 +3585,7 @@ export struct MobileBrowserOverlay {
               this.issueCommand({ command: 'toggleReaderMode' });
             })
         }
-        this.MenuItem($r('app.media.chromium_share'), '分享 / 发送到我的设备', '', (): void => {
+        this.MenuItem($r('app.media.aura_share'), '分享 / 发送到我的设备', '', (): void => {
           this.closeMenuCard();
           this.shareCurrentPage();
         })
@@ -3995,7 +3993,7 @@ export struct MobileBrowserOverlay {
   private ShareButton() {
     Button({ type: ButtonType.Normal }) {
       Column({ space: 4 }) {
-        Image($r('app.media.chromium_share'))
+        Image($r('app.media.aura_share'))
           .width(22)
           .height(22)
           .fillColor($r('app.color.icon_primary'))
@@ -4028,7 +4026,7 @@ export struct MobileBrowserOverlay {
   @Builder
   private CastPickerContent() {
     Column({ space: 4 }) {
-      Image($r('app.media.chromium_cast'))
+      Image($r('app.media.aura_cast'))
         .width(22)
         .height(22)
         .fillColor($r('app.color.icon_primary'))
@@ -4705,13 +4703,6 @@ export struct MobileBrowserOverlay {
 
   private issueCommand(command: BrowserCommandPayload): void {
     // 1.0.220 取证：reload/home/navigate 会杀掉进行中的导航（磁贴弹回家族），
-    // 命令侧不留日志时没法分清"谁发的 reload"。只记关键命令，别刷屏。
-    const name: string = command.command;
-    if (name === 'reload' || name === 'stop' || name === 'home' ||
-      name === 'navigate' || name === 'back' || name === 'forward') {
-      console.info(`[aura] cmd sent: ${name}` +
-        (command.url ? ` url=${command.url}` : ''));
-    }
     this.onCommand(command);
   }
 
@@ -4755,8 +4746,8 @@ export struct MobileBrowserOverlay {
 // the buttons stacked on top of it; on device the material's geometry
 // followed that empty bar, so the capsule looked too tall and a haze ring
 // bled around both rounded ends -- and with hitTest None touches never
-// reached the material either, so the press light never fired. A reference
-// build shows none of that on the same phone, and its shell explains why:
+// reached the material either, so the press light never fired. The same layout
+// on a stock system dock shows none of that, and the system shell explains why:
 // five TabContents, each with a tabBar builder rendering a real button,
 // clicks distributed centrally from onTabBarClick.
 //
@@ -4765,14 +4756,14 @@ export struct MobileBrowserOverlay {
 // barOverlap true + vertical false + barPosition End.
 //
 // gradientMask pins the material's fade region to exactly "bar + the strip
-// below it" -- the same shape as the reference dock mask. Left unset, the mask
+// below it". Left unset, the mask
 // falls back to "component height + tabBar + 32vp", a tall rectangle
 // bleeding above the capsule. barBackgroundColor / barBackgroundBlurStyle
 // are deliberately never set: the official guide says they cover the
 // material ("避免遮挡材质效果").
 //
-// barWidth is set explicitly. A first revision passed no barWidth (the
-// reference sets none either) and the floating bar measured itself from its tab
+// barWidth is set explicitly. A first revision passed no barWidth (none set
+// either) and the floating bar measured itself from its tab
 // items -- but our items are percent-sized, so the measurement collapsed
 // to nothing and the whole plate (material AND buttons) vanished. Now the
 // bar gets the concrete width on all three breakpoints AND every tab item
@@ -4928,15 +4919,14 @@ struct DockMaterialPlate {
         mediumWidth: width,
         largeWidth: width
       },
-      // ADAPTIVE lets the system pick the material strength for the device
-      // (the reference DOCK_MATERIAL is exactly this type/level pair).
+      // ADAPTIVE lets the system pick the material strength for the device.
       systemMaterialEffect: {
         materialType: hdsMaterial.MaterialType.ADAPTIVE,
         materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
       },
       // The fade region: from the bar down past the home-indicator strip to
       // the layer's bottom edge (= the screen edge). maskHeight = bar +
-      // bottom margin, mirroring the reference dockMaskHeight.
+      // bottom margin, matching the dock's own mask height.
       gradientMask: {
         maskColor: $r('app.color.dock_mask'),
         maskHeight: this.barHeightVp + this.bottomMarginVp
