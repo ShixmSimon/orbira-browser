@@ -3637,7 +3637,9 @@ export struct MobileBrowserOverlay {
   // 本 builder 必须叫 MenuBottomSheet。
   private MenuBottomSheet() {
     Column({ space: 0 }) {
-      // 把手：点按收起（与点遮罩等价）。进场时随面板从底部滑入。
+      // 把手：点按收起（与点遮罩等价）。必须显式居中——Row 主轴默认 Start，
+      // 把手丸会贴在左上角（用户两轮截图的「左上角黑条」真身，此前误删阴影
+      // 没打中）。
       Row() {
         Column()
           .width(36)
@@ -3647,6 +3649,7 @@ export struct MobileBrowserOverlay {
       }
       .width('100%')
       .height(28)
+      .justifyContent(FlexAlign.Center)
       .hitTestBehavior(HitTestMode.Default)
       .onClick((): void => this.closeMenuCard())
 
@@ -3982,90 +3985,106 @@ export struct MobileBrowserOverlay {
   // surface_floating 背景从屏幕 y=0 开始，盖住状态栏和顶部 dock，只有最底部
   // 一行有用（用户报「高度很大、上边空着、位置不合适、不美观」）。现在条子
   // 只包内容（≈52vp）：圆角 14 + 投影 + 输入框药丸底，参考 Chrome 手机版。
+  // ⚠️ 根 Stack 未给 alignContent（默认 Center）：卡片不能直接当 Stack 子组件
+  // （会被垂直居中——用户报「查找框在中间位置」的真因），必须套一层满幅透明
+  // 包裹用 padding 贴顶；包裹层 hitTest None 不挡页面（查找时页面照常可看可滚，
+  // findVisible 不在模态响应区名单里是有意设计），卡片自身 Default 拦点击。
+  // 退场动效挂 if 根（铁律：子节点退场会被整树原子删除）；卡片的上滑是
+  // 子节点入场动效（入场不受该限制）。
   @Builder
   private FindBar() {
-    Row({ space: 6 }) {
-      Image($r('app.media.chromium_search'))
-        .width(18)
-        .height(18)
-        .fillColor($r('app.color.icon_secondary'))
-        .margin({ left: 6 })
-
-      TextInput({ text: this.findQuery, placeholder: '在页面中查找' })
-        .layoutWeight(1)
-        .height(36)
-        .fontSize(14)
-        .fontColor($r('app.color.text_primary'))
-        .placeholderColor($r('app.color.text_secondary'))
-        .backgroundColor($r('app.color.surface_secondary'))
-        .borderRadius(18)
-        .enterKeyType(EnterKeyType.Done)
-        .onChange((value: string) => {
-          this.findQuery = value;
-          if (value.trim().length > 0) {
-            this.issueCommand({ command: 'findInPage', text: value });
-          }
-        })
-        .onSubmit(() => {
-          this.findNext(true);
-        })
-
-      Text(this.findMatches() > 0 ? `${this.findActiveMatch()}/${this.findMatches()}` : '')
-        .fontSize(12)
-        .fontColor($r('app.color.text_secondary'))
-
-      Button({ type: ButtonType.Circle }) {
-        Text('↑')
-          .fontSize(16)
-          .fontColor($r('app.color.icon_primary'))
-      }
-      .width(34)
-      .height(34)
-      .backgroundColor(Color.Transparent)
-      .accessibilityText('上一个')
-      .onClick(() => {
-        this.findNext(false);
-      })
-
-      Button({ type: ButtonType.Circle }) {
-        Text('↓')
-          .fontSize(16)
-          .fontColor($r('app.color.icon_primary'))
-      }
-      .width(34)
-      .height(34)
-      .backgroundColor(Color.Transparent)
-      .accessibilityText('下一个')
-      .onClick(() => {
-        this.findNext(true);
-      })
-
-      Button({ type: ButtonType.Circle }) {
-        Image($r('app.media.chromium_close'))
+    Column() {
+      Row({ space: 6 }) {
+        Image($r('app.media.chromium_search'))
           .width(18)
           .height(18)
           .fillColor($r('app.color.icon_secondary'))
+          .margin({ left: 6 })
+
+        TextInput({ text: this.findQuery, placeholder: '在页面中查找' })
+          .layoutWeight(1)
+          .height(36)
+          .fontSize(14)
+          .fontColor($r('app.color.text_primary'))
+          .placeholderColor($r('app.color.text_secondary'))
+          .backgroundColor($r('app.color.surface_secondary'))
+          .borderRadius(18)
+          .enterKeyType(EnterKeyType.Done)
+          .onChange((value: string) => {
+            this.findQuery = value;
+            if (value.trim().length > 0) {
+              this.issueCommand({ command: 'findInPage', text: value });
+            }
+          })
+          .onSubmit(() => {
+            this.findNext(true);
+          })
+
+        Text(this.findMatches() > 0 ? `${this.findActiveMatch()}/${this.findMatches()}` : '')
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+
+        Button({ type: ButtonType.Circle }) {
+          Text('↑')
+            .fontSize(16)
+            .fontColor($r('app.color.icon_primary'))
+        }
+        .width(34)
+        .height(34)
+        .backgroundColor(Color.Transparent)
+        .accessibilityText('上一个')
+        .onClick(() => {
+          this.findNext(false);
+        })
+
+        Button({ type: ButtonType.Circle }) {
+          Text('↓')
+            .fontSize(16)
+            .fontColor($r('app.color.icon_primary'))
+        }
+        .width(34)
+        .height(34)
+        .backgroundColor(Color.Transparent)
+        .accessibilityText('下一个')
+        .onClick(() => {
+          this.findNext(true);
+        })
+
+        Button({ type: ButtonType.Circle }) {
+          Image($r('app.media.chromium_close'))
+            .width(18)
+            .height(18)
+            .fillColor($r('app.color.icon_secondary'))
+        }
+        .width(34)
+        .height(34)
+        .backgroundColor(Color.Transparent)
+        .accessibilityText('结束查找')
+        .onClick(() => {
+          this.closeFindBar();
+        })
       }
-      .width(34)
-      .height(34)
-      .backgroundColor(Color.Transparent)
-      .accessibilityText('结束查找')
-      .onClick(() => {
-        this.closeFindBar();
-      })
+      .width('100%')
+      .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+      .margin({ left: 10, right: 10 })
+      .borderRadius(14)
+      .backgroundColor($r('app.color.surface_floating'))
+      .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+      .hitTestBehavior(HitTestMode.Default)
+      .transition(TransitionEffect.asymmetric(
+        TransitionEffect.opacity(0)
+          .combine(TransitionEffect.translate({ y: -24 })),
+        TransitionEffect.opacity(1)
+      ).animation({ duration: 200, curve: Curve.Friction }))
     }
     .width('100%')
-    .padding({ left: 8, right: 8, top: 6, bottom: 6 })
-    // 浮动卡：左右各 10vp 边距，顶边距由 findBarTopMarginVp() 贴 chrome 下沿。
-    .margin({ left: 10, right: 10, top: this.findBarTopMarginVp() })
-    .borderRadius(14)
-    .backgroundColor($r('app.color.surface_floating'))
-    .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+    .height('100%')
+    .padding({ top: this.findBarTopMarginVp() })
+    .hitTestBehavior(HitTestMode.None)
     .transition(TransitionEffect.asymmetric(
-      TransitionEffect.opacity(0)
-        .combine(TransitionEffect.translate({ y: -24 })),
-      TransitionEffect.opacity(0)
-    ).animation({ duration: 200, curve: Curve.Friction }))
+      TransitionEffect.opacity(0).animation({ duration: 180, curve: Curve.FastOutSlowIn }),
+      TransitionEffect.opacity(0).animation({ duration: 200, curve: Curve.Friction })
+    ))
   }
 
   @Builder
