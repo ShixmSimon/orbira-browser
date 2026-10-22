@@ -9,6 +9,7 @@
     "pages/panels/SettingsPanelPage",
     "pages/panels/ExtensionPanelPage",
     "pages/panels/PasswordsPanelPage",
-    "pages/panels/SitePermissionsPanelPage"
+    "pages/panels/SitePermissionsPanelPage",
+    "pages/panels/SiteSettingsPanelPage"
   ]
 }

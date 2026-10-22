@@ -1713,19 +1713,33 @@ export struct MobileBrowserOverlay {
   // Chrome 手机版样式：整体左对齐（锁贴左、省略号贴右），不做域名居中。
   @Builder
   private ChromeBarAddress() {
-    Button({ type: ButtonType.Normal, stateEffect: false }) {
-      Row({ space: 6 }) {
-        if (this.browserState.loading) {
-          LoadingProgress()
-            .width(15)
-            .height(15)
-            .color($r('app.color.accent_primary'))
-        } else {
-          Image($r('app.media.aura_lock'))
-            .width(15)
-            .height(15)
-            .fillColor($r('app.color.icon_secondary'))
+    Row({ space: 6 }) {
+      // 锁图标：点按打开"网站设置"（方案A），不再进入编辑态。
+      Button({ type: ButtonType.Normal, stateEffect: false }) {
+        Row({ space: 6 }) {
+          if (this.browserState.loading) {
+            LoadingProgress()
+              .width(15)
+              .height(15)
+              .color($r('app.color.accent_primary'))
+          } else {
+            Image($r('app.media.aura_lock'))
+              .width(15)
+              .height(15)
+              .fillColor($r('app.color.icon_secondary'))
+          }
         }
+        .height(40)
+        .padding({ right: 4 })
+      }
+      .height(40)
+      .backgroundColor(Color.Transparent)
+      .clip(true)
+      .accessibilityText('网站设置')
+      .hitTestBehavior(HitTestMode.Default)
+      .onClick((): void => this.openSiteSettings())
+
+      Button({ type: ButtonType.Normal, stateEffect: false }) {
         Text(this.displayDomain())
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -1735,18 +1749,19 @@ export struct MobileBrowserOverlay {
           .textAlign(TextAlign.Start)
           .layoutWeight(1)
       }
-      .width('100%')
+      .layoutWeight(1)
       .height(40)
+      .backgroundColor(Color.Transparent)
       .clip(true)
+      .accessibilityText('地址栏')
+      .hitTestBehavior(HitTestMode.Default)
+      .onClick((): void => this.beginAddressEdit())
     }
-    .layoutWeight(1)
+    .width('100%')
     .height(40)
     .padding({ left: 6, right: 6 })
     .backgroundColor(Color.Transparent)
     .clip(true)
-    .accessibilityText('地址栏')
-    .hitTestBehavior(HitTestMode.Default)
-    .onClick((): void => this.beginAddressEdit())
   }
 
   // 底栏右侧：标签页计数徽标（沿用顶置 dock 那枚方框数字）。
@@ -1924,38 +1939,53 @@ export struct MobileBrowserOverlay {
       .backgroundColor($r('app.color.glass_tint'))
       .border({ width: 0.5, color: $r('app.color.divider') })
     } else {
-      Row({ space: 6 }) {
-        if (this.browserState.loading) {
-          LoadingProgress()
-            .width(16)
-            .height(16)
-            .color($r('app.color.accent_primary'))
-        } else {
-          Image($r('app.media.aura_lock'))
-            .width(15)
-            .height(15)
-            .fillColor($r('app.color.icon_secondary'))
-        }
-        Text(this.displayDomain())
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .textAlign(TextAlign.Start)
+        Row({ space: 6 }) {
+          // 锁图标：点按打开"网站设置"（方案A），不再进入编辑态。
+          Button({ type: ButtonType.Normal, stateEffect: false }) {
+            if (this.browserState.loading) {
+              LoadingProgress()
+                .width(16)
+                .height(16)
+                .color($r('app.color.accent_primary'))
+            } else {
+              Image($r('app.media.aura_lock'))
+                .width(15)
+                .height(15)
+                .fillColor($r('app.color.icon_secondary'))
+            }
+          }
+          .height(40)
+          .backgroundColor(Color.Transparent)
+          .hitTestBehavior(HitTestMode.Default)
+          .accessibilityText('网站设置')
+          .onClick((): void => this.openSiteSettings())
+
+          Button({ type: ButtonType.Normal, stateEffect: false }) {
+            Text(this.displayDomain())
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .fontSize(15)
+              .fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_primary'))
+              .textAlign(TextAlign.Start)
+              .layoutWeight(1)
+          }
           .layoutWeight(1)
-      }
-      .layoutWeight(1)
-      .height(40)
-      // 锁到胶囊左沿 = 这个 left padding。16vp 实测观感「锁离左沿很远」
-      // （1.0.211~1.0.216 一直改的是底置 ChromeBarAddress，顶置 dock 实际
-      // 渲染的是本胶囊，用户四次反馈「没起作用」的真因）。
-      .padding({ left: 10, right: 12 })
-      .borderRadius(20)
-      .backgroundColor($r('app.color.glass_tint'))
-      .border({ width: 0.5, color: $r('app.color.divider') })
-      .accessibilityText('地址栏')
-      .onClick((): void => this.beginAddressEdit())
+          .height(40)
+          .backgroundColor(Color.Transparent)
+          .hitTestBehavior(HitTestMode.Default)
+          .accessibilityText('地址栏')
+          .onClick((): void => this.beginAddressEdit())
+        }
+        .layoutWeight(1)
+        .height(40)
+        // 锁到胶囊左沿 = 这个 left padding。16vp 实测观感「锁离左沿很远」
+        // （1.0.211~1.0.216 一直改的是底置 ChromeBarAddress，顶置 dock 实际
+        // 渲染的是本胶囊，用户四次反馈「没起作用」的真因）。
+        .padding({ left: 10, right: 12 })
+        .borderRadius(20)
+        .backgroundColor($r('app.color.glass_tint'))
+        .border({ width: 0.5, color: $r('app.color.divider') })
     }
   }
 
@@ -2438,8 +2468,9 @@ export struct MobileBrowserOverlay {
           this.issueCommand({ command: 'back' });
         })
 
-        Button({ type: ButtonType.Normal, stateEffect: true }) {
-          Row({ space: 6 }) {
+        Row({ space: 6 }) {
+          // 锁图标：点按打开"网站设置"（方案A），不再进入编辑态。
+          Button({ type: ButtonType.Normal, stateEffect: false }) {
             if (this.browserState.loading) {
               LoadingProgress()
                 .width(16)
@@ -2451,31 +2482,45 @@ export struct MobileBrowserOverlay {
                 .height(15)
                 .fillColor($r('app.color.icon_secondary'))
             }
-            if (this.incognito) {
-              Text('无痕')
-                .fontSize(11)
-                .fontColor($r('app.color.text_secondary'))
-                .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                .borderRadius(6)
-                .backgroundColor($r('app.color.surface_secondary'))
-            }
-            Text(this.displayDomain())
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .fontSize(15)
-              .fontWeight(FontWeight.Medium)
-              .fontColor($r('app.color.text_primary'))
-              .textAlign(TextAlign.Start)
-              .layoutWeight(1)
           }
-          .width('100%')
+          .height(40)
+          .backgroundColor(Color.Transparent)
+          .hitTestBehavior(HitTestMode.Default)
+          .accessibilityText('网站设置')
+          .onClick(() => this.openSiteSettings())
+
+          Button({ type: ButtonType.Normal, stateEffect: true }) {
+            Row({ space: 6 }) {
+              if (this.incognito) {
+                Text('无痕')
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_secondary'))
+                  .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                  .borderRadius(6)
+                  .backgroundColor($r('app.color.surface_secondary'))
+              }
+              Text(this.displayDomain())
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .fontSize(15)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary'))
+                .textAlign(TextAlign.Start)
+                .layoutWeight(1)
+            }
+            .width('100%')
+          }
+          .layoutWeight(1)
+          .height(40)
+          .backgroundColor(Color.Transparent)
+          .hitTestBehavior(HitTestMode.Default)
+          .accessibilityText('地址栏')
+          .onClick(() => this.beginAddressEdit())
         }
         .layoutWeight(1)
         .height(40)
         .padding({ left: 6, right: 6 })
         .backgroundColor(Color.Transparent)
-        .accessibilityText('地址栏')
-        .onClick(() => this.beginAddressEdit())
 
         Button({ type: ButtonType.Circle, stateEffect: true }) {
           Image(this.showStopVariant ?
@@ -3676,6 +3721,12 @@ export struct MobileBrowserOverlay {
         .height(18)
         .fillColor(this.isConnectionSecure() ?
           $r('app.color.text_primary') : $r('app.color.icon_secondary'))
+        .hitTestBehavior(HitTestMode.Default)
+        .accessibilityText('网站设置')
+        .onClick((): void => {
+          this.closeMenuCard();
+          this.openSiteSettings();
+        })
       Text(this.isConnectionSecure() ?
         `${this.menuDomainText()} · 连接安全` : `${this.menuDomainText()} · 不安全`)
         .fontSize(13)
@@ -4154,6 +4205,15 @@ export struct MobileBrowserOverlay {
     this.sheetPage = 'tabs';
     router.pushUrl({ url: 'pages/panels/DownloadsPanelPage' }).catch((error: Error): void => {
       console.error('openDownloadsPanel pushUrl failed:', error);
+    });
+  }
+
+  // 方案A：地址栏锁图标进入"网站设置"（针对当前浏览站逐类设权限）。
+  private openSiteSettings(): void {
+    this.menuVisible = false;
+    this.menuCardVisible = false;
+    router.pushUrl({ url: 'pages/panels/SiteSettingsPanelPage' }).catch((error: Error): void => {
+      console.error('openSiteSettings pushUrl failed:', error);
     });
   }
 
