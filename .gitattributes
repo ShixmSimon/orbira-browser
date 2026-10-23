@@ -18,3 +18,6 @@
 # Pipeline-script insurance copies: keep byte-identical to the out-of-repo
 # originals (mixed LF/CRLF by design), so no EOL normalisation here.
 /local-pipeline/** -text
+# local-patches/ must stay byte-stable: MANIFEST fingerprints and the snapshot
+# copies are verified byte-for-byte by restore.sh, so no EOL magic here either.
+/local-patches/** text eol=lf
