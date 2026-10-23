@@ -1,0 +1,44 @@
+--- a/overlay/arkweb/ohos_nweb/src/aura_shell/ohos_aura_input_router.cc
++++ b/overlay/arkweb/ohos_nweb/src/aura_shell/ohos_aura_input_router.cc
+@@ -35,6 +35,19 @@
+ constexpr base::TimeDelta kCrossSourceDuplicateEventWindow =
+     base::Milliseconds(250);
+ constexpr double kCrossSourcePointerSlop = 4.0;
++
++// OHOS input never reports a touch size, so every touch reached Aura with
++// radius_x == radius_y == 0 and therefore touch_major == 0. Chromium's gesture
++// detector reads that as a low-quality panel and multiplies the tap slop by
++// kExpandSlopFactorForZeroTouchMajor (4x), turning the standard 8dp slop into a
++// ~112 physical px dead zone on a 3.5dpr phone: a scroll would not begin until
++// the finger had already travelled that far, and short fast swipes were
++// classified as taps instead. Reporting a plausible fingertip radius keeps
++// has_native_touch_major true, so the detector uses its normal 8dp slop.
++// Only the "is it zero" distinction matters here -- the exact value does not
++// scale the slop, it just has to be non-zero and physically sane.
++constexpr float kDefaultTouchRadiusDip = 10.0f;
++constexpr float kDefaultTouchForce = 1.0f;
+ 
+ bool MouseButtonsMatch(int action, int first, int second) {
+   return first == second || (action == 1 && (first < 0 || second < 0));
+@@ -455,7 +468,9 @@
+   last_touch_timestamp_ = ToTouchTimestamp(event.timestamp_ns);
+   auto touch_event = std::make_unique<ui::TouchEvent>(
+       *event_type, location, root_location, last_touch_timestamp_,
+-      ui::PointerDetails(ui::EventPointerType::kTouch, event.pointer_id));
++      ui::PointerDetails(ui::EventPointerType::kTouch, event.pointer_id,
++                         kDefaultTouchRadiusDip, kDefaultTouchRadiusDip,
++                         kDefaultTouchForce));
+   if (!ui::OhosEventSource::PostEvent(std::move(touch_event),
+                                       event.target_widget)) {
+     WVLOG_W(
+@@ -533,7 +548,9 @@
+     }
+     auto touch_event = std::make_unique<ui::TouchEvent>(
+         *event_type, location, root_location, base::TimeTicks::Now(),
+-        ui::PointerDetails(ui::EventPointerType::kTouch, pointer_id));
++        ui::PointerDetails(ui::EventPointerType::kTouch, pointer_id,
++                           kDefaultTouchRadiusDip, kDefaultTouchRadiusDip,
++                           kDefaultTouchForce));
+     if (!ui::OhosEventSource::PostEvent(std::move(touch_event),
+                                         target_widget)) {
+       WVLOG_W(
