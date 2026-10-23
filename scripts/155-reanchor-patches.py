@@ -35,6 +35,11 @@
   patches/155-port/ohos-155-paint-hold-b.patch             (delegated_frame_host.cc)
   patches/155-port/ohos-155-extension-origin.patch         (cors_url_loader.cc + resource_request.cc)
   合并出现冲突的文件会写入 reanchor-conflicts/ 并标红，需人工修。
+
+人工裁决覆盖（可选）：在 reanchor-resolved/<git相对路径> 放一份已裁决的整文件，
+  重跑时该文件直接采用覆盖版（跳过 3-way merge），冲突不再阻塞；冲突但无
+  覆盖的文件不会被写进 patch（避免 <<<<<<< 垃圾）。例如：
+    reanchor-resolved/content/browser/renderer_host/render_widget_host_view_aura.cc
 """
 
 import os
