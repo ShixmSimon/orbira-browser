@@ -6,6 +6,10 @@
 # the patch will not apply to a LF tree. Scoped to our directories on purpose:
 # the vendored trees under overlay/ keep whatever line endings they shipped with.
 /patches/*.patch text eol=lf
+# Same rule for sub-directories (e.g. patches/155-port/). The top-level glob
+# above does NOT match nested paths, and a CRLF checkout makes those patches
+# fail to apply.
+/patches/**/*.patch text eol=lf
 /scripts/*.sh text eol=lf
 /scripts/*.py text eol=lf
 /scripts/tests/fixtures/phishing-updates/*.json text eol=lf
