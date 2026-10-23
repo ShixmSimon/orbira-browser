@@ -35,7 +35,6 @@
 #include "native_window/external_window.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/ozone/platform/ohos/ohos_phone_gpu_channel.h"
-#include "ui/ozone/platform/ohos/ohos_output_color_config.h"
 #include "vulkan/vulkan_core.h"
 
 namespace ui {
@@ -50,8 +49,6 @@ constexpr char kStubDescriptor[] = "chromium.ohos.GpuChild";
 // Request codes, browser to GPU process.
 constexpr uint32_t kBootstrap = 1;
 constexpr uint32_t kWidgetState = 2;
-// GPU to browser, on the callback stub sent with its bootstrap.
-constexpr uint32_t kOutputCapabilities = 1;
 
 // What a request callback may return besides success is limited to the user
 // range; anything else comes back to the sender as a generic error.
@@ -83,9 +80,6 @@ bool SameState(const OhosGpuChildWidgetState& a,
 
 struct BrowserSide {
   base::Lock lock;
-  uint64_t output_generation GUARDED_BY(lock) = 0;
-  bool output_failed GUARDED_BY(lock) = false;
-  OHIPCDeathRecipient* death_recipient GUARDED_BY(lock) = nullptr;
   // The GPU child most recently started. Replaced when the GPU process is
   // restarted; a request to a dead one fails and is ignored.
   OHIPCRemoteProxy* proxy GUARDED_BY(lock) = nullptr;
@@ -105,52 +99,6 @@ struct BrowserSide {
 BrowserSide& Browser() {
   static base::NoDestructor<BrowserSide> side;
   return *side;
-}
-
-int OnOutputCapabilities(uint32_t code, const OHIPCParcel* data,
-                         OHIPCParcel*, void*) {
-  int64_t generation = 0, widget = 0;
-  int32_t hdr = 0, p3 = 0;
-  if (code != kOutputCapabilities ||
-      OH_IPCParcel_ReadInt64(data, &generation) != OH_IPC_SUCCESS ||
-      OH_IPCParcel_ReadInt64(data, &widget) != OH_IPC_SUCCESS ||
-      OH_IPCParcel_ReadInt32(data, &hdr) != OH_IPC_SUCCESS ||
-      OH_IPCParcel_ReadInt32(data, &p3) != OH_IPC_SUCCESS ||
-      (hdr != 0 && hdr != 1) || (p3 != 0 && p3 != 1))
-    return kBadRequest;
-  auto& side = Browser();
-  base::AutoLock lock(side.lock);
-  if (generation <= 0 || static_cast<uint64_t>(generation) != side.output_generation)
-    return kBadRequest;
-  if (widget == 0 && !hdr && !p3) {
-    side.output_failed = true;
-    ResetOhosVerifiedWsiOutputs();
-    return OH_IPC_SUCCESS;
-  }
-  const auto key = static_cast<gfx::AcceleratedWidget>(widget);
-  if ((hdr || p3) && (side.output_failed || !side.death_recipient ||
-                      !GetOhosNativeSurface(key) || IsOhosAnchoredWindow(key)))
-    return kBadRequest;
-  SetOhosVerifiedWsiOutput(key, hdr != 0, p3 != 0);
-  return OH_IPC_SUCCESS;
-}
-OHIPCRemoteStub* OutputCapabilityReceiver() {
-  static OHIPCRemoteStub* receiver = OH_IPCRemoteStub_Create(
-      "chromium.ohos.OutputCapabilities", &OnOutputCapabilities, nullptr, nullptr);
-  return receiver;
-}
-void OnGpuOutputDied(void* context) {
-  const uint64_t generation = *static_cast<uint64_t*>(context);
-  auto& side = Browser();
-  base::AutoLock lock(side.lock);
-  if (generation == side.output_generation) {
-    ++side.output_generation;
-    side.output_failed = true;
-    ResetOhosVerifiedWsiOutputs();
-  }
-}
-void DestroyGpuOutputContext(void* context) {
-  delete static_cast<uint64_t*>(context);
 }
 
 void OnGpuChildStarted(int error, OHIPCRemoteProxy* proxy) {
@@ -245,8 +193,6 @@ base::FilePath GpuChildFailedMarker() {
 }
 
 struct LaunchHistory {
-  // Serialize marker writes and deletion with generation changes.
-  base::Lock marker_lock;
   // A start that failed outright: not tried again in this run. Chromium
   // retries a failed launch many times, and each retry here was a new
   // native child -- the system counted fifty.
@@ -258,8 +204,8 @@ struct LaunchHistory {
 };
 
 LaunchHistory& History() {
-  static base::NoDestructor<LaunchHistory> history;
-  return *history;
+  static LaunchHistory history;
+  return history;
 }
 
 void NoteGpuChildInDoubt() {
@@ -270,24 +216,11 @@ void NoteGpuChildInDoubt() {
 }
 
 void ClearGpuChildDoubtIfSettled(uint64_t generation) {
-  auto& history = History();
-  base::AutoLock lock(history.marker_lock);
-  // A stale generation only means a later launch took over. Do not delete its
-  // marker, even if this check was already queued when that launch began.
-  if (history.generation.load() != generation || history.fell_back.load() ||
-      history.start_failed) {
-    return;
-  }
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          base::internal::kOhosPhoneFork) &&
-      !OhosPhoneGpuHasPresented()) {
-    // Starting in the background can delay the first frame beyond ten seconds.
-    // Keep the failure guard until a frame arrives, but retry: a one-shot check
-    // would leave a healthy GPU marked failed for the next app launch.
-    base::ThreadPool::PostDelayedTask(
-        FROM_HERE, {base::MayBlock()},
-        base::BindOnce(&ClearGpuChildDoubtIfSettled, generation),
-        base::Seconds(1));
+  // A stale generation only means a later launch took over.
+  if (History().generation.load() != generation || History().fell_back.load() ||
+      (base::CommandLine::ForCurrentProcess()->HasSwitch(
+           base::internal::kOhosPhoneFork) &&
+       !OhosPhoneGpuHasPresented())) {
     return;
   }
   const base::FilePath marker = GpuChildFailedMarker();
@@ -300,13 +233,6 @@ void ClearGpuChildDoubtIfSettled(uint64_t generation) {
 base::ProcessId StartGpuChild(const std::string& encoded_params,
                               const std::vector<std::pair<int, int>>& fds) {
   BrowserSide& side = Browser();
-  uint64_t output_generation;
-  {
-    base::AutoLock lock(side.lock);
-    output_generation = ++side.output_generation;
-    side.output_failed = false;
-    ResetOhosVerifiedWsiOutputs();
-  }
   OHIPCRemoteProxy* proxy = nullptr;
   {
     base::AutoLock start_lock(side.start_lock);
@@ -362,12 +288,6 @@ base::ProcessId StartGpuChild(const std::string& encoded_params,
           "use-vulkan") == "native";
   written = written &&
             OH_IPCParcel_WriteInt32(data.get(), wants_vulkan) == OH_IPC_SUCCESS;
-  if (wants_vulkan) {
-    auto* receiver = OutputCapabilityReceiver();
-    written = written && receiver &&
-              OH_IPCParcel_WriteInt64(data.get(), static_cast<int64_t>(output_generation)) == OH_IPC_SUCCESS &&
-              OH_IPCParcel_WriteRemoteStub(data.get(), receiver) == OH_IPC_SUCCESS;
-  }
   const OH_IPC_MessageOption option = SyncOption();
   int32_t pid = 0;
   if (!written ||
@@ -380,39 +300,15 @@ base::ProcessId StartGpuChild(const std::string& encoded_params,
     return base::kNullProcessId;
   }
 
-  OHIPCDeathRecipient* recipient = nullptr;
-  if (wants_vulkan) {
-    auto* context = new uint64_t(output_generation);
-    recipient = OH_IPCDeathRecipient_Create(
-        &OnGpuOutputDied, &DestroyGpuOutputContext, context);
-    if (!recipient) {
-      delete context;
-    } else if (OH_IPCRemoteProxy_AddDeathRecipient(proxy, recipient) != OH_IPC_SUCCESS) {
-      OH_IPCDeathRecipient_Destroy(recipient);
-      recipient = nullptr;
-    }
-  }
-  OHIPCRemoteProxy* old_proxy;
-  OHIPCDeathRecipient* old_recipient;
   {
     base::AutoLock lock(side.lock);
-    old_proxy = side.proxy;
-    old_recipient = side.death_recipient;
+    if (side.proxy) {
+      OH_IPCRemoteProxy_Destroy(side.proxy);
+    }
     side.proxy = proxy;
-    side.death_recipient = recipient;
+    // A new GPU process knows nothing yet.
     side.sent.clear();
   }
-  // Recipient operations may invoke callbacks. Never perform them while
-  // holding Browser::lock, which the death callback itself acquires.
-  if (old_proxy) {
-    if (old_recipient) {
-      OH_IPCRemoteProxy_RemoveDeathRecipient(old_proxy, old_recipient);
-      OH_IPCDeathRecipient_Destroy(old_recipient);
-    }
-    OH_IPCRemoteProxy_Destroy(old_proxy);
-  }
-  if (wants_vulkan && !recipient)
-    LOG(ERROR) << "OHOS WSI: no death observer; browser capabilities remain SDR";
   LOG(WARNING) << "OHOS GPU child: started pid=" << pid;
   ForwardOhosSurfacesToGpuChild();
   return pid;
@@ -422,30 +318,26 @@ base::ProcessId StartGpuChild(const std::string& encoded_params,
 base::ProcessId LaunchGpuChild(const std::string& encoded_params,
                                const std::vector<std::pair<int, int>>& fds) {
   LaunchHistory& history = History();
-  uint64_t generation;
-  {
-    base::AutoLock lock(history.marker_lock);
-    if (history.start_failed) {
-      return base::kNullProcessId;
-    }
-    // The launch after the last GL mode has failed. It is still a child worth
-    // starting, but it must not clear the failure guard for the next app run.
-    if (encoded_params.find("--use-gl=disabled") != std::string::npos) {
-      history.fell_back = true;
-    }
-    generation = ++history.generation;
-    NoteGpuChildInDoubt();
+  if (history.start_failed) {
+    return base::kNullProcessId;
   }
+  // The launch after the last GL mode has failed. It is still a child
+  // worth starting -- without it Chromium gives up altogether -- but the
+  // run counts as a failure.
+  if (encoded_params.find("--use-gl=disabled") != std::string::npos) {
+    history.fell_back = true;
+  }
+  NoteGpuChildInDoubt();
   const bool phone_fork = base::CommandLine::ForCurrentProcess()->HasSwitch(
       base::internal::kOhosPhoneFork);
   const base::ProcessId pid = phone_fork
                                   ? LaunchOhosPhoneGpuChild(encoded_params, fds)
                                   : StartGpuChild(encoded_params, fds);
   if (pid == base::kNullProcessId) {
-    base::AutoLock lock(history.marker_lock);
     history.start_failed = true;
     return pid;
   }
+  const uint64_t generation = ++history.generation;
   base::ThreadPool::PostDelayedTask(
       FROM_HERE, {base::MayBlock()},
       base::BindOnce(&ClearGpuChildDoubtIfSettled, generation),
@@ -471,8 +363,6 @@ struct ChildSide {
   bool is_child GUARDED_BY(lock) = false;
   bool bootstrapped GUARDED_BY(lock) = false;
   bool wants_vulkan GUARDED_BY(lock) = false;
-  OHIPCRemoteProxy* output_receiver GUARDED_BY(lock) = nullptr;
-  uint64_t output_generation GUARDED_BY(lock) = 0;
   std::string encoded_params GUARDED_BY(lock);
   std::vector<std::pair<int, int>> fds GUARDED_BY(lock);
   std::map<gfx::AcceleratedWidget, MirrorRecord> mirror GUARDED_BY(lock);
@@ -501,28 +391,10 @@ int HandleBootstrap(const OHIPCParcel* data, OHIPCParcel* reply) {
     fds.emplace_back(destination_fd, fd);
   }
   int32_t wants_vulkan = 0;
-  int64_t output_generation = 0;
-  if (OH_IPCParcel_ReadInt32(data, &wants_vulkan) != OH_IPC_SUCCESS)
-    return kBadRequest;
-  OHIPCRemoteProxy* receiver = nullptr;
-  if (wants_vulkan) {
-    if (OH_IPCParcel_ReadInt64(data, &output_generation) != OH_IPC_SUCCESS ||
-        output_generation <= 0)
-      return kBadRequest;
-    receiver = OH_IPCParcel_ReadRemoteProxy(data);
-    if (!receiver)
-      return kBadRequest;
-  }
+  OH_IPCParcel_ReadInt32(data, &wants_vulkan);
   ChildSide& side = Child();
   {
     base::AutoLock lock(side.lock);
-    if (side.bootstrapped) {
-      if (receiver)
-        OH_IPCRemoteProxy_Destroy(receiver);
-      return kBadRequest;
-    }
-    side.output_receiver = receiver;
-    side.output_generation = static_cast<uint64_t>(output_generation);
     side.wants_vulkan = wants_vulkan != 0;
     side.encoded_params = params;
     side.fds = std::move(fds);
@@ -607,40 +479,6 @@ int OnRemoteRequest(uint32_t code,
 
 }  // namespace
 
-bool ReportOhosWsiOutputCapabilities(gfx::AcceleratedWidget widget,
-                                    bool hdr, bool p3) {
-  if (IsOhosPhoneGpuChild())
-    return false;
-  if (!IsOhosGpuChildProcess()) {
-    if (widget == gfx::kNullAcceleratedWidget)
-      ResetOhosVerifiedWsiOutputs();
-    else
-      SetOhosVerifiedWsiOutput(widget, hdr, p3);
-    return true;
-  }
-  OHIPCRemoteProxy* receiver;
-  uint64_t generation;
-  {
-    auto& side = Child();
-    base::AutoLock lock(side.lock);
-    receiver = side.output_receiver;
-    generation = side.output_generation;
-  }
-  // Bootstrap is immutable. Do not hold Child::lock during reverse IPC:
-  // the browser may be forwarding a window update in the other direction.
-  ScopedParcel data(OH_IPCParcel_Create());
-  ScopedParcel reply(OH_IPCParcel_Create());
-  if (!receiver || !data || !reply ||
-      OH_IPCParcel_WriteInt64(data.get(), static_cast<int64_t>(generation)) != OH_IPC_SUCCESS ||
-      OH_IPCParcel_WriteInt64(data.get(), static_cast<int64_t>(widget)) != OH_IPC_SUCCESS ||
-      OH_IPCParcel_WriteInt32(data.get(), hdr) != OH_IPC_SUCCESS ||
-      OH_IPCParcel_WriteInt32(data.get(), p3) != OH_IPC_SUCCESS)
-    return false;
-  const auto option = SyncOption();
-  return OH_IPCRemoteProxy_SendRequest(receiver, kOutputCapabilities, data.get(),
-                                        reply.get(), &option) == OH_IPC_SUCCESS;
-}
-
 void InstallOhosGpuChildLauncher() {
   base::internal::SetOhosGpuChildLauncher(&LaunchGpuChild);
 }
@@ -697,14 +535,6 @@ bool ForwardGpuChildLogToHilog(int severity,
 }  // namespace
 
 void AttachOhosGpuChildLogging() {
-  // GpuMain has already installed its deferred log handler before Ozone GPU
-  // initialization. Keep it in a phone fork child: direct hilog writes from
-  // this child can disappear, whereas Viz later relays the queued messages
-  // through the browser. Replacing it here loses all GL/Dawn startup logs.
-  if (IsOhosPhoneGpuChild() && logging::GetLogMessageHandler()) {
-    LOG(WARNING) << "OHOS phone GPU: retaining deferred startup logging";
-    return;
-  }
   logging::SetLogMessageHandler(&ForwardGpuChildLogToHilog);
   logging::SetMinLogLevel(
       std::min(logging::GetMinLogLevel(), logging::LOGGING_WARNING));
@@ -727,17 +557,6 @@ std::optional<OhosNativeSurface> GetOhosGpuChildSurface(
   if (it == side.mirror.end()) {
     return std::nullopt;
   }
-  return it->second.surface;
-}
-
-std::optional<OhosNativeSurface> AcquireOhosGpuChildSurface(
-    gfx::AcceleratedWidget widget) {
-  auto& side = Child();
-  base::AutoLock lock(side.lock);
-  const auto it = side.mirror.find(widget);
-  if (it == side.mirror.end() || !it->second.surface.window)
-    return std::nullopt;
-  OH_NativeWindow_NativeObjectReference(it->second.surface.window);
   return it->second.surface;
 }
 

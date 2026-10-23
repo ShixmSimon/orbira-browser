@@ -1,5 +1,6 @@
-import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want, errorManager } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
 import { window } from '@kit.ArkUI';
 import { http } from '@kit.NetworkKit';
 import display from '@ohos.display';
@@ -15,13 +16,21 @@ import {
   BrowserProfileService,
   BrowserProfileState
 } from '../utils/profile/BrowserProfileService';
+import { AppearanceSettings, ColorModeSetting } from '../utils/appearance/AppearanceSettings';
+import { IncognitoSwitch } from '../utils/IncognitoSwitch';
+import { ShellUiPrefs } from '../utils/appearance/ShellUiPrefs';
 
 const DOMAIN = 0x0000;
+const AURA_INCOGNITO_KEY = 'auraIncognito';
 const AURA_SURFACE_READY_KEY = 'auraSurfaceReady';
 const AURA_APP_VISIBLE_KEY = 'auraAppVisible';
 const AURA_THEME_FONT_ID_KEY = 'auraThemeFontId';
 const AURA_THEME_FONT_REVISION_KEY = 'auraThemeFontRevision';
 const AURA_COLOR_SCHEME_KEY = 'auraColorScheme';
+// 1.0.143「Vulkan 渲染加速」：启动时读取一次的 GPU 后端开关（默认 false=GLES）。
+const AURA_VULKAN_ENABLED_KEY = 'auraVulkanEnabled';
+// 1.0.146「WebGPU 加速」：启动时读取一次的开关（默认 false）。
+const AURA_WEBGPU_ENABLED_KEY = 'auraWebGpuEnabled';
 const AURA_ONBOARDING_READY_KEY = 'auraOnboardingReady';
 const AURA_ONBOARDING_COMPLETE_KEY = 'auraOnboardingComplete';
 const AURA_PROFILE_ID_KEY = 'auraProfileId';
@@ -73,7 +82,15 @@ export default class EntryAbility extends UIAbility {
     // A tap on a "download complete" notification: open the file; the
     // browser still starts behind it.
     handleDownloadNotificationWant(this.context, want);
+    // v8a diagnostic: record the last ArkTS-level crash into the app sandbox
+    // so the shell can surface it on the next launch (AuraShell's crash
+    // report mode). Native crashes do not surface here.
+    this.registerCrashRecorder();
     this.startupWant = want;
+    // 无痕模式：手机上没有第二个渲染进程，进无痕靠的是"用另一个 profileId
+    // 重启应用"（见 utils/IncognitoSwitch.ets）。启动参数在这里落地，界面层
+    // 据此把 WebWindow 挂到 incognito 这个 profile 上。
+    this.applyIncognitoWant(want);
     const initialThemeFontId = this.context.config.fontId ?? '';
     this.lastThemeFontId = initialThemeFontId;
     this.lastColorScheme = this.resolveColorScheme(this.context.config.colorMode);
@@ -81,6 +98,11 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate(AURA_THEME_FONT_ID_KEY, initialThemeFontId);
     AppStorage.setOrCreate(AURA_THEME_FONT_REVISION_KEY, 0);
     AppStorage.setOrCreate(AURA_COLOR_SCHEME_KEY, this.lastColorScheme);
+    // 1.0.143：Vulkan 开关默认关（GLES，规避部分机型滑动掉帧）。冷启动真正读到
+    // 的值在 onWindowStageCreate 里从 preferences 读取后再覆盖此默认值。
+    AppStorage.setOrCreate(AURA_VULKAN_ENABLED_KEY, false);
+    // 1.0.146：WebGPU 开关默认关。冷启动真正读到的值在 onWindowStageCreate 里覆盖。
+    AppStorage.setOrCreate(AURA_WEBGPU_ENABLED_KEY, false);
     AppStorage.setOrCreate(AURA_ONBOARDING_READY_KEY, false);
     AppStorage.setOrCreate(AURA_ONBOARDING_COMPLETE_KEY, false);
     AppStorage.setOrCreate(AURA_PROFILE_ID_KEY, 'local');
@@ -90,12 +112,38 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate(AURA_BROWSER_COMMAND_TEXT_KEY, '');
     AppStorage.setOrCreate(AURA_BROWSER_COMMAND_REVISION_KEY, 0);
     hilog.info(DOMAIN, 'AuraShell', 'Initial theme font configuration: %{public}s', initialThemeFontId);
-    try {
-      this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
-    } catch (err) {
-      hilog.error(DOMAIN, 'AuraShell', 'Failed to set colorMode. Cause: %{public}s', JSON.stringify(err));
-    }
+    // Follow the user's saved appearance choice (system/light/dark). Applying
+    // it here re-themes every $r color in the shell together with the engine.
+    AppearanceSettings.load(this.context).then((mode: ColorModeSetting): void => {
+      AppearanceSettings.apply(this.context, mode);
+    });
     this.restoreBrowserProfile();
+  }
+
+  // v8a diagnostic helpers: the crash file lives in the app sandbox; the
+  // shell reads it on its next launch and shows the crash report page.
+  private registerCrashRecorder(): void {
+    try {
+      errorManager.setDefaultErrorHandler((errObject: Error): void => {
+        this.writeCrashRecord(`${errObject.message}\n${errObject.stack ?? ''}`);
+      });
+    } catch (error) {
+      hilog.warn(DOMAIN, 'AuraShell', 'Crash recorder unavailable on this system');
+    }
+  }
+
+  // Synchronous on purpose: this runs inside the crash path, where there is
+  // no time for async work. Appends nothing -- the last crash wins.
+  private writeCrashRecord(message: string): void {
+    try {
+      const path = `${this.context.filesDir}/aura-crash.txt`;
+      const file = fs.openSync(path,
+        fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+      const body = message.length > 4000 ? message.substring(0, 4000) : message;
+      fs.writeSync(file.fd, `${new Date().toISOString()}\n${body}\n`);
+      fs.closeSync(file);
+    } catch (error) {
+    }
   }
 
   onDestroy(): void {
@@ -145,40 +193,108 @@ export default class EntryAbility extends UIAbility {
       return;
     }
     this.startupWant = want;
-    const startUrl = CrossDeviceEntryAdapter.resolveLaunchUrl(want);
-    AppStorage.setOrCreate('auraStartUrl', startUrl);
-    if (this.mainWindow) {
-      this.refreshRouting('newWant');
+    this.applyIncognitoWant(want);
+    // 1.0.119：无链接的再次拉起按「启动页」设置决定打开网址主页还是内置启动页。
+    this.resolveStartupUrl(want).then((startUrl: string): void => {
+      AppStorage.setOrCreate('auraStartUrl', startUrl);
+      if (this.mainWindow) {
+        this.refreshRouting('newWant');
+      }
+    });
+  }
+
+  // Reads the incognito flag off the launch want and parks it where the UI
+  // layer reads it. An ordinary launch also sweeps the incognito profile
+  // directory: leaving incognito is what those saved cookies and history
+  // were waiting for.
+  private applyIncognitoWant(want: Want | undefined): void {
+    const incognito = IncognitoSwitch.incognitoFromWant(want);
+    if (!incognito) {
+      IncognitoSwitch.sweepIncognitoProfile(this.context);
     }
+    AppStorage.setOrCreate(AURA_INCOGNITO_KEY, incognito);
+    hilog.info(DOMAIN, 'AuraShell', 'Incognito launch: %{public}s', incognito ? 'true' : 'false');
+  }
+
+  // 1.0.119「启动页」：决定本次启动打开的 URL。
+  // - 若启动 want 携带真实网址（分享/点击链接/跨设备续接），一律尊重该网址，不套用启动页设置；
+  // - 否则（普通冷启动 / 无链接的再次拉起），按「启动页」设置决定：
+  //   'homeUrl' 且已设置网址主页 → 打开网址主页；其余 → 内置启动页(CHROMIUM_HOME_URL)。
+  // prefs 为异步读取，故返回 Promise。读取失败时安全回退内置启动页。
+  private async resolveStartupUrl(want: Want | undefined): Promise<string> {
+    const resolved = CrossDeviceEntryAdapter.resolveLaunchUrl(want);
+    if (resolved !== CHROMIUM_HOME_URL) {
+      return resolved;
+    }
+    try {
+      const startupPage = await ShellUiPrefs.loadStartupPage(this.context);
+      if (startupPage === 'homeUrl') {
+        const homeUrl = await ShellUiPrefs.loadHomeUrl(this.context);
+        if (homeUrl && homeUrl.length > 0) {
+          return homeUrl;
+        }
+        // 1.0.120：单个值缺失时用多组网址列表的第一条兜底（旧版本数据 / 只
+        // 写了列表没写活动项的情况）。
+        const list: string[] = await ShellUiPrefs.loadHomeUrls(this.context);
+        if (list.length > 0) {
+          return list[0];
+        }
+      }
+    } catch (error) {
+      hilog.error(DOMAIN, 'AuraShell', 'Failed to read startup page pref: %{public}s', JSON.stringify(error));
+    }
+    return CHROMIUM_HOME_URL;
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     const uiPath = UIManager.loadUI();
-    const startUrl = CrossDeviceEntryAdapter.resolveLaunchUrl(this.startupWant ?? undefined);
+    // 1.0.119：启动 URL 依赖异步读取「启动页」偏好，先拿到再装载 UI，避免首帧用错 URL。
+    this.resolveStartupUrl(this.startupWant ?? undefined).then((startUrl: string): void => {
+      AppStorage.setOrCreate('auraStartUrl', startUrl);
+      AppStorage.setOrCreate('auraRoutingRevision', 0);
+      AppStorage.setOrCreate('auraRouting', '');
+      // 1.0.143：Vulkan 开关必须在引擎启动配置序列化「之前」读出来——引擎只在启动
+      // 时读一次配置，晚了就得等下次冷启动。这里与 startUrl 一并异步拿到再序列化。
+      // 1.0.146：WebGPU 开关同理，与 Vulkan 一并读取、一并序列化进启动配置。
+      ShellUiPrefs.loadVulkanEnabled(this.context).then((vulkanEnabled: boolean): void => {
+        ShellUiPrefs.loadWebGpuEnabled(this.context).then((webgpuEnabled: boolean): void => {
+          AppStorage.setOrCreate(AURA_VULKAN_ENABLED_KEY, vulkanEnabled);
+          AppStorage.setOrCreate(AURA_WEBGPU_ENABLED_KEY, webgpuEnabled);
+          AppStorage.setOrCreate('auraStartupConfig',
+            UIManager.serializeAuraStartupConfig(startUrl, undefined, undefined, this.lastColorScheme, vulkanEnabled, webgpuEnabled));
+          AppStorage.setOrCreate(AURA_SURFACE_READY_KEY, false);
+        }).catch((innerError: Error): void => {
+          hilog.error(DOMAIN, 'AuraShell', 'Failed to read webgpu pref: %{public}s', JSON.stringify(innerError));
+          AppStorage.setOrCreate(AURA_VULKAN_ENABLED_KEY, vulkanEnabled);
+          AppStorage.setOrCreate(AURA_WEBGPU_ENABLED_KEY, false);
+          AppStorage.setOrCreate('auraStartupConfig',
+            UIManager.serializeAuraStartupConfig(startUrl, undefined, undefined, this.lastColorScheme, vulkanEnabled, false));
+          AppStorage.setOrCreate(AURA_SURFACE_READY_KEY, false);
+        });
+      }).catch((error: Error): void => {
+        hilog.error(DOMAIN, 'AuraShell', 'Failed to read vulkan pref: %{public}s', JSON.stringify(error));
+        AppStorage.setOrCreate('auraStartupConfig',
+          UIManager.serializeAuraStartupConfig(startUrl, undefined, undefined, this.lastColorScheme, false, false));
+        AppStorage.setOrCreate(AURA_SURFACE_READY_KEY, false);
+      });
 
-    AppStorage.setOrCreate('auraStartUrl', startUrl);
-    AppStorage.setOrCreate('auraRoutingRevision', 0);
-    AppStorage.setOrCreate('auraRouting', '');
-    AppStorage.setOrCreate('auraStartupConfig',
-      UIManager.serializeAuraStartupConfig(startUrl, undefined, undefined, this.lastColorScheme));
-    AppStorage.setOrCreate(AURA_SURFACE_READY_KEY, false);
+      windowStage.loadContent(uiPath, (err) => {
+        if (err && err.code) {
+          hilog.error(DOMAIN, 'AuraShell', 'Failed to load UI content: %{public}s', JSON.stringify(err));
+          return;
+        }
+        hilog.info(DOMAIN, 'AuraShell', 'Loaded UI content: %{public}s', uiPath);
+      });
 
-    windowStage.loadContent(uiPath, (err) => {
-      if (err && err.code) {
-        hilog.error(DOMAIN, 'AuraShell', 'Failed to load UI content: %{public}s', JSON.stringify(err));
-        return;
-      }
-      hilog.info(DOMAIN, 'AuraShell', 'Loaded UI content: %{public}s', uiPath);
-    });
-
-    windowStage.getMainWindow().then((win: window.Window) => {
-      this.mainWindow = win;
-      this.lastFoldStatus = DeviceRoutingPolicy.getFoldStatus();
-      this.configureChromiumOwnedFrame(win);
-      this.refreshRouting('initial', this.lastFoldStatus);
-      this.registerRuntimeObservers(win);
-    }).catch((error: Error) => {
-      hilog.error(DOMAIN, 'AuraShell', 'Failed to get main window: %{public}s', JSON.stringify(error));
+      windowStage.getMainWindow().then((win: window.Window) => {
+        this.mainWindow = win;
+        this.lastFoldStatus = DeviceRoutingPolicy.getFoldStatus();
+        this.configureChromiumOwnedFrame(win);
+        this.refreshRouting('initial', this.lastFoldStatus);
+        this.registerRuntimeObservers(win);
+      }).catch((error: Error) => {
+        hilog.error(DOMAIN, 'AuraShell', 'Failed to get main window: %{public}s', JSON.stringify(error));
+      });
     });
   }
 
@@ -311,12 +427,14 @@ export default class EntryAbility extends UIAbility {
     const foldStatus = foldStatusOverride ?? this.lastFoldStatus;
     const routing = UIManager.getRouting(windowState, foldStatus);
     const startUrl = (AppStorage.get('auraStartUrl') as string) || CHROMIUM_HOME_URL;
+    const vulkanEnabled = Boolean(AppStorage.get(AURA_VULKAN_ENABLED_KEY) ?? false);
+    const webgpuEnabled = Boolean(AppStorage.get(AURA_WEBGPU_ENABLED_KEY) ?? false);
     const routingSignature = `${DeviceRoutingPolicy.buildRoutingSignature(routing)}|${this.lastColorScheme}`;
 
     this.applyWindowPolicy(this.mainWindow, routing);
     AppStorage.setOrCreate('auraRouting', JSON.stringify(routing));
     AppStorage.setOrCreate('auraStartupConfig',
-      UIManager.serializeAuraStartupConfig(startUrl, windowState, foldStatus, this.lastColorScheme));
+      UIManager.serializeAuraStartupConfig(startUrl, windowState, foldStatus, this.lastColorScheme, vulkanEnabled, webgpuEnabled));
 
     if (routingSignature !== this.lastRoutingSignature) {
       this.lastRoutingSignature = routingSignature;
@@ -337,11 +455,18 @@ export default class EntryAbility extends UIAbility {
 
   private restoreBrowserProfile(): void {
     BrowserProfileService.load(this.context)
-      .then((state: BrowserProfileState): void => {
-        AppStorage.setOrCreate(AURA_ONBOARDING_COMPLETE_KEY, state.onboardingComplete);
-        AppStorage.setOrCreate(AURA_PROFILE_ID_KEY, state.profileId);
-        AppStorage.setOrCreate(AURA_PROFILE_KIND_KEY, state.profileKind);
-        AppStorage.setOrCreate(AURA_SYNC_MODE_KEY, state.syncMode);
+      .then(async (state: BrowserProfileState): Promise<void> => {
+        let resolved: BrowserProfileState = state;
+        // 1.0.235：首次安装不再弹「选择浏览器资料的保存方式」——直接默认
+        // 本机 Profile（数据只留本机不上传），静默完成 onboarding；账号绑定
+        // 留给日后的同步设置入口，不在启动路径上打断用户。
+        if (!state.onboardingComplete) {
+          resolved = await BrowserProfileService.completeLocalOnboarding(this.context);
+        }
+        AppStorage.setOrCreate(AURA_ONBOARDING_COMPLETE_KEY, resolved.onboardingComplete);
+        AppStorage.setOrCreate(AURA_PROFILE_ID_KEY, resolved.profileId);
+        AppStorage.setOrCreate(AURA_PROFILE_KIND_KEY, resolved.profileKind);
+        AppStorage.setOrCreate(AURA_SYNC_MODE_KEY, resolved.syncMode);
         AppStorage.setOrCreate(AURA_ONBOARDING_READY_KEY, true);
       })
       .catch((error: Error): void => {
@@ -416,14 +541,55 @@ export default class EntryAbility extends UIAbility {
       hilog.warn(DOMAIN, 'AuraShell', 'Window decor update is unavailable: %{public}s', JSON.stringify(error));
     }
 
+    // 导航过渡"闪黑"柔化：跨站导航时显示层重建有一瞬空档，系统会露出
+    // 窗口背景——默认纯黑在深色主题下十分扎眼。这里把窗口背景对齐主题
+    // 底色（深色 #1D1D1F / 浅色 #FFFFFF），空档帧变成"闪一下界面底色"。
+    try {
+      win.setWindowBackgroundColor(this.lastColorScheme === 'dark' ? '#1D1D1F' : '#FFFFFF');
+    } catch (error) {
+      hilog.warn(DOMAIN, 'AuraShell', 'Window background color update is unavailable: %{public}s', JSON.stringify(error));
+    }
+
+    // 系统状态栏/导航条只保留图标（颜色随主题），**底色必须透明**：这两条区域
+    // 的底色由 shell 自己绘制（网页页 = 顶栏条带 surface_primary；二级页 = 页面
+    // 自己的沉浸玻璃纱幕）。曾经把状态栏底色刷成 #1D1D1F/#FFFFFF —— 等于在应用
+    // 之上盖了一条不透明色带：网页顶栏看似"同色"了，但二级页（设置/关于…）顶部
+    // 的渐变模糊被整条盖死、还和页面底色对不上（真机反馈：状态栏颜色和设置页
+    // 不一样、渐变模糊没了）。透明后两边都自然，各页面自己决定观感。
+    try {
+      if (this.lastColorScheme === 'dark') {
+        win.setWindowSystemBarProperties({
+          statusBarColor: '#00000000',
+          statusBarContentColor: '#FFFFFF',
+          navigationBarColor: '#00000000',
+          navigationBarContentColor: '#FFFFFF',
+          isStatusBarLightIcon: true,
+        });
+      } else {
+        win.setWindowSystemBarProperties({
+          statusBarColor: '#00000000',
+          statusBarContentColor: '#000000',
+          navigationBarColor: '#00000000',
+          navigationBarContentColor: '#000000',
+          isStatusBarLightIcon: false,
+        });
+      }
+    } catch (error) {
+      hilog.warn(DOMAIN, 'AuraShell', 'System bar properties update is unavailable: %{public}s', JSON.stringify(error));
+    }
+
     if (routing.windowPolicy === WindowPolicy.FULLSCREEN) {
+      // Immersive layout: the shell draws BEHIND the status bar and the
+      // navigation pill (their heights reach the shell as avoid-area insets),
+      // so both stay visible like on any system app.
       win.setWindowLayoutFullScreen(true).catch(() => {
       });
       try {
-        win.setSpecificSystemBarEnabled('status', false);
-        win.setSpecificSystemBarEnabled('navigationIndicator', false);
+        win.setSpecificSystemBarEnabled('status', true);
+        win.setSpecificSystemBarEnabled('navigationIndicator', true);
       } catch (error) {
       }
+      this.updateSafeAreaInsets(win, true);
     } else {
       win.setWindowLayoutFullScreen(false).catch(() => {
       });
@@ -432,6 +598,40 @@ export default class EntryAbility extends UIAbility {
         win.setSpecificSystemBarEnabled('navigationIndicator', true);
       } catch (error) {
       }
+      this.updateSafeAreaInsets(win, false);
+    }
+  }
+
+  // In fullscreen-immersive layout the shell draws under the status bar and
+  // the navigation pill, so the mobile chrome needs their heights as vp
+  // insets (AppStorage 'auraTopSafeVp' / 'auraBottomSafeVp'). Non-fullscreen
+  // windows get the system's own insets, so the values reset to zero.
+  private updateSafeAreaInsets(win: window.Window, fullscreen: boolean): void {
+    if (!fullscreen) {
+      AppStorage.setOrCreate('auraTopSafeVp', 0);
+      AppStorage.setOrCreate('auraBottomSafeVp', 0);
+      return;
+    }
+    try {
+      const density = display.getDefaultDisplaySync().densityPixels;
+      if (density <= 0) {
+        return;
+      }
+      let topPx = 0;
+      let bottomPx = 0;
+      try {
+        topPx = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM).topRect.height;
+      } catch (error) {
+      }
+      try {
+        bottomPx = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR)
+          .bottomRect.height;
+      } catch (error) {
+      }
+      AppStorage.setOrCreate('auraTopSafeVp', Math.round(topPx / density));
+      AppStorage.setOrCreate('auraBottomSafeVp', Math.round(bottomPx / density));
+    } catch (error) {
+      hilog.warn(DOMAIN, 'AuraShell', 'Avoid area read failed: %{public}s', JSON.stringify(error));
     }
   }
 

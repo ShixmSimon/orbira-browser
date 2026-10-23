@@ -14,8 +14,6 @@
  */
 
 import { common } from '@kit.AbilityKit';
-import { TranslationStyle, TranslationResult, TranslationReleaseReason } from './TranslationTypes';
-import { DisplayBrightnessBridge, DisplayBrightnessNativePort } from '../../utils/DisplayBrightnessBridge';
 import { BluetoothBridge, BluetoothNativePort } from '../../utils/BluetoothBridge';
 import { UsbBridge, UsbNativePort } from '../../utils/UsbBridge';
 import { SystemServiceBridge, SystemServiceNativePort } from '../../utils/SystemServiceBridge';
@@ -203,12 +201,8 @@ export interface ContextMenuMediaFlags {
 }
 
 export interface BrowserRuntimeEvent {
-  startupToken?: string;
-  startupPhase?: 'ready' | 'frame';
-  startupStatus?: 'waiting' | 'ready' | 'presented';
   version: number;
-  event: 'resourceList' | 'resourcesChanged' | 'resourceActionResult' | 'resourcesRequested' |
-    'startupAck' | 'pictureInPictureState' | 'systemPrintReady' | 'systemPrintFailed' | 'shareRequested' |
+  event: 'pictureInPictureState' | 'systemPrintReady' | 'systemPrintFailed' | 'shareRequested' |
     'castRequested' | 'filePickerRequested' | 'pwaInstalled' | 'pwaMenuModel' |
     'pwaMenuClosed' | 'inputRecovered' | 'systemActionRequested' |
     'permissionsRequested' | 'sitePermissionRequested' |
@@ -219,16 +213,20 @@ export interface BrowserRuntimeEvent {
     'gpuContextLost' | 'lastSessionRestorable' | 'lastSessionRestored' | 'extensionInstallFailed' |
     'pageFullscreenChanged' | 'pullToRefresh' |
     'extensionDetails' | 'extensionCommandFailed' |
-    'extensionUpdateCapabilities' | 'extensionUpdateProgress' |
     'pageDragStarted' | 'pageDragEnded' |
     'recentlyClosed' | 'recentlyClosedChanged' | 'extensionActions' |
     'recentBookmarks' |
-    'extensionActionsChanged' |
+    'extensionActionsChanged' | 'developerMode' |
+    // 扩展「重新载入」的收到回执：引擎重载是异步的，先回执、再由
+    // extensionActionsChanged 报告是否真正落地。
+    'extensionReloadReceived' |
+    // 重载落地回执：如实报告重载后观察到的状态（reload 调用本身无返回值）。
+    'extensionReloadLanded' |
+    // 原生扩展 popup 关闭：popup widget 销毁时由引擎发出，外壳据此立刻收回
+    // 主页盖层（auraPopupHomeHold 清零），不必再等 8 秒兜底超时。
+    'extensionPopupClosed' |
     'sitePermissionCancelled' |
     'browserControlsRatio' | 'findResult' | 'pageText' |
-    'translationCapabilities' | 'translationState' | 'translationSessionResult' |
-    'translationBatch' | 'translationBatchResult' | 'translationWorkAvailable' |
-    'translationStateChanged' | 'translationSessionEnded' | 'translationBatchInvalidated' |
     'contextMenuRequested' | 'externalUrlRequested' | 'popupBlocked' |
     'fileOpenRequested' | 'dateTimePickerRequested' | 'dateTimePickerClosed' |
     'selectPopupRequested' | 'selectPopupClosed' | 'contactsPickerRequested' |
@@ -237,11 +235,12 @@ export interface BrowserRuntimeEvent {
     'nfcScanStart' | 'nfcScanStop' | 'nfcWrite' | 'nfcWriteCancel' | 'nfcMakeReadOnly' |
     // Profile data; read these through shellEvent<T>() (ShellServiceTypes).
     'bookmarkList' | 'bookmarkCreated' | 'bookmarksChanged' |
+    'bookmarksForSync' |
+    'bookmarkImportDone' | 'bookmarkExportDone' |
     'historyResults' | 'historyChanged' | 'autocompleteResults' | 'topSites' |
     'downloadUpdated' | 'downloadList' |
     'clearBrowsingDataDone' | 'browsingDataCounts' | 'searchEngines' |
     'prefs' | 'prefsChanged' | 'siteSettings' | 'aboutInfo' | 'favicons' |
-    'pageInfo' | 'pageInfoActionResult' |
     'urlProtectionState' | 'urlProtectionConfigResult' | 'urlProtectionStateChanged' |
     'urlProtectionRulesUpdateResult' |
     'protectionRuleSources' | 'protectionRuleSourceResult' | 'protectionRuleSourcesChanged' |
@@ -485,23 +484,7 @@ export interface DroppedFileRef {
 }
 
 export interface BrowserCommandPayload {
-  startupToken?: string;
-  startupPhase?: 'ready' | 'frame' | 'cancel';
   command: string;
-  // Translation v1: use native-issued identities from getTranslationState/start.
-  sessionId?: string;
-  batchId?: string;
-  sourceLanguage?: string;
-  targetLanguage?: string;
-  uiLanguage?: string;
-  style?: TranslationStyle;
-  prefetchViewportRatio?: number;
-  maxSegments?: number;
-  maxTextUnits?: number;
-  segments?: TranslationResult[];
-  showTranslation?: boolean;
-  reason?: TranslationReleaseReason;
-  retryable?: boolean;
   // URL/site protection: native-issued identity and atomic policy revision.
   contextId?: string;
   tabId?: string;
@@ -518,6 +501,11 @@ export interface BrowserCommandPayload {
   pipWidget?: number;
   pipAction?: 'play' | 'pause' | 'close' | 'restore' | 'state';
   url?: string;
+  // setDesktopSites: hosts the shell wants opened as desktop sites, one per
+  // line; allSites opens every host that way. The engine keeps this list only
+  // in memory, because the shell owns the persistent copy.
+  sites?: string;
+  allSites?: boolean;
   // contextMenuAction: the item chosen, one of the event's supportedActions.
   // downloadAction: what to do with the download `id`.
   action?: ContextMenuAction | DownloadAction;
@@ -735,7 +723,7 @@ export interface AuxiliaryWindowState {
   incognito?: boolean;
 }
 
-export interface INativeContext extends BluetoothNativePort, UsbNativePort, SystemServiceNativePort, DisplayBrightnessNativePort {
+export interface INativeContext extends BluetoothNativePort, UsbNativePort, SystemServiceNativePort {
   Initialize(xComponentId: string, configJson: string, onWindowAction: (action: string) => void): void;
   OnSurfaceCreated(xComponentId: string): void;
   OnSurfaceChanged(
@@ -768,7 +756,6 @@ export interface INativeContext extends BluetoothNativePort, UsbNativePort, Syst
 export class NativeContext {
   private readonly xComponentId: string;
   private nativeContext: INativeContext | null = null;
-  private displayBrightnessBridge: DisplayBrightnessBridge | null = null;
   private bluetoothBridge: BluetoothBridge | null = null;
   private usbBridge: UsbBridge | null = null;
   private systemServiceBridge: SystemServiceBridge | null = null;
@@ -798,8 +785,6 @@ export class NativeContext {
     onAuxiliaryWindowState: (stateJson: string) => void
   ): void {
     this.nativeContext = context;
-    this.displayBrightnessBridge = new DisplayBrightnessBridge(context);
-    this.displayBrightnessBridge.start();
     this.onWindowAction = onWindowAction;
     this.onBrowserState = onBrowserState;
     this.onAuxiliaryWindowState = onAuxiliaryWindowState;
@@ -850,9 +835,6 @@ export class NativeContext {
   }
 
   OnVisibilityChanged(visible: boolean): void {
-    if (visible) {
-      this.displayBrightnessBridge?.refresh();
-    }
     this.callVoid('OnVisibilityChanged', () => {
       this.nativeContext!.OnVisibilityChanged(this.xComponentId, visible);
     });
@@ -936,8 +918,6 @@ export class NativeContext {
       return;
     }
 
-    this.displayBrightnessBridge?.destroy();
-    this.displayBrightnessBridge = null;
     this.bluetoothBridge?.destroy();
     this.bluetoothBridge = null;
     this.usbBridge?.destroy();

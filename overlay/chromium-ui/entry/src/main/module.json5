@@ -9,11 +9,7 @@
     "description": "$string:module_desc",
     "mainElement": "EntryAbility",
     "deviceTypes": [
-      "phone",
-      "tablet",
-      "2in1",
-      "car",
-      "tv"
+      "phone"
     ],
     "deliveryWithInstall": true,
     "installationFree": false,
@@ -23,9 +19,9 @@
         "name": "EntryAbility",
         "srcEntry": "./ets/entryability/EntryAbility.ets",
         "description": "$string:EntryAbility_desc",
-        "icon": "$media:chromium_hmos_layered_image",
+        "icon": "$media:layered_image",
         "label": "$string:EntryAbility_label",
-        "startWindowIcon": "$media:chromium_hmos_start_icon",
+        "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
         "backgroundModes": [
@@ -73,9 +69,9 @@
         "name": "PWASmallAppExperience",
         "srcEntry": "./ets/pwaability/PWASmallAppExperience.ets",
         "description": "$string:EntryAbility_desc",
-        "icon": "$media:chromium_hmos_layered_image",
+        "icon": "$media:layered_image",
         "label": "$string:EntryAbility_label",
-        "startWindowIcon": "$media:chromium_hmos_start_icon",
+        "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
         "exported": false,
         "supportWindowMode": [
@@ -102,6 +98,17 @@
         ]
       }
     ],
+    // HarmonyOS 7 immersive light (system UI material): app-level switch.
+    // With "enable", dialogs, toasts, menus (bindSheet), Select, Toggle and
+    // friends get system materials by default without per-component code.
+    // Only takes effect in entry modules; requires target API >= 26.
+    // See UI-DESIGN-SPEC.md section 8.5.
+    "metadata": [
+      {
+        "name": "ohos.arkui.UIMaterial.state",
+        "value": "enable"
+      }
+    ],
     "requestPermissions": [
       {
         // Also declared by the engine HAR; listed here so DevEco Studio's
@@ -111,6 +118,16 @@
       {
         "name": "ohos.permission.DETECT_GESTURE",
         "reason": "$string:holding_hand_permission_reason",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
+      },
+      {
+        "name": "ohos.permission.CAMERA",
+        "reason": "$string:scan_permission_reason",
         "usedScene": {
           "abilities": [
             "EntryAbility"

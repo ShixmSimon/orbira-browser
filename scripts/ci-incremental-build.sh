@@ -114,9 +114,10 @@ apply_incremental_patch() {
   done
   if [[ -n "$best_rev" ]]; then
     git -C "$repo_root" show "${best_rev}:${rel}" |
-      python3 "${repo_root}/scripts/refresh-incremental-patch.py" \
-        "$patch_root" "$patch" || die "failed to refresh ${name} at ${best_rev}"
+      git -C "$patch_root" apply -C0 --reverse ||
+      die "failed to back out ${name} at ${best_rev}"
     say "backed out incremental patch ${name} at ${best_rev:0:8}"
+    git -C "$patch_root" apply "$patch" || die "failed to apply ${name}"
     say "applied incremental patch ${name}"
     return
   fi
@@ -168,10 +169,6 @@ if [[ -n "${PACKAGE_ONLY:-}" ]]; then
 else
   compiled_here=true
 
-  if [[ "${CHROMIUM_MAJOR:-154}" == 155 ]]; then
-    say "155 uses the complete migrated native snapshot"
-    bash "${repo_root}/scripts/setup-adblock-rust.sh" || die "Rust toolchain setup failed"
-  else
   # ---- incremental patches ---------------------------------------------------
   # Every incremental patch up to hmos-154-adapter 398a5ed (and those applied
   # by hand on this runner) was folded into chromium-154-harmonyos.patch and
@@ -183,9 +180,6 @@ else
   #
   # and retire_incremental_patch backs one out again.
 
-  apply_incremental_patch "${repo_root}/patches/ohos-dawn-instance-diagnostics.patch" \
-    "${src}/third_party/dawn"
-
   # A cached Skia shader that fails to compile clears the cache in place
   # rather than crashing the in-process GPU, and the browser with it.
   apply_incremental_patch "${repo_root}/patches/ohos-cached-shader-no-crash.patch"
@@ -194,7 +188,6 @@ else
   apply_incremental_patch "${repo_root}/patches/ohos-phone-ua-openharmony.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-external-protocol-to-shell.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-phone-android-web-prefs.patch"
-  apply_incremental_patch "${repo_root}/patches/ohos-mobile-ua-viewport.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-web-share.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-file-chooser-accept-capture.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-popup-blocked-notice.patch"
@@ -228,74 +221,25 @@ else
   apply_incremental_patch "${repo_root}/patches/ohos-csv-import-lifecycle.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-memfd-shared-memory.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-child-exit-observation.patch"
-  apply_incremental_patch "${repo_root}/patches/ohos-webnn-nnrt.patch"
-  # Video import layers over browser media and cached-upload capabilities.
-  # Unstack it before validating those prerequisite patches; preserve mtimes
-  # so an unchanged Mojo schema does not rebuild the whole browser.
-  video_patch_backup="$(mktemp -d)"
-  trap 'rm -rf "${video_patch_backup:-}"' EXIT
-  while read -r video_file; do
-    if [[ -f "${src}/${video_file}" ]]; then
-      mkdir -p "${video_patch_backup}/$(dirname "$video_file")"
-      cp -p "${src}/${video_file}" "${video_patch_backup}/${video_file}"
-    fi
-  done < <(awk '/^diff --git / {sub(/^b\//, "", $4); print $4}' \
-    "${repo_root}/patches/ohos-phone-vulkan-video.patch")
-  if git -C "$src" apply --reverse --check "${repo_root}/patches/ohos-phone-vulkan-video.patch" 2>/dev/null; then
-    git -C "$src" apply --reverse "${repo_root}/patches/ohos-phone-vulkan-video.patch"
-  else
-    retire_incremental_patch "${repo_root}/patches/ohos-phone-vulkan-video.patch"
-  fi
-  # HDR intentionally replaces lines introduced by the phone Vulkan/SDR
-  # patches. Unstack it before checking those prerequisites on a persistent
-  # runner. Preserve mtimes when reapplying leaves identical contents, so an
-  # unchanged OutputSurface header does not recompile all of Viz every run.
-  hdr_patch_backup="$(mktemp -d)"
-  trap 'rm -rf "$hdr_patch_backup" "${video_patch_backup:-}"' EXIT
-  while read -r hdr_file; do
-    if [[ -f "${src}/${hdr_file}" ]]; then
-      mkdir -p "${hdr_patch_backup}/$(dirname "$hdr_file")"
-      cp -p "${src}/${hdr_file}" "${hdr_patch_backup}/${hdr_file}"
-    fi
-  done < <(awk '/^diff --git / {sub(/^b\//, "", $4); print $4}' \
-    "${repo_root}/patches/ohos-vulkan-hdr-output.patch")
-  retire_incremental_patch "${repo_root}/patches/ohos-vulkan-hdr-output.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-phone-fork.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-phone-gpu-shared-output.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-ime-explicit-keyboard-request.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-video-zero-copy.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-hevc-capability.patch"
-  apply_incremental_patch "${repo_root}/patches/ohos-phone-browser-media.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-adaptive-vsync.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-phone-skia-vulkan.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-skia-output-format-diagnostics.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-vulkan-sdr-output.patch"
-  apply_incremental_patch "${repo_root}/patches/ohos-vulkan-hdr-output.patch"
-  while IFS= read -r -d '' hdr_saved; do
-    hdr_file="${hdr_saved#"${hdr_patch_backup}/"}"
-    if cmp -s "${hdr_saved}" "${src}/${hdr_file}"; then
-      touch -r "${hdr_saved}" "${src}/${hdr_file}"
-    fi
-  done < <(find "${hdr_patch_backup}" -type f -print0)
-  rm -rf "$hdr_patch_backup"
-  trap 'rm -rf "${video_patch_backup:-}"' EXIT
   apply_incremental_patch "${repo_root}/patches/ohos-tab-discarding.patch"
-  apply_incremental_patch "${repo_root}/patches/ohos-phone-vulkan-shared-images.patch"
-  apply_incremental_patch "${repo_root}/patches/ohos-vulkan-cached-upload.patch"
-  apply_incremental_patch "${repo_root}/patches/ohos-phone-vulkan-video.patch"
-  apply_incremental_patch "${repo_root}/patches/ohos-startup-probes.patch"
-  while IFS= read -r -d '' video_saved; do
-    video_file="${video_saved#"${video_patch_backup}/"}"
-    if cmp -s "${video_saved}" "${src}/${video_file}"; then
-      touch -r "${video_saved}" "${src}/${video_file}"
-    fi
-  done < <(find "${video_patch_backup}" -type f -print0)
-  rm -rf "$video_patch_backup"
-  trap - EXIT
-  apply_incremental_patch "${repo_root}/patches/ohos-skia-native-ycbcr.patch" "${src}/third_party/skia"
   apply_incremental_patch "${repo_root}/patches/ohos-camera-frame-layout.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-camera-lifecycle.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-camera-timeline.patch"
+  # Paint-holding fixes: A = transparent Init background (cold-start/new-tab
+  # white flash), B = finite navigation-gap deadline (black-gutter flash).
+  apply_incremental_patch "${repo_root}/patches/ohos-paint-hold-a.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-paint-hold-b.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-bottom-crop.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-extension-origin.patch"
   # An early updater revision inserted deps inside the base protection hunk.
   # Back that dependent patch out before checking/upgrading its prerequisite.
   if ! git -C "$src" apply -C0 --reverse --check \
@@ -305,22 +249,8 @@ else
   apply_incremental_patch "${repo_root}/patches/ohos-url-protection.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-url-protection-updates.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-rule-sources.patch"
-  apply_incremental_patch "${repo_root}/patches/ohos-extension-updates.patch"
-  # Migrate the first translation patch before checking its prerequisites:
-  # that version inserted lines inside their added hunks. The new version
-  # adds separate blocks so every prerequisite remains reverse-checkable.
-  if git -C "$repo_root" show c5d94268:patches/ohos-viewport-translation.patch |
-      git -C "$src" apply -C0 --reverse --check - 2>/dev/null; then
-    apply_incremental_patch "${repo_root}/patches/ohos-viewport-translation.patch"
-  fi
-  apply_incremental_patch "${repo_root}/patches/ohos-adblock-rust.patch"
-  apply_incremental_patch "${repo_root}/patches/ohos-adblock-execution.patch"
-  apply_incremental_patch "${repo_root}/patches/ohos-viewport-translation.patch"
-  bash "${repo_root}/scripts/setup-adblock-rust.sh" || die "Rust toolchain setup failed"
   apply_incremental_patch "${repo_root}/patches/ohos-angle-vulkan-msrt.patch" \
     "${src}/third_party/angle"
-
-  fi
 
   # ---- sync overlay into the tree -------------------------------------------
   # The overlay holds whole files the adapter adds or replaces. Copying by
@@ -332,21 +262,11 @@ else
   while IFS= read -r -d '' f; do
     rel="${f#"${repo_root}/overlay/"}"
     case "$rel" in
-      third_party/adblock_rust/target/*) continue ;;
       chromium-ui/*|ohos_arkweb_playground/*) continue ;;  # app side, not Chromium
       arkweb/ohos_nweb/*) ;;  # Chromium's //ohos_nweb integration
       arkweb/*) continue ;;
     esac
     dst="${src}/${rel}"
-    # Vendored source archive is binary; newline normalization corrupts gzip.
-    if [[ "$rel" == third_party/adblock_rust/*.tar.gz || "$rel" == third_party/adblock_rust/resources/*.tar.gz ]]; then
-      if [[ ! -f "$dst" ]] || ! cmp -s "$f" "$dst"; then
-        mkdir -p "$(dirname "$dst")"
-        cp "$f" "$dst"
-        changed=$((changed + 1))
-      fi
-      continue
-    fi
     # The tree has symlinks where the overlay has plain files (ohos_glue,
     # ohos_nweb are links to real directories; git on Windows checked them out as
     # text). Writing through the link would land on whatever it points at, so
@@ -381,78 +301,24 @@ else
     say "engine commit ${engine_commit}"
   fi
 
-  # Narrow recovery for the already-observed 2026-10-15 patch refresh. Only
-  # byte-identical known headers inside that six-second window qualify.
-  python3 "${repo_root}/scripts/refresh-incremental-patch.py" --repair-known-inputs \
-    "$src" "${repo_root}/scripts/ci-input-mtime-repair.json" || die "input timestamp repair failed"
-
   # ---- build -----------------------------------------------------------------
-  # This tree keeps its own GN args. Sync the builtins PGO and context
-  # snapshot choices, validate the profile, and report pending build work.
-  python3 "${repo_root}/scripts/configure-v8-builtins-pgo.py" \
-    "$src" "$out" "$status_dir" || die "V8 builtins PGO setup failed"
   say "building (-j ${jobs})"
   start=$(date +%s)
-  # Keep bounded diagnostics from a previous interrupted build before tee
-  # replaces its raw log. This is especially useful after cancellation.
-  if [[ -f "$log" ]]; then
-    say "previous build diagnostics (may refer to an older commit)"
-    awk '/error:|undefined symbol:|ninja: error:/ && !seen[$0]++ {
-      print; if (++n == 30) exit
-    }' "$log"
-  fi
-  # Public-header mistakes can fail thousands of targets. Stop after a useful
-  # sample and stream diagnostics instead of hiding them until ninja ends.
-  # Check the new native execution paths before a public-header rebuild can
-  # spend an hour reaching them. Ninja still regenerates GN inputs normally.
-  migration_checks=()
-  if [[ "${CHROMIUM_MAJOR:-154}" == 155 ]]; then
-    # Exercise the moved GPU interfaces and OHOS integration before the full
-    # browser link graph can spend hours reaching an incompatible declaration.
-    migration_checks=(
-      obj/chrome/browser/core/shell_password_sync_ohos.o
-      obj/media/mojo/services/services/gpu_mojo_media_client_ohos.o
-      obj/content/browser/browser/media_interface_proxy.o
-      obj/content/browser/browser/url_provision_fetcher.o
-      obj/content/public/browser/browser_sources/provision_fetcher_impl.o
-      obj/content/browser/browser/websocket_connector_impl.o
-      obj/chrome/browser/supervised_user/impl/supervised_user_browser_utils.o
-      obj/chrome/browser/supervised_user/impl/supervised_user_google_auth_navigation_throttle.o
-      obj/chrome/browser/supervised_user/impl/supervised_user_verification_page_youtube.o
-      obj/chrome/browser/supervised_user/impl/supervised_user_verification_page_blocked_sites.o
-      obj/gpu/command_buffer/service/gles2_sources/external_vk_image_backing.o
-      obj/gpu/command_buffer/service/gles2_sources/webgpu_decoder_impl.o
-      obj/gpu/command_buffer/service/gles2_sources/vulkan_in_process_context_provider.o
-      obj/gpu/command_buffer/service/gles2_sources/skia_vk_ozone_image_representation.o
-      obj/gpu/ipc/service/service/gpu_channel_shared_image_interface.o
-      obj/components/viz/service/service/skia_output_device_ohos_phone_vulkan.o
-      obj/components/viz/service/service/skia_output_device_ohos_graphite.o
-      obj/media/gpu/gpu/ohos_video_frame_converter.o
-      obj/ui/ozone/platform/ohos/ohos/ohos_native_pixmap.o
-      obj/ohos_nweb/src/aura_shell/aura_shell_core/ohos_chrome_main_runner.o
-      obj/chrome/browser/core/aura_shell_runtime_bridge.o
-      obj/chrome/browser/core/shell_site_settings_ohos.o
-      obj/net/net/cert_verify_proc.o
-      obj/net/net/system_trust_store.o
-      obj/components/signin/internal/identity_manager/identity_manager/profile_oauth2_token_service_builder.o
-      obj/third_party/blink/renderer/modules/webgpu/webgpu/gpu_canvas_context.o
-      obj/third_party/dawn/src/dawn/native/sources/WaitAnySystemEvent.o
-      obj/third_party/dawn/src/dawn/native/sources/SamplerVk.o
-      obj/third_party/angle/src/libANGLE/renderer/vulkan/angle_vulkan_backend/DisplayVkOhos.o
-      obj/third_party/angle/src/libANGLE/renderer/vulkan/angle_vulkan_backend/NativeBufferImageSiblingVkOhos.o
-    )
-  fi
-  ( cd "$src" && third_party/ninja/ninja -C "$out" -j "$jobs" -k 1 \
-      obj/chrome/common/ohos/adblock/execution/decision_throttle.o \
-      obj/chrome/browser/core/adblock.o obj/chrome/renderer/renderer/adblock.o \
-      obj/chrome/browser/core/translation.o "${migration_checks[@]}" && \
-    third_party/ninja/ninja -C "$out" -j "$jobs" \
-      -k "${NINJA_MAX_FAILURES:-20}" gn_all ) \
+  # The whole log goes to the file, as it always did -- tens of thousands of
+  # lines do not belong in a job log, and failures are carried through
+  # errors.txt and the step summary. But sending nothing at all left the job
+  # looking identical whether it was compiling or wedged, for the half hour a
+  # large rebuild takes. The first step, every fiftieth after it, and every
+  # failure also go to stdout -- the first one because that is the one that
+  # says the build started and how much there is to do -- and the last one,
+  # or a build of fewer steps than the spacing would report that it began
+  # and never that it finished. PROGRESS_EVERY changes the spacing. ninja
+  # prints one line per step when it has no terminal, which is the case
+  # here.
+  ( cd "$src" && third_party/ninja/ninja -C "$out" -j "$jobs" -k 0 gn_all ) \
     2>&1 | tee "$log" \
     | awk -v every="${PROGRESS_EVERY:-50}" '
-        /^FAILED:/ || /error:|undefined symbol:|ninja: error:/ {
-          print; fflush(); next
-        }
+        /^FAILED:/ { print; fflush(); next }
         /^\[[0-9]+\/[0-9]+\]/ {
           last = $0
           if (++n == 1 || n % every == 0) {
@@ -819,16 +685,6 @@ else
   rm -f "$har_engine"
   [[ "$har_id" == "$build_id" ]] \
     || die "HAR carries engine ${har_id:-with no build-id}, expected ${build_id}"
-
-  if grep -Eq '^[[:space:]]*use_v8_context_snapshot[[:space:]]*=[[:space:]]*true([[:space:]]|$)' "${src}/${out}/args.gn"; then
-    har_snapshot="$(mktemp)"
-    tar -xzOf "$har" package/src/main/resources/rawfile/chromium/v8_context_snapshot.bin \
-      >"$har_snapshot" 2>/dev/null || die 'HAR has no V8 context snapshot'
-    cmp -s "$har_snapshot" "${src}/${out}/v8_context_snapshot.bin" \
-      || die 'HAR V8 context snapshot differs from the native build'
-    rm -f "$har_snapshot"
-    say 'HAR V8 context snapshot matches the native build'
-  fi
 
   har_size=$(stat -c %s "$har")
   say "HAR $(basename "$har") ($((har_size / 1048576)) MB)"

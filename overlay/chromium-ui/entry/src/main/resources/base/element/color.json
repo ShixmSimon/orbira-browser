@@ -2,7 +2,7 @@
   "color": [
     {
       "name": "start_window_background",
-      "value": "#FFFFFF"
+      "value": "#0F172A"
     },
     {
       "name": "browser_canvas",
@@ -54,11 +54,47 @@
     },
     {
       "name": "modal_scrim",
-      "value": "#52000000"
+      "value": "#33000000"
     },
     {
       "name": "transparent",
       "value": "#00000000"
+    },
+    {
+      "name": "glass_tint",
+      "value": "#E0F7F7F8"
+    },
+    {
+      "name": "float_bar_bg",
+      "value": "#99F7F7F8"
+    },
+    {
+      "name": "menu_glass",
+      "value": "#FFF7F7F8"
+    },
+    {
+      "name": "dock_mask",
+      "value": "#B3F3F5F7"
+    },
+    {
+      "name": "page_background",
+      "value": "#F2F3F5"
+    },
+    {
+      "name": "page_background_fade",
+      "value": "#00F2F3F5"
+    },
+    {
+      "name": "page_background_veil",
+      "value": "#D9F2F3F5"
+    },
+    {
+      "name": "card_background",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "danger",
+      "value": "#E24B4A"
     }
   ]
 }

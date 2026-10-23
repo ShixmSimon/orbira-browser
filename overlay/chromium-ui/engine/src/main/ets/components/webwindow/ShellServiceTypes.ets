@@ -33,42 +33,6 @@ export interface BookmarkNode {
   path?: string[];
 }
 
-/** Response metadata only; identities are scoped to one tab/document. */
-export interface DetectedResource {
-  id: string;
-  name: string;
-  url: string;
-  kind: 'video' | 'audio' | 'image' | 'file' | 'hls' | 'dash';
-  mimeType: string;
-  totalBytes: number;
-  downloadable: boolean;
-}
-
-export interface ResourceListEvent extends ShellServiceEvent {
-  event: 'resourceList';
-  ok: boolean;
-  protocolVersion?: number;
-  tabId?: string;
-  navigationId?: string;
-  resources?: DetectedResource[];
-  truncated?: boolean;
-  reason?: string;
-}
-
-export interface ResourceChangedEvent extends ShellServiceEvent {
-  event: 'resourcesChanged';
-  tabId: string;
-  navigationId: string;
-}
-
-export interface ResourceActionResultEvent extends ShellServiceEvent {
-  event: 'resourceActionResult';
-  ok: boolean;
-  tabId?: string;
-  navigationId?: string;
-  reason?: string;
-}
-
 export interface HistoryItem {
   url: string;
   title: string;
@@ -339,15 +303,30 @@ export interface ExtensionDetailsEvent extends ShellServiceEvent {
   siteAccess: ExtensionSiteAccess;
   // False when the extension asks for no sites, or policy decides for it.
   siteAccessChangeable: boolean;
+  // The "允许运行用户脚本" switch from the extension's detail page. Whether it
+  // shows at all is the extension's own doing -- it has to declare the
+  // userScripts permission (脚本猫 does); the state is a per-extension pref.
+  userScriptsAvailable?: boolean;
+  userScriptsAllowed?: boolean;
   // 'notFound' when there is no such extension.
   error?: string;
 }
 
+// getDeveloperMode / setDeveloperMode: the extensions page's own switch, the
+// profile pref extensions.ui.developer_mode. One pref, two doors -- the
+// desktop page reads and writes the same one.
+export interface DeveloperModeEvent extends ShellServiceEvent {
+  enabled: boolean;
+  // False when the profile has no such pref (no extensions at all): the
+  // shell then shows the switch off and inert.
+  available?: boolean;
+}
+
 export type ExtensionSiteAccess = 'onClick' | 'specificSites' | 'allSites';
 
-// A setExtensionEnabled, uninstallExtension, setExtensionSiteAccess or
-// openExtensionOptions that could not be carried out. A cancelled uninstall
-// is not one.
+// A setExtensionEnabled, uninstallExtension, reloadExtension,
+// setExtensionSiteAccess or openExtensionOptions that could not be carried
+// out. A cancelled uninstall is not one.
 export interface ExtensionCommandFailedEvent extends ShellServiceEvent {
   command: string;
   id: string;
@@ -356,6 +335,23 @@ export interface ExtensionCommandFailedEvent extends ShellServiceEvent {
   reason: string;
   // Chromium's own sentence when it gave one, in the reader's language.
   message: string;
+}
+
+// What the engine observes right after running a reloadExtension. The reload
+// call reports nothing, and it gives up without a word in several places, so
+// the shell needs the state rather than a bare "done".
+export interface ExtensionReloadLandedEvent extends ShellServiceEvent {
+  id: string;
+  // Sitting in the enabled set again: the extension really was reloaded.
+  enabled: boolean;
+  // Blocklisted or blocked: the reload refuses these outright.
+  blocked: boolean;
+  // Still carrying DISABLE_RELOAD, meaning an earlier reload never finished.
+  // In that state this reload returns without doing anything.
+  stuckReloading: boolean;
+  // The install directory is still on disk. An unpacked install reloads out of
+  // it, so a missing directory leaves nothing to reload.
+  pathExists: boolean;
 }
 
 // A site is asking the user for a permission, and the shell draws the sheet
@@ -616,7 +612,6 @@ export interface SiteSettingsEvent extends ShellServiceEvent {
 
 export interface AboutInfoEvent extends ShellServiceEvent {
   requestId: number;
-  pageInfoApiVersion?: number;
   chromiumVersion: string;
   engineCommit: string;
   urlProtectionApiVersion?: number;
@@ -982,38 +977,4 @@ export interface PullToRefreshEvent {
 export interface PageFullscreenChangedEvent {
   event: 'pageFullscreenChanged';
   fullscreen: boolean;
-}
-
-// Current committed document, scoped to the sender's Profile (including incognito).
-export interface PageCertificate {
-  subject: string;
-  issuer: string;
-  organization: string;
-  validFrom: number;
-  validTo: number;
-  serialNumber: string;
-  fingerprint: string;
-  names: string[];
-}
-export interface PageInfoEvent extends ShellServiceEvent {
-  protocolVersion: number;
-  ok: boolean;
-  reason?: string;
-  tabId?: string;
-  navigationId?: string;
-  origin?: string;
-  connection?: 'secure' | 'insecure' | 'invalid' | 'mixed' | 'unknown';
-  certificate?: PageCertificate;
-  cookieCount?: number;
-  storageBytes?: number;
-  permissions?: PagePermissionSetting[];
-}
-export interface PageInfoActionResultEvent extends ShellServiceEvent {
-  protocolVersion: number;
-  ok: boolean;
-  reason?: string;
-}
-export interface PagePermissionSetting {
-  type: SiteSettingType;
-  setting: SiteSettingValue;
 }

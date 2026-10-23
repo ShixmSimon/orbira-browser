@@ -12,8 +12,6 @@ import { SystemServiceBridge, SystemServiceEmitter, SystemServiceHandler,
   SystemServiceHandlerFactory } from './SystemServiceBridge';
 import { BackgroundAudioService } from './BackgroundAudioService';
 import { MediaArtworkService } from './MediaArtworkService';
-import { FontScaleService } from './FontScaleService';
-import { MemoryLevelService } from './MemoryLevelService';
 import { NotificationService } from './NotificationService';
 import { OrientationService } from './OrientationService';
 import { ShapeDetectionService } from './ShapeDetectionService';
@@ -58,8 +56,4 @@ export function registerSystemServices(bridge: SystemServiceBridge,
   bridge.register('userauth', (): SystemServiceHandler => new UserAuthService());
   bridge.register('backgroundaudio', (): SystemServiceHandler => new BackgroundAudioService(context));
   bridge.register('mediaartwork', (): SystemServiceHandler => new MediaArtworkService(context));
-  bridge.register('memorylevel',
-    (emit: SystemServiceEmitter): SystemServiceHandler => new MemoryLevelService(context, emit));
-  bridge.register('fontscale',
-    (emit: SystemServiceEmitter): SystemServiceHandler => new FontScaleService(context, emit));
 }
