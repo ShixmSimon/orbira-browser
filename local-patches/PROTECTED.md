@@ -9,7 +9,7 @@
 一旦某次上游同步误把这些文件覆盖（例如 `sync-154.cmd` 的 `ff` 成功、或手动复制上游版本），
 手感/行为类改动会悄悄丢失。
 
-## 受保护的 4 块原创
+## 受保护的 5 块原创
 | 块 | 内容 | 落点 |
 |---|---|---|
 | ① UA pin | desktop-site 按站点桌面 UA，对抗状态轮询打回 | `overlay/chrome/.../aura_shell_runtime_bridge.cc/.h` + `shell_store_user_agent_ohos.cc` |
@@ -18,6 +18,7 @@
 | ② 底部裁切 + paint-hold | 底部固定条不裁切、冷启动/导航间隙不闪 | `patches/ohos-bottom-crop.patch` + `ohos-paint-hold-a/b.patch` |
 | ③ touch slop | touch_major==0 导致的 4x tap slop 死区（滑动延迟根因） | `overlay/arkweb/.../ohos_aura_input_router.cc` |
 | ④ Vulkan 闸门 | `--ohos-disable-vulkan` 开关原生尊重 | `overlay/ui/ozone/.../ohos_phone_gpu_channel.cc/.h` |
+| ⑤ 扩展 Origin（2026-10-23 增补） | 扩展请求不带 `Origin: chrome-extension://`（3G 签到「跨域检测无效」根因） | `patches/ohos-extension-origin.patch`（作用于 `resource_request.cc` + `cors_url_loader.cc`，两文件均在 overlay 之外） |
 
 ## 三道保险
 1. **git 跟踪**：9 个文件全部 `git ls-files` 已跟踪（见仓库），普通 `git` 操作不会丢。

@@ -239,6 +239,7 @@ else
   apply_incremental_patch "${repo_root}/patches/ohos-paint-hold-a.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-paint-hold-b.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-bottom-crop.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-extension-origin.patch"
   # An early updater revision inserted deps inside the base protection hunk.
   # Back that dependent patch out before checking/upgrading its prerequisite.
   if ! git -C "$src" apply -C0 --reverse --check \

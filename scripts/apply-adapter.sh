@@ -63,6 +63,12 @@ git -C "${chromium_src}" apply \
   "${project_root}/patches/ohos-paint-hold-b.patch"
 git -C "${chromium_src}" apply \
   "${project_root}/patches/ohos-bottom-crop.patch"
+# Extension Origin fix: extension requests must not carry
+# "Origin: chrome-extension://..." (sites validating Origin for CSRF answer
+# 403). Both files live outside overlay/, so the rsync below never clobbers
+# them. Previously carried only by D:/hmos-build/apply-engine-patches.py.
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-extension-origin.patch"
 while read -r deps_path deps_patch; do
   [[ -z "${deps_path}" || "${deps_path}" == \#* ]] && continue
   git -C "${chromium_src}/${deps_path}" apply --binary \

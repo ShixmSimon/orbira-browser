@@ -14,3 +14,7 @@
 # NUL, so git's own binary sniffing misses it and a CRLF checkout on Windows
 # shifts every offset in its xref table.
 /docs/test-pages/*.pdf binary
+
+# Pipeline-script insurance copies: keep byte-identical to the out-of-repo
+# originals (mixed LF/CRLF by design), so no EOL normalisation here.
+/local-pipeline/** -text
