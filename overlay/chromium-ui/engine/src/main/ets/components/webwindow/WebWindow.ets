@@ -128,12 +128,6 @@ export struct WebWindow {
   private componentWidthPx: number = 0;
   private componentHeightPx: number = 0;
   private focusRecoveryTimers: number[] = [];
-  // Native window events arrive even when the shell's reactive appVisible
-  // update is deferred in the background. Both gates must allow presentation.
-  private hostWindowVisible: boolean = true;
-  private readonly hostWindowEvent = (event: window.WindowEventType): void => {
-    this.handleWindowEvent(event);
-  };
   private rotationSyncTimer: number = -1;
   private lastExecutedBrowserCommandRevision: number = 0;
   // For commands from a BrowserCommandChannel: which channel, and the last
@@ -197,10 +191,9 @@ export struct WebWindow {
       return;
     }
 
-    const visible = this.isHostVisible();
-    this.nativeContext.OnVisibilityChanged(visible);
-    this.nativeContext.OnFocusChanged(visible);
-    if (visible) {
+    this.nativeContext.OnVisibilityChanged(this.appVisible);
+    this.nativeContext.OnFocusChanged(this.appVisible);
+    if (this.appVisible) {
       this.notifyCurrentBounds();
       // Let the activating pointer sequence finish before restoring focus.
       this.restoreXComponentFocus(80);
@@ -271,7 +264,7 @@ export struct WebWindow {
           this.destroyNativeContext();
         })
         .onFocus(() => {
-          this.nativeContext?.OnFocusChanged(this.isHostVisible());
+          this.nativeContext?.OnFocusChanged(this.appVisible);
         })
         .onBlur(() => {
           this.nativeContext?.OnFocusChanged(false);
@@ -348,8 +341,8 @@ export struct WebWindow {
       this.nativeContext.OnSurfaceCreated();
       this.notifyWindowId();
       this.nativeContext.OnThemeFontChanged(this.themeFontId);
-      this.nativeContext.OnVisibilityChanged(this.isHostVisible());
-      this.nativeContext.OnFocusChanged(this.isHostVisible());
+      this.nativeContext.OnVisibilityChanged(this.appVisible);
+      this.nativeContext.OnFocusChanged(this.appVisible);
       this.notifyCurrentBounds();
       this.requestXComponentFocus();
       const swallowed = this.nativeContext.takeLastError();
@@ -378,9 +371,6 @@ export struct WebWindow {
   }
 
   private requestXComponentFocus(): void {
-    if (!this.isHostVisible()) {
-      return;
-    }
     try {
       this.getUIContext().getFocusController().requestFocus(this.xComponentId);
     } catch (error) {
@@ -388,13 +378,13 @@ export struct WebWindow {
   }
 
   private restoreXComponentFocus(delayMs: number = 0): void {
-    if (!this.nativeContext || !this.isHostVisible()) {
+    if (!this.nativeContext || !this.appVisible) {
       return;
     }
 
     this.clearFocusRecoveryTimers();
     this.focusRecoveryTimers.push(setTimeout((): void => {
-      if (!this.nativeContext || !this.isHostVisible()) {
+      if (!this.nativeContext || !this.appVisible) {
         return;
       }
       this.requestXComponentFocus();
@@ -404,7 +394,7 @@ export struct WebWindow {
   }
 
   private requestNativeInputRecovery(): void {
-    if (!this.nativeContext || !this.isHostVisible()) {
+    if (!this.nativeContext || !this.appVisible) {
       return;
     }
     const command: BrowserCommandPayload = {
@@ -488,11 +478,11 @@ export struct WebWindow {
           `${runtimeDir}/${fileName}`
         );
       }
-      // Extract the optional context snapshot and signed phishing assets.
+      // A signed application may carry an optional public phishing snapshot.
       // Remove the previous version when the new package omits it; otherwise
       // an old extracted file could silently survive an app upgrade.
       const rawFiles = hostContext.resourceManager.getRawFileListSync('chromium');
-      for (const rulesName of ['v8_context_snapshot.bin', 'ohos_phishing_rules.json', 'ohos_phishing_updates.json']) {
+      for (const rulesName of ['ohos_phishing_rules.json', 'ohos_phishing_updates.json']) {
         const rulesPath = `${runtimeDir}/${rulesName}`;
         if (rawFiles.some((name: string): boolean =>
           name === rulesName || name === `chromium/${rulesName}`)) {
@@ -629,12 +619,9 @@ export struct WebWindow {
         win.on('windowSizeChange', (size: window.Size) => {
           this.handleWindowSizeChange(size);
         });
-        win.on('windowEvent', this.hostWindowEvent);
-        try {
-          this.hostWindowVisible = win.isWindowShowing();
-          this.nativeContext?.OnVisibilityChanged(this.isHostVisible());
-        } catch (visibilityError) {
-        }
+        win.on('windowEvent', (event: window.WindowEventType) => {
+          this.handleWindowEvent(event);
+        });
         try {
           win.on('windowStatusChange', (status: window.WindowStatusType): void => {
             this.onWindowStatus?.(Number(status));
@@ -709,7 +696,7 @@ export struct WebWindow {
     } catch (error) {
     }
     try {
-      this.activeWindow.off('windowEvent', this.hostWindowEvent);
+      this.activeWindow.off('windowEvent');
     } catch (error) {
     }
     try {
@@ -836,22 +823,7 @@ export struct WebWindow {
       Number(options.rect.height)));
   }
 
-  private isHostVisible(): boolean {
-    return this.appVisible && this.hostWindowVisible;
-  }
-
   private handleWindowEvent(event: window.WindowEventType): void {
-    if (event === window.WindowEventType.WINDOW_HIDDEN) {
-      this.hostWindowVisible = false;
-      this.clearFocusRecoveryTimers();
-      this.nativeContext?.OnVisibilityChanged(false);
-      this.nativeContext?.OnFocusChanged(false);
-      return;
-    }
-    if (event === window.WindowEventType.WINDOW_SHOWN) {
-      this.hostWindowVisible = true;
-      this.nativeContext?.OnVisibilityChanged(this.isHostVisible());
-    }
     if (!this.nativeContext) {
       return;
     }
@@ -862,8 +834,8 @@ export struct WebWindow {
       this.restoreXComponentFocus(80);
       return;
     }
-    if (event === window.WindowEventType.WINDOW_INACTIVE) {
-      this.clearFocusRecoveryTimers();
+    if (event === window.WindowEventType.WINDOW_INACTIVE ||
+      event === window.WindowEventType.WINDOW_HIDDEN) {
       this.nativeContext.OnFocusChanged(false);
     }
   }
@@ -1450,13 +1422,109 @@ export struct WebWindow {
     return this.nativeContext.DispatchKeyEvent(payload);
   }
 
+  // 1.0.197：当前活动标签是否已在请求桌面版（以引擎回报的 requestDesktopSite
+  // 为准）。所有下发都以它为基线，同值不重发，避免命令刷屏；切标签后由状态回
+  // 报自动校正。
+  private currentDesktopSite: boolean = false;
+  // 已自动修正过的 host：每个 host 只补一次，防止服务端重定向造成 reload 循环。
+  private desktopHealHosts: string[] = [];
+  // 最近一次引擎回报的 URL（currentUrl 只由外壳命令更新，不反映页面内跳转）。
+  private lastStateUrl: string = '';
+
   loadUrl(url: string): void {
     this.currentUrl = url;
     if (!this.nativeContext) {
       this.showDiagnostic('导航失败: native context 未创建 (onLoad 未触发?)');
       return;
     }
+    // 导航前按「全局默认 + 站点名单」推导并下发桌面 UA：命中则引擎用桌面形状
+    // UA（去 Mobile），WPS 这类按 UA 分流的活动页才能显示桌面组件；未命中则
+    // 用手机形状 UA，保持手机浏览体验。
+    this.applyDesktopUserAgent(url);
     this.nativeContext.Navigate(url);
+  }
+
+  // 是否应为该 URL 请求桌面版网站：全局默认 desktop 一律 true；否则看 host 是否
+  // 在持久化的桌面版网站名单里（精确匹配）。
+  private shouldUseDesktopSite(url: string): boolean {
+    // 内部页永远不按桌面站点处理：桌面版默认开着时这里的无条件 true 会把
+    // chrome://、chrome-extension:// 也算进名单，驱动 UA 注入与自愈对内部页
+    // 动手（见 maybeHealDesktopSite 的注释）。与引擎侧护栏同一约定。
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      return false;
+    }
+    const def = String(AppStorage.get('auraUaDefault') ?? 'mobile');
+    if (def === 'desktop') {
+      return true;
+    }
+    const raw = String(AppStorage.get('auraDesktopSites') ?? '');
+    if (raw.length === 0) {
+      return false;
+    }
+    const host: string = this.hostOf(url);
+    if (!host) {
+      return false;
+    }
+    const list: string[] = raw.split('\n');
+    for (let i = 0; i < list.length; i++) {
+      const item: string = list[i].trim();
+      if (item.length > 0 && item === host) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // 无依赖地从一个 URL 取出 host（去掉协议/路径/端口/userinfo），避免引入 URL
+  // 模块；http(s) 之外的非常规 scheme 返回空串，不会误匹配桌面名单。
+  private hostOf(url: string): string {
+    if (!url || url.length === 0) {
+      return '';
+    }
+    let rest: string = url;
+    const protoIdx: number = rest.indexOf('://');
+    if (protoIdx >= 0) {
+      rest = rest.substring(protoIdx + 3);
+    } else {
+      const colon: number = rest.indexOf(':');
+      if (colon >= 0) {
+        rest = rest.substring(colon + 1);
+      }
+    }
+    let end: number = rest.length;
+    const slash: number = rest.indexOf('/');
+    const q: number = rest.indexOf('?');
+    const h: number = rest.indexOf('#');
+    if (slash >= 0 && slash < end) {
+      end = slash;
+    }
+    if (q >= 0 && q < end) {
+      end = q;
+    }
+    if (h >= 0 && h < end) {
+      end = h;
+    }
+    let host: string = rest.substring(0, end);
+    const port: number = host.lastIndexOf(':');
+    if (port >= 0) {
+      host = host.substring(0, port);
+    }
+    const at: number = host.lastIndexOf('@');
+    if (at >= 0) {
+      host = host.substring(at + 1);
+    }
+    return host;
+  }
+
+  // 把桌面 UA 偏好应用到当前标签（在导航前调用）；状态未变则跳过，避免命令刷屏。
+  private applyDesktopUserAgent(url: string): void {
+    const want: boolean = this.shouldUseDesktopSite(url);
+    if (want === this.currentDesktopSite) {
+      return;
+    }
+    this.currentDesktopSite = want;
+    this.nativeContext?.ExecuteBrowserCommand(
+      JSON.stringify({ command: 'setRequestDesktopSite', enabled: want }));
   }
 
   private executePendingBrowserCommand(): void {
@@ -1469,7 +1537,8 @@ export struct WebWindow {
     const sequenced: SequencedBrowserCommandBatch | undefined =
       this.parseSequencedBrowserCommands(this.browserCommandText);
     if (!sequenced) {
-      if (this.nativeContext.ExecuteBrowserCommand(this.browserCommandText)) {
+      if (this.nativeContext.ExecuteBrowserCommand(
+        this.injectDesktopUserAgentText(this.browserCommandText))) {
         this.lastExecutedBrowserCommandRevision = this.browserCommandRevision;
       }
       return;
@@ -1490,11 +1559,93 @@ export struct WebWindow {
     }
     const commands: BrowserCommandPayload[] =
       fresh.map((entry: SequencedBrowserCommand): BrowserCommandPayload => entry.command);
-    const text: string = JSON.stringify(commands.length === 1 ? commands[0] : commands);
+    const withDesktopUa: BrowserCommandPayload[] = this.injectDesktopUserAgent(commands);
+    const text: string = JSON.stringify(
+      withDesktopUa.length === 1 ? withDesktopUa[0] : withDesktopUa);
     if (this.nativeContext.ExecuteBrowserCommand(text)) {
       this.lastExecutedBrowserCommandRevision = this.browserCommandRevision;
       this.lastExecutedBrowserCommandSeq = fresh[fresh.length - 1].seq;
     }
+  }
+
+  // 外壳导航走命令通道（navigate 直发引擎），不经过 loadUrl —— 因此在命令发出
+  // 前按持久化名单注入桌面 UA，保证 navigate 的首次请求就是桌面形状。
+  // newTab 不在此列：命令发出时新标签尚未成为当前标签，注入会落到旧标签上。
+  private injectDesktopUserAgent(commands: BrowserCommandPayload[]): BrowserCommandPayload[] {
+    const out: BrowserCommandPayload[] = [];
+    // 同步一次名单：引擎在每次导航时按它决定 UA，脚本后台新开的标签也靠它。
+    let sitesSent: boolean = false;
+    for (let i = 0; i < commands.length; i++) {
+      const cmd: BrowserCommandPayload = commands[i];
+      const target: string = cmd.command === 'navigate' ? (cmd.url ?? '') :
+        (cmd.command === 'reload' ? this.lastStateUrl : '');
+      if (target.length > 0) {
+        if (!sitesSent) {
+          sitesSent = true;
+          out.push({
+            command: 'setDesktopSites',
+            sites: String(AppStorage.get('auraDesktopSites') ?? ''),
+            allSites: String(AppStorage.get('auraUaDefault') ?? 'mobile') === 'desktop'
+          });
+        }
+        const want: boolean = this.shouldUseDesktopSite(target);
+        if (want !== this.currentDesktopSite) {
+          out.push({ command: 'setRequestDesktopSite', enabled: want });
+          this.currentDesktopSite = want;
+        }
+      }
+      out.push(cmd);
+    }
+    return out;
+  }
+
+  private injectDesktopUserAgentText(text: string): string {
+    try {
+      if (text.trim().startsWith('[')) {
+        const list: BrowserCommandPayload[] = JSON.parse(text) as BrowserCommandPayload[];
+        return JSON.stringify(this.injectDesktopUserAgent(list));
+      }
+      const single: BrowserCommandPayload = JSON.parse(text) as BrowserCommandPayload;
+      return JSON.stringify(this.injectDesktopUserAgent([single]));
+    } catch (error) {
+      return text;
+    }
+  }
+
+  // 引擎内部导航（链接点击、脚本新建标签、服务端重定向）不经过外壳命令通道，
+  // 导航前注入管不到。这里在状态回报后兜底：当前标签落在桌面名单里的站点、却
+  // 仍以手机 UA 请求时，补发一次 setRequestDesktopSite 并重载；每个 host 只修一
+  // 次，防止重定向来回造成 reload 循环。
+  private maybeHealDesktopSite(state: BrowserStateSnapshot): void {
+    if (!this.nativeContext) {
+      return;
+    }
+    const url: string = state.url ?? '';
+    if (url.length === 0 || state.requestDesktopSite === true) {
+      return;
+    }
+    // 内部页（chrome://、chrome-extension://）永远以设备 UA 渲染，与引擎侧
+    // ApplyUserAgentToWebContents 的护栏同一约定。桌面版默认开着时
+    // shouldUseDesktopSite 对它们也返回 true —— 自愈于是对扩展页补发
+    // setRequestDesktopSite + reload，把刚提交的导航顶掉：桌面版开着时
+    // 「扩展磁贴要点两次」「地址栏跳一下」的最终源头（2026-10-21 日志：
+    // 每次导航提交后 30~90ms 一条裸 reload，绕过命令通道无日志）。
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      return;
+    }
+    if (!this.shouldUseDesktopSite(url)) {
+      return;
+    }
+    const host: string = this.hostOf(url);
+    if (!host || this.desktopHealHosts.indexOf(host) >= 0) {
+      return;
+    }
+    this.desktopHealHosts.push(host);
+    this.currentDesktopSite = true;
+    this.nativeContext.ExecuteBrowserCommand(
+      JSON.stringify({ command: 'setRequestDesktopSite', enabled: true }));
+    this.nativeContext.ExecuteBrowserCommand(
+      JSON.stringify({ command: 'reload' }));
   }
 
   // A BrowserCommandChannel's write, or undefined for anything else -- a
@@ -1547,6 +1698,10 @@ export struct WebWindow {
         return;
       }
       const state = parsed as BrowserStateSnapshot;
+      // 引擎回报的当前标签状态是下发基线；页面内跳转只有这里能看到。
+      this.currentDesktopSite = state.requestDesktopSite === true;
+      this.lastStateUrl = state.url ?? '';
+      this.maybeHealDesktopSite(state);
       const nextActivationEpoch = Number(state.activationEpoch ?? 0);
       const nextFocusedTarget: 'webContents' | 'sidePanel' =
         state.focusedTarget === 'sidePanel' ? 'sidePanel' : 'webContents';

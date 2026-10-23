@@ -21,11 +21,6 @@
 
 namespace media {
 
-// AVCodecKit is unavailable in the experimental phone fork child: capability
-// queries can crash its inherited FFRT runtime. Official NCP children and
-// the browser retain the normal native codec path.
-MEDIA_GPU_EXPORT bool CanUseOhosNativeCodecs();
-
 struct OhosAVFormatDeleter {
   void operator()(OH_AVFormat* format) const;
 };

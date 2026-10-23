@@ -93,6 +93,14 @@ export type ShellSurface =
   // Permission questions; the shell gets sitePermissionRequested.
   | 'permissionPrompt';
 
+// 1.0.143: one extra command-line switch handed to the engine at startup.
+// ArkTS has no object-literal types (arkts-no-obj-literals-as-types), so the
+// shape has to be a declared interface rather than written inline.
+export interface AuraCommandLineSwitch {
+  key: string;
+  value?: string;
+}
+
 export interface AuraStartupConfig {
   startUrl: string;
   uiProfile: 'phone' | 'tablet' | 'pc';
@@ -135,20 +143,12 @@ export interface AuraStartupConfig {
   icuDataOffset?: number;
   icuDataLength?: number;
   jitless: boolean;
-  // Off the GPU when the GPU's fences do not work. Unset lets the engine
-  // decide, which is what a device should do; set only to run the
-  // comparison the other way without a rebuild.
-  gpuRasterization?: boolean;
-  // The last resort: draw the page without the GPU at all. Unset lets the
-  // engine decide, which is what a device should do.
-  gpuCompositing?: boolean;
-  // Chromium's frame-rate counter, drawn over the page and over its own
-  // UI. For checking a 120Hz panel is driven at 120 and that a still page
-  // stops asking for frames.
-  showFrameRate?: boolean;
   // Which of ANGLE's backends draws. Unset or 'gles' is ANGLE on
   // HarmonyOS's own EGL/GLES, which is what a device should use; 'vulkan'
   // is for measuring Vulkan against it. Read once, at startup.
+  // 1.0.144: this carries the "Vulkan 渲染加速" setting. It is the only path
+  // that reaches the GPU process: the engine turns it into --use-angle=, and
+  // "use-angle" is on the GPU process switch allowlist.
   angleBackend?: 'gles' | 'vulkan';
   // Where the GPU runs. Unset or 'in-process' keeps it in the browser
   // process; 'separate' gives it a process of its own on a tablet or 2in1,
@@ -164,17 +164,7 @@ export interface AuraStartupConfig {
   // is Vulkan, for comparing the two. Only with gpuProcess 'separate', and
   // ignored otherwise. Phone fork uses shared NativeBuffers (ANGLE stays GLES).
   // Vulkan failure falls back to GL for this app session; cold restart retries.
-  // 'graphite' is experimental Dawn/Vulkan on phone and tablet. Ganesh
-  // Vulkan remains the default Vulkan backend and the first fallback.
-  skiaBackend?: 'gl' | 'vulkan' | 'graphite';
-  // Startup-only, defaults to auto: separate Skia Vulkan attempts 10-bit,
-  // using HDR10 when the display and system brightness API support it.
-  // A failed high-color target falls back to SDR8 for this app session.
-  vulkanOutputMode?: 'sdr8' | 'sdr10' | 'hdr10' | 'auto';
-  // Optional fixed debug overrides. Normally omit both: the engine reads
-  // display.getBrightnessInfo() and follows brightnessInfoChange automatically.
-  vulkanHdrWhiteNits?: number;
-  vulkanHdrPeakNits?: number;
+  skiaBackend?: 'gl' | 'vulkan';
   // What the app menu's way back to this shell's UI is called. Not sending
   // it is how a shell says it does not want that item -- a phone has no
   // setting to come back to, and a shell drawing the browser itself has
@@ -200,9 +190,19 @@ export interface AuraStartupConfig {
   windowRole?: 'browser' | 'pwa';
   targetWidget?: number;
   pwaAppId?: string;
+  // 附加命令行开关。注意：GPU 进程的命令行是从浏览器进程按白名单拷过去的
+  // (content/browser/gpu/gpu_process_host.cc 的 kSwitchNames)，白名单外的键
+  // 在 GPU 进程读不到，闸门再严也是空转。
+  additionalSwitches?: AuraCommandLineSwitch[];
 }
 
 export const CHROMIUM_HOME_URL: string = 'chrome://newtab/';
+
+// 1.0.143: the switch the engine's GPU process looks for. Present, it keeps
+// ANGLE on EGL/GLES and never asks for Vulkan; absent, the engine follows its
+// own (upstream) Vulkan path. Must match IsOhosPhoneVulkanEnabled() in
+// overlay/ui/ozone/platform/ohos/ohos_phone_gpu_channel.cc.
+export const OHOS_DISABLE_VULKAN_SWITCH: string = 'ohos-disable-vulkan';
 
 const TV_MARKET_KEYWORDS: string[] = [
   'MATETV',
@@ -260,10 +260,12 @@ export class DeviceRoutingPolicy {
     startUrl: string,
     windowState?: WindowStateSnapshot,
     foldStatusOverride?: number,
-    colorScheme: 'light' | 'dark' = 'light'
+    colorScheme: 'light' | 'dark' = 'light',
+    vulkanEnabled: boolean = false,
+    webgpuEnabled: boolean = false
   ): AuraStartupConfig {
     const routing = DeviceRoutingPolicy.resolve(windowState, foldStatusOverride);
-    return {
+    const config: AuraStartupConfig = {
       startUrl: startUrl && startUrl.trim().length > 0 ? startUrl : CHROMIUM_HOME_URL,
       uiProfile: routing.uiProfile,
       uiFamily: routing.uiFamily,
@@ -274,9 +276,44 @@ export class DeviceRoutingPolicy {
       isFoldable: routing.identity.isFoldable,
       foldStatus: routing.identity.foldStatus,
       colorScheme,
+      // 本外壳在所有设备形态上都自绘浏览器 chrome。不显式给 'shell' 时引擎
+      // 按 uiFamily 默认值决定，实测会自行画出原生标签条：主页顶部露出一排
+      // 被裁掉下半截的标签卡（用户看到的"左上角截断图标"）。
+      browserChrome: 'shell',
+      // 同样强制外壳画长按/右键菜单，不要引擎的原生菜单（功能不全）。
+      contextMenu: 'shell',
       jitless: false,
       fullscreenRequested: routing.fullscreenRequested
     };
+    // 1.0.144「Vulkan 渲染加速」：默认关 → ANGLE 走 HarmonyOS 自带的 EGL/GLES，
+    // 规避部分机型（如 Pura80）滑动掉帧；开启则让 ANGLE 走 Vulkan。启动时读取
+    // 一次，改完需重启。
+    //
+    // 走 angleBackend 而不是 additionalSwitches：GPU 进程的命令行是从浏览器
+    // 进程按白名单拷过去的（content/browser/gpu/gpu_process_host.cc 的
+    // kSwitchNames），自定义键进不去，闸门读不到就等于空转。1.0.143 就是踩了
+    // 这个坑——包里能查到字符串，但开关拨了没反应。
+    config.angleBackend = vulkanEnabled ? 'vulkan' : 'gles';
+    // 1.0.146「WebGPU 加速」：外壳注入 --enable-unsafe-webgpu 即开，无需重编。
+    // 引擎侧 Dawn/WebGPU 已编进当前 .so（patches/ohos-dawn-webgpu.patch），WebGPU
+    // 走 Dawn 自带的 Vulkan（libvulkan.so），与 ANGLE 后端（gles/vulkan 那条）互不干扰。
+    // 它进 additionalSwitches 而非白名单键：手机是 in-process-gpu，
+    // gpu_preferences.enable_unsafe_webgpu 走 mojo 传到 GPU 侧，外壳注入即可生效。
+    const extraSwitches: AuraCommandLineSwitch[] = [];
+    // 顺带拦住 GPU 进程的原生 Vulkan（skiaBackend 那条路）。手机上它本来不启用
+    // （要 gpuProcess='separate'），留着做保险，等那条路真启用时不会失控。
+    if (!vulkanEnabled) {
+      const disableVulkan: AuraCommandLineSwitch = { key: OHOS_DISABLE_VULKAN_SWITCH };
+      extraSwitches.push(disableVulkan);
+    }
+    if (webgpuEnabled) {
+      const enableWebGpu: AuraCommandLineSwitch = { key: 'enable-unsafe-webgpu' };
+      extraSwitches.push(enableWebGpu);
+    }
+    if (extraSwitches.length > 0) {
+      config.additionalSwitches = extraSwitches;
+    }
+    return config;
   }
 
   static buildRoutingSignature(routing: DeviceRouting): string {

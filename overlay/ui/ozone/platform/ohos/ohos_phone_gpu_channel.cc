@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 
+#include "base/command_line.h"
 #include "base/files/scoped_file.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
@@ -578,8 +579,19 @@ bool QueryOhosPhoneHdrDisplay(uint64_t* display_id) {
     *display_id = response.packet.display_id;
   return true;
 }
-bool AllowOhosPhoneVulkan() {
+bool IsOhosPhoneVulkanEnabled() {
   if (!IsOhosPhoneGpuChild())
+    return false;
+  // A settings toggle lets the user fall back to GLES to avoid frame drops on
+  // some phones (e.g. Pura80). The flag is inherited by the GPU process from
+  // the browser command line, so it is visible here at Vulkan init time.
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch("ohos-disable-vulkan"))
+    return false;
+  return true;
+}
+
+bool AllowOhosPhoneVulkan() {
+  if (!IsOhosPhoneVulkanEnabled())
     return false;
   phone_gpu::SharedMessage request, response;
   request.packet.operation = phone_gpu::SharedOp::kVulkanState;

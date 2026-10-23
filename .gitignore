@@ -47,7 +47,3 @@ build-status/
 # Screenshots pulled off a device while debugging. Written over on every
 # capture, never worth keeping.
 /shot.jpeg
-
-# Private device captures, experimental probes, signed test packages and caches.
-/artifacts/
-/overlay/chromium-ui/.cache/

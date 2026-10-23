@@ -23,7 +23,7 @@ export class CurrentTabCastSession {
     this.starting = true;
     const revision = ++this.lifecycleRevision;
     try {
-      const session = await avSession.createAVSession(context, 'ChromiumCurrentTab', 'video');
+      const session = await avSession.createAVSession(context, 'OrbiraCurrentTab', 'video');
       if (revision !== this.lifecycleRevision) {
         await session.destroy();
         return;
@@ -101,7 +101,7 @@ export class CurrentTabCastSession {
     }
 
     const sourceUrl = state.url && state.url.length > 0 ? state.url : 'chrome://newtab/';
-    const title = state.title && state.title.length > 0 ? state.title : 'Chromium';
+    const title = state.title && state.title.length > 0 ? state.title : 'Orbira';
     const subtitle = state.domain && state.domain.length > 0 ? state.domain : sourceUrl;
     const metadata: avSession.AVMetadata = {
       assetId: sourceUrl,
@@ -126,7 +126,7 @@ export class CurrentTabCastSession {
     };
 
     await session.setAVMetadata(metadata);
-    await session.setAVQueueTitle('Chromium');
+    await session.setAVQueueTitle('Orbira');
     await session.setAVQueueItems([queueItem]);
     await session.setExtras({
       sourceUrl,

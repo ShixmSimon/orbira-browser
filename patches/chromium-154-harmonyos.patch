@@ -6603,12 +6603,12 @@ index 9e27bdcb53..7a81eb753a 100644
  bool BrowserWebContentsDelegate::DoBrowserControlsShrinkRendererSize(
      content::WebContents* contents) {
 +#if BUILDFLAG(IS_OHOS)
-+  // Room is made for the shell's bar rather than the page drawing under it
-+  // at the top: shrink the viewport while the controls show at all, and
-+  // give the page their room once they have slid away, as Android does.
-+  if (chrome::ohos::GetAuraShellTopControlsHeight() > 0) {
-+    return !chrome::ohos::AreAuraShellBrowserControlsHidden(contents);
-+  }
++  // AuraShell draws its top/bottom bars as translucent overlays ON TOP of the
++  // full-size page (see shell memory section 2/3). The renderer must never
++  // shrink to make room for them -- shrinking clips the page bottom and causes
++  // scroll jank. Always report "do not shrink" (overlay-style controls, as on
++  // Android when the bar is not layout-owning). Fix tracked as 1.0.118 re-fix.
++  return false;
 +#endif
    return window_->DoBrowserControlsShrinkRendererSize(contents);
  }

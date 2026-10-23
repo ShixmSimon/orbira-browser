@@ -2,15 +2,15 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "Chromium HarmonyOS Adapter 浏览器"
+      "value": "Orbira 浏览器"
     },
     {
       "name": "EntryAbility_desc",
-      "value": "Chromium HarmonyOS Adapter 主入口"
+      "value": "Orbira 主入口"
     },
     {
       "name": "EntryAbility_label",
-      "value": "Chromium HarmonyOS Adapter"
+      "value": "Orbira"
     },
     {
       "name": "holding_hand_permission_reason",
@@ -19,6 +19,10 @@
     {
       "name": "extensional_device_permission_reason",
       "value": "需要扩展设备权限以访问原生功能"
+    },
+    {
+      "name": "scan_permission_reason",
+      "value": "用于扫一扫识别二维码并打开链接"
     }
   ]
 }

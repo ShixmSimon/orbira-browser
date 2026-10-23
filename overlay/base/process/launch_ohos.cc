@@ -13,7 +13,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include <atomic>
 #include <cstdint>
 #include <iterator>
 #include <map>
@@ -46,7 +45,6 @@ constexpr char kNativeChildEntry[] =
     "libnweb_render.so:ChromiumNativeChildMain";
 
 OhosGpuChildLauncher g_gpu_child_launcher = nullptr;
-std::atomic<bool> g_v8_context_snapshot_enabled{false};
 
 // These APIs appeared in API 20, with UID isolation added in API 21. Resolve
 // the entire set before creating anything: older devices must reject the
@@ -283,8 +281,6 @@ Process LaunchProcessOhos(const std::vector<std::string>& argv,
   child_command_line.RemoveSwitch(kOhosIsolatedRenderer);
   if (isolate_renderer) {
     child_command_line.AppendSwitch(kOhosIsolatedRenderer);
-    child_command_line.CopySwitchesFrom(*CommandLine::ForCurrentProcess(),
-                                       {"ohos-trap-diagnostics"});
   }
   std::string encoded_params;
   if (!EncodeOhosNativeChildParams(child_command_line.argv(), options,
@@ -373,7 +369,7 @@ Process LaunchProcessOhos(const std::vector<std::string>& argv,
         assets.AppendASCII("chrome_100_percent.pak"),
         assets.AppendASCII("chrome_200_percent.pak"),
         assets.AppendASCII("resources.pak"),
-        assets.AppendASCII(GetOhosV8SnapshotFileName())};
+        assets.AppendASCII("snapshot_blob.bin")};
     for (size_t i = 0; i < std::size(paths); ++i) {
       ScopedFD fd(HANDLE_EINTR(
           open(paths[i].value().c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW)));
@@ -436,16 +432,6 @@ Process LaunchProcessOhos(const std::vector<std::string>& argv,
     DPCHECK(waited_pid == pid);
   }
   return Process(pid);
-}
-
-void SetOhosV8ContextSnapshotEnabled(bool enabled) {
-  g_v8_context_snapshot_enabled.store(enabled, std::memory_order_relaxed);
-}
-
-const char* GetOhosV8SnapshotFileName() {
-  return g_v8_context_snapshot_enabled.load(std::memory_order_relaxed)
-             ? "v8_context_snapshot.bin"
-             : "snapshot_blob.bin";
 }
 
 bool IsOhosIsolatedRenderer() {

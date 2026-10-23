@@ -16,7 +16,7 @@ interface PwaWantParameters {
 class PwaStorageValues {
   pwaWidget: number = 0;
   pwaAppId: string = '';
-  pwaTitle: string = 'Chromium';
+  pwaTitle: string = 'Orbira';
   pwaStartUrl: string = 'chrome://newtab/';
   pwaProfileId: string = 'local';
   pwaStartupConfig: string = '';
@@ -101,7 +101,7 @@ export default class PWASmallAppExperience extends UIAbility {
     const parameters = (want.parameters ?? {}) as PwaWantParameters;
     this.storage.setOrCreate('pwaWidget', Number(parameters.pwaWidget ?? 0));
     this.storage.setOrCreate('pwaAppId', String(parameters.pwaAppId ?? ''));
-    this.storage.setOrCreate('pwaTitle', String(parameters.pwaTitle ?? 'Chromium'));
+    this.storage.setOrCreate('pwaTitle', String(parameters.pwaTitle ?? 'Orbira'));
     this.storage.setOrCreate('pwaStartUrl',
       String(parameters.pwaStartUrl ?? 'chrome://newtab/'));
     this.storage.setOrCreate('pwaProfileId', String(parameters.pwaProfileId ?? 'local'));
@@ -165,7 +165,7 @@ export default class PWASmallAppExperience extends UIAbility {
     }
     win.setWindowLayoutFullScreen(true).catch((): void => {
     });
-    const title = String(this.storage.get('pwaTitle') ?? 'Chromium');
+    const title = String(this.storage.get('pwaTitle') ?? 'Orbira');
     win.setWindowTitle(title).catch((): void => {
     });
   }

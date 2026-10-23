@@ -106,7 +106,7 @@ int main() {
   for(const auto& hash:builtin->blocked_spkis_)
     assert(old_download.CheckSPKI(hash)==CRLSet::REVOKED);
 }
-'''.replace('HASH_LITERALS', hash_literals).replace('PRODUCTION_FLOOR', '\n'.join('  ' + line for line in floor[0].splitlines()))
+'''.replace('HASH_LITERALS', hash_literals).replace('PRODUCTION_FLOOR', floor[0])
 with tempfile.TemporaryDirectory(prefix='ohos-crl-floor-') as directory:
     source = Path(directory) / 'floor.cc'
     binary = Path(directory) / 'floor'

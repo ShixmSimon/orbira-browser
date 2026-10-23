@@ -21,7 +21,7 @@ export class PwaWindowLauncher {
       parameters: {
         pwaWidget: state.widget,
         pwaAppId,
-        pwaTitle: state.title || 'Chromium',
+        pwaTitle: state.title || 'Orbira',
         pwaStartUrl: startUrl,
         pwaProfileId: profileId,
         pwaStartupConfig: JSON.stringify(config)

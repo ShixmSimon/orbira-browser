@@ -14,7 +14,6 @@
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -130,47 +129,7 @@ void CloseFds(std::vector<int>& fds) {
   fds.clear();
 }
 
-bool IsLoaderRelroFd(int directory_fd, const char* name, int fd) {
-  // OHOS musl caches this descriptor in its inherited prelink state. Closing
-  // or renumbering it lets a later dlopen mmap an unrelated, reused FD at a
-  // RELRO offset (and can SIGBUS beyond that file's end). Keep the original
-  // descriptor, not just the existing mappings or a duplicate at another FD.
-  constexpr char kRelroTarget[] = "/memfd:relro_cache (deleted)";
-  char target[sizeof(kRelroTarget)];
-  ssize_t size = readlinkat(directory_fd, name, target, sizeof(target));
-  if (size != sizeof(kRelroTarget) - 1 ||
-      memcmp(target, kRelroTarget, sizeof(kRelroTarget) - 1) != 0)
-    return false;
-  // Phone policy can deny getattr (fstat returns EACCES) on this inherited
-  // system memfd while readlink, fcntl and mmap remain usable. Metadata access
-  // is not a liveness test. The exact procfs target identifies the cache; keep
-  // its live original descriptor even when metadata cannot be queried.
-  return fcntl(fd, F_GETFD) >= 0;
-}
-
-bool IsSystemTraceMarkerFd(int directory_fd, const char* name, int fd) {
-  // HiTrace caches its trace_marker FD in process-global state. fork inherits
-  // that cache without exec: closing the FD lets later shared-memory allocation
-  // reuse its number, so trace writes can corrupt Chromium's command buffers.
-  // Match the exact kernel nodes, never arbitrary files or application channels.
-  char target[PATH_MAX];
-  const ssize_t size = readlinkat(directory_fd, name, target, sizeof(target));
-  if (size <= 0 || size >= static_cast<ssize_t>(sizeof(target)))
-    return false;
-  constexpr const char* paths[] = {
-      "/sys/kernel/debug/tracing/trace_marker",
-      "/sys/kernel/tracing/trace_marker",
-  };
-  for (const char* path : paths) {
-    if (static_cast<size_t>(size) == strlen(path) &&
-        memcmp(target, path, static_cast<size_t>(size)) == 0)
-      return fcntl(fd, F_GETFD) >= 0;
-  }
-  return false;
-}
-
 // Close inherited application channels before the server can fork children.
-// Loader and HiTrace caches must retain their original descriptor numbers.
 // No broad munmap of Ark/anonymous memory: mapped libraries may still use it.
 bool CloseInheritedFds(int keep, int& minimum_received_fd) {
   DIR* directory = opendir("/proc/self/fd");
@@ -185,10 +144,7 @@ bool CloseInheritedFds(int keep, int& minimum_received_fd) {
     if (*end == '\0' && fd >= 0 && fd < INT_MAX) {
       if (fd >= minimum_received_fd)
         minimum_received_fd = static_cast<int>(fd) + 1;
-      if (fd > 2 && fd != keep && fd != directory_fd &&
-          !IsLoaderRelroFd(directory_fd, entry->d_name, static_cast<int>(fd)) &&
-          !IsSystemTraceMarkerFd(directory_fd, entry->d_name,
-                                static_cast<int>(fd)))
+      if (fd > 2 && fd != keep && fd != directory_fd)
         close(static_cast<int>(fd));
     }
   }
@@ -575,10 +531,6 @@ int DuplicateOhosChildDescriptor(int fd) {
     result = fcntl(fd, F_DUPFD_CLOEXEC, child_minimum_fd);
   } while (result < 0 && errno == EINTR);
   return result;
-}
-
-bool IsOhosForkChild() {
-  return child_progress != nullptr;
 }
 
 bool StartOhosForkServer(const std::string& child_library) {
