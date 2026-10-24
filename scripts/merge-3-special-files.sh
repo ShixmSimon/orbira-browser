@@ -22,7 +22,7 @@ set -euo pipefail
 
 # ---- 可调环境变量（按你本机实际情况改）------------------------------------
 UPSTREAM_DIR="${UPSTREAM_DIR:-/home/administrator/upstream-chromium-hmos}"   # 克隆的上游只读副本
-BR154="${BR154:-hmos-154}"                                                   # 上游 154 分支
+BR154="${BR154:-hmos-154-adapter}"                                           # 上游 154 分支（注意带 -adapter 后缀）
 BR155="${BR155:-hmos-155-adapter}"                                           # 上游 155 分支
 SRC154="${SRC154:-/home/administrator/chromium-work/chromium/src}"           # 我们的 154 树
 SRC155="${SRC155:-/home/administrator/chromium-155/src}"                     # 准备好的 155 树
@@ -35,7 +35,7 @@ if [[ ! -d "$UPSTREAM_DIR/.git" ]]; then
 ✗ UPSTREAM_DIR 没指向克隆好的上游仓库：$UPSTREAM_DIR
   先做一次只读 clone（零打扰允许 clone，不会触发任何公开互动）：
     git clone --filter=blob:none https://github.com/miramira8295/chromium-hmos.git "$UPSTREAM_DIR"
-  若上游分支名不是 hmos-154 / hmos-155-adapter，用 BR154=... BR155=... 覆盖。
+  若上游分支名不是 hmos-154-adapter / hmos-155-adapter，用 BR154=... BR155=... 覆盖。
   若上游仓内路径不是 chrome/browser/ui/ohos，用 UP_REL=... 覆盖。
 EOF
   exit 1
