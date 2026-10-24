@@ -62,12 +62,20 @@ fi
 
 # 3) 手动合并提示
 echo
-echo "⚠ 仍需你手动合并 3 个特殊文件（155 基线 vs 我们的 UA-pin / AuraShell 桥增量）："
-echo "   - content/browser/.../aura_shell_runtime_bridge.cc"
-echo "   - content/browser/.../aura_shell_runtime_bridge.h"
-echo "   - chrome/browser/.../shell_store_user_agent_ohos.cc"
-echo "   方法：对比 $src154 里这些文件（我们的版本）与 $src155（当前为上游 155 版），"
-echo "         把我们的增量段（UA pin 调用、桥接扩展逻辑）移植到 155 版本上。"
+echo "⚠ 仍需你手动合并 3 个特殊文件（UA-pin / AuraShell 桥，154→155 大幅分叉）："
+echo "   - chrome/browser/ui/ohos/aura_shell_runtime_bridge.cc   (545/365 分叉，三方合并)"
+echo "   - chrome/browser/ui/ohos/aura_shell_runtime_bridge.h    (12/4 小差异，三方合并)"
+echo "   - chrome/browser/ui/ohos/shell_store_user_agent_ohos.cc (0/71 子集，直接用 155 上游版)"
+echo
+echo "   ⚠ 重要：prepare 阶段5 把本仓 overlay 原样 rsync 进了 155 树，所以 \$src155 里这 3 个文件"
+echo "     目前是【我们的 154 版】，并不是 155 上游版。155 上游版只在上游仓库，需只读 clone 一次。"
+echo "     不要直接拿 \$src154 和 \$src155 互比（两边都是 154 版，比不出东西）。"
+echo
+echo "   已备好自动化脚本（三方合并 ours=154版 / base=上游154 / theirs=上游155）："
+echo "     export CHROMIUM_154_SRC=$src154"
+echo "     export CHROMIUM_155_ROOT=$(dirname "$src155")"
+echo "     bash $(dirname "${BASH_SOURCE[0]}")/merge-3-special-files.sh"
+echo "   脚本会先把上游只读 clone 好的路径用 UPSTREAM_DIR 指过去（默认 /home/administrator/upstream-chromium-hmos）。"
 echo "   154 与本仓的对应关系见《155升级-本土优化迁移清单.md》§2。"
 echo
-echo "✅ patch 叠加完成（vulkan-gate/touch-slop 由 overlay 承载；3 个重锚 patch 见上方汇总；特殊文件需手动合）。之后即可全量编 155 引擎。"
+echo "✅ patch 叠加完成（vulkan-gate/touch-slop 由 overlay 承载；3 个重锚 patch 见上方汇总；特殊文件用 merge-3-special-files.sh 合并）。之后即可全量编 155 引擎。"
