@@ -47,3 +47,9 @@ build-status/
 # Screenshots pulled off a device while debugging. Written over on every
 # capture, never worth keeping.
 /shot.jpeg
+
+# Python bytecode from running the helper scripts.
+__pycache__/
+
+# Reanchor diagnostics: regenerated on every 155-reanchor-patches.py run.
+reanchor-conflicts/

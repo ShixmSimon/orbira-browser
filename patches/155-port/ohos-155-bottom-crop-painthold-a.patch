@@ -1,0 +1,27 @@
+diff --git a/content/browser/renderer_host/render_widget_host_view_aura.cc b/content/browser/renderer_host/render_widget_host_view_aura.cc
+index 3be7716..68975da 100644
+--- a/content/browser/renderer_host/render_widget_host_view_aura.cc
++++ b/content/browser/renderer_host/render_widget_host_view_aura.cc
+@@ -1053,7 +1053,7 @@ OhosReservedHeight GetOhosReservedHeight(RenderWidgetHostImpl* host) {
+   // (DoBrowserControlsShrinkRendererSize turns false, as on Android), so a
+   // fixed element sized to the viewport reaches the bottom of the screen
+   // and not where the controls' edge was. What stays covered stays off.
+-  return {view->DoBrowserControlsShrinkRendererSize() ? controls : 0, true};
++  return {0, true};  // [鸿蒙Chrome] 关掉浏览器控件对渲染尺寸的收缩：页面恒满高、底栏固定条完整
+ }
+ 
+ }  // namespace
+@@ -3188,8 +3188,12 @@ void RenderWidgetHostViewAura::CreateAuraWindow(aura::client::WindowType type) {
+ 
+   window_->SetType(type);
+   window_->Init(ui::LAYER_SURFACE);
++  // Default to transparent so the cold-start / new-tab gap reveals the
++  // shell's themed background instead of flashing opaque white. The ArkUI
++  // XComponent hosting the web surface is already Color.Transparent, so the
++  // themed background shows through until the first frame paints.
+   SkColor4f background_color = SkColor4f::FromColor(
+-      GetBackgroundColor() ? *GetBackgroundColor() : SK_ColorWHITE);
++      GetBackgroundColor() ? *GetBackgroundColor() : SK_ColorTRANSPARENT);
+   window_->layer()->SetFillsBoundsOpaquely(background_color.isOpaque());
+   window_->layer()->AsSurface()->SetFallbackBackgroundColor(background_color);
+   UpdateFrameSinkIdRegistration();

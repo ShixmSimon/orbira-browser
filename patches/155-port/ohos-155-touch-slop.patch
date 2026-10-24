@@ -1,5 +1,5 @@
---- a/overlay/arkweb/ohos_nweb/src/aura_shell/ohos_aura_input_router.cc
-+++ b/overlay/arkweb/ohos_nweb/src/aura_shell/ohos_aura_input_router.cc
+--- a/arkweb/ohos_nweb/src/aura_shell/ohos_aura_input_router.cc
++++ b/arkweb/ohos_nweb/src/aura_shell/ohos_aura_input_router.cc
 @@ -35,6 +35,19 @@
  constexpr base::TimeDelta kCrossSourceDuplicateEventWindow =
      base::Milliseconds(250);
