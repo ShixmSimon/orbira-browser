@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PATCHES = ROOT / 'patches/migration-155'
@@ -14,6 +15,18 @@ PATCHES = ROOT / 'patches/migration-155'
 
 def run(*args, **kwargs):
     return subprocess.run(args, check=True, **kwargs)
+
+
+def lf_bytes(patch):
+    """Return the LF-normalized bytes of a patch.
+
+    The migration patches are canonical LF (the manifest sha256 were computed
+    on LF content), but they may land on disk as CRLF when .gitattributes
+    normalization was not applied on checkout. ``git apply`` needs LF context
+    lines to match the LF tree, and the integrity hash is over the LF content,
+    so normalize before both hashing and applying.
+    """
+    return patch.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
 def apply_snapshot(target, patch):
@@ -42,9 +55,14 @@ def apply_snapshot(target, patch):
 
 
 def main():
+    default_root = Path('/root/chromium-155')
+    root = Path(os.environ.get('CHROMIUM_155_ROOT', str(default_root)))
+    expected = (root / 'src').resolve()
     src = Path(sys.argv[1]).resolve()
-    if src != Path('/root/chromium-155/src'):
-        raise ValueError('Migration may only modify /root/chromium-155/src')
+    if src != expected:
+        raise ValueError(
+            f'Migration may only modify {expected} '
+            f'(CHROMIUM_155_ROOT={root}, got {src})')
     manifest = json.loads((PATCHES / 'manifest.json').read_text())
     actual = subprocess.check_output(['git', '-C', str(src), 'rev-parse', 'HEAD'], text=True).strip()
     if actual != manifest['target_revision']:
@@ -57,7 +75,7 @@ def main():
             raise ValueError(f'Dependency pin mismatch for {entry["path"]}: '
                              f'expected {entry["base"]}, got {actual}')
         patch = PATCHES / entry['patch']
-        data = patch.read_bytes()
+        data = lf_bytes(patch)
         digest = hashlib.sha256(data).hexdigest()
         if digest != entry['sha256']:
             raise ValueError(f'Patch integrity failure: {patch}')
@@ -70,7 +88,16 @@ def main():
         # upstream revision, rather than stack over that half-applied patch.
         # This path is confined to 155 and never deletes untracked build data.
         print(f'Migrating {entry["path"]} ({len(data)} bytes)', flush=True)
-        apply_snapshot(target, patch)
+        # git apply needs an LF file on disk; write a temp LF copy rather than
+        # relying on the (possibly CRLF) working-tree file.
+        fd, norm_path = tempfile.mkstemp(prefix='m155-', suffix='.patch')
+        os.close(fd)
+        norm = Path(norm_path)
+        try:
+            norm.write_bytes(data)
+            apply_snapshot(target, norm)
+        finally:
+            norm.unlink(missing_ok=True)
         receipt.write_text(digest + '\n')
 
 

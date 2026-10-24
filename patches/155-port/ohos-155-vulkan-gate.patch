@@ -1,5 +1,5 @@
---- a/overlay/ui/ozone/platform/ohos/ohos_phone_gpu_channel.h
-+++ b/overlay/ui/ozone/platform/ohos/ohos_phone_gpu_channel.h
+--- a/ui/ozone/platform/ohos/ohos_phone_gpu_channel.h
++++ b/ui/ozone/platform/ohos/ohos_phone_gpu_channel.h
 @@ -20,6 +20,12 @@
  bool OhosPhoneGpuHasPresented();
  // Phone GPU only. A failed Vulkan generation stays on GL until app restart.
@@ -13,8 +13,8 @@
  // Registers Graphite separately so a failed Dawn generation preserves Ganesh.
  bool AllowOhosPhoneGraphite();
  void ReportOhosPhoneVulkanFailure();
---- a/overlay/ui/ozone/platform/ohos/ohos_phone_gpu_channel.cc
-+++ b/overlay/ui/ozone/platform/ohos/ohos_phone_gpu_channel.cc
+--- a/ui/ozone/platform/ohos/ohos_phone_gpu_channel.cc
++++ b/ui/ozone/platform/ohos/ohos_phone_gpu_channel.cc
 @@ -13,6 +13,7 @@
  #include <map>
  #include <memory>
