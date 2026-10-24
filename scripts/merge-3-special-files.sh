@@ -146,7 +146,7 @@ echo "    upstream base: $ph_base   theirs: $ph_theirs"
 up_show "$ref154" "$ph_base" > "$tmp/base_h"
 up_show "$ref155" "$ph_theirs" > "$tmp/theirs_h"
 merge_one "$tmp/base_h" "$SRC154/$REL/aura_shell_runtime_bridge.h" "$tmp/theirs_h" \
-          "$SRC155/$REL/aura_shell_runtime_bridge.h" "aura_shell_runtime_bridge.h"
+          "$SRC155/$REL/aura_shell_runtime_bridge.h" "aura_shell_runtime_bridge.h" || true
 
 # 3) aura_shell_runtime_bridge.cc
 echo
@@ -164,8 +164,15 @@ echo "    upstream base: $pc_base   theirs: $pc_theirs"
 up_show "$ref154" "$pc_base" > "$tmp/base_cc"
 up_show "$ref155" "$pc_theirs" > "$tmp/theirs_cc2"
 merge_one "$tmp/base_cc" "$SRC154/$REL/aura_shell_runtime_bridge.cc" "$tmp/theirs_cc2" \
-          "$SRC155/$REL/aura_shell_runtime_bridge.cc" "aura_shell_runtime_bridge.cc"
+          "$SRC155/$REL/aura_shell_runtime_bridge.cc" "aura_shell_runtime_bridge.cc" || true
 
+echo
+echo "=== 冲突汇总（需手动解）==="
+c_h=$(grep -c '^<<<<<<< ' "$SRC155/$REL/aura_shell_runtime_bridge.h" 2>/dev/null || true)
+c_cc=$(grep -c '^<<<<<<< ' "$SRC155/$REL/aura_shell_runtime_bridge.cc" 2>/dev/null || true)
+echo "  aura_shell_runtime_bridge.h : ${c_h:-0} 处"
+echo "  aura_shell_runtime_bridge.cc: ${c_cc:-0} 处"
+echo "  shell_store_user_agent_ohos.cc: 0（已直接用 155 上游版覆盖）"
 echo
 echo "✅ 处理完毕。下一步："
 echo "   1) 在 $SRC155 里搜 <<<<<<< 解冲突（保留 155 结构，补回我们的 UA-pin / AuraShell 桥逻辑）。"
