@@ -56,10 +56,34 @@ else:
         '  ~/.cargo/bin/rustup toolchain install 1.96.1\n'
         '  ~/.cargo/bin/rustup target add '+rust_target)
 env['CARGO_TARGET_DIR']=str(work/'target')
-env['CARGO_TARGET_'+rust_target.upper().replace('-','_')+'_LINKER']=str(sdk/'native/llvm/bin/clang')
+# 链接器：① SDK 自带 Linux clang（上游 canonical）。本机不可用——DevEco NDK 只装了 Windows clang.exe
+# （无 extensionless clang，其 wrapper aarch64-unknown-linux-ohos-clang 也 exec 同目录 clang）、WSL 未挂 /mnt/d。
+# ② 回退 Chromium 自带 clang：本树全部 C++ 编译/.so 链接均由它驱动（110MB 真二进制，LLVM24）。
+#    但其自身资源目录无 ohos builtins（lib/clang/24/lib 无 ohos triple），必须按
+#    build/config/ohos/BUILD.gn(170/211/218) 同款补 -resource-dir 与 -L——builtins/crt/libc++ 都在 SDK llvm/lib 下。
+src_root=root.parent.parent
+extra=[]
+linker=sdk/'native/llvm/bin/clang'
+if not linker.exists():
+    fb=src_root/'third_party/llvm-build/Release+Asserts/bin/clang'
+    rdir=sdk/'native/llvm/lib/clang/current'
+    if not fb.exists():
+        raise SystemExit('找不到链接器：试过 '+str(linker)+' 与 '+str(fb))
+    if not rdir.exists():
+        raise SystemExit('找不到 clang 资源目录（ohos builtins 所在）：'+str(rdir))
+    linker=fb
+    extra.append('-resource-dir='+str(rdir))
+    if rust_target.startswith('aarch64'):
+        extra.append('-L'+str(sdk/'native/llvm/lib/aarch64-linux-ohos'))
+        extra.append('-L'+str(rdir/'lib/aarch64-unknown-linux-ohos'))
+    print('note: SDK clang 缺失，回退 Chromium clang（附 '+','.join(extra)+'）')
+env['CARGO_TARGET_'+rust_target.upper().replace('-','_')+'_LINKER']=str(linker)
 # Encoded flags preserve SDK paths containing spaces. No LTO bitcode leaves the DSO.
-env['CARGO_ENCODED_RUSTFLAGS']='\x1f'.join(['-C','relocation-model=pic','-C','link-arg=--target='+clang_target,
-    '-C','link-arg=--sysroot='+str(sdk/'native/sysroot'),'-C','link-arg=-Wl,-soname,liblumie_adblock.so'])
+flags=['-C','relocation-model=pic','-C','link-arg=--target='+clang_target,
+    '-C','link-arg=--sysroot='+str(sdk/'native/sysroot'),'-C','link-arg=-Wl,-soname,liblumie_adblock.so']
+for f in extra:
+    flags+=['-C','link-arg='+f]
+env['CARGO_ENCODED_RUSTFLAGS']='\x1f'.join(flags)
 subprocess.run([cargo]+targs+['build','--manifest-path',str(work/'Cargo.toml'),'--target',rust_target,
                 '--release','--frozen','--offline'],cwd=work,env=env,check=True)
 shutil.copy2(work/'target'/rust_target/'release/liblumie_adblock.so',out)
