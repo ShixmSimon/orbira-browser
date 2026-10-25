@@ -36,12 +36,22 @@ triples={'arm64':('aarch64-unknown-linux-ohos','aarch64-linux-ohos'),
 rust_target,clang_target=triples[a.cpu]
 sdk=pathlib.Path(a.sdk).resolve()
 env=os.environ.copy()
-cargo=shutil.which('cargo') or str(pathlib.Path.home()/'.cargo/bin/cargo')
+# cargo 解析：优先用 Chromium 自带 Rust 工具链（third_party/rust-toolchain/bin/cargo，随树就位、无需 rustup）；
+# 找不到才回退 rustup（PATH 或 ~/.cargo/bin/cargo），此时才需 rustup 的 +toolchain 语法。
+# root = src/third_party/adblock_rust，故 root.parent = src/third_party。
+bundled=root.parent/'rust-toolchain'/'bin'/'cargo'
+rustup=shutil.which('cargo') or (str(pathlib.Path.home()/'.cargo/bin/cargo') if (pathlib.Path.home()/'.cargo/bin/cargo').exists() else None)
+if bundled.exists():
+    cargo, targs = str(bundled), []
+elif rustup:
+    cargo, targs = rustup, ['+1.96.1']
+else:
+    raise SystemExit('cargo not found: 试过 third_party/rust-toolchain/bin/cargo、PATH、~/.cargo/bin/cargo；请安装 rustup 或确保 Chromium rust-toolchain 就位')
 env['CARGO_TARGET_DIR']=str(work/'target')
 env['CARGO_TARGET_'+rust_target.upper().replace('-','_')+'_LINKER']=str(sdk/'native/llvm/bin/clang')
 # Encoded flags preserve SDK paths containing spaces. No LTO bitcode leaves the DSO.
 env['CARGO_ENCODED_RUSTFLAGS']='\x1f'.join(['-C','relocation-model=pic','-C','link-arg=--target='+clang_target,
     '-C','link-arg=--sysroot='+str(sdk/'native/sysroot'),'-C','link-arg=-Wl,-soname,liblumie_adblock.so'])
-subprocess.run([cargo,'+1.96.1','build','--manifest-path',str(work/'Cargo.toml'),'--target',rust_target,
+subprocess.run([cargo]+targs+['build','--manifest-path',str(work/'Cargo.toml'),'--target',rust_target,
                 '--release','--frozen','--offline'],cwd=work,env=env,check=True)
 shutil.copy2(work/'target'/rust_target/'release/liblumie_adblock.so',out)
