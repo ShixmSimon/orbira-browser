@@ -78,7 +78,9 @@ Redistribution and use in source and binary forms, with or without modification,
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.`;
 
-const THIRD_PARTY_LICENSE_NOTE: string = `本应用基于 Chromium 150.0.7871.114 构建。除应用自身采用上述 BSD 3-Clause 许可外，所捆绑的第三方组件按其各自许可发布，主要包括：
+// 1.0.243：去掉此段硬编码的内核版本（原 'Chromium 150.0.7871.114'，实际引擎
+// 已 154，会误导）——版本号只在「版权声明」段动态显示（getAboutInfo）。
+const THIRD_PARTY_LICENSE_NOTE: string = `除应用自身采用上述 BSD 3-Clause 许可外，所捆绑的第三方组件按其各自许可发布，主要包括：
 
 · WebView / 引擎封装层：Apache License 2.0
 · FFmpeg（静态链接）：BSD-2-Clause、BSD-3-Clause、ISC、LGPL-2.1+，以及 MIT 组件
@@ -1930,7 +1932,10 @@ export struct SettingsPanel {
           this.LegalSectionTitle('版权声明')
           Text('Orbira 星轨浏览器（基于 Chromium 的鸿蒙浏览器）\n' +
             'Copyright © 2015 The Chromium Authors. All rights reserved.\n' +
-            '基于 Chromium 150.0.7871.114 构建。')
+            // 1.0.243：内核版本改为动态读取（getAboutInfo → chromiumVersion，
+            // 与下方「关于」页的内核版本行同源）。原硬编码 150.0.7871.114，
+            // 实际引擎已基于 154，装机反馈「法律页显示 150」。
+            `基于 Chromium ${this.chromiumVersion.length > 0 ? this.chromiumVersion : '—'} 构建。`)
             .fontSize(13)
             .fontColor($r('app.color.text_secondary'))
             .width('100%')

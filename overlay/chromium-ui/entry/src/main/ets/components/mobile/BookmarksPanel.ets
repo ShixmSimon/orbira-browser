@@ -1382,7 +1382,8 @@ export struct BookmarksPanel {
       deleteStagedFile(stagedPath);
       return;
     }
-    const saved = await saveExportedFile(context, stagedPath, 'Aura 书签.html');
+    // 1.0.243：与密码导出同款——导出文件名去掉品牌名（原 'Aura 书签.html'）。
+    const saved = await saveExportedFile(context, stagedPath, '书签.html');
     if (saved) {
       AlertDialog.show({
         title: '导出完成',

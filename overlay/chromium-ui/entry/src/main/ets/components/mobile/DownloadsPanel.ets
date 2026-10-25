@@ -195,7 +195,29 @@ export struct DownloadsPanel {
   }
 
   private openItem(item: DownloadItem): void {
-    if (item.state !== 'completed' || item.fileMissing === true || item.filePath.length === 0) {
+    // 1.0.243：点按反馈——打不开时说明原因。此前守卫全部静默 return，
+    // 用户点到「还在下载 / 已暂停 / 文件丢失」的条目像点了没反应
+    // （装机反馈「点击下载没有弹窗提醒」）。下载中/完成态的系统通知
+    // 由 DownloadNotifier 负责，这里补的是面板内点按的即时反馈。
+    if (item.state === 'inProgress' || item.state === 'paused') {
+      this.getUIContext().getPromptAction().showToast({
+        message: item.state === 'paused' ? '下载已暂停，继续后才能打开' : '还在下载中，下载完成后才能打开',
+        duration: 2000
+      });
+      return;
+    }
+    if (item.state !== 'completed') {
+      this.getUIContext().getPromptAction().showToast({
+        message: '这个下载没有成功，可以重试',
+        duration: 2000
+      });
+      return;
+    }
+    if (item.fileMissing === true || item.filePath.length === 0) {
+      this.getUIContext().getPromptAction().showToast({
+        message: '文件已不在原位置，可以重新下载',
+        duration: 2000
+      });
       return;
     }
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
