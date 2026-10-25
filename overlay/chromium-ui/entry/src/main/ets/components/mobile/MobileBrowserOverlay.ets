@@ -50,12 +50,21 @@ interface DownloadEventPayload {
   revision: number;
 }
 
-// 通知条的当前内容。kind: start=开始下载 / done=完成 /
-// failed=失败 / dangerous=危险文件（引擎标 dangerous，只提示不动作）。
+// 通知条状态。start=开始下载 / done=完成 / failed=失败 /
+// dangerous=危险文件（引擎标 dangerous，只提示不动作）。
+// 用 enum 不用字面量联合：ArkTS 不支持索引访问类型（DownloadSnackState['kind']
+// 报 arkts-no-aliases-by-index，10605028），枚举与工程 MobileEdgeAction 同款。
+enum DownloadSnackKind {
+  START = 'start',
+  DONE = 'done',
+  FAILED = 'failed',
+  DANGEROUS = 'dangerous'
+}
+
 interface DownloadSnackState {
   id: string;
   name: string;
-  kind: 'start' | 'done' | 'failed' | 'dangerous';
+  kind: DownloadSnackKind;
   filePath: string;
   mimeType: string;
   isCrx: boolean;
@@ -66,7 +75,7 @@ interface DownloadSnackState {
 const EMPTY_DOWNLOAD_SNACK: DownloadSnackState = {
   id: '',
   name: '',
-  kind: 'start',
+  kind: DownloadSnackKind.START,
   filePath: '',
   mimeType: '',
   isCrx: false
@@ -1286,23 +1295,24 @@ export struct MobileBrowserOverlay {
     if (ev.state === 'inProgress') {
       // 同 id 已是「开始下载」态：进度事件每秒多次，不重复弹、不重置计时。
       if (this.downloadSnackVisible && this.downloadSnack.id === ev.id &&
-        this.downloadSnack.kind === 'start') {
+        this.downloadSnack.kind === DownloadSnackKind.START) {
         return;
       }
-      this.showDownloadSnack(ev.id, name, 'start', ev.filePath, ev.mimeType);
+      this.showDownloadSnack(ev.id, name, DownloadSnackKind.START, ev.filePath, ev.mimeType);
       return;
     }
     if (ev.state === 'completed') {
-      const kind: 'done' | 'dangerous' = ev.dangerous ? 'dangerous' : 'done';
+      const kind: DownloadSnackKind = ev.dangerous ?
+        DownloadSnackKind.DANGEROUS : DownloadSnackKind.DONE;
       this.showDownloadSnack(ev.id, name, kind, ev.filePath, ev.mimeType);
       return;
     }
     if (ev.state === 'failed') {
-      this.showDownloadSnack(ev.id, name, 'failed', ev.filePath, ev.mimeType);
+      this.showDownloadSnack(ev.id, name, DownloadSnackKind.FAILED, ev.filePath, ev.mimeType);
     }
   }
 
-  private showDownloadSnack(id: string, name: string, kind: DownloadSnackState['kind'],
+  private showDownloadSnack(id: string, name: string, kind: DownloadSnackKind,
     filePath: string, mimeType: string): void {
     if (this.downloadSnackTimer !== -1) {
       clearTimeout(this.downloadSnackTimer);
@@ -1318,7 +1328,7 @@ export struct MobileBrowserOverlay {
     };
     this.downloadSnackVisible = true;
     // 自动消失：开始 4s（完成/失败/危险 6s，留足点动作按钮的时间）。
-    const ttl: number = kind === 'start' ? 4000 : 6000;
+    const ttl: number = kind === DownloadSnackKind.START ? 4000 : 6000;
     this.downloadSnackTimer = setTimeout((): void => {
       this.downloadSnackTimer = -1;
       this.downloadSnackVisible = false;
@@ -4251,24 +4261,24 @@ export struct MobileBrowserOverlay {
     Column() {
       Row({ space: 10 }) {
         // 状态图标：开始=转圈；完成=对勾；失败/危险=叉。
-        if (this.downloadSnack.kind === 'start') {
+        if (this.downloadSnack.kind === DownloadSnackKind.START) {
           LoadingProgress()
             .width(18)
             .height(18)
             .color($r('app.color.accent_primary'))
         } else {
-          Image(this.downloadSnack.kind === 'done' ?
+          Image(this.downloadSnack.kind === DownloadSnackKind.DONE ?
             $r('app.media.aura_check') : $r('app.media.aura_close'))
             .width(18)
             .height(18)
-            .fillColor(this.downloadSnack.kind === 'done' ?
+            .fillColor(this.downloadSnack.kind === DownloadSnackKind.DONE ?
               $r('app.color.accent_primary') : $r('app.color.icon_secondary'))
         }
 
         // 前缀（固定不缩）+ 文件名（layoutWeight 1，一行省略）。
-        Text(this.downloadSnack.kind === 'start' ? '开始下载 ' :
-          (this.downloadSnack.kind === 'failed' ? '下载失败 ' :
-            (this.downloadSnack.kind === 'dangerous' ? '下载需要确认 ' : '下载完成 ')))
+        Text(this.downloadSnack.kind === DownloadSnackKind.START ? '开始下载 ' :
+          (this.downloadSnack.kind === DownloadSnackKind.FAILED ? '下载失败 ' :
+            (this.downloadSnack.kind === DownloadSnackKind.DANGEROUS ? '下载需要确认 ' : '下载完成 ')))
           .fontSize(14)
           .fontColor($r('app.color.text_secondary'))
           .maxLines(1)
@@ -4282,17 +4292,17 @@ export struct MobileBrowserOverlay {
 
         // 动作钮：完成且 .crx=安装；完成且普通文件=打开；失败=重试；
         // 危险文件只提示不动作（保留/丢弃去下载页选）。
-        if (this.downloadSnack.kind === 'done' && this.downloadSnack.isCrx) {
+        if (this.downloadSnack.kind === DownloadSnackKind.DONE && this.downloadSnack.isCrx) {
           this.DownloadSnackAction($r('app.media.aura_extensions'), '安装',
             (): void => {
               this.installDownloadedSnackCrx();
             })
-        } else if (this.downloadSnack.kind === 'done') {
+        } else if (this.downloadSnack.kind === DownloadSnackKind.DONE) {
           this.DownloadSnackAction($r('app.media.aura_download'), '打开',
             (): void => {
               this.openDownloadedSnackFile();
             })
-        } else if (this.downloadSnack.kind === 'failed') {
+        } else if (this.downloadSnack.kind === DownloadSnackKind.FAILED) {
           this.DownloadSnackAction($r('app.media.aura_reload'), '重试',
             (): void => {
               this.issueCommand({
