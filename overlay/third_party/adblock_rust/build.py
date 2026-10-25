@@ -36,17 +36,25 @@ triples={'arm64':('aarch64-unknown-linux-ohos','aarch64-linux-ohos'),
 rust_target,clang_target=triples[a.cpu]
 sdk=pathlib.Path(a.sdk).resolve()
 env=os.environ.copy()
-# cargo 解析：优先用 Chromium 自带 Rust 工具链（third_party/rust-toolchain/bin/cargo，随树就位、无需 rustup）；
-# 找不到才回退 rustup（PATH 或 ~/.cargo/bin/cargo），此时才需 rustup 的 +toolchain 语法。
-# root = src/third_party/adblock_rust，故 root.parent = src/third_party。
-bundled=root.parent/'rust-toolchain'/'bin'/'cargo'
+# cargo + OHOS 目标 std：优先 rustup（其 1.96.1 工具链含 aarch64-unknown-linux-ohos 目标 std，本 build.py 原设计）。
+# Chromium 自带 rust-toolchain 仅含 host(x86_64-unknown-linux-gnu) std、无 OHOS 目标，故仅当它确有该目标 std 才启用。
+# root = src/third_party/adblock_rust，root.parent = src/third_party。
 rustup=shutil.which('cargo') or (str(pathlib.Path.home()/'.cargo/bin/cargo') if (pathlib.Path.home()/'.cargo/bin/cargo').exists() else None)
-if bundled.exists():
-    cargo, targs = str(bundled), []
-elif rustup:
+bundled_bin=root.parent/'rust-toolchain'/'bin'
+bundled_has_ohos=(bundled_bin/'cargo').exists() and (root.parent/'rust-toolchain'/'lib'/'rustlib'/rust_target).exists()
+if rustup:
     cargo, targs = rustup, ['+1.96.1']
+elif bundled_has_ohos:
+    cargo, targs = str(bundled_bin/'cargo'), []
+    env['RUSTC']=str(bundled_bin/'rustc')
+    env['PATH']=str(bundled_bin)+os.pathsep+env.get('PATH',os.environ.get('PATH',''))
 else:
-    raise SystemExit('cargo not found: 试过 third_party/rust-toolchain/bin/cargo、PATH、~/.cargo/bin/cargo；请安装 rustup 或确保 Chromium rust-toolchain 就位')
+    raise SystemExit(
+        'adblock 需要 rustup：未找到 cargo，且 Chromium 自带 rust-toolchain 无 '+rust_target+' 目标 std（仅 host）。\n'
+        '请在 WSL 依次执行：\n'
+        '  curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y\n'
+        '  ~/.cargo/bin/rustup toolchain install 1.96.1\n'
+        '  ~/.cargo/bin/rustup target add '+rust_target)
 env['CARGO_TARGET_DIR']=str(work/'target')
 env['CARGO_TARGET_'+rust_target.upper().replace('-','_')+'_LINKER']=str(sdk/'native/llvm/bin/clang')
 # Encoded flags preserve SDK paths containing spaces. No LTO bitcode leaves the DSO.
