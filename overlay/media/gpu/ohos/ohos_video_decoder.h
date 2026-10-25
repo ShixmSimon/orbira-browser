@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 
+#include "base/functional/callback.h"
 #include "base/containers/circular_deque.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ptr_exclusion.h"
@@ -30,9 +31,15 @@
 #include "media/gpu/ohos/ohos_video_frame_converter.h"
 #include "media/gpu/ohos/ohos_video_surface.h"
 
+namespace gpu {
+class SharedImageInterface;
+}  // namespace gpu
+
 namespace media {
 
 class VideoFrame;
+using OhosGetSharedImageInterfaceCB = base::RepeatingCallback<void(
+    base::OnceCallback<void(scoped_refptr<gpu::SharedImageInterface>)>)>;
 
 // AVCodecKit hardware decoding. Eligible streams use Surface -> SharedImage by
 // default, with Buffer mode as the compatibility fallback during initialization.
