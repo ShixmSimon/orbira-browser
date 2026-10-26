@@ -1,0 +1,385 @@
+/**
+ * 小锁快捷面板（地址栏锁图标 → 底部卡）。
+ *
+ * 与「网站设置」路由页的分工：这里是**当前站点的快捷开关**（随时可达、
+ * 一步到位），那边是逐类权限的完整管理页。锁图标在浏览态打开本面板，
+ * 面板里保留「网站设置」入口进入完整页。
+ *
+ * 两个开关都是引擎的「读-改-写」协议：
+ *   广告拦截  getAdBlockPageState{tabId} → adBlockPageState（含 contextId /
+ *             revision / navigationId / siteEnabled / canToggle / blockedRequests）
+ *           → setAdBlockSiteEnabled{tabId, navigationId, enabled, contextId,
+ *             expectedRevision} → adBlockSiteResult
+ *   防钓鱼    getSiteProtectionState{tabId} → siteProtectionState（含 contextId /
+ *             navigationId / origin / revision / siteEnabled / canOverride / verdict）
+ *           → setSiteProtectionEnabled{tabId, contextId, navigationId, origin,
+ *             expectedRevision, siteEnabled} → siteProtectionConfigResult
+ * 回包由 AuraShell.handleRuntimeEvent 原样写进 AppStorage['auraPanelSiteQuick']。
+ * 写回执的 contextId / navigationId / origin / revision 一律取自最近一次读到的
+ * 状态 —— 引擎按这些键做新鲜度校验，带着旧值写会回 stale。
+ */
+import { BrowserCommandPayload } from 'engine';
+import { promptAction } from '@kit.ArkUI';
+
+// 引擎回包的松散形状（ArkTS 禁 any / 索引访问，逐字段显式声明）。
+interface SiteQuickEvent {
+  event?: string;
+  requestId?: number;
+  ok?: boolean;
+  reason?: string;
+  // 广告拦截（adBlockPageState / adBlockSiteResult）
+  tabId?: string;
+  navigationId?: string;
+  host?: string;
+  enabled?: boolean;
+  siteEnabled?: boolean;
+  active?: boolean;
+  canToggle?: boolean;
+  blockedRequests?: number;
+  reloadRequired?: boolean;
+  contextId?: string;
+  revision?: number;
+  // 防钓鱼（siteProtectionState / siteProtectionConfigResult）
+  origin?: string;
+  canOverride?: boolean;
+  verdict?: string;
+  checkedAt?: string;
+}
+
+@Component
+export struct SiteQuickPanel {
+  @StorageLink('auraPanelSiteQuick') @Watch('onPayload') payloadJson: string = '';
+  // 站点显示名（host）与当前标签 id，由 MBO 传入。
+  @Prop host: string = '';
+  @Prop tabId: string = '';
+  onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
+  onClose: () => void = (): void => {};
+  // 「网站设置」入口：回 MBO 的 openSiteSettings 原行为（路由页）。
+  onOpenSiteSettings: () => void = (): void => {};
+
+  @State private adBlockOn: boolean = false;
+  @State private adBlockCanToggle: boolean = false;
+  @State private blockedCount: number = -1;
+  @State private protectionOn: boolean = false;
+  @State private protectionCanToggle: boolean = false;
+  @State private protectionVerdict: string = '';
+  @State private statusLine: string = '正在读取状态…';
+  // 读-改-写上下文：最近一次状态回包里带回来的写参数。
+  private abContextId: string = '';
+  private abRevision: number = -1;
+  private abNavigationId: string = '';
+  private prContextId: string = '';
+  private prRevision: number = -1;
+  private prNavigationId: string = '';
+  private prOrigin: string = '';
+  private seq: number = 0;
+  private pendingAdBlockWrite: boolean = false;
+  private pendingProtectionWrite: boolean = false;
+
+  aboutToAppear(): void {
+    this.refresh();
+  }
+
+  private nextRequestId(): number {
+    this.seq += 1;
+    return this.seq;
+  }
+
+  private refresh(): void {
+    if (this.tabId.length === 0) {
+      this.statusLine = '当前没有网页';
+      return;
+    }
+    this.onCommand({ command: 'getAdBlockPageState', requestId: this.nextRequestId(), tabId: this.tabId });
+    this.onCommand({ command: 'getSiteProtectionState', requestId: this.nextRequestId(), tabId: this.tabId });
+  }
+
+  private onPayload(): void {
+    if (this.payloadJson.length === 0) {
+      return;
+    }
+    let payload: SiteQuickEvent | null = null;
+    try {
+      payload = JSON.parse(this.payloadJson) as SiteQuickEvent;
+    } catch (error) {
+      return;
+    }
+    if (payload === null) {
+      return;
+    }
+    const name: string = payload.event ?? '';
+    if (name === 'adBlockPageState' || name === 'adBlockSiteResult') {
+      this.applyAdBlock(payload, name === 'adBlockSiteResult');
+    } else if (name === 'siteProtectionState' || name === 'siteProtectionConfigResult') {
+      this.applyProtection(payload, name === 'siteProtectionConfigResult');
+    }
+  }
+
+  private applyAdBlock(payload: SiteQuickEvent, isWriteReply: boolean): void {
+    // 只认当前标签的回包（快速切标签时旧回包不能污染新面板）。
+    if ((payload.tabId ?? '') !== this.tabId) {
+      return;
+    }
+    this.abContextId = payload.contextId ?? '';
+    this.abRevision = payload.revision ?? -1;
+    this.abNavigationId = payload.navigationId ?? '';
+    if (payload.siteEnabled !== undefined) {
+      this.adBlockOn = payload.siteEnabled;
+    }
+    if (payload.blockedRequests !== undefined) {
+      this.blockedCount = payload.blockedRequests;
+    }
+    this.adBlockCanToggle = payload.canToggle === true;
+    if (isWriteReply) {
+      this.pendingAdBlockWrite = false;
+      if (payload.ok === true) {
+        this.statusLine = '已更新';
+      } else {
+        this.statusLine = this.reasonText(payload.reason ?? '');
+      }
+    } else if (this.pendingAdBlockWrite) {
+      // 写回执被状态回包插队：状态已是最新，撤销挂起标记即可。
+      this.pendingAdBlockWrite = false;
+    }
+  }
+
+  private applyProtection(payload: SiteQuickEvent, isWriteReply: boolean): void {
+    if ((payload.tabId ?? '') !== this.tabId) {
+      return;
+    }
+    this.prContextId = payload.contextId ?? '';
+    this.prRevision = payload.revision ?? -1;
+    this.prNavigationId = payload.navigationId ?? '';
+    this.prOrigin = payload.origin ?? '';
+    if (payload.siteEnabled !== undefined) {
+      this.protectionOn = payload.siteEnabled;
+    }
+    this.protectionCanToggle = payload.canOverride === true;
+    this.protectionVerdict = payload.verdict ?? '';
+    if (isWriteReply) {
+      this.pendingProtectionWrite = false;
+      if (payload.ok !== true) {
+        this.statusLine = this.reasonText(payload.reason ?? '');
+      }
+    }
+  }
+
+  private reasonText(reason: string): string {
+    if (reason === 'stale' || reason === 'stale_navigation') {
+      return '页面刚刷新过，请重试';
+    }
+    if (reason === 'stale_policy' || reason === 'stale_policy') {
+      return '策略刚更新过，请重试';
+    }
+    if (reason === 'invalid_tab' || reason === 'invalidTab') {
+      return '页面已切换，请重试';
+    }
+    if (reason === 'invalid_context') {
+      return '引擎状态已变化，请重试';
+    }
+    if (reason === 'invalid_request') {
+      return '该站点不允许此操作';
+    }
+    if (reason.length > 0) {
+      return '操作失败（' + reason + '）';
+    }
+    return '';
+  }
+
+  private toggleAdBlock(): void {
+    if (!this.adBlockCanToggle || this.pendingAdBlockWrite) {
+      return;
+    }
+    // 读-改-写：写参数取自最近一次 adBlockPageState 回包。
+    this.pendingAdBlockWrite = true;
+    this.onCommand({
+      command: 'setAdBlockSiteEnabled',
+      requestId: this.nextRequestId(),
+      tabId: this.tabId,
+      navigationId: this.abNavigationId,
+      contextId: this.abContextId,
+      expectedRevision: this.abRevision,
+      enabled: !this.adBlockOn
+    });
+  }
+
+  private toggleProtection(): void {
+    if (!this.protectionCanToggle || this.pendingProtectionWrite) {
+      return;
+    }
+    this.pendingProtectionWrite = true;
+    this.onCommand({
+      command: 'setSiteProtectionEnabled',
+      requestId: this.nextRequestId(),
+      tabId: this.tabId,
+      contextId: this.prContextId,
+      navigationId: this.prNavigationId,
+      origin: this.prOrigin,
+      expectedRevision: this.prRevision,
+      siteEnabled: !this.protectionOn
+    });
+  }
+
+  private verdictText(): string {
+    const v: string = this.protectionVerdict;
+    if (v.length === 0) {
+      return '尚未检查';
+    }
+    if (v === 'clean' || v === 'safe') {
+      return '未发现威胁';
+    }
+    if (v === 'phishing' || v === 'malware' || v === 'unwanted') {
+      return '发现威胁！';
+    }
+    return v;
+  }
+
+  private adBlockStatusText(): string {
+    if (this.blockedCount < 0) {
+      return '正在读取…';
+    }
+    if (this.blockedCount === 0) {
+      return '本页暂无被拦截的请求';
+    }
+    return `本页已拦截 ${this.blockedCount} 条请求`;
+  }
+
+  private confirmClear(): void {
+    AlertDialog.show({
+      title: '清除这个网站的权限和数据？',
+      message: `${this.host} 的权限设置和网站存储的数据都会删除。`,
+      autoCancel: true,
+      primaryButton: {
+        value: '取消',
+        action: (): void => {
+        }
+      },
+      secondaryButton: {
+        value: '清除',
+        fontColor: '#E24B4A',
+        action: (): void => {
+          // ① 权限 / 站点设置（按 origin 字符串）。
+          this.onCommand({ command: 'resetSiteSettings', origin: this.prOrigin.length > 0 ? this.prOrigin : this.host });
+          // ② 站点存储：引擎按 tabId 定位当前标签再取它的 origin 清理。
+          if (this.tabId.length > 0) {
+            this.onCommand({ command: 'clearPageSiteData', tabId: this.tabId });
+          }
+          promptAction.showToast({ message: '已清除', duration: 2000 });
+          this.onClose();
+        }
+      }
+    });
+  }
+
+  @Builder
+  private RowHead(title: string, subtitle: string) {
+    Column({ space: 3 }) {
+      Text(title)
+        .fontSize(15)
+        .fontColor($r('app.color.text_primary'))
+      if (subtitle.length > 0) {
+        Text(subtitle)
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+      }
+    }
+    .alignItems(HorizontalAlign.Start)
+    .layoutWeight(1)
+  }
+
+  @Builder
+  private ToggleRow(title: string, subtitle: string, isOn: boolean, enabled: boolean, onToggle: () => void) {
+    Row({ space: 12 }) {
+      this.RowHead(title, subtitle)
+      Toggle({ type: ToggleType.Switch, isOn: isOn })
+        .selectedColor($r('app.color.accent_primary'))
+        .opacity(enabled ? 1 : 0.4)
+        .onChange((_isOn: boolean): void => {
+          // onChange 在程序置位时也会触发；统一走显式回调，由调用方判断。
+          onToggle();
+        })
+    }
+    .width('100%')
+    .padding({ top: 10, bottom: 10 })
+  }
+
+  build() {
+    Column({ space: 2 }) {
+      // 头行：锁 + 域名。
+      Row({ space: 8 }) {
+        Image($r('app.media.aura_lock'))
+          .width(16)
+          .height(16)
+          .fillColor($r('app.color.icon_secondary'))
+        Text(this.host.length > 0 ? this.host : '当前网站')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+      }
+      .width('100%')
+      .padding({ top: 14, bottom: 6 })
+
+      if (this.tabId.length === 0) {
+        Text('当前没有打开的网页')
+          .fontSize(13)
+          .fontColor($r('app.color.text_secondary'))
+          .width('100%')
+          .padding({ top: 10, bottom: 16 })
+      } else {
+        Divider().color($r('app.color.divider'))
+
+        this.ToggleRow('拦截此站的广告', this.adBlockStatusText(),
+          this.adBlockOn, this.adBlockCanToggle, (): void => this.toggleAdBlock())
+        Divider().color($r('app.color.divider'))
+
+        this.ToggleRow('防钓鱼检测此站',
+          this.protectionVerdict.length > 0 ? this.verdictText() : '检查中…',
+          this.protectionOn, this.protectionCanToggle, (): void => this.toggleProtection())
+        Divider().color($r('app.color.divider'))
+
+        if (this.statusLine.length > 0) {
+          Text(this.statusLine)
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+            .padding({ top: 8, bottom: 4 })
+        }
+
+        // 清除该站数据（红字）。
+        Row() {
+          Text('清除这个网站的权限和数据')
+            .fontSize(14)
+            .fontColor('#E24B4A')
+        }
+        .width('100%')
+        .padding({ top: 12, bottom: 12 })
+        .onClick((): void => this.confirmClear())
+
+        Divider().color($r('app.color.divider'))
+
+        // 完整管理页入口。
+        Row() {
+          Text('网站设置')
+            .fontSize(14)
+            .fontColor($r('app.color.text_primary'))
+          Blank()
+          Image($r('sys.symbol.chevron_forward'))
+            .width(14)
+            .height(14)
+            .fillColor($r('app.color.icon_secondary'))
+        }
+        .width('100%')
+        .padding({ top: 12, bottom: 14 })
+        .onClick((): void => {
+          this.onClose();
+          this.onOpenSiteSettings();
+        })
+      }
+    }
+    .width('100%')
+    .padding({ left: 16, right: 16, bottom: 10 })
+  }
+}

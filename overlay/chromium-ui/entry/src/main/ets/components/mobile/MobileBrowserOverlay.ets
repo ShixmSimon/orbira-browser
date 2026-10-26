@@ -21,6 +21,7 @@ import {
 } from 'engine';
 import { HuaweiShareAdapter } from 'engine';
 import { GripSide, HoldingHandRouter } from './HoldingHandRouter';
+import { SiteQuickPanel } from './SiteQuickPanel';
 import { BrowserCommandBus } from '../../bus/BrowserCommandBus';
 import { CurrentTabCastSession } from './CurrentTabCastSession';
 import {
@@ -339,6 +340,8 @@ export struct MobileBrowserOverlay {
   // The ⋮ menu is a floating card above the dock, not a
   // sheet; the sheet hosts the tab switcher only.
   @State private menuCardVisible: boolean = false;
+  // 小锁快捷面板：浏览态点锁图标弹出（当前站点快捷开关）。
+  @State private siteQuickVisible: boolean = false;
   // 1.0.109：「自定义网址」入口菜单（长按 dock 主页图标弹出，自绘卡片）。
   @State private homeTileMenuVisible: boolean = false;
   // 1.0.110：刷新键的「停止」变体——延迟 700ms 出现（见 syncStopVariant）。
@@ -2347,6 +2350,47 @@ export struct MobileBrowserOverlay {
             })
 
           this.MenuBottomSheet()
+        }
+        .width('100%')
+        .height('100%')
+        .transition(TransitionEffect.asymmetric(
+          TransitionEffect.opacity(0).animation({ duration: 220, curve: Curve.FastOutSlowIn }),
+          TransitionEffect.opacity(0).animation({ duration: 240, curve: Curve.Friction })
+        ))
+      }
+
+      // 小锁快捷面板（底部卡）：结构同 ⋮ 菜单 sheet —— 全屏浅遮罩 + 贴底卡。
+      if (this.siteQuickVisible) {
+        Stack({ alignContent: Alignment.Bottom }) {
+          Column()
+            .width('100%')
+            .height('100%')
+            .backgroundColor('rgba(0, 0, 0, 0.18)')
+            .onClick(() => {
+              this.siteQuickVisible = false;
+            })
+
+          Column() {
+            SiteQuickPanel({
+              host: this.displayDomain(),
+              tabId: (AppStorage.get('auraActiveTabId') as string) ?? '',
+              onCommand: (command: BrowserCommandPayload): void => {
+                this.issueCommand(command);
+              },
+              onClose: (): void => {
+                this.siteQuickVisible = false;
+              },
+              onOpenSiteSettings: (): void => {
+                router.pushUrl({ url: 'pages/panels/SiteSettingsPanelPage' }).catch((error: Error): void => {
+                  console.error('openSiteSettings pushUrl failed:', error);
+                });
+              }
+            })
+          }
+          .width('100%')
+          .borderRadius({ topLeft: 20, topRight: 20 })
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
         }
         .width('100%')
         .height('100%')
@@ -4728,6 +4772,13 @@ export struct MobileBrowserOverlay {
   private openSiteSettings(): void {
     this.menuVisible = false;
     this.menuCardVisible = false;
+    // 浏览态（有真实网页）先开「站点快捷面板」：广告拦截/防钓鱼单站开关 +
+    // 清除该站数据 + 网站设置入口；主页/新标签没有站点语义，直接进完整页。
+    const url: string = this.browserState.url ?? '';
+    if (url.length > 0 && !this.isNewTabUrl(url)) {
+      this.siteQuickVisible = true;
+      return;
+    }
     router.pushUrl({ url: 'pages/panels/SiteSettingsPanelPage' }).catch((error: Error): void => {
       console.error('openSiteSettings pushUrl failed:', error);
     });

@@ -1892,6 +1892,16 @@ struct AuraShell {
       AppStorage.setOrCreate('auraPanelAdBlock', JSON.stringify(event));
       return;
     }
+    // 小锁快捷面板：广告拦截/防钓鱼的「单站」回包（读-改-写协议的两半）。
+    // 原样转存，SiteQuickPanel 自己解析（两个开关各自的 contextId/revision/
+    // navigationId 都在回包里，写回时原样带上）。
+    if (event.event === 'adBlockPageState' ||
+      event.event === 'adBlockSiteResult' ||
+      event.event === 'siteProtectionState' ||
+      event.event === 'siteProtectionConfigResult') {
+      AppStorage.setOrCreate('auraPanelSiteQuick', JSON.stringify(event));
+      return;
+    }
     if (event.event === 'searchEngines') {
       const engines = shellEvent<SearchEnginesEvent>(event).items ?? [];
       AppStorage.setOrCreate('auraPanelEngines', JSON.stringify(engines));
