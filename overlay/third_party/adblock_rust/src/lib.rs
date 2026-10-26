@@ -262,7 +262,7 @@ fn query(snapshot: &Snapshot, v: Value) -> Value {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lumie_adblock_abi_version() -> u32 {
+pub extern "C" fn orbira_adblock_abi_version() -> u32 {
     2
 }
 
@@ -285,7 +285,7 @@ unsafe fn input<'a>(data: *const u8, len: usize) -> Option<&'a [u8]> {
 // All returned strings and snapshots belong to this library. The caller must use the
 // corresponding free function, not Chromium's allocator. Calls may run on workers.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lumie_adblock_compile(
+pub unsafe extern "C" fn orbira_adblock_compile(
     data: *const u8,
     len: usize,
     info: *mut *mut c_char,
@@ -316,7 +316,7 @@ pub unsafe extern "C" fn lumie_adblock_compile(
     }
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lumie_adblock_query(
+pub unsafe extern "C" fn orbira_adblock_query(
     handle: *const std::ffi::c_void,
     data: *const u8,
     len: usize,
@@ -337,13 +337,13 @@ pub unsafe extern "C" fn lumie_adblock_query(
     output(result)
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lumie_adblock_free(handle: *mut std::ffi::c_void) {
+pub unsafe extern "C" fn orbira_adblock_free(handle: *mut std::ffi::c_void) {
     if !handle.is_null() {
         drop(unsafe { Box::from_raw(handle.cast::<Snapshot>()) });
     }
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lumie_adblock_free_string(s: *mut c_char) {
+pub unsafe extern "C" fn orbira_adblock_free_string(s: *mut c_char) {
     if !s.is_null() {
         drop(unsafe { CString::from_raw(s) });
     }

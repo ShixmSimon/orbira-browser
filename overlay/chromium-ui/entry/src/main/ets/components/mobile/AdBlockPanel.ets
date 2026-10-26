@@ -8,10 +8,14 @@
  * 写命令必须带 contextId + expectedRevision —— 引擎 Service::CheckRevision()
  * 会校验这两项，不带或过期一律回 reason='stale'。这里收到 stale 时先重拉状态，
  * 拿到新 revision 后把刚才那次写操作自动重放一次（否则用户会看到"点了没反应"）。
+ *
+ * 引擎若 dlopen 不到 adblock DSO（liborbira_adblock.so），所有写命令会回
+ * 'engineUnavailable' —— 那是安装包里缺这个 so，不是本页的问题。
  */
 import { BrowserCommandPayload } from 'engine';
-import { glassBottomInsetVp, glassHeaderInsetVp } from './GlassPage';
 import { AdBlockSource, AdBlockStateEvent } from 'engine';
+import { glassBottomInsetVp, glassHeaderInsetVp } from './GlassPage';
+import { promptAction } from '@kit.ArkUI';
 
 @Component
 export struct AdBlockPanel {
@@ -23,26 +27,35 @@ export struct AdBlockPanel {
   @State private ready: boolean = false;
   @State private updating: boolean = false;
   @State private sources: AdBlockSource[] = [];
+  @State private exceptions: string[] = [];
+  @State private userRuleCount: number = 0;
   @State private statusLine: string = '正在读取规则…';
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
+
+  // 「添加订阅」与「我的规则」用内联展开区，不用对话框：二级页里 sheet 会盖住
+  // 标题栏，CustomDialogController 又要额外生命周期，就地展开最省事。
+  @State private showAddSource: boolean = false;
+  @State private newSourceName: string = '';
+  @State private newSourceUrl: string = '';
+  @State private showRules: boolean = false;
+  @State private rulesText: string = '';
 
   private contextId: string = '';
   private revision: number = 0;
   private requestSeq: number = 0;
-  // 上一次写命令：只在 stale 重试时用，成功回包后清空。
   private pendingWrite: BrowserCommandPayload | null = null;
   private retryPending: boolean = false;
-  // 更新请求的兜底定时器：引擎若因为初始化失败/网络卡住不回包，不能让按钮
-  // 永远停在「正在更新…」（1.0.3 用户实测）。
-  private updateTimer: number = -1;
-  // 轮询：updateAdBlockSources 在引擎侧可能被同步编译/下载阻塞，回包迟迟不来。
-  // getAdBlockState 是能回包的，所以点更新后按 2 秒一档追问，直到引擎说
-  // updating=false，或超过 45 秒放弃。
+  // 轮询：updateAdBlockSources 在引擎侧可能被同步下载/编译阻塞，回包迟迟不来。
+  // getAdBlockState 是能回包的，所以点更新后按 2 秒一档追问。
   private pollTimer: number = -1;
   private pollLeft: number = 0;
 
   aboutToAppear(): void {
     this.refresh();
+  }
+
+  aboutToDisappear(): void {
+    this.stopPolling();
   }
 
   private refresh(): void {
@@ -77,10 +90,16 @@ export struct AdBlockPanel {
       return '规则正在更新，稍后再试';
     }
     if (reason === 'invalidSource') {
-      return '规则源无效';
+      return '订阅地址无效（需要 http/https 的规则列表地址）';
     }
     if (reason === 'limit') {
       return '规则源数量已达上限';
+    }
+    if (reason === 'engineUnavailable') {
+      return '广告过滤引擎未加载（安装包缺 liborbira_adblock.so）';
+    }
+    if (reason === 'invalidSite') {
+      return '网站域名无效';
     }
     if (reason.length > 0) {
       return '操作失败（' + reason + '）';
@@ -91,7 +110,6 @@ export struct AdBlockPanel {
   private apply(payload: AdBlockStateEvent): void {
     const reason: string = payload.reason !== undefined ? payload.reason : '';
     if (reason === 'stale') {
-      // 修订号过期：重拉状态，拿到新 revision 后重放刚才那次写。
       this.retryPending = this.pendingWrite !== null;
       this.refresh();
       return;
@@ -118,12 +136,17 @@ export struct AdBlockPanel {
         this.stopPolling();
       }
     } else if (reason.length > 0 || payload.ok === true) {
-      // 回包不带 updating（多数写命令的回包都不带）→ 本次操作已结束。
       this.updating = false;
       this.stopPolling();
     }
     if (payload.sources !== undefined) {
       this.sources = payload.sources;
+    }
+    if (payload.exceptions !== undefined) {
+      this.exceptions = payload.exceptions;
+    }
+    if (payload.userRuleCount !== undefined) {
+      this.userRuleCount = payload.userRuleCount;
     }
 
     let rules: number = 0;
@@ -201,9 +224,6 @@ export struct AdBlockPanel {
     this.statusLine = '正在下载并编译规则…';
     const payload: BrowserCommandPayload = this.write('updateAdBlockSources');
     this.send(payload);
-    if (this.updateTimer !== -1) {
-      clearTimeout(this.updateTimer);
-    }
     this.startPolling();
   }
 
@@ -231,6 +251,52 @@ export struct AdBlockPanel {
     }
   }
 
+  // ---- 自定义规则 ----
+  private submitSubscription(): void {
+    const name: string = this.newSourceName.trim();
+    const url: string = this.newSourceUrl.trim();
+    if (url.length === 0) {
+      promptAction.showToast({ message: '订阅地址不能为空', duration: 2000 });
+      return;
+    }
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      promptAction.showToast({ message: '订阅地址要以 http:// 或 https:// 开头', duration: 2000 });
+      return;
+    }
+    const payload: BrowserCommandPayload = this.write('saveAdBlockSource');
+    payload.name = name.length > 0 ? name : url;
+    payload.url = url;
+    this.send(payload);
+    this.showAddSource = false;
+    this.newSourceName = '';
+    this.newSourceUrl = '';
+    promptAction.showToast({ message: '已添加订阅，点「检查规则更新」拉取', duration: 2000 });
+  }
+
+  private submitUserRules(): void {
+    const payload: BrowserCommandPayload = this.write('setAdBlockUserRules');
+    payload.text = this.rulesText;
+    this.send(payload);
+    this.showRules = false;
+    promptAction.showToast({ message: '自定义规则已保存', duration: 2000 });
+  }
+
+  private importFileHint(): void {
+    // 文件选择器还要接 DocumentViewPicker（选择 → 读 → importAdBlockFile{path,name}），
+    // 这一版先给出可用的替代路径，避免点上去没反应。
+    promptAction.showToast({
+      message: '暂不支持从文件导入，可把规则文本粘贴到「我的规则」',
+      duration: 2600
+    });
+  }
+
+  private removeException(host: string): void {
+    const payload: BrowserCommandPayload = this.write('removeAdBlockException');
+    payload.text = host;
+    this.send(payload);
+    promptAction.showToast({ message: '已恢复对 ' + host + ' 的拦截', duration: 1800 });
+  }
+
   private sourceSubtitle(item: AdBlockSource): string {
     const kind: string = item.kind;
     let head: string = '内置规则';
@@ -255,8 +321,176 @@ export struct AdBlockPanel {
     return head + ' · ' + tail;
   }
 
+  @Builder
+  private RuleButton(label: string, action: () => void) {
+    Button(label)
+      .fontSize(13)
+      .fontColor($r('app.color.accent_primary'))
+      .height(34)
+      .padding({ left: 14, right: 14 })
+      .backgroundColor($r('app.color.surface_secondary'))
+      .borderRadius(17)
+      .onClick((): void => {
+        action();
+      })
+  }
+
+  @Builder
+  private SectionTitle(title: string, note: string) {
+    Column() {
+      Text(title)
+        .fontSize(15)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .width('100%')
+      if (note.length > 0) {
+        Text(note)
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+          .width('100%')
+          .margin({ top: 3 })
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    .padding({ left: 4, top: 6, bottom: 6 })
+  }
+
+  // 开源致谢：引擎用的是 Brave 系组件，许可证按 MPL-2.0 展示。
+  @Builder
+  private CreditRow(name: string, license: string, desc: string) {
+    Row() {
+      Column() {
+        Text(name)
+          .fontSize(14)
+          .fontColor($r('app.color.text_primary'))
+          .width('100%')
+        Text(desc)
+          .fontSize(11)
+          .fontColor($r('app.color.text_secondary'))
+          .width('100%')
+          .margin({ top: 2 })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      Text(license)
+        .fontSize(11)
+        .fontColor($r('app.color.accent_primary'))
+    }
+    .width('100%')
+    .padding({ top: 10, bottom: 10 })
+    .alignItems(VerticalAlign.Center)
+  }
+
   build() {
     List({ space: 10 }) {
+      // ---------- 自定义规则 ----------
+      ListItem() {
+        Column() {
+          this.SectionTitle('自定义规则', '')
+          Row({ space: 8 }) {
+            this.RuleButton('添加订阅', (): void => {
+              this.showAddSource = !this.showAddSource;
+              this.showRules = false;
+            })
+            this.RuleButton('导入文件', (): void => {
+              this.importFileHint();
+            })
+            this.RuleButton('我的规则', (): void => {
+              this.showRules = !this.showRules;
+              this.showAddSource = false;
+            })
+          }
+          .width('100%')
+
+          if (this.showAddSource) {
+            Column({ space: 8 }) {
+              TextInput({ text: this.newSourceName, placeholder: '名称（可留空）' })
+                .fontSize(14)
+                .height(40)
+                .backgroundColor($r('app.color.surface_secondary'))
+                .borderRadius(10)
+                .onChange((value: string): void => {
+                  this.newSourceName = value;
+                })
+              TextInput({ text: this.newSourceUrl, placeholder: '规则列表地址 https://…' })
+                .fontSize(14)
+                .height(40)
+                .backgroundColor($r('app.color.surface_secondary'))
+                .borderRadius(10)
+                .onChange((value: string): void => {
+                  this.newSourceUrl = value;
+                })
+              Row({ space: 8 }) {
+                Button('取消')
+                  .fontSize(13)
+                  .height(34)
+                  .layoutWeight(1)
+                  .backgroundColor($r('app.color.surface_secondary'))
+                  .fontColor($r('app.color.text_secondary'))
+                  .onClick((): void => {
+                    this.showAddSource = false;
+                  })
+                Button('保存')
+                  .fontSize(13)
+                  .height(34)
+                  .layoutWeight(1)
+                  .onClick((): void => {
+                    this.submitSubscription();
+                  })
+              }
+              .width('100%')
+            }
+            .width('100%')
+            .margin({ top: 10 })
+          }
+
+          if (this.showRules) {
+            Column({ space: 8 }) {
+              Text('每行一条过滤规则，语法同 EasyList（例如 ||ads.example.com^ ）')
+                .fontSize(11)
+                .fontColor($r('app.color.text_secondary'))
+                .width('100%')
+              TextArea({ text: this.rulesText, placeholder: '在此粘贴自定义规则' })
+                .fontSize(13)
+                .height(120)
+                .backgroundColor($r('app.color.surface_secondary'))
+                .borderRadius(10)
+                .onChange((value: string): void => {
+                  this.rulesText = value;
+                })
+              Row({ space: 8 }) {
+                Button('取消')
+                  .fontSize(13)
+                  .height(34)
+                  .layoutWeight(1)
+                  .backgroundColor($r('app.color.surface_secondary'))
+                  .fontColor($r('app.color.text_secondary'))
+                  .onClick((): void => {
+                    this.showRules = false;
+                  })
+                Button('保存规则')
+                  .fontSize(13)
+                  .height(34)
+                  .layoutWeight(1)
+                  .onClick((): void => {
+                    this.submitUserRules();
+                  })
+              }
+              .width('100%')
+            }
+            .width('100%')
+            .margin({ top: 10 })
+          }
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 8, bottom: 14 })
+        .borderRadius(16)
+        .backgroundColor($r('app.color.card_background'))
+      }
+
+      // ---------- 总开关 + 自动更新 ----------
       ListItem() {
         Column() {
           Row() {
@@ -291,7 +525,7 @@ export struct AdBlockPanel {
               Text('自动更新规则')
                 .fontSize(16)
                 .fontColor($r('app.color.text_primary'))
-              Text('空闲时拉取规则更新')
+              Text('应用运行且联网时检查，失败保留有效旧规则')
                 .fontSize(12)
                 .fontColor($r('app.color.text_secondary'))
                 .margin({ top: 2 })
@@ -325,56 +559,124 @@ export struct AdBlockPanel {
         .clip(true)
       }
 
+      // ---------- 检查更新 / 刷新状态 ----------
       ListItem() {
-        Button(this.updating ? '正在更新…' : '立即更新规则')
-          .width('100%')
-          .height(44)
-          .fontSize(15)
-          .fontColor($r('app.color.accent_primary'))
-          .backgroundColor($r('app.color.card_background'))
-          .borderRadius(16)
-          .enabled(!this.updating)
-          .onClick((): void => {
-            this.updateSources();
-          })
-      }
-
-      ListItem() {
-        Text('规则源')
-          .fontSize(13)
-          .fontColor($r('app.color.text_secondary'))
-          .width('100%')
-          .padding({ left: 4, top: 6 })
-      }
-
-      ForEach(this.sources, (item: AdBlockSource): void => {
-        ListItem() {
-          Row() {
-            Column() {
-              Text(item.name)
-                .fontSize(15)
-                .fontColor($r('app.color.text_primary'))
-              Text(this.sourceSubtitle(item))
-                .fontSize(11)
-                .fontColor($r('app.color.text_secondary'))
-                .margin({ top: 2 })
-            }
-            .alignItems(HorizontalAlign.Start)
+        Row({ space: 8 }) {
+          Button(this.updating ? '正在更新…' : '检查规则更新')
+            .fontSize(14)
+            .height(40)
             .layoutWeight(1)
-
-            Toggle({ type: ToggleType.Switch, isOn: item.enabled })
-              .selectedColor($r('app.color.accent_primary'))
-              .onChange((isOn: boolean): void => {
-                this.setSource(item.id, isOn);
-              })
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 12, bottom: 12 })
-          .alignItems(VerticalAlign.Center)
-          .borderRadius(16)
-          .backgroundColor($r('app.color.card_background'))
+            .enabled(!this.updating)
+            .onClick((): void => {
+              this.updateSources();
+            })
+          Button('刷新状态')
+            .fontSize(14)
+            .height(40)
+            .layoutWeight(1)
+            .backgroundColor($r('app.color.card_background'))
+            .fontColor($r('app.color.accent_primary'))
+            .onClick((): void => {
+              this.refresh();
+            })
         }
-      }, (item: AdBlockSource): string => item.id)
+        .width('100%')
+      }
+
+      // ---------- 不拦截的网站 ----------
+      ListItem() {
+        Column() {
+          this.SectionTitle('不拦截的网站', '仅作用于该主机名，不包含其他子域名。')
+          if (this.exceptions.length === 0) {
+            Text('还没有网站例外')
+              .fontSize(13)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+              .padding({ left: 4, top: 4, bottom: 4 })
+          } else {
+            ForEach(this.exceptions, (host: string): void => {
+              Row() {
+                Text(host)
+                  .fontSize(14)
+                  .fontColor($r('app.color.text_primary'))
+                  .layoutWeight(1)
+                Button('恢复')
+                  .fontSize(12)
+                  .height(30)
+                  .padding({ left: 12, right: 12 })
+                  .backgroundColor($r('app.color.surface_secondary'))
+                  .fontColor($r('app.color.accent_primary'))
+                  .onClick((): void => {
+                    this.removeException(host);
+                  })
+              }
+              .width('100%')
+              .padding({ left: 4, right: 4, top: 6, bottom: 6 })
+              .alignItems(VerticalAlign.Center)
+            }, (host: string): string => host)
+          }
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 8, bottom: 14 })
+        .borderRadius(16)
+        .backgroundColor($r('app.color.card_background'))
+      }
+
+      // ---------- 规则源 ----------
+      ListItem() {
+        Column() {
+          this.SectionTitle('规则源',
+            this.userRuleCount > 0 ? ('自定义规则 ' + this.userRuleCount.toString() + ' 条已生效') : '')
+          ForEach(this.sources, (item: AdBlockSource): void => {
+            Row() {
+              Column() {
+                Text(item.name)
+                  .fontSize(15)
+                  .fontColor($r('app.color.text_primary'))
+                Text(this.sourceSubtitle(item))
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_secondary'))
+                  .margin({ top: 2 })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              Toggle({ type: ToggleType.Switch, isOn: item.enabled })
+                .selectedColor($r('app.color.accent_primary'))
+                .onChange((isOn: boolean): void => {
+                  this.setSource(item.id, isOn);
+                })
+            }
+            .width('100%')
+            .padding({ top: 10, bottom: 10 })
+            .alignItems(VerticalAlign.Center)
+          }, (item: AdBlockSource): string => item.id)
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 8, bottom: 14 })
+        .borderRadius(16)
+        .backgroundColor($r('app.color.card_background'))
+      }
+
+      // ---------- 开源致谢 ----------
+      ListItem() {
+        Column() {
+          this.SectionTitle('开源致谢',
+            '感谢 Brave、uBlock Origin、EasyList 及社区贡献者，为广告过滤提供引擎、脚本资源和规则。')
+          this.CreditRow('adblock-rust', 'MPL-2.0', 'Brave 与社区贡献者维护的广告过滤引擎。')
+          Divider().color($r('app.color.divider'))
+          this.CreditRow('brave-core', 'MPL-2.0', 'Brave 与社区贡献者提供的浏览器广告过滤集成代码。')
+          Divider().color($r('app.color.divider'))
+          this.CreditRow('adblock-resources', 'MPL-2.0', 'Brave 维护的脚本与替代资源包，含另行授权的第三方资源。')
+          Divider().color($r('app.color.divider'))
+          this.CreditRow('adblock-lists', '查看许可证', 'Brave 维护的广告过滤补充规则与网站兼容修正规则。')
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 8, bottom: 12 })
+        .borderRadius(16)
+        .backgroundColor($r('app.color.card_background'))
+        .clip(true)
+      }
 
       ListItem() {
         Text('规则来自 EasyList 等公开列表，下载后在本机编译；首次使用需要联网。')
@@ -386,11 +688,8 @@ export struct AdBlockPanel {
     }
     .width('100%')
     .height('100%')
-    // 与其他设置二级页一致：原生 Spring 回弹 + 不显示滚动条。
     .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
     .scrollBar(BarState.Off)
-    // 二级页标题栏浮在内容上（HDS 渐变模糊），内容必须自己让开，否则第一张
-    // 卡片钻到「广告拦截」标题下面。
     .padding({
       left: 16,
       right: 16,
