@@ -5475,14 +5475,17 @@ struct DockMaterialPlate {
         materialType: hdsMaterial.MaterialType.ADAPTIVE,
         materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
       },
-      // The fade region covers the capsule only. It used to run from the bar
-      // down past the home-indicator strip to the screen edge, which painted a
-      // frosted band over the page under the dock: invisible on white pages,
-      // obvious the moment a page put a photo or a colour there (zhihu). The
-      // strip belongs to the page now (see AuraShell's bottom viewport inset),
-      // so the material must stop at the capsule's bottom edge.
+      // gradientMask 官方语义是「背板蒙层」—— 一层**实色半透明底**，高度从容器
+      // 底往上算，不是淡出遮罩。默认浅色 #CCF1F3F5 / 深色 #99000000；我们原本
+      // 用的是 dock_mask（浅 #B3F3F5F7 70% 白 / 深 #B30F1317 70% 黑）。
+      // 这层实色就是底部一系列观感的真凶：
+      //   · 高度 = bar + 安全区时 → 安全区那一条被糊成磨砂白（浅色）/ 漏光（暗色）；
+      //   · 高度收到 bar 时 → 整块盖在胶囊上，胶囊变成一条**不透明灰**（1.0.5 截图）。
+      // 胶囊本身已有 HDS 系统材质（systemMaterialEffect）提供模糊与底色，这层蒙层
+      // 纯属多余 —— 置为全透明，胶囊恢复真玻璃，安全区交给网页自己画。
+      // maskHeight 仍给 barHeight（官方要求不可为 0），但颜色透明后不再有视觉作用。
       gradientMask: {
-        maskColor: $r('app.color.dock_mask'),
+        maskColor: $r('app.color.transparent'),
         maskHeight: this.barHeightVp
       }
     };
