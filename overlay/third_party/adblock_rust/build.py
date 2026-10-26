@@ -80,10 +80,10 @@ if not linker.exists():
 env['CARGO_TARGET_'+rust_target.upper().replace('-','_')+'_LINKER']=str(linker)
 # Encoded flags preserve SDK paths containing spaces. No LTO bitcode leaves the DSO.
 flags=['-C','relocation-model=pic','-C','link-arg=--target='+clang_target,
-    '-C','link-arg=--sysroot='+str(sdk/'native/sysroot'),'-C','link-arg=-Wl,-soname,liblumie_adblock.so']
+    '-C','link-arg=--sysroot='+str(sdk/'native/sysroot'),'-C','link-arg=-Wl,-soname,liborbira_adblock.so']
 for f in extra:
     flags+=['-C','link-arg='+f]
 env['CARGO_ENCODED_RUSTFLAGS']='\x1f'.join(flags)
 subprocess.run([cargo]+targs+['build','--manifest-path',str(work/'Cargo.toml'),'--target',rust_target,
                 '--release','--frozen','--offline'],cwd=work,env=env,check=True)
-shutil.copy2(work/'target'/rust_target/'release/liblumie_adblock.so',out)
+shutil.copy2(work/'target'/rust_target/'release/liborbira_adblock.so',out)

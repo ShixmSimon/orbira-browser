@@ -6,6 +6,8 @@ license = "MPL-2.0"
 publish = false
 
 [lib]
+# 产物名显式指定：不沿用 package name（lumie_adblock），避免二进制里带第三方项目名。
+name = "orbira_adblock"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
