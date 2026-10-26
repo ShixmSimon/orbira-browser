@@ -35,6 +35,11 @@ export struct AdBlockPanel {
   // 更新请求的兜底定时器：引擎若因为初始化失败/网络卡住不回包，不能让按钮
   // 永远停在「正在更新…」（1.0.3 用户实测）。
   private updateTimer: number = -1;
+  // 轮询：updateAdBlockSources 在引擎侧可能被同步编译/下载阻塞，回包迟迟不来。
+  // getAdBlockState 是能回包的，所以点更新后按 2 秒一档追问，直到引擎说
+  // updating=false，或超过 45 秒放弃。
+  private pollTimer: number = -1;
+  private pollLeft: number = 0;
 
   aboutToAppear(): void {
     this.refresh();
@@ -109,9 +114,13 @@ export struct AdBlockPanel {
     }
     if (payload.updating !== undefined) {
       this.updating = payload.updating;
+      if (!payload.updating) {
+        this.stopPolling();
+      }
     } else if (reason.length > 0 || payload.ok === true) {
       // 回包不带 updating（多数写命令的回包都不带）→ 本次操作已结束。
       this.updating = false;
+      this.stopPolling();
     }
     if (payload.sources !== undefined) {
       this.sources = payload.sources;
@@ -195,13 +204,31 @@ export struct AdBlockPanel {
     if (this.updateTimer !== -1) {
       clearTimeout(this.updateTimer);
     }
-    this.updateTimer = setTimeout((): void => {
-      this.updateTimer = -1;
-      if (this.updating) {
-        this.updating = false;
-        this.statusLine = '引擎没有回包：可能是初始化未完成，稍后重试';
+    this.startPolling();
+  }
+
+  private startPolling(): void {
+    this.stopPolling();
+    this.pollLeft = 22;
+    this.pollTimer = setInterval((): void => {
+      this.pollLeft -= 1;
+      if (this.pollLeft <= 0) {
+        this.stopPolling();
+        if (this.updating) {
+          this.updating = false;
+          this.statusLine = '规则更新超时：引擎一直没有回报进度';
+        }
+        return;
       }
-    }, 15000);
+      this.refresh();
+    }, 2000);
+  }
+
+  private stopPolling(): void {
+    if (this.pollTimer !== -1) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = -1;
+    }
   }
 
   private sourceSubtitle(item: AdBlockSource): string {
@@ -359,12 +386,15 @@ export struct AdBlockPanel {
     }
     .width('100%')
     .height('100%')
+    // 与其他设置二级页一致：原生 Spring 回弹 + 不显示滚动条。
+    .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+    .scrollBar(BarState.Off)
     // 二级页标题栏浮在内容上（HDS 渐变模糊），内容必须自己让开，否则第一张
-    // 卡片钻到「广告拦截」标题下面（1.0.3 用户截图）。
+    // 卡片钻到「广告拦截」标题下面。
     .padding({
       left: 16,
       right: 16,
-      top: glassHeaderInsetVp() + 8,
+      top: glassHeaderInsetVp(),
       bottom: glassBottomInsetVp()
     })
   }
