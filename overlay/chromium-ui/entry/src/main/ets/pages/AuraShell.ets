@@ -1652,7 +1652,23 @@ struct AuraShell {
     }
 
     if (event.event === 'downloadUpdated') {
-      this.downloadNotifier?.update(shellEvent<DownloadUpdatedEvent>(event));
+      const updated = shellEvent<DownloadUpdatedEvent>(event);
+      this.downloadNotifier?.update(updated);
+      // 1.0.2：App 内下载通知条数据源（snackbar 挂在 MobileBrowserOverlay：
+      // 开始下载 → 下载完成[.crx→安装 / 其他→打开] → 失败）。系统通知栏仍由
+      // DownloadNotifier 负责，这里是 App 内浮层通道。revision 保证内容变化
+      // 必触发 @Watch（AppStorage 逐字节相同不算变，见 auraFindResult 先例）。
+      AppStorage.setOrCreate('auraDownloadEvent', JSON.stringify({
+        id: updated.id ?? '',
+        fileName: updated.fileName ?? '',
+        url: updated.url ?? '',
+        state: updated.state ?? '',
+        filePath: updated.filePath ?? '',
+        mimeType: updated.mimeType ?? '',
+        dangerous: updated.dangerous === true,
+        failReason: updated.failReason ?? '',
+        revision: Date.now()
+      }));
       // The downloads page watches this tick and re-lists (throttled) so
       // progress on it moves while a download is running.
       AppStorage.setOrCreate('auraPanelDownloadsTick', Date.now());
