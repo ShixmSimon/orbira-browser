@@ -31,6 +31,10 @@ export struct AdBlockPanel {
   @State private userRuleCount: number = 0;
   @State private statusLine: string = '正在读取规则…';
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
+  // 必须由外部传入同一个 Scroller：NavDestination 的 bindToScrollable 靠它拿到
+  // 滚动容器，标题栏才会出「滚动内容渐隐到标题栏下」的渐变模糊。组件内自建
+  // Scroller 绑不上（外面拿不到实例），顶端就永远是一块实的。
+  scroller: Scroller = new Scroller();
 
   // 「添加订阅」与「我的规则」用内联展开区，不用对话框：二级页里 sheet 会盖住
   // 标题栏，CustomDialogController 又要额外生命周期，就地展开最省事。
@@ -384,7 +388,7 @@ export struct AdBlockPanel {
   }
 
   build() {
-    List({ space: 10 }) {
+    List({ space: 10, scroller: this.scroller }) {
       // ---------- 自定义规则 ----------
       ListItem() {
         Column() {
@@ -710,11 +714,11 @@ export struct AdBlockPanel {
     .height('100%')
     .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
     .scrollBar(BarState.Off)
-    .padding({
-      left: 16,
-      right: 16,
-      top: glassHeaderInsetVp(),
-      bottom: glassBottomInsetVp()
-    })
+    // 起始/结束偏移必须用 contentStartOffset / contentEndOffset，**不能用 .padding()**：
+    // List 的 padding 是固化的内容区，列表内容永远滚不进那块区域，标题栏下方
+    // 也就没有内容可以虚化 —— 这正是「顶端没有逐渐虚化透明」的原因。
+    // 这两个属性属于滚动内容的一部分，内容能穿过它滚到标题栏下面。
+    .contentStartOffset(glassHeaderInsetVp())
+    .contentEndOffset(glassBottomInsetVp())
   }
 }

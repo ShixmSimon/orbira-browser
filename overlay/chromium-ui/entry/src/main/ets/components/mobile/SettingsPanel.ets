@@ -230,6 +230,9 @@ export struct SettingsPanel {
   private appearanceScroller: Scroller = new Scroller();
   private homeScroller: Scroller = new Scroller();
   private zoomScroller: Scroller = new Scroller();
+  // 广告拦截页（内容由 AdBlockPanel 自渲染，Scroller 由本组件持有后传入，
+  // 否则 bindToScrollable 拿不到实例，标题栏没有渐变模糊）。
+  private adblockScroller: Scroller = new Scroller();
   private clearScroller: Scroller = new Scroller();
   @State private toggleItems: PrefToggleItem[] = [];
   // 搜索引擎：baseEngines = 引擎返回的（不含自定义）；customEngines = 用户自定义
@@ -920,6 +923,9 @@ export struct SettingsPanel {
     }
     if (name === 'zoom') {
       return [this.zoomScroller];
+    }
+    if (name === 'adblock') {
+      return [this.adblockScroller];
     }
     if (name === 'about') {
       return [this.aboutScroller];
@@ -2334,6 +2340,7 @@ export struct SettingsPanel {
           this.DesktopSitesView()
         } else if (name === 'adblock') {
           AdBlockPanel({
+            scroller: this.adblockScroller,
             onCommand: (command: BrowserCommandPayload): void => {
               this.onCommand(command);
             }
