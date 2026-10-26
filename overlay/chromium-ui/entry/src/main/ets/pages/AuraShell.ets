@@ -493,8 +493,13 @@ struct AuraShell {
         dockCoveredHeightVp(Number(AppStorage.get('auraBottomSafeVp') ?? 0)));
       this.setTouchDockRatio(seeded);
     }
-    // 开关切换可能改变「完全收起」标志（如切到常驻）——重算并（翻转时）重发内距。
-    this.syncDockInsetForControlsMove();
+    // 必须**直接重发**，不能只交给 syncDockInsetForControlsMove()：那条路只在
+    // 「完全收起」标志翻转时才发，而 Chrome 底置档的 computeTopBarHiddenForInset()
+    // 恒返回 false（见上），标志永远不翻转 —— 于是这个开关改了、applyDockViewportInset
+    // 里读它的分支（底置 dockCover、顶置 topBarPushVp）却全按旧值算，页面内距不更新。
+    // 用户实测：Chrome 底置 + 地址栏固定（本开关关着）时页面没抬高，就是这条。
+    this.topBarHiddenForInset = this.computeTopBarHiddenForInset();
+    this.applyDockViewportInset();
   }
 
   // 把顶栏的 browser controls（高度 + 收起许可）发给引擎：启动、设置开关
@@ -701,10 +706,12 @@ struct AuraShell {
     if (this.homeStyle === 'chrome') {
       if (this.dockPosition === 'bottom') {
         // 1.0.132「智能抬高」：底置 dock **常驻**时把页面底部抬到 dock 上边，否则
-        // 最后一行 / 贴底元素被 dock 盖住。判据：Chrome 底置的 dock 收起由触摸驱动、
-        // 且要求 `hideTopBarOnScroll` 开着（见 MBO onChromeBottomDockTouch）——
-        // 所以「滚动隐藏地址栏」关着 = dock 常驻 → 抬；开着 = 可收起 → 收起后铺满
-        // 物理底边（维持 1.0.111 起的行为，不动）。
+        // 最后一行 / 贴底元素被 dock 盖住。判据：「滚动隐藏地址栏」关着 = dock 常驻
+        // → 抬到 dock 上边；开着 = 可收起 → 收起后铺满物理底边（1.0.111 起的行为）。
+        // 155 线修的是**重发**：该档 computeTopBarHiddenForInset() 恒返回 false，
+        // 旧代码在开关切换时只走 syncDockInsetForControlsMove()（不翻转就不发），
+        // 于是这里的判断变了、inset 却还是旧值 —— 用户实测「地址栏在下固定时页面
+        // 没抬高」正是这个。现在 onHideTopBarPrefChanged 直接 applyDockViewportInset()。
         const dockCover: number = this.hideTopBarOnScroll ? 0 : dockCoveredHeightVp(bottomSafe);
         bottom = dockCover + (this.hideStatusBarOnScroll ? 0 : topSafe);
       } else {
