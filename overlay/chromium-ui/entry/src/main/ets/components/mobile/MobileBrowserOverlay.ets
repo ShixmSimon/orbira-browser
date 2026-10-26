@@ -644,6 +644,17 @@ export struct MobileBrowserOverlay {
     if (((AppStorage.get('auraCurrentTitle') as string) ?? '') !== currentTitleValue) {
       AppStorage.setOrCreate('auraCurrentTitle', currentTitleValue);
     }
+    // 当前活动标签的稳定 id：网站设置面板的「清除该站数据」要让引擎按 tabId
+    // 定位标签（clearPageSiteData 只认 tabId，不认 origin 字符串；state 里
+    // 没有 navigationId 这种键）。路由页（SiteSettingsPanelPage）拿不到
+    // browserState，只能走 AppStorage 桥。
+    const tabsList: BrowserTabState[] = this.browserState.tabs ?? [];
+    const activeIdx: number = this.browserState.activeTabIndex ?? 0;
+    const activeTabId: string = (activeIdx >= 0 && activeIdx < tabsList.length)
+      ? (tabsList[activeIdx].id ?? '') : '';
+    if (((AppStorage.get('auraActiveTabId') as string) ?? '') !== activeTabId) {
+      AppStorage.setOrCreate('auraActiveTabId', activeTabId);
+    }
     // 扩展 popup 让位期间导航离开了主页 → 让位结束，恢复 HomeSurface。
     if ((AppStorage.get('auraPopupHomeHold') as number ?? 0) > 0 &&
       !this.isNewTabUrl(currentUrlValue)) {
