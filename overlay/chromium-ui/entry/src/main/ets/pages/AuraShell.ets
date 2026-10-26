@@ -668,14 +668,14 @@ struct AuraShell {
     if (this.homeStyle === 'chrome' && this.dockPosition === 'bottom') {
       return this.hideStatusBarOnScroll ? 0 : topSafe;   // 底置沿用 1.0.111 的常量
     }
-    // 1.0.133：常显档（「滚动隐藏地址栏」关着）minTop = top = 48+topSafe —— 页面顶部
-    // 常年被「状态栏 + 地址栏」占住，视口底部同样少这么多，必须补回来。
-    // 用户实测确认的两处：简约「底栏关 + 地址栏也关」要在 dock 占位之外**额外**抬一份；
-    // Chrome 顶置「地址栏关」也要抬。
-    // （1.0.131 曾把常显档判成 0：当时那张截图是「内容一直延伸到屏幕底」，看着像正常，
-    //  其实底部内容已被推出屏幕 —— 与收起档的「裁切」是同一个现象，只是没有空条。）
+    // 常显档（「滚动隐藏地址栏」关着）：只补状态栏那一条。
+    // 1.0.133 曾给 48+topSafe（minTop 全量），并自己留了备选：「若用户看到底部空出
+    // 一大截，说明实际只少 topSafe → 改回 topSafe」。1.0.3（155 线）在 Chrome 顶置 +
+    // 地址栏常驻下实测正是这个现象：底部空出约 90vp ≈ 48+36，且滚动时那块空白还会
+    // 变（inset 在 topSafe / 48+topSafe 之间翻）→ 观感就是「知乎底部跳一下」。
+    // 说明 155 引擎的可见视口已经把地址栏算进去了，外壳再补一份就是重复。
     if (!this.hideTopBarOnScroll) {
-      return TOP_BAR_EXTENT_VP + topSafe;
+      return topSafe;
     }
     return this.hideStatusBarOnScroll ? 0 : topSafe;
   }
@@ -691,12 +691,12 @@ struct AuraShell {
     let bottom: number;
     if (this.homeStyle === 'chrome') {
       if (this.dockPosition === 'bottom') {
-        // 1.0.4（155 线）：与简约风格同一条修法 —— **始终**让出 dock 高度（含底部
-        // 安全区），不再用「滚动隐藏地址栏」开关去判断。
-        // inset 是常量、只在设置变化时重发；而 Chrome 底置的 dock 收起是靠触摸观察层
-        // 驱动（MBO.onChromeBottomDockTouch），实测常常并不真的收起 —— 开关一开就给 0，
-        // 页面最后 76vp 就被 dock 白盖住（知乎固定底栏「欢迎参与讨论」正是这样被压掉）。
-        const dockCover: number = dockCoveredHeightVp(bottomSafe);
+        // 1.0.132「智能抬高」：底置 dock **常驻**时把页面底部抬到 dock 上边，否则
+        // 最后一行 / 贴底元素被 dock 盖住。判据：Chrome 底置的 dock 收起由触摸驱动、
+        // 且要求 `hideTopBarOnScroll` 开着（见 MBO onChromeBottomDockTouch）——
+        // 所以「滚动隐藏地址栏」关着 = dock 常驻 → 抬；开着 = 可收起 → 收起后铺满
+        // 物理底边（维持 1.0.111 起的行为，不动）。
+        const dockCover: number = this.hideTopBarOnScroll ? 0 : dockCoveredHeightVp(bottomSafe);
         bottom = dockCover + (this.hideStatusBarOnScroll ? 0 : topSafe);
       } else {
         // 1.0.130：补偿 = 引擎的「顶栏下推量」，随 ratio 连续（见 topBarPushVp）。
@@ -705,16 +705,7 @@ struct AuraShell {
         bottom = this.topBarPushVp();
       }
     } else {
-      // 简约「智能抬高」：底栏常驻（「滚动隐藏底部栏」关着）→ 抬到 dock 上边；
-      // 随滚动收起 → 0（收起后铺满物理底边，1.0.97 用户拍板）。再叠顶部缺口补偿。
-      // 1.0.4（155 线）：**始终**为 dock 让出高度（含底部安全区），不再看「滚动时
-      // 隐藏底部栏」这个开关。
-      // 原因（用户 1.0.2 / 1.0.3 同页实拍对比）：inset 是常量，只在设置变化时重发，
-      // 而 dock 收起与否是每帧随滚动变化的 —— 开关开着时这里给 0（铺满），可 dock
-      // 在「地址栏常驻」档下靠触摸观察层驱动，实测常常并不收起，于是那 76vp 被 dock
-      // 白盖住：知乎的固定底栏（「欢迎参与讨论」）正是这样被压掉的。
-      // 代价：dock 真收起后页面底部会留一段空白，比内容被压住好。
-      bottom = dockCoveredHeightVp(bottomSafe) + this.topBarPushVp();
+      bottom = (this.hideDockOnScroll ? 0 : dockCoveredHeightVp(bottomSafe)) + this.topBarPushVp();
     }
     this.lastTopPushSent = this.topBarPushVp();
     this.executeBrowserCommand({
