@@ -427,7 +427,7 @@ bool BrowserWebContentsDelegate::DoBrowserControlsShrinkRendererSize(
   }
   // AuraShell 的顶/底条带都是**浮在满屏页面之上的半透明覆盖层**（overlay 式），
   // 不是布局占位（layout-owning）。上游在这里写的是
-  //   return !chrome::ohos::AreAuraShellBrowserControlsHidden(contents);
+  //   顶栏显隐态驱动的收缩（按 AreAuraShellBrowserControlsHidden 的返回值决定）
   // —— 顶栏一显示就收缩 renderer、一收起就长回来，页面高度随滚动来回变：
   // 知乎这类 position:fixed 固定在视口底的元素（「欢迎参与讨论」条）会跟着上下跳，
   // 页面底部也会被裁。154 的适配层把它改成恒定 false：只要顶栏存在
