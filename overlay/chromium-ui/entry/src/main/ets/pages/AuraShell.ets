@@ -691,12 +691,12 @@ struct AuraShell {
     let bottom: number;
     if (this.homeStyle === 'chrome') {
       if (this.dockPosition === 'bottom') {
-        // 1.0.132「智能抬高」：底置 dock **常驻**时把页面底部抬到 dock 上边，否则
-        // 最后一行 / 贴底元素被 dock 盖住。判据：Chrome 底置的 dock 收起由触摸驱动、
-        // 且要求 `hideTopBarOnScroll` 开着（见 MBO onChromeBottomDockTouch）——
-        // 所以「滚动隐藏地址栏」关着 = dock 常驻 → 抬；开着 = 可收起 → 收起后铺满
-        // 物理底边（维持 1.0.111 起的行为，不动）。
-        const dockCover: number = this.hideTopBarOnScroll ? 0 : dockCoveredHeightVp(bottomSafe);
+        // 1.0.4（155 线）：与简约风格同一条修法 —— **始终**让出 dock 高度（含底部
+        // 安全区），不再用「滚动隐藏地址栏」开关去判断。
+        // inset 是常量、只在设置变化时重发；而 Chrome 底置的 dock 收起是靠触摸观察层
+        // 驱动（MBO.onChromeBottomDockTouch），实测常常并不真的收起 —— 开关一开就给 0，
+        // 页面最后 76vp 就被 dock 白盖住（知乎固定底栏「欢迎参与讨论」正是这样被压掉）。
+        const dockCover: number = dockCoveredHeightVp(bottomSafe);
         bottom = dockCover + (this.hideStatusBarOnScroll ? 0 : topSafe);
       } else {
         // 1.0.130：补偿 = 引擎的「顶栏下推量」，随 ratio 连续（见 topBarPushVp）。
