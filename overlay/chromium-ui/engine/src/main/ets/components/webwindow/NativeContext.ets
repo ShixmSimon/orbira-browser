@@ -507,6 +507,9 @@ export interface BrowserCommandPayload {
   // in memory, because the shell owns the persistent copy.
   sites?: string;
   allSites?: boolean;
+  // setDesktopSites: hosts the reader sent back to the mobile agent while
+  // allSites is on, one per line. Wins over both the list and the switch.
+  mobileSites?: string;
   // contextMenuAction: the item chosen, one of the event's supportedActions.
   // downloadAction: what to do with the download `id`.
   action?: ContextMenuAction | DownloadAction;

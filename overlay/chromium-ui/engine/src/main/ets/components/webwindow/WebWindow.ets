@@ -1453,6 +1453,18 @@ export struct WebWindow {
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
       return false;
     }
+    // 单站「回到移动版」例外优先于全局开关：与引擎 IsDesktopSiteHost() 同一约定，
+    // 否则全局桌面版开着时外壳会在这里把 UA 又推回桌面，页面与按钮各说各话。
+    const mobileRaw = String(AppStorage.get('auraMobileSites') ?? '');
+    const targetHost: string = this.hostOf(url);
+    if (mobileRaw.length > 0 && targetHost.length > 0) {
+      const excluded: string[] = mobileRaw.split('\n');
+      for (let i = 0; i < excluded.length; i++) {
+        if (excluded[i].trim() === targetHost) {
+          return false;
+        }
+      }
+    }
     const def = String(AppStorage.get('auraUaDefault') ?? 'mobile');
     if (def === 'desktop') {
       return true;
@@ -1585,7 +1597,8 @@ export struct WebWindow {
           out.push({
             command: 'setDesktopSites',
             sites: String(AppStorage.get('auraDesktopSites') ?? ''),
-            allSites: String(AppStorage.get('auraUaDefault') ?? 'mobile') === 'desktop'
+            allSites: String(AppStorage.get('auraUaDefault') ?? 'mobile') === 'desktop',
+            mobileSites: String(AppStorage.get('auraMobileSites') ?? '')
           });
         }
         const want: boolean = this.shouldUseDesktopSite(target);

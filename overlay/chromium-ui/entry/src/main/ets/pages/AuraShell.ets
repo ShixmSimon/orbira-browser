@@ -333,6 +333,11 @@ struct AuraShell {
       ShellUiPrefs.loadDesktopSites(context).then((list: string[]): void => {
         AppStorage.setOrCreate('auraDesktopSites', ShellUiPrefs.joinUrlList(list));
       });
+      // 单站「回到移动版」例外名单：与桌面站名单同路持久化，启动期灌进 AppStorage，
+      // 供 WebWindow 导航前推导 UA、菜单切换时增删。
+      ShellUiPrefs.loadMobileSites(context).then((list: string[]): void => {
+        AppStorage.setOrCreate('auraMobileSites', ShellUiPrefs.joinUrlList(list));
+      });
       ShellUiPrefs.loadUaDefault(context).then((value: string): void => {
         AppStorage.setOrCreate('auraUaDefault', value);
       });
@@ -2303,7 +2308,8 @@ struct AuraShell {
       this.executeBrowserCommand({
         command: 'setDesktopSites',
         sites: sites,
-        allSites: allSites
+        allSites: allSites,
+        mobileSites: String(AppStorage.get('auraMobileSites') ?? '')
       });
       // 闸门只在名单真的发出去之后才落。放在发送判断之前会让重试的第二跳被
       // 开头闸门挡死：名单异步读出前闸门已关，迟到的名单永远补发不了。

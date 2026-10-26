@@ -3968,10 +3968,15 @@ export struct MobileBrowserOverlay {
               this.closeMenuCard();
               this.issueCommand({ command: 'print' });
             })
-            this.PanelEntryButton('桌面版', $r('app.media.aura_desktop'), (): void => {
-              this.closeMenuCard();
-              this.toggleDesktopSite();
-            })
+            // 文案随当前页反转：移动版页显示「桌面版」（点了切过去），桌面版页
+            // 显示「移动版」。引擎已在 state.requestDesktopSite 里报了这个状态
+            // （IsRequestingDesktopSite → NavigationEntry::GetIsOverridingUserAgent）。
+            this.PanelEntryButton(
+              this.browserState.requestDesktopSite === true ? '移动版' : '桌面版',
+              $r('app.media.aura_desktop'), (): void => {
+                this.closeMenuCard();
+                this.toggleDesktopSite();
+              })
           }
           .width('100%')
         }
@@ -4157,13 +4162,16 @@ export struct MobileBrowserOverlay {
       return;
     }
     const enabled = !(this.browserState.requestDesktopSite === true);
+    // 顺序要紧：先把名单（含「移动版例外」）送到引擎，再发 setRequestDesktopSite。
+    // 后者会触发重载，而重载时的导航观察者按**新**名单决定 UA —— 反过来发的话，
+    // 重载瞬间名单还是旧的，桌面 UA 会被重新装上，用户看到「点了没反应」。
+    // 1.0.190：把当前站点写进/移出「桌面版网站」持久化名单，重开该站仍用桌面 UA。
+    this.persistDesktopSite(enabled);
     this.issueCommand({ command: 'setRequestDesktopSite', enabled: enabled });
     this.getUIContext().getPromptAction().showToast({
       message: enabled ? '已请求桌面版网站' : '已回到移动版网站',
       duration: 2000
     });
-    // 1.0.190：把当前站点写进/移出「桌面版网站」持久化名单，重开该站仍用桌面 UA。
-    this.persistDesktopSite(enabled);
   }
 
   // 将当前标签的 host 加入或移出桌面版网站名单，并落盘 + 同步 AppStorage
@@ -4192,11 +4200,32 @@ export struct MobileBrowserOverlay {
     if (context) {
       ShellUiPrefs.saveDesktopSites(context, list);
     }
+    // 全局「默认使用桌面版网站」开着时，从桌面名单里移除这个 host 毫无作用
+    // （它本来就不在名单里，引擎按 everywhere 对所有 http(s) 页返回桌面）。
+    // 真正让单页回到移动版的是这份例外名单：引擎 IsDesktopSiteHost() 里优先判定，
+    // 外壳 WebWindow 导航前也按它拦住桌面 UA 注入。
+    const allSites: boolean = String(AppStorage.get('auraUaDefault') ?? 'mobile') === 'desktop';
+    const mobileList: string[] = ShellUiPrefs.parseUrlList(
+      String(AppStorage.get('auraMobileSites') ?? ''));
+    const mobileIdx: number = mobileList.indexOf(host);
+    if (!enabled && allSites) {
+      if (mobileIdx < 0) {
+        mobileList.push(host);
+      }
+    } else if (mobileIdx >= 0) {
+      mobileList.splice(mobileIdx, 1);
+    }
+    const mobileJoined: string = ShellUiPrefs.joinUrlList(mobileList);
+    AppStorage.setOrCreate('auraMobileSites', mobileJoined);
+    if (context) {
+      ShellUiPrefs.saveMobileSites(context, mobileList);
+    }
     // 同步给引擎：引擎按这份名单在每次导航时决定 UA，脚本后台新开的标签也靠它。
     this.issueCommand({
       command: 'setDesktopSites',
       sites: joined,
-      allSites: String(AppStorage.get('auraUaDefault') ?? 'mobile') === 'desktop'
+      allSites: allSites,
+      mobileSites: mobileJoined
     });
   }
 
