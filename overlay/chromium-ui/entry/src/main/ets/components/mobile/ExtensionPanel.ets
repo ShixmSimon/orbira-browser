@@ -810,21 +810,26 @@ export struct ExtensionPanel {
 
   @Builder
   private ExtensionIcon(item: ExtensionActionItem, size: number) {
-    // 首字母块**永远画在底下**，真实图标叠在上面：引擎偶发返回解不开的图标串时
-    // Image 解码失败只画空白，底下还有字母块兜底——不会出现「图标位置空一块」。
+    // 1.0.243：首字母块不再永远画在底层。真实扩展图标普遍带透明区域
+    // （云形/爪形/异形 logo），底层灰底+字母会从透明处透出来——装机反馈
+    // 「扩展页面图标后显示首字母」即此观感。改为：位图或 data:URL 可用时
+    // 不画字母块，全部来源失败（引擎无图标+缓存无+上份串解不开）才退化。
     // 1.0.160：停用（开发者模式关闭）的扩展图标置灰 + 压暗 —— 与桌面 Chrome
     // chrome://extensions 的停用态一致；此前停用也显示全彩图标，分不清启停。
     Stack({ alignContent: Alignment.Center }) {
-      Text(extensionInitial(item.name))
-        .width(size)
-        .height(size)
-        .borderRadius(size / 4)
-        .backgroundColor($r('app.color.surface_secondary'))
-        .fontSize(size / 2.2)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .textAlign(TextAlign.Center)
-        .opacity(item.userEnabled ? 1 : 0.45)
+      if (!(this.iconPixelsVersion >= 0 && this.pixelMapOf(item.id) !== undefined) &&
+        !(iconSource(item).length > 0 && !this.iconBroken(item.id))) {
+        Text(extensionInitial(item.name))
+          .width(size)
+          .height(size)
+          .borderRadius(size / 4)
+          .backgroundColor($r('app.color.surface_secondary'))
+          .fontSize(size / 2.2)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .textAlign(TextAlign.Center)
+          .opacity(item.userEnabled ? 1 : 0.45)
+      }
 
       // 版本号参与条件：位图解好时靠它触发重绘（Map 本身不是 @State）。
       if (this.iconPixelsVersion >= 0 && this.pixelMapOf(item.id) !== undefined) {
@@ -835,7 +840,9 @@ export struct ExtensionPanel {
           .grayscale(item.userEnabled ? 0 : 1)
           .opacity(item.userEnabled ? 1 : 0.45)
       } else if (iconSource(item).length > 0 && !this.iconBroken(item.id)) {
-        // 位图还没解好（或解不动）时先用 data: URL；解不动就露出字母块。
+        // 位图还没解好（或解不动）时先用 data: URL；Image 解不开 →
+        // onError 标 broken，下次重绘翻到字母块；新非空 base64 到达时
+        // decodeIcons 会撤销 broken 给重试机会（1.0.241 自愈机制）。
         Image(iconSource(item))
           .width(size)
           .height(size)

@@ -195,7 +195,29 @@ export struct DownloadsPanel {
   }
 
   private openItem(item: DownloadItem): void {
-    if (item.state !== 'completed' || item.fileMissing === true || item.filePath.length === 0) {
+    // 1.0.243：点按反馈——打不开时说明原因。此前守卫全部静默 return，
+    // 用户点到「还在下载 / 已暂停 / 文件丢失」的条目像点了没反应
+    // （装机反馈「点击下载没有弹窗提醒」）。下载中/完成态的系统通知
+    // 由 DownloadNotifier 负责，这里补的是面板内点按的即时反馈。
+    if (item.state === 'inProgress' || item.state === 'paused') {
+      this.getUIContext().getPromptAction().showToast({
+        message: item.state === 'paused' ? '下载已暂停，继续后才能打开' : '还在下载中，下载完成后才能打开',
+        duration: 2000
+      });
+      return;
+    }
+    if (item.state !== 'completed') {
+      this.getUIContext().getPromptAction().showToast({
+        message: '这个下载没有成功，可以重试',
+        duration: 2000
+      });
+      return;
+    }
+    if (item.fileMissing === true || item.filePath.length === 0) {
+      this.getUIContext().getPromptAction().showToast({
+        message: '文件已不在原位置，可以重新下载',
+        duration: 2000
+      });
       return;
     }
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
@@ -230,6 +252,24 @@ export struct DownloadsPanel {
         }
       });
     }
+  }
+
+  // 1.0.2：文件名拆主名/扩展名（见 DownloadRow 用法）——主名参与省略，
+  // 扩展名常驻，截断后仍可分辨 zip / crx / apk。
+  private downloadNameBase(name: string): string {
+    const dot: number = name.lastIndexOf('.');
+    if (dot <= 0 || dot === name.length - 1) {
+      return name;
+    }
+    return name.substring(0, dot);
+  }
+
+  private downloadNameExt(name: string): string {
+    const dot: number = name.lastIndexOf('.');
+    if (dot <= 0 || dot === name.length - 1) {
+      return '';
+    }
+    return name.substring(dot);
   }
 
   private subtitle(item: DownloadItem): string {
@@ -304,13 +344,24 @@ export struct DownloadsPanel {
             .fillColor($r('app.color.icon_primary'))
 
           Column({ space: 2 }) {
-            Text(item.fileName.length > 0 ? item.fileName : item.url)
-              .fontSize(15)
-              .fontWeight(FontWeight.Medium)
-              .fontColor($r('app.color.text_primary'))
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .width('100%')
+            // 1.0.2：文件名拆「主名 + 扩展名」两个 Text——主名才参与省略，
+            // 扩展名常驻。此前整条省略会把 'scriptcat-v1.5.0-chrome.zip'
+            // 截成 'scriptcat-v1.5.0-…'，看不出是 zip 还是 crx（装机反馈）。
+            Row({ space: 0 }) {
+              Text(this.downloadNameBase(item.fileName.length > 0 ? item.fileName : item.url))
+                .fontSize(15)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary'))
+                .layoutWeight(1)
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+              Text(this.downloadNameExt(item.fileName.length > 0 ? item.fileName : item.url))
+                .fontSize(15)
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary'))
+                .maxLines(1)
+            }
+            .width('100%')
             Text(this.subtitle(item))
               .fontSize(12)
               .fontColor($r('app.color.text_secondary'))

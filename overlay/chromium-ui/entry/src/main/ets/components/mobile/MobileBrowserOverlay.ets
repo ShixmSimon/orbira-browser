@@ -5,6 +5,7 @@ import { hdsEffect, hdsMaterial, HdsTabs, HdsTabsFloatingStyle } from '@kit.UIDe
 import { inputMethod } from '@kit.IMEKit';
 import { http } from '@kit.NetworkKit';
 import { curves, promptAction } from '@kit.ArkUI';
+import { fileIo as fs } from '@kit.CoreFileKit';
 import router from '@ohos.router';
 import display from '@ohos.display';
 import { showSystemPasteDialog } from './SystemPasteDialog';
@@ -15,7 +16,8 @@ import {
   BrowserStateSnapshot,
   BrowserTabState,
   ContextMenuAction,
-  TabThumbnail
+  TabThumbnail,
+  openDownloadedFile
 } from 'engine';
 import { HuaweiShareAdapter } from 'engine';
 import { GripSide, HoldingHandRouter } from './HoldingHandRouter';
@@ -32,6 +34,56 @@ import { MobileBackRouter } from './MobileBackRouter';
 import { normalizeAddress, searchUrlFor } from './ShellUtils';
 import { ShellUiPrefs } from '../../utils/appearance/ShellUiPrefs';
 import { IncognitoSwitch, SavedTab } from '../../utils/IncognitoSwitch';
+
+// 1.0.2：App 内下载通知条（snackbar）的数据契约。AuraShell 在 downloadUpdated
+// 事件里把单条下载项转存进 AppStorage（auraDownloadEvent），本组件消费。
+// 与 DownloadItem 同名字段语义一致（见 engine ShellServiceTypes）。
+interface DownloadEventPayload {
+  id: string;
+  fileName: string;
+  url: string;
+  state: string;
+  filePath: string;
+  mimeType: string;
+  dangerous: boolean;
+  failReason: string;
+  revision: number;
+}
+
+// 通知条状态。start=开始下载 / done=完成 / failed=失败 /
+// dangerous=危险文件（引擎标 dangerous，只提示不动作）。
+// 用 enum 不用字面量联合：ArkTS 不支持索引访问类型（DownloadSnackState['kind']
+// 报 arkts-no-aliases-by-index，10605028），枚举与工程 MobileEdgeAction 同款。
+enum DownloadSnackKind {
+  START = 'start',
+  DONE = 'done',
+  FAILED = 'failed',
+  DANGEROUS = 'dangerous'
+}
+
+interface DownloadSnackState {
+  id: string;
+  name: string;
+  kind: DownloadSnackKind;
+  filePath: string;
+  mimeType: string;
+  isCrx: boolean;
+}
+
+// 空态常量：downloadSnack 恒非空（可见性由 downloadSnackVisible 控制）——
+// @Builder 内直接解引用，避开可空 @State 在构建函数里的解析坑。
+const EMPTY_DOWNLOAD_SNACK: DownloadSnackState = {
+  id: '',
+  name: '',
+  kind: DownloadSnackKind.START,
+  filePath: '',
+  mimeType: '',
+  isCrx: false
+};
+
+// 通知条固定高 52vp（内容限一行，动作按钮紧凑）；与 dock 的间距。
+const DOWNLOAD_SNACK_HEIGHT_VP: number = 52;
+const DOWNLOAD_SNACK_GAP_VP: number = 8;
 
 // The floating bars' full vertical extents (top gap + bar height), in vp.
 // AuraShell reports the top bar to the engine through setBrowserControls;
@@ -308,6 +360,14 @@ export struct MobileBrowserOverlay {
   @StorageLink('auraContextMenu') contextMenuJson: string = '';
   // 页内查找 (findInPage): a small bar under the top area.
   @State private findVisible: boolean = false;
+  // 1.0.2：App 内下载通知条（见 DownloadSnackState / DownloadSnackLayer）。
+  // 数据源 = AuraShell 转存的 auraDownloadEvent；同一下载的连续进度事件不
+  // 重复弹（id+kind 去重），状态跃迁（inProgress→completed/failed）更新同一条。
+  @State private downloadSnackVisible: boolean = false;
+  @State private downloadSnack: DownloadSnackState = EMPTY_DOWNLOAD_SNACK;
+  private downloadSnackTimer: number = -1;
+  @StorageLink('auraDownloadEvent') @Watch('onDownloadEventChanged')
+  private downloadEventJson: string = '';
   @State private findQuery: string = '';
   @StorageLink('auraFindResult') findResultJson: string = '';
   // Tab switcher card previews, keyed by tab id.
@@ -484,6 +544,10 @@ export struct MobileBrowserOverlay {
 
   aboutToDisappear(): void {
     MobileBackRouter.handler = undefined;
+    if (this.downloadSnackTimer !== -1) {
+      clearTimeout(this.downloadSnackTimer);
+      this.downloadSnackTimer = -1;
+    }
     if (this.thumbnailRetryTimer !== 0) {
       clearTimeout(this.thumbnailRetryTimer);
       this.thumbnailRetryTimer = 0;
@@ -1208,6 +1272,147 @@ export struct MobileBrowserOverlay {
     this.findVisible = false;
     this.findQuery = '';
     this.issueCommand({ command: 'stopFind' });
+  }
+
+  // ---- App 内下载通知条（1.0.2）----
+  // 状态机：inProgress → 首次出现弹「开始下载」（同 id 连续进度事件不重置
+  // 计时）；completed → 同一条更新为「下载完成」+ 动作（.crx=安装 / 其他=
+  // 打开）；failed → 「下载失败」。paused/cancelled 不弹（避免打断）。
+  private onDownloadEventChanged(): void {
+    if (this.downloadEventJson.length === 0) {
+      return;
+    }
+    let ev: DownloadEventPayload;
+    try {
+      ev = JSON.parse(this.downloadEventJson) as DownloadEventPayload;
+    } catch (error) {
+      return;
+    }
+    const name: string = ev.fileName.length > 0 ? ev.fileName : ev.url;
+    if (name.length === 0) {
+      return;
+    }
+    if (ev.state === 'inProgress') {
+      // 同 id 已是「开始下载」态：进度事件每秒多次，不重复弹、不重置计时。
+      if (this.downloadSnackVisible && this.downloadSnack.id === ev.id &&
+        this.downloadSnack.kind === DownloadSnackKind.START) {
+        return;
+      }
+      this.showDownloadSnack(ev.id, name, DownloadSnackKind.START, ev.filePath, ev.mimeType);
+      return;
+    }
+    if (ev.state === 'completed') {
+      const kind: DownloadSnackKind = ev.dangerous ?
+        DownloadSnackKind.DANGEROUS : DownloadSnackKind.DONE;
+      this.showDownloadSnack(ev.id, name, kind, ev.filePath, ev.mimeType);
+      return;
+    }
+    if (ev.state === 'failed') {
+      this.showDownloadSnack(ev.id, name, DownloadSnackKind.FAILED, ev.filePath, ev.mimeType);
+    }
+  }
+
+  private showDownloadSnack(id: string, name: string, kind: DownloadSnackKind,
+    filePath: string, mimeType: string): void {
+    if (this.downloadSnackTimer !== -1) {
+      clearTimeout(this.downloadSnackTimer);
+      this.downloadSnackTimer = -1;
+    }
+    this.downloadSnack = {
+      id: id,
+      name: name,
+      kind: kind,
+      filePath: filePath,
+      mimeType: mimeType,
+      isCrx: name.toLowerCase().endsWith('.crx')
+    };
+    this.downloadSnackVisible = true;
+    // 自动消失：开始 4s（完成/失败/危险 6s，留足点动作按钮的时间）。
+    const ttl: number = kind === DownloadSnackKind.START ? 4000 : 6000;
+    this.downloadSnackTimer = setTimeout((): void => {
+      this.downloadSnackTimer = -1;
+      this.downloadSnackVisible = false;
+    }, ttl);
+  }
+
+  private dismissDownloadSnack(): void {
+    if (this.downloadSnackTimer !== -1) {
+      clearTimeout(this.downloadSnackTimer);
+      this.downloadSnackTimer = -1;
+    }
+    this.downloadSnackVisible = false;
+  }
+
+  // 通知条贴 dock 同侧（与 dock 条带相邻，响应区才能合并成单条连续带——
+  // 七连败定论：多 region 先 push 的被引擎丢弃）。简约风格 dock 恒底置；
+  // Chrome 风格随 chromeDockAtTop()。
+  private downloadSnackDockAtTop(): boolean {
+    return this.homeStyle === 'chrome' && this.chromeDockAtTop();
+  }
+
+  // 通知条固定高 52vp（内容限一行，动作按钮紧凑）。底置：贴在 dock 容器
+  // 上沿再上 8vp；顶置：贴在顶置 dock 下沿再下 8vp。
+  private downloadSnackTopVp(): number {
+    if (this.downloadSnackDockAtTop()) {
+      const chromeTop: number = CHROME_DOCK_EXTENT_VP + this.topSafeVp +
+        CHROME_DOCK_FLOAT_MARGIN_VP;
+      return chromeTop + DOWNLOAD_SNACK_GAP_VP;
+    }
+    if (this.homeStyle === 'chrome') {
+      const chromeBottom: number = CHROME_DOCK_EXTENT_VP + this.bottomSafeVp +
+        CHROME_DOCK_FLOAT_MARGIN_VP;
+      return Math.max(0, this.viewportHeightVp - chromeBottom -
+        DOWNLOAD_SNACK_GAP_VP -
+        DOWNLOAD_SNACK_HEIGHT_VP);
+    }
+    const dockBottom: number = BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(this.bottomSafeVp);
+    return Math.max(0, this.viewportHeightVp - dockBottom -
+      DOWNLOAD_SNACK_GAP_VP -
+      DOWNLOAD_SNACK_HEIGHT_VP);
+  }
+
+  private downloadSnackBottomVp(): number {
+    return this.downloadSnackTopVp() + DOWNLOAD_SNACK_HEIGHT_VP;
+  }
+
+  // 「打开」：交给系统选应用（与下载面板 / 通知点击同一路径）。
+  private openDownloadedSnackFile(): void {
+    if (this.downloadSnack.filePath.length === 0) {
+      return;
+    }
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (!context) {
+      return;
+    }
+    openDownloadedFile(context, this.downloadSnack.filePath, this.downloadSnack.mimeType);
+  }
+
+  // 「安装」（.crx）：与下载面板 installCrx 同一路径——拷进沙箱再交给引擎。
+  private installDownloadedSnackCrx(): void {
+    if (this.downloadSnack.filePath.length === 0) {
+      return;
+    }
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (!context) {
+      return;
+    }
+    try {
+      const source = fs.openSync(this.downloadSnack.filePath, fs.OpenMode.READ_ONLY);
+      const destPath = `${context.filesDir}/imported-extension.crx`;
+      fs.copyFileSync(source.fd, destPath);
+      fs.closeSync(source);
+      this.issueCommand({ command: 'installExtensionFromFile', path: destPath });
+      this.getUIContext().getPromptAction().showToast({
+        message: '已开始安装，可在扩展页查看结果',
+        duration: 2000
+      });
+      this.dismissDownloadSnack();
+    } catch (error) {
+      this.getUIContext().getPromptAction().showToast({
+        message: '无法读取这个扩展程序安装包',
+        duration: 2000
+      });
+    }
   }
 
   private findNext(forward: boolean): void {
@@ -2155,6 +2360,13 @@ export struct MobileBrowserOverlay {
       if (this.contextMenuJson.length > 0) {
         this.ContextMenuLayer()
       }
+
+      // App 内下载通知条（1.0.2）：挂最上层——菜单/查找栏在场时也看得见
+      // （菜单全屏遮罩会盖住它，属预期：用户正在操作菜单）。退场动效挂
+      // if 分支根（铁律：子节点退场会被整树原子删除，只有 if 根的退场能播）。
+      if (this.downloadSnackVisible) {
+        this.DownloadSnackLayer()
+      }
     }
     .width('100%')
     .height('100%')
@@ -2219,6 +2431,31 @@ export struct MobileBrowserOverlay {
         regions.push({ x: 0, y: 0, width: '100%', height: findBottom });
       } else {
         regions.push({ x: 0, y: this.findBarTopMarginVp(), width: '100%', height: 52 });
+      }
+      return regions;
+    }
+    // 下载通知条（1.0.2）：snackbar 恒贴 dock 同侧、与 dock 条带相邻 →
+    // 「dock + snackbar」合并为单条连续 region（同查找栏思路；多 region 先
+    // push 的会被引擎丢弃——七连败定论）。放在 findVisible 之后：查找栏在
+    // 场时查找 region 优先，snackbar 可见但点不中（几秒后自消，可接受）。
+    // viewportHeightVp 未测到时退化全屏（onAreaChange 首布局即上报，正常
+    // 不会走到；全屏是最稳兜底）。
+    if (this.downloadSnackVisible) {
+      if (this.viewportHeightVp <= 0) {
+        regions.push({ x: 0, y: 0, width: '100%', height: '100%' });
+        return regions;
+      }
+      if (this.downloadSnackDockAtTop()) {
+        // 顶置：屏幕顶 → snackbar 底沿（含顶置 dock）。
+        regions.push({ x: 0, y: 0, width: '100%', height: this.downloadSnackBottomVp() });
+      } else {
+        // 底置：snackbar 顶沿 → 屏幕底（含底置 dock）。
+        regions.push({
+          x: 0,
+          y: this.downloadSnackTopVp(),
+          width: '100%',
+          height: Math.max(1, this.viewportHeightVp - this.downloadSnackTopVp())
+        });
       }
       return regions;
     }
@@ -2319,9 +2556,13 @@ export struct MobileBrowserOverlay {
   // 查找栏」单条连续带（见 buildChromeTouchRegions 1.0.239 分支）——条带内
   // 阻断且卡片按钮不穿透，条带外 OUT_OF_REGION 落网页，查找期间页面照常
   // 可点可滚。
+  // 1.0.2：下载通知条同样要根 Default —— 但它**不是**全屏锁：响应区是
+  // 「dock + snackbar」单条连续带（见 buildChromeTouchRegions 1.0.2 分支），
+  // 条带外照常落网页。若沿用 Transparent，命中 snackbar 的触摸会继续下发
+  // WebWindow（点穿到网页——七连败第②败同款）。
   const modal: boolean = this.panelPage !== 'none' ||
     this.menuCardVisible || this.contextMenuJson.length > 0 ||
-    this.suggestListActive() || this.findVisible;
+    this.suggestListActive() || this.findVisible || this.downloadSnackVisible;
   return modal ? HitTestMode.Default : HitTestMode.Transparent;
   }
 
@@ -4008,6 +4249,129 @@ export struct MobileBrowserOverlay {
       ? (this.chromeDockAtTop() ? CHROME_DOCK_EXTENT_VP : 0)
       : (this.isHomeSurface() ? 0 : TOP_BAR_EXTENT_VP);
     return this.topSafeVp + topChromeH + 8;
+  }
+
+  // App 内下载通知条（1.0.2）：Chrome Android 同款 snackbar——「开始下载」
+  // →「下载完成」（.crx=安装 / 其他=打开）/「下载失败」，贴 dock 同侧。
+  // 命中：自身 Default；根响应区已收缩为「dock + snackbar」单条连续带
+  // （buildChromeTouchRegions 1.0.2 分支），条带内拦点击、条带外落网页。
+  // 动效：if 分支根节点上的非对称转场（入场=下方 24vp 滑入，退场=淡出）。
+  @Builder
+  private DownloadSnackLayer() {
+    Column() {
+      Row({ space: 10 }) {
+        // 状态图标：开始=转圈；完成=对勾；失败/危险=叉。
+        if (this.downloadSnack.kind === DownloadSnackKind.START) {
+          LoadingProgress()
+            .width(18)
+            .height(18)
+            .color($r('app.color.accent_primary'))
+        } else {
+          Image(this.downloadSnack.kind === DownloadSnackKind.DONE ?
+            $r('app.media.aura_check') : $r('app.media.aura_close'))
+            .width(18)
+            .height(18)
+            .fillColor(this.downloadSnack.kind === DownloadSnackKind.DONE ?
+              $r('app.color.accent_primary') : $r('app.color.icon_secondary'))
+        }
+
+        // 前缀（固定不缩）+ 文件名（layoutWeight 1，一行省略）。
+        Text(this.downloadSnack.kind === DownloadSnackKind.START ? '开始下载 ' :
+          (this.downloadSnack.kind === DownloadSnackKind.FAILED ? '下载失败 ' :
+            (this.downloadSnack.kind === DownloadSnackKind.DANGEROUS ? '下载需要确认 ' : '下载完成 ')))
+          .fontSize(14)
+          .fontColor($r('app.color.text_secondary'))
+          .maxLines(1)
+        Text(this.downloadSnack.name)
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .layoutWeight(1)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+        // 动作钮：完成且 .crx=安装；完成且普通文件=打开；失败=重试；
+        // 危险文件只提示不动作（保留/丢弃去下载页选）。
+        if (this.downloadSnack.kind === DownloadSnackKind.DONE && this.downloadSnack.isCrx) {
+          this.DownloadSnackAction($r('app.media.aura_extensions'), '安装',
+            (): void => {
+              this.installDownloadedSnackCrx();
+            })
+        } else if (this.downloadSnack.kind === DownloadSnackKind.DONE) {
+          this.DownloadSnackAction($r('app.media.aura_download'), '打开',
+            (): void => {
+              this.openDownloadedSnackFile();
+            })
+        } else if (this.downloadSnack.kind === DownloadSnackKind.FAILED) {
+          this.DownloadSnackAction($r('app.media.aura_reload'), '重试',
+            (): void => {
+              this.issueCommand({
+                command: 'downloadAction',
+                id: this.downloadSnack.id,
+                action: 'retry'
+              });
+              this.dismissDownloadSnack();
+            })
+        }
+
+        // ✕：只关通知条，不动下载本身（Chrome 同款语义）。
+        Button({ type: ButtonType.Circle, stateEffect: true }) {
+          Image($r('app.media.aura_close'))
+            .width(16)
+            .height(16)
+            .fillColor($r('app.color.icon_secondary'))
+        }
+        .width(32)
+        .height(32)
+        .backgroundColor(Color.Transparent)
+        .hitTestBehavior(HitTestMode.Default)
+        .accessibilityText('关闭')
+        .onClick((): void => {
+          this.dismissDownloadSnack();
+        })
+      }
+      .height(DOWNLOAD_SNACK_HEIGHT_VP)
+      .padding({ left: 14, right: 6 })
+      .backgroundColor($r('app.color.surface_floating'))
+      .borderRadius(16)
+      .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+    }
+    .width('100%')
+    .padding({ left: 16, right: 16 })
+    .position({ x: 0, y: this.downloadSnackTopVp() })
+    .hitTestBehavior(HitTestMode.Default)
+    .transition(TransitionEffect.asymmetric(
+      TransitionEffect.translate({ y: 24 }).animation({ duration: 300, curve: Curve.FastOutSlowIn }),
+      TransitionEffect.opacity(0).animation({ duration: 240, curve: Curve.Friction })
+    ))
+  }
+
+  // 通知条里的紧凑动作钮（图标 + 文字，浅底胶囊）。
+  @Builder
+  private DownloadSnackAction(icon: Resource, label: string, action: () => void) {
+    Button({ type: ButtonType.Normal, stateEffect: true }) {
+      Row({ space: 4 }) {
+        Image(icon)
+          .width(16)
+          .height(16)
+          .fillColor($r('app.color.accent_primary'))
+        Text(label)
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.accent_primary'))
+      }
+      .padding({ left: 8, right: 8 })
+      .height(28)
+      .backgroundColor($r('app.color.surface_secondary'))
+      .borderRadius(14)
+      .justifyContent(FlexAlign.Center)
+    }
+    .width(72)
+    .height(32)
+    .padding(0)
+    .backgroundColor(Color.Transparent)
+    .hitTestBehavior(HitTestMode.Default)
+    .onClick(action)
   }
 
   // 查找栏（1.0.237）：回到 ≤1.0.231 验证过的「直挂根 Stack + 自身 Default」

@@ -504,7 +504,9 @@ export struct PasswordsPanel {
       deleteStagedFile(stagedPath);
       return;
     }
-    const saved = await saveExportedFile(context, stagedPath, 'Aura 密码.csv');
+    // 1.0.243：导出文件名去掉品牌名（原 'Aura 密码.csv'，装机反馈导出
+    // 文件名还显示 aura）——保存框与系统下载列表里只应出现功能名。
+    const saved = await saveExportedFile(context, stagedPath, '密码.csv');
     if (saved) {
       AlertDialog.show({
         title: '导出完成',
