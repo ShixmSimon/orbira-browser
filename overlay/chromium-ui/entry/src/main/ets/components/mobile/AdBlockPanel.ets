@@ -389,6 +389,19 @@ export struct AdBlockPanel {
 
   build() {
     List({ space: 10, scroller: this.scroller }) {
+      // 顶部/底部占位。两条都不能用：
+      //   · .padding()           —— List 的 padding 是固化的内容区，内容滚不进标题栏
+      //                            下方，渐变模糊就没有可虚化的东西（顶端永远是一块实的）；
+      //   · .contentStartOffset() —— 实测只影响滚动范围，**静止时首项仍从物理顶端开始**，
+      //                            于是内容压在标题栏底下（用户实测）。
+      // 按本项目约定用首/末占位 ListItem（Row().height()，不用 Blank —— 在 List 里会塌成 0）。
+      // List 的 space 是 10，占位与首张卡片之间还会多出 10，故各减去 10。
+      ListItem() {
+        Row()
+          .width('100%')
+          .height(Math.max(0, glassHeaderInsetVp() - 10))
+      }
+
       // ---------- 自定义规则 ----------
       ListItem() {
         Column() {
@@ -709,16 +722,16 @@ export struct AdBlockPanel {
           .width('100%')
           .padding({ left: 4, top: 4, bottom: 8 })
       }
+
+      ListItem() {
+        Row()
+          .width('100%')
+          .height(Math.max(0, glassBottomInsetVp() - 10))
+      }
     }
     .width('100%')
     .height('100%')
     .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
     .scrollBar(BarState.Off)
-    // 起始/结束偏移必须用 contentStartOffset / contentEndOffset，**不能用 .padding()**：
-    // List 的 padding 是固化的内容区，列表内容永远滚不进那块区域，标题栏下方
-    // 也就没有内容可以虚化 —— 这正是「顶端没有逐渐虚化透明」的原因。
-    // 这两个属性属于滚动内容的一部分，内容能穿过它滚到标题栏下面。
-    .contentStartOffset(glassHeaderInsetVp())
-    .contentEndOffset(glassBottomInsetVp())
   }
 }
