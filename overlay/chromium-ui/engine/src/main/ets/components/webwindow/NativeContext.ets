@@ -226,6 +226,9 @@ export interface BrowserRuntimeEvent {
     // 主页盖层（auraPopupHomeHold 清零），不必再等 8 秒兜底超时。
     'extensionPopupClosed' |
     'sitePermissionCancelled' |
+    // 站点快捷面板（小锁）：广告拦截/防钓鱼的「单站」读-改-写回包。
+    'adBlockPageState' | 'adBlockSiteResult' |
+    'siteProtectionState' | 'siteProtectionConfigResult' |
     'browserControlsRatio' | 'findResult' | 'pageText' |
     'contextMenuRequested' | 'externalUrlRequested' | 'popupBlocked' |
     'fileOpenRequested' | 'dateTimePickerRequested' | 'dateTimePickerClosed' |
