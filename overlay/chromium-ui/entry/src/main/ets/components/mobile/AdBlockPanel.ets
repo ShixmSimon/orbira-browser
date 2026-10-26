@@ -10,6 +10,7 @@
  * 拿到新 revision 后把刚才那次写操作自动重放一次（否则用户会看到"点了没反应"）。
  */
 import { BrowserCommandPayload } from 'engine';
+import { glassBottomInsetVp, glassHeaderInsetVp } from './GlassPage';
 import { AdBlockSource, AdBlockStateEvent } from 'engine';
 
 @Component
@@ -31,6 +32,9 @@ export struct AdBlockPanel {
   // 上一次写命令：只在 stale 重试时用，成功回包后清空。
   private pendingWrite: BrowserCommandPayload | null = null;
   private retryPending: boolean = false;
+  // 更新请求的兜底定时器：引擎若因为初始化失败/网络卡住不回包，不能让按钮
+  // 永远停在「正在更新…」（1.0.3 用户实测）。
+  private updateTimer: number = -1;
 
   aboutToAppear(): void {
     this.refresh();
@@ -105,6 +109,9 @@ export struct AdBlockPanel {
     }
     if (payload.updating !== undefined) {
       this.updating = payload.updating;
+    } else if (reason.length > 0 || payload.ok === true) {
+      // 回包不带 updating（多数写命令的回包都不带）→ 本次操作已结束。
+      this.updating = false;
     }
     if (payload.sources !== undefined) {
       this.sources = payload.sources;
@@ -185,6 +192,16 @@ export struct AdBlockPanel {
     this.statusLine = '正在下载并编译规则…';
     const payload: BrowserCommandPayload = this.write('updateAdBlockSources');
     this.send(payload);
+    if (this.updateTimer !== -1) {
+      clearTimeout(this.updateTimer);
+    }
+    this.updateTimer = setTimeout((): void => {
+      this.updateTimer = -1;
+      if (this.updating) {
+        this.updating = false;
+        this.statusLine = '引擎没有回包：可能是初始化未完成，稍后重试';
+      }
+    }, 15000);
   }
 
   private sourceSubtitle(item: AdBlockSource): string {
@@ -342,6 +359,13 @@ export struct AdBlockPanel {
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 16, right: 16, top: 12, bottom: 24 })
+    // 二级页标题栏浮在内容上（HDS 渐变模糊），内容必须自己让开，否则第一张
+    // 卡片钻到「广告拦截」标题下面（1.0.3 用户截图）。
+    .padding({
+      left: 16,
+      right: 16,
+      top: glassHeaderInsetVp() + 8,
+      bottom: glassBottomInsetVp()
+    })
   }
 }
