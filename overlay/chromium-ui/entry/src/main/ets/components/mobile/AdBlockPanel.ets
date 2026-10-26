@@ -9,7 +9,7 @@
  * 会校验这两项，不带或过期一律回 reason='stale'。这里收到 stale 时先重拉状态，
  * 拿到新 revision 后把刚才那次写操作自动重放一次（否则用户会看到"点了没反应"）。
  *
- * 引擎若 dlopen 不到 adblock DSO（liborbira_adblock.so），所有写命令会回
+ * 引擎若 dlopen 不到 adblock DSO（libadblock.so），所有写命令会回
  * 'engineUnavailable' —— 那是安装包里缺这个 so，不是本页的问题。
  */
 import { BrowserCommandPayload } from 'engine';
@@ -96,7 +96,7 @@ export struct AdBlockPanel {
       return '规则源数量已达上限';
     }
     if (reason === 'engineUnavailable') {
-      return '广告过滤引擎未加载（安装包缺 liborbira_adblock.so）';
+      return '广告过滤引擎未加载（安装包缺 libadblock.so）';
     }
     if (reason === 'invalidSite') {
       return '网站域名无效';

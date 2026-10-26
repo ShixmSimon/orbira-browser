@@ -10,10 +10,10 @@ namespace {
 struct Api {
   // Deliberately separate DSO: Chromium and Cargo must not share Rust runtime
   // or allocator symbols.
-  void* library = dlopen("liborbira_adblock.so", RTLD_NOW | RTLD_LOCAL);
+  void* library = dlopen("libadblock.so", RTLD_NOW | RTLD_LOCAL);
   using Version = uint32_t (*)();
   Version version = library ? reinterpret_cast<Version>(
-                                  dlsym(library, "orbira_adblock_abi_version"))
+                                  dlsym(library, "adblock_abi_version"))
                             : nullptr;
   using Compile = void* (*)(const char*, size_t, char**);
   using Query = char* (*)(const void*, const char*, size_t);
@@ -21,17 +21,17 @@ struct Api {
   using FreeString = void (*)(char*);
   Compile compile =
       library
-          ? reinterpret_cast<Compile>(dlsym(library, "orbira_adblock_compile"))
+          ? reinterpret_cast<Compile>(dlsym(library, "adblock_compile"))
           : nullptr;
   Query query =
-      library ? reinterpret_cast<Query>(dlsym(library, "orbira_adblock_query"))
+      library ? reinterpret_cast<Query>(dlsym(library, "adblock_query"))
               : nullptr;
   Free free = library
-                  ? reinterpret_cast<Free>(dlsym(library, "orbira_adblock_free"))
+                  ? reinterpret_cast<Free>(dlsym(library, "adblock_free"))
                   : nullptr;
   FreeString free_string =
       library ? reinterpret_cast<FreeString>(
-                    dlsym(library, "orbira_adblock_free_string"))
+                    dlsym(library, "adblock_free_string"))
               : nullptr;
   bool valid() const {
     return version && version() == 2 && compile && query && free && free_string;

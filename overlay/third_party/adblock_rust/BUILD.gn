@@ -6,7 +6,7 @@ action("runtime") {
     "Cargo.toml", "Cargo.lock", "vendor.tar.gz", "src/lib.rs", "src/preprocess.rs", "resources/resources.json", "resources/SOURCES.json",
     "lists/brave-specific.txt", "lists/brave-unbreak.txt", "lists/easylist.txt", "lists/easylist-china.txt", "lists/easyprivacy.txt",
   ]
-  outputs = [ "$root_out_dir/liborbira_adblock.so" ]
+  outputs = [ "$root_out_dir/libadblock.so" ]
   args = [
     "--out", rebase_path(outputs[0], root_build_dir),
     "--sdk", rebase_path(ohos_sdk_root, root_build_dir),
