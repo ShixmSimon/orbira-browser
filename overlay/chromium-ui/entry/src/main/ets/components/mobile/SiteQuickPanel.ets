@@ -86,6 +86,7 @@ export struct SiteQuickPanel {
   }
 
   private refresh(): void {
+    console.info('[SiteQuick] refresh tabId=' + this.tabId + ' host=' + this.host);
     if (this.tabId.length === 0) {
       this.statusLine = '当前没有网页';
       return;
@@ -95,6 +96,7 @@ export struct SiteQuickPanel {
   }
 
   private onPayload(): void {
+    console.info('[SiteQuick] onPayload raw=' + this.payloadJson);
     if (this.payloadJson.length === 0) {
       return;
     }
@@ -123,23 +125,28 @@ export struct SiteQuickPanel {
     this.abContextId = payload.contextId ?? '';
     this.abRevision = payload.revision ?? -1;
     this.abNavigationId = payload.navigationId ?? '';
-    if (payload.siteEnabled !== undefined) {
-      this.adBlockOn = payload.siteEnabled;
-    }
     if (payload.blockedRequests !== undefined) {
       this.blockedCount = payload.blockedRequests;
     }
-    this.adBlockCanToggle = payload.canToggle === true;
     if (isWriteReply) {
       this.pendingAdBlockWrite = false;
       if (payload.ok === true) {
+        if (payload.siteEnabled !== undefined) {
+          this.adBlockOn = payload.siteEnabled;
+        }
         this.statusLine = '已更新';
       } else {
+        // 失败（stale 等）：回滚到操作前的状态。
+        this.adBlockOn = !this.adBlockOn;
         this.statusLine = this.reasonText(payload.reason ?? '');
       }
-    } else if (this.pendingAdBlockWrite) {
-      // 写回执被状态回包插队：状态已是最新，撤销挂起标记即可。
-      this.pendingAdBlockWrite = false;
+    } else {
+      // 状态回包：pending 期间（刚点了开关、乐观值未确认）不覆盖，
+      // 否则会被旧的 siteEnabled 插队冲掉，造成 Toggle 视觉抖动。
+      if (!this.pendingAdBlockWrite && payload.siteEnabled !== undefined) {
+        this.adBlockOn = payload.siteEnabled;
+      }
+      this.adBlockCanToggle = payload.canToggle === true;
     }
   }
 
@@ -151,16 +158,23 @@ export struct SiteQuickPanel {
     this.prRevision = payload.revision ?? -1;
     this.prNavigationId = payload.navigationId ?? '';
     this.prOrigin = payload.origin ?? '';
-    if (payload.siteEnabled !== undefined) {
-      this.protectionOn = payload.siteEnabled;
-    }
-    this.protectionCanToggle = payload.canOverride === true;
     this.protectionVerdict = payload.verdict ?? '';
     if (isWriteReply) {
+      // 写回执：引擎确认值权威，校正乐观值；失败则回滚。
       this.pendingProtectionWrite = false;
-      if (payload.ok !== true) {
+      if (payload.ok === true) {
+        if (payload.siteEnabled !== undefined) {
+          this.protectionOn = payload.siteEnabled;
+        }
+      } else {
+        this.protectionOn = !this.protectionOn;
         this.statusLine = this.reasonText(payload.reason ?? '');
       }
+    } else {
+      if (!this.pendingProtectionWrite && payload.siteEnabled !== undefined) {
+        this.protectionOn = payload.siteEnabled;
+      }
+      this.protectionCanToggle = payload.canOverride === true;
     }
   }
 
@@ -190,7 +204,10 @@ export struct SiteQuickPanel {
     if (!this.adBlockCanToggle || this.pendingAdBlockWrite) {
       return;
     }
-    // 读-改-写：写参数取自最近一次 adBlockPageState 回包。
+    // Toggle 是受控组件：不在这里立即置位，下一次重渲染会用旧 adBlockOn
+    // 把视觉拉回，表现为「点了自己弹回去」。先乐观更新，命令确认后再校正。
+    const next = !this.adBlockOn;
+    this.adBlockOn = next;
     this.pendingAdBlockWrite = true;
     this.onCommand({
       command: 'setAdBlockSiteEnabled',
@@ -199,7 +216,7 @@ export struct SiteQuickPanel {
       navigationId: this.abNavigationId,
       contextId: this.abContextId,
       expectedRevision: this.abRevision,
-      enabled: !this.adBlockOn
+      enabled: next
     });
   }
 
@@ -207,6 +224,8 @@ export struct SiteQuickPanel {
     if (!this.protectionCanToggle || this.pendingProtectionWrite) {
       return;
     }
+    const next = !this.protectionOn;
+    this.protectionOn = next;
     this.pendingProtectionWrite = true;
     this.onCommand({
       command: 'setSiteProtectionEnabled',
@@ -216,7 +235,7 @@ export struct SiteQuickPanel {
       navigationId: this.prNavigationId,
       origin: this.prOrigin,
       expectedRevision: this.prRevision,
-      siteEnabled: !this.protectionOn
+      siteEnabled: next
     });
   }
 
@@ -294,6 +313,7 @@ export struct SiteQuickPanel {
       Toggle({ type: ToggleType.Switch, isOn: isOn })
         .selectedColor($r('app.color.accent_primary'))
         .opacity(enabled ? 1 : 0.4)
+        .enabled(enabled)
         .onChange((_isOn: boolean): void => {
           // onChange 在程序置位时也会触发；统一走显式回调，由调用方判断。
           onToggle();
@@ -336,7 +356,9 @@ export struct SiteQuickPanel {
         Divider().color($r('app.color.divider'))
 
         this.ToggleRow('防钓鱼检测此站',
-          this.protectionVerdict.length > 0 ? this.verdictText() : '检查中…',
+          this.protectionCanToggle
+            ? (this.protectionVerdict.length > 0 ? this.verdictText() : '检查中…')
+            : '当前提供方不支持单站切换',
           this.protectionOn, this.protectionCanToggle, (): void => this.toggleProtection())
         Divider().color($r('app.color.divider'))
 

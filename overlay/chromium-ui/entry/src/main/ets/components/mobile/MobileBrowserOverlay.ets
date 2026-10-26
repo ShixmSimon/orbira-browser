@@ -2366,6 +2366,7 @@ export struct MobileBrowserOverlay {
             .width('100%')
             .height('100%')
             .backgroundColor('rgba(0, 0, 0, 0.18)')
+            .hitTestBehavior(HitTestMode.Block)
             .onClick(() => {
               this.siteQuickVisible = false;
             })
@@ -2391,6 +2392,7 @@ export struct MobileBrowserOverlay {
           .borderRadius({ topLeft: 20, topRight: 20 })
           .backgroundColor($r('app.color.card_background'))
           .clip(true)
+          .onClick((): void => {})
         }
         .width('100%')
         .height('100%')
