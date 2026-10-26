@@ -696,16 +696,7 @@ struct AuraShell {
         // 且要求 `hideTopBarOnScroll` 开着（见 MBO onChromeBottomDockTouch）——
         // 所以「滚动隐藏地址栏」关着 = dock 常驻 → 抬；开着 = 可收起 → 收起后铺满
         // 物理底边（维持 1.0.111 起的行为，不动）。
-        // 1.0.5（155 线）：底栏常驻时网页**铺满物理底边**（bottom = 0），dock 整体
-        // 作为浮层叠在网页之上。
-        // 1.0.3 曾改成「只让出 dock 高度（60）、不再叠加安全区」，结果那 60 里没有网页，
-        // 露的是引擎 surface 底板 + dock 的磨砂材质 → 用户两次截图反馈「页面没铺到底」
-        // 「胶囊下面有磨砂/漏光」。
-        // 与之配套：MobileBrowserOverlay.BottomDock 的容器高度也去掉了安全区（材质只
-        // 覆盖胶囊），否则材质仍会糊住安全区那一条。
-        // 取舍（1.0.97 / 1.0.86 已拍板过同一题）：最后一行会落在半透明 dock 之下，
-        // 但「去色带 + 页面到底」的观感优先；Chrome/Safari 移动版同为该形态。
-        const dockCover: number = 0;
+        const dockCover: number = this.hideTopBarOnScroll ? 0 : dockCoveredHeightVp(bottomSafe);
         bottom = dockCover + (this.hideStatusBarOnScroll ? 0 : topSafe);
       } else {
         // 1.0.130：补偿 = 引擎的「顶栏下推量」，随 ratio 连续（见 topBarPushVp）。
@@ -716,8 +707,7 @@ struct AuraShell {
     } else {
       // 简约「智能抬高」：底栏常驻（「滚动隐藏底部栏」关着）→ 抬到 dock 上边；
       // 随滚动收起 → 0（收起后铺满物理底边，1.0.97 用户拍板）。再叠顶部缺口补偿。
-      // 同上：常驻档也铺满物理底边（bottom 只余顶部缺口补偿，不再让出 dock 高度）。
-      bottom = this.topBarPushVp();
+      bottom = (this.hideDockOnScroll ? 0 : dockCoveredHeightVp(bottomSafe)) + this.topBarPushVp();
     }
     this.lastTopPushSent = this.topBarPushVp();
     this.executeBrowserCommand({
