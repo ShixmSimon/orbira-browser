@@ -240,6 +240,7 @@ export interface BrowserRuntimeEvent {
     'historyResults' | 'historyChanged' | 'autocompleteResults' | 'topSites' |
     'downloadUpdated' | 'downloadList' |
     'clearBrowsingDataDone' | 'browsingDataCounts' | 'searchEngines' |
+    'adBlockState' | 'adBlockConfigResult' | 'adBlockStateChanged' |
     'prefs' | 'prefsChanged' | 'siteSettings' | 'aboutInfo' | 'favicons' |
     'urlProtectionState' | 'urlProtectionConfigResult' | 'urlProtectionStateChanged' |
     'urlProtectionRulesUpdateResult' |

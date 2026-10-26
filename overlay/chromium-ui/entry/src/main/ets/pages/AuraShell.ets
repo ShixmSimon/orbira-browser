@@ -1867,6 +1867,15 @@ struct AuraShell {
         JSON.stringify(shellEvent<PrefsEvent>(event).values ?? []));
       return;
     }
+    // 广告拦截：getAdBlockState / setAdBlock* / updateAdBlockSources 的回包
+    // （adBlockState / adBlockConfigResult），以及引擎主动推的 adBlockStateChanged。
+    // 原样转给「设置 → 广告拦截」面板，由它自己解析 sources / revision / contextId。
+    if (event.event === 'adBlockState' ||
+      event.event === 'adBlockConfigResult' ||
+      event.event === 'adBlockStateChanged') {
+      AppStorage.setOrCreate('auraPanelAdBlock', JSON.stringify(event));
+      return;
+    }
     if (event.event === 'searchEngines') {
       const engines = shellEvent<SearchEnginesEvent>(event).items ?? [];
       AppStorage.setOrCreate('auraPanelEngines', JSON.stringify(engines));

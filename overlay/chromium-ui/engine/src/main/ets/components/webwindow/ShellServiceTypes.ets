@@ -978,3 +978,40 @@ export interface PageFullscreenChangedEvent {
   event: 'pageFullscreenChanged';
   fullscreen: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// 广告拦截（adblockApiVersion 1）。引擎实现在 chrome/browser/ohos/adblock/。
+// 状态用 getAdBlockState 拉，变更后引擎会推 adBlockState / adBlockConfigResult。
+// 所有写命令都必须带 contextId + expectedRevision：引擎 Service::CheckRevision()
+// 会校验这两项，不带或过期一律回 reason = 'stale'（此时重拉一次状态再重试）。
+// ---------------------------------------------------------------------------
+export interface AdBlockSource {
+  id: string;
+  name: string;
+  // builtin（内置，可开关但不可删）/ subscription（用户订阅）/ file（导入的文件）
+  kind: string;
+  url?: string;
+  enabled: boolean;
+  // missing / downloading / compiling / ready / failed
+  status?: string;
+  ruleCount?: number;
+  unsupportedCount?: number;
+  updatedAt?: number;
+}
+
+export interface AdBlockStateEvent {
+  event?: string;
+  incognito?: boolean;
+  requestId?: number;
+  enabled?: boolean;
+  autoUpdate?: boolean;
+  ready?: boolean;
+  updating?: boolean;
+  sources?: AdBlockSource[];
+  exceptions?: string[];
+  userRuleCount?: number;
+  revision?: number;
+  contextId?: string;
+  ok?: boolean;
+  reason?: string;
+}

@@ -22,6 +22,7 @@ import { ShellUiPrefs } from '../../utils/appearance/ShellUiPrefs';
 import { SearchEnginesPrefs } from '../../utils/appearance/SearchEnginesPrefs';
 import { HuaweiAccountInfo } from '../../utils/account/HuaweiAccountService';
 import { HuaweiAccountView } from './AccountPanel';
+import { AdBlockPanel } from './AdBlockPanel';
 import { AuraNavIconRow, AuraSectionLabel, AuraSearchBar } from './AuraKit';
 import { searchTemplateForSite } from './ShellUtils';
 import {
@@ -129,6 +130,9 @@ const SETTINGS_ENTRIES: SettingsEntry[] = [
     keywords: ['popup', '弹窗', '拦截', '广告'], section: '隐私与安全', kind: 'toggle' },
   { id: 'doNotTrack', title: '发送"请勿追踪"请求', subtitle: '',
     keywords: ['dnt', '请勿追踪', '追踪', '隐私'], section: '隐私与安全', kind: 'toggle' },
+  { id: 'adblock', title: '广告拦截', subtitle: '内置规则过滤网页广告与追踪脚本',
+    keywords: ['adblock', '广告', '拦截', '过滤', '屏蔽', 'easylist', '规则'],
+    section: '隐私与安全', kind: 'page' },
   { id: 'clearBrowsingData', title: '清除浏览数据', subtitle: '历史记录、Cookie、缓存等',
     keywords: ['clear', '清除', '清理', '历史', '缓存', 'cache', 'history'],
     section: '隐私与安全', kind: 'page' },
@@ -870,6 +874,9 @@ export struct SettingsPanel {
 
   // 二级页标题按路由名取（name = pushPathByName 传入的路由名）。
   private subPageTitle(name: string): string {
+    if (name === 'adblock') {
+      return '广告拦截';
+    }
     if (name === 'clear') {
       return '清除浏览数据';
     }
@@ -1268,6 +1275,15 @@ export struct SettingsPanel {
               value: '',
               onTap: (): void => {
                 this.onOpenPasswords();
+              }
+            })
+            this.CardDivider()
+            SettingsNavRow({
+              icon: $r('app.media.aura_block'),
+              label: '广告拦截',
+              value: '',
+              onTap: (): void => {
+                this.pushPage('adblock');
               }
             })
             this.CardDivider()
@@ -2316,6 +2332,12 @@ export struct SettingsPanel {
           this.HomeStyleView()
         } else if (name === 'desktopSites') {
           this.DesktopSitesView()
+        } else if (name === 'adblock') {
+          AdBlockPanel({
+            onCommand: (command: BrowserCommandPayload): void => {
+              this.onCommand(command);
+            }
+          })
         }
       }
       .width('100%')
