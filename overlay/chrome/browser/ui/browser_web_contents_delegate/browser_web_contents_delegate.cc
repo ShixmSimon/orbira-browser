@@ -422,14 +422,21 @@ int BrowserWebContentsDelegate::GetTopControlsMinHeight() {
 bool BrowserWebContentsDelegate::DoBrowserControlsShrinkRendererSize(
     content::WebContents* contents) {
 #if BUILDFLAG(IS_OHOS)
+  if (app_browser_controller_) {
+    return false;
+  }
   // AuraShell 的顶/底条带都是**浮在满屏页面之上的半透明覆盖层**（overlay 式），
-  // 不是布局占位（layout-owning）。renderer 一旦为给条带腾空间而收缩，页面高度
-  // 就随「顶栏显示 / 收起」来回变：知乎这类 position:fixed 固定在视口底的元素
-  // （「欢迎参与讨论」条）会跟着上下跳，页面底部也会被裁。
-  // 155 上游在这里改成了 Android 那种收缩式
-  // （return !AreAuraShellBrowserControlsHidden(contents)），与我们的 overlay
-  // 外壳不匹配；154 的适配层是无条件 return false，这里改回 154 的语义。
-  return false;
+  // 不是布局占位（layout-owning）。上游在这里写的是
+  //   return !chrome::ohos::AreAuraShellBrowserControlsHidden(contents);
+  // —— 顶栏一显示就收缩 renderer、一收起就长回来，页面高度随滚动来回变：
+  // 知乎这类 position:fixed 固定在视口底的元素（「欢迎参与讨论」条）会跟着上下跳，
+  // 页面底部也会被裁。154 的适配层把它改成恒定 false：只要顶栏存在
+  // （GetAuraShellTopControlsHeight() > 0）就永不收缩，与顶栏显隐无关。
+  // 注意：这里必须保留 if 条件，不能写成无条件 return ——
+  // 后面那句 return 会变成不可达代码，-Wunreachable-code-return 直接报错。
+  if (chrome::ohos::GetAuraShellTopControlsHeight() > 0) {
+    return false;
+  }
 #endif
   return window_->DoBrowserControlsShrinkRendererSize(contents);
 }
