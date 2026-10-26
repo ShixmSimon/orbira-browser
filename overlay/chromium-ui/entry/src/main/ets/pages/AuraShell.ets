@@ -668,14 +668,18 @@ struct AuraShell {
     if (this.homeStyle === 'chrome' && this.dockPosition === 'bottom') {
       return this.hideStatusBarOnScroll ? 0 : topSafe;   // 底置沿用 1.0.111 的常量
     }
-    // 常显档（「滚动隐藏地址栏」关着）：只补状态栏那一条。
-    // 1.0.133 曾给 48+topSafe（minTop 全量），并自己留了备选：「若用户看到底部空出
-    // 一大截，说明实际只少 topSafe → 改回 topSafe」。1.0.3（155 线）在 Chrome 顶置 +
-    // 地址栏常驻下实测正是这个现象：底部空出约 90vp ≈ 48+36，且滚动时那块空白还会
-    // 变（inset 在 topSafe / 48+topSafe 之间翻）→ 观感就是「知乎底部跳一下」。
-    // 说明 155 引擎的可见视口已经把地址栏算进去了，外壳再补一份就是重复。
+    // 1.0.133：常显档（「滚动隐藏地址栏」关着）minTop = top = 48+topSafe —— 页面顶部
+    // 常年被「状态栏 + 地址栏」占住，视口底部同样少这么多，必须补回来。
+    // 用户实测确认的两处：简约「底栏关 + 地址栏也关」要在 dock 占位之外**额外**抬一份；
+    // Chrome 顶置「地址栏关」也要抬。
+    // （1.0.131 曾把常显档判成 0：当时那张截图是「内容一直延伸到屏幕底」，看着像正常，
+    //  其实底部内容已被推出屏幕 —— 与收起档的「裁切」是同一个现象，只是没有空条。）
+    // 155 线补充：1.0.3 一度把它改成 topSafe，那是因为当时 155 上游把 renderer 改成
+    // 「收缩式」（顶栏显示就收缩），引擎的收缩与这里的 inset 双重抬高 → 底部空一大截。
+    // 现在引擎已改回「顶栏存在即不收缩」，与 154/1.0.2 行为等价，这里必须回到 minTop
+    // 全量；否则地址栏常显时页面底部少 48vp，最后一行会被 dock 盖住（1.0.3 实测）。
     if (!this.hideTopBarOnScroll) {
-      return topSafe;
+      return TOP_BAR_EXTENT_VP + topSafe;
     }
     return this.hideStatusBarOnScroll ? 0 : topSafe;
   }
@@ -705,6 +709,8 @@ struct AuraShell {
         bottom = this.topBarPushVp();
       }
     } else {
+      // 简约「智能抬高」：底栏常驻（「滚动隐藏底部栏」关着）→ 抬到 dock 上边；
+      // 随滚动收起 → 0（收起后铺满物理底边，1.0.97 用户拍板）。再叠顶部缺口补偿。
       bottom = (this.hideDockOnScroll ? 0 : dockCoveredHeightVp(bottomSafe)) + this.topBarPushVp();
     }
     this.lastTopPushSent = this.topBarPushVp();
