@@ -23,6 +23,8 @@ class BrowserWindowInterface;
 class GURL;
 class Profile;
 
+class GURL;
+
 namespace content {
 class RenderFrameHost;
 class WebContents;
@@ -38,6 +40,8 @@ struct AuraShellWindowMetadata {
   // A second browser window -- an incognito one, today. The shell hosts it the
   // way it hosts the first: full screen, not as a popup.
   bool is_browser = false;
+  // A web window.open() popup, including one embedded in the native shell.
+  bool is_web_popup = false;
   bool is_incognito = false;
   std::string app_id;
   std::string title;
@@ -87,6 +91,10 @@ std::optional<bool> IsAuraShellPictureInPictureWindow(
 std::optional<bool> IsAuraShellWindowModal(gfx::AcceleratedWidget widget);
 std::optional<AuraShellWindowMetadata> GetAuraShellWindowMetadata(
     gfx::AcceleratedWidget widget);
+// Called once when the shell attaches a system window to a desktop web popup.
+// The window action is posted to Chromium's UI thread and leaves normal
+// browser windows and phone popups unchanged.
+void RestoreAuraShellPopupWindow(gfx::AcceleratedWidget widget);
 void UpdateAuraShellUiFamily(const std::string& ui_family);
 void UpdateAuraShellColorScheme(const std::string& color_scheme);
 void UpdateAuraShellPrintOutputDirectory(const std::string& output_directory);
@@ -198,6 +206,11 @@ void RequestAuraShellExternalUrl(content::WebContents* contents,
 void NotifyAuraShellPopupBlocked(content::WebContents* contents,
                                  const GURL& popup_url,
                                  int blocked_on_page);
+// 扩展 popup 关闭：引擎在原生 popup widget 销毁时发出，外壳据此立刻收回
+// 主页盖层（auraPopupHomeHold 清零），不必再等 8 秒兜底超时。点击扩展图标
+// 打开 popup 时主页让位露出引擎原生 NTP，popup 一关主页就回来。
+void NotifyAuraShellExtensionPopupClosed(Profile* profile,
+                                         const std::string& extension_id);
 void NotifyAuraShellWebAppInstalled(const std::string& app_id,
                                     const std::string& title,
                                     const std::string& start_url);
@@ -254,9 +267,14 @@ void OnAuraShellWebContentsBlocked(content::WebContents* contents,
 void SetAuraShellUserAgentPinned(content::WebContents* contents, bool pinned);
 bool IsAuraShellUserAgentPinned(content::WebContents* contents);
 
-// Whether the active override requests desktop layout; a mobile compatibility
-// override is still a mobile page.
+// A navigation override can carry the inherited mobile UA too. Use the
+// effective UA to distinguish desktop-site mode for both viewport and menu.
 bool IsAuraShellRequestingDesktopSite(content::WebContents* contents);
+
+// For page-created tabs only, before their first navigation; toolbar-created
+// tabs keep the device default. Includes the pin needed to survive state polls.
+void InheritAuraShellUserAgent(content::WebContents* source,
+                              content::WebContents* target);
 
 // The user agent "desktop site" sends. On a phone, the OpenHarmony string
 // without its Mobile token, which Chinese sites take for a desktop. A tablet
@@ -264,6 +282,11 @@ bool IsAuraShellRequestingDesktopSite(content::WebContents* contents);
 // is Chrome's desktop Linux string, as Chrome for Android's desktop site is,
 // with client hints to match.
 blink::UserAgentOverride AuraShellDesktopSiteUserAgent();
+
+// Whether the shell asked for this URL to be opened as a desktop site. Used by
+// the navigation throttle so every tab gets the right user agent before its
+// request goes out, including tabs an extension opens in the background.
+bool IsAuraShellDesktopSite(const GURL& url);
 
 void OnAuraShellTopControlsShownRatio(content::WebContents* contents,
                                       float ratio);

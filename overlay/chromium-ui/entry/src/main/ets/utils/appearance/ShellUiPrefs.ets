@@ -39,6 +39,8 @@ const KEY_WEBGPU_ENABLED = 'webgpuEnabled';
 // （\n 分隔，复用 URL 列表的解析/拼接，避免 ArkTS 侧 JSON 体操）。再打开这些
 // 站点会自动用桌面形状 UA（去 Mobile），不用每次手动切。
 const KEY_DESKTOP_SITES = 'desktopSites';
+// 「默认使用桌面版网站」开着时，读者从菜单明确切回移动版的站点（单站例外）。
+const KEY_MOBILE_SITES = 'mobileSites';
 // 全局默认 UA：'mobile'（默认，手机浏览体验）或 'desktop'（所有站点用桌面 UA）。
 const KEY_UA_DEFAULT = 'uaDefault';
 
@@ -331,6 +333,25 @@ export class ShellUiPrefs {
     try {
       const store = await preferences.getPreferences(context, STORE_NAME);
       await store.put(KEY_DESKTOP_SITES, ShellUiPrefs.joinUrlList(list));
+      await store.flush();
+    } catch (error) {
+    }
+  }
+
+  static async loadMobileSites(context: common.Context): Promise<string[]> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      const raw = await store.get(KEY_MOBILE_SITES, '');
+      return ShellUiPrefs.parseUrlList(typeof raw === 'string' ? raw : '');
+    } catch (error) {
+      return [];
+    }
+  }
+
+  static async saveMobileSites(context: common.Context, list: string[]): Promise<void> {
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      await store.put(KEY_MOBILE_SITES, ShellUiPrefs.joinUrlList(list));
       await store.flush();
     } catch (error) {
     }

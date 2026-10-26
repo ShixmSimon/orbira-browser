@@ -1252,7 +1252,8 @@ export struct SettingsPanel {
                 this.onCommand({
                   command: 'setDesktopSites',
                   sites: String(AppStorage.get('auraDesktopSites') ?? ''),
-                  allSites: isOn
+                  allSites: isOn,
+                  mobileSites: String(AppStorage.get('auraMobileSites') ?? '')
                 });
                 this.onCommand({ command: 'setRequestDesktopSite', enabled: isOn });
                 this.onCommand({ command: 'reload' });
@@ -2485,7 +2486,8 @@ export struct SettingsPanel {
     this.onCommand({
       command: 'setDesktopSites',
       sites: joined,
-      allSites: String(AppStorage.get('auraUaDefault') ?? 'mobile') === 'desktop'
+      allSites: String(AppStorage.get('auraUaDefault') ?? 'mobile') === 'desktop',
+      mobileSites: String(AppStorage.get('auraMobileSites') ?? '')
     });
   }
 
