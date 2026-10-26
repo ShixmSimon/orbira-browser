@@ -2968,7 +2968,10 @@ export struct MobileBrowserOverlay {
           barWidthVp: resolveDockBarWidthVp(),
           barHeightVp: DOCK_BAR_HEIGHT_VP,
           sideMarginVp: 36,
-          bottomMarginVp: resolveDockBottomMarginVp(this.bottomSafeVp),
+          // 0 而不是安全区：材质板的高度 = 容器高度，容器一旦含安全区，
+          // HDS 材质就会把安全区那一条也糊上（浅色模式=磨砂白、暗色模式=漏光）。
+          // 底距改由外层 Stack 的 margin 承担，视觉位置不变，材质画不到那里。
+          bottomMarginVp: 0,
           onDockSlot: (slot: string): void => {
             this.handleDockSlot(slot);
           }
@@ -2993,11 +2996,16 @@ export struct MobileBrowserOverlay {
         .width('100%')
         .height('100%')
         .justifyContent(FlexAlign.End)
-        .padding({ top: 12, left: 16, right: 16, bottom: resolveDockBottomMarginVp(this.bottomSafeVp) })
+        .padding({ top: 12, left: 16, right: 16, bottom: 0 })
       }
     }
     .width('100%')
-    .height(BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(this.bottomSafeVp))
+    // 容器高度 = 胶囊(48) + 顶部呼吸位(12) = 60，**不含底部安全区**：安全区那一条
+    // 交给网页自己画（AuraShell 的 setViewportInsets.bottom 已为 0）。此前容器含
+    // 安全区，HDS 材质板按容器高度铺满 → 胶囊下方一直到屏幕底都是磨砂玻璃，
+    // 浅色模式表现为「页面没铺到底的一条灰白」，暗色模式表现为「胶囊下漏光」。
+    .height(BOTTOM_DOCK_EXTENT_VP)
+    .margin({ bottom: resolveDockBottomMarginVp(this.bottomSafeVp) })
     // 同顶栏：行程要含 dock 的底距（原始安全区），否则 ratio→0 时 dock
     // 仍留一条缝。
     .translate({ y: (1 - this.dockRatio()) * (BOTTOM_DOCK_EXTENT_VP + resolveDockBottomMarginVp(this.bottomSafeVp)) })
@@ -5467,12 +5475,15 @@ struct DockMaterialPlate {
         materialType: hdsMaterial.MaterialType.ADAPTIVE,
         materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
       },
-      // The fade region: from the bar down past the home-indicator strip to
-      // the layer's bottom edge (= the screen edge). maskHeight = bar +
-      // bottom margin, matching the dock's own mask height.
+      // The fade region covers the capsule only. It used to run from the bar
+      // down past the home-indicator strip to the screen edge, which painted a
+      // frosted band over the page under the dock: invisible on white pages,
+      // obvious the moment a page put a photo or a colour there (zhihu). The
+      // strip belongs to the page now (see AuraShell's bottom viewport inset),
+      // so the material must stop at the capsule's bottom edge.
       gradientMask: {
         maskColor: $r('app.color.dock_mask'),
-        maskHeight: this.barHeightVp + this.bottomMarginVp
+        maskHeight: this.barHeightVp
       }
     };
     return style;
