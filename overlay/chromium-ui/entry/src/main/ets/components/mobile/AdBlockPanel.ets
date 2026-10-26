@@ -663,23 +663,29 @@ export struct AdBlockPanel {
         Column() {
           this.SectionTitle('开源致谢',
             '感谢 Brave、uBlock Origin、EasyList 及社区贡献者，为广告过滤提供引擎、脚本资源和规则。')
-          this.CreditRow('adblock-rust', 'MPL-2.0', 'Brave 与社区贡献者维护的广告过滤引擎。')
+          this.CreditRow('adblock-rust', 'MPL-2.0',
+            'brave/adblock-rust · 广告过滤引擎（adblock 0.13.3）')
           Divider().color($r('app.color.divider'))
-          this.CreditRow('brave-core', 'MPL-2.0', 'Brave 与社区贡献者提供的浏览器广告过滤集成代码。')
+          this.CreditRow('brave-core', 'MPL-2.0',
+            'brave/brave-core · 浏览器侧广告过滤集成代码')
           Divider().color($r('app.color.divider'))
-          this.CreditRow('adblock-resources', 'MPL-2.0', 'Brave 维护的脚本与替代资源包，含另行授权的第三方资源。')
+          this.CreditRow('adblock-resources', 'MPL-2.0',
+            'brave/adblock-resources · 脚本与替代资源包')
           Divider().color($r('app.color.divider'))
-          this.CreditRow('adblock-lists', '查看许可证', 'Brave 维护的广告过滤补充规则与网站兼容修正规则。')
+          this.CreditRow('adblock-lists', 'MPL-2.0',
+            'brave/adblock-lists · 补充规则与网站兼容修正')
           Divider().color($r('app.color.divider'))
           this.CreditRow('uBlock Origin', 'GPL-3.0-or-later',
-            'Raymond Hill 与 uBlock Origin 贡献者提供的脚本及替代资源。')
+            'gorhill/uBlock · scriptlets 与替代资源（Raymond Hill 及贡献者）')
           Divider().color($r('app.color.divider'))
-          this.CreditRow('EasyList', 'CC-BY-SA 3.0', 'EasyList 作者与社区维护的基础广告过滤规则。')
+          this.CreditRow('EasyList', 'CC-BY-SA 3.0', 'easylist/easylist · 基础广告过滤规则')
           Divider().color($r('app.color.divider'))
-          this.CreditRow('EasyList China', 'CC-BY-SA 3.0', 'EasyList China 贡献者维护的中文网站补充规则。')
+          this.CreditRow('EasyList China', 'CC-BY-SA 3.0', 'easylist/easylistchina · 中文网站补充规则')
           Divider().color($r('app.color.divider'))
-          this.CreditRow('EasyPrivacy', 'CC-BY-SA 3.0', 'EasyList 作者与社区维护的跟踪器过滤规则。')
-          Text('各项目及第三方资源保留原作者版权，分别遵循其许可证。规则是否启用，以「规则源」中的勾选为准。')
+          this.CreditRow('EasyPrivacy', 'CC-BY-SA 3.0', 'easylist/easylist · 跟踪器过滤规则')
+          Text('各项目及第三方资源保留原作者版权，分别遵循其许可证（许可证原文随源码提供：' +
+            'BRAVE-MPL-2.0.txt / UBLOCK-GPL-3.0.txt / CC-BY-SA-3.0.txt）。' +
+            '规则是否启用，以「规则源」中的勾选为准。')
             .fontSize(11)
             .fontColor($r('app.color.text_secondary'))
             .width('100%')
