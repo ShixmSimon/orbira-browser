@@ -71,8 +71,6 @@ export struct ExtensionPanel {
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
   onBack: () => void = (): void => {};
   onClose: () => void = (): void => {};
-  // 1.0.163：内层详情导航激活态回传 overlay（禁用面板级边缘右滑，避免与原生子页返回冲突）。
-  onInnerNavChange?: (active: boolean) => void = (_active: boolean): void => {};
   // The active tab's URL when the page opened: the native install-confirm
   // dialog renders in the tab's web layer, and a new-tab page is covered by
   // the shell's home surface -- the tab must be parked elsewhere first.
@@ -330,7 +328,6 @@ export struct ExtensionPanel {
         this.pageTitle = '扩展程序';
         if (this.pathStack.size() > 1) {
           this.pathStack.pop();
-          this.onInnerNavChange?.(this.pathStack.size() > 0);
         }
         this.reload();
         return;
@@ -572,7 +569,6 @@ export struct ExtensionPanel {
     this.page = 'detail';
     this.pageTitle = item.name;
     this.pathStack.pushPathByName('detail', item.id);
-    this.onInnerNavChange?.(this.pathStack.size() > 0);
     this.requestSeq += 1;
     this.onCommand({ command: 'getExtensionDetails', requestId: this.requestSeq, id: item.id });
   }
@@ -583,7 +579,6 @@ export struct ExtensionPanel {
     this.pageTitle = '扩展程序';
     if (this.pathStack.size() > 0) {
       this.pathStack.pop();
-      this.onInnerNavChange?.(this.pathStack.size() > 0);
     }
   }
 

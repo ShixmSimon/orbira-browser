@@ -190,9 +190,6 @@ export struct SettingsPanel {
   onOpenExtensions: () => void = (): void => {};
   onOpenSitePermissions: () => void = (): void => {};
   onOpenPasswords: () => void = (): void => {};
-  // 1.0.163：内层子页（清除数据/搜索引擎/关于…）导航激活态回传 overlay，
-  // 用于禁用面板级边缘右滑手势、避免与系统原生子页返回手势打架。
-  onInnerNavChange?: (active: boolean) => void = (_active: boolean): void => {};
   // 1.0.93：「主页设置 → 自定义主页布局」需先收起设置面板、再打开主页布局弹层
   // （HomeSurface 在设置面板打开时未挂载 / 被遮挡，直发信号无效）。
   onOpenHomeLayout: () => void = (): void => {};
@@ -1022,14 +1019,12 @@ export struct SettingsPanel {
   private popPage(): void {
     if (this.pathStack.size() > 0) {
       this.pathStack.pop();
-      this.onInnerNavChange?.(this.pathStack.size() > 0);
     }
   }
 
   // 推入二级页。转场由系统 push-pop 默认接管，不再手写位移/淡出。
   private pushPage(target: string): void {
     this.pathStack.pushPathByName(target, '');
-    this.onInnerNavChange?.(this.pathStack.size() > 0);
   }
 
   @Builder
