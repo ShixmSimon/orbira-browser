@@ -19,7 +19,6 @@
  * 状态 —— 引擎按这些键做新鲜度校验，带着旧值写会回 stale。
  */
 import { BrowserCommandPayload } from 'engine';
-import { promptAction } from '@kit.ArkUI';
 
 // 引擎回包的松散形状（ArkTS 禁 any / 索引访问，逐字段显式声明）。
 interface SiteQuickEvent {
@@ -292,33 +291,6 @@ export struct SiteQuickPanel {
     return `本页已拦截 ${this.blockedCount} 条请求`;
   }
 
-  private confirmClear(): void {
-    AlertDialog.show({
-      title: '清除这个网站的权限和数据？',
-      message: `${this.host} 的权限设置和网站存储的数据都会删除。`,
-      autoCancel: true,
-      primaryButton: {
-        value: '取消',
-        action: (): void => {
-        }
-      },
-      secondaryButton: {
-        value: '清除',
-        fontColor: '#E24B4A',
-        action: (): void => {
-          // ① 权限 / 站点设置（按 origin 字符串）。
-          this.onCommand({ command: 'resetSiteSettings', origin: this.prOrigin.length > 0 ? this.prOrigin : this.host });
-          // ② 站点存储：引擎按 tabId 定位当前标签再取它的 origin 清理。
-          if (this.tabId.length > 0) {
-            this.onCommand({ command: 'clearPageSiteData', tabId: this.tabId });
-          }
-          promptAction.showToast({ message: '已清除', duration: 2000 });
-          this.onClose();
-        }
-      }
-    });
-  }
-
   @Builder
   private RowHead(title: string, subtitle: string) {
     Column({ space: 3 }) {
@@ -398,16 +370,6 @@ export struct SiteQuickPanel {
             .width('100%')
             .padding({ top: 8, bottom: 4 })
         }
-
-        // 清除该站数据（红字）。
-        Row() {
-          Text('清除这个网站的权限和数据')
-            .fontSize(14)
-            .fontColor('#E24B4A')
-        }
-        .width('100%')
-        .padding({ top: 12, bottom: 12 })
-        .onClick((): void => this.confirmClear())
 
         Divider().color($r('app.color.divider'))
 
