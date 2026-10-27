@@ -4060,6 +4060,11 @@ export struct MobileBrowserOverlay {
               this.issueCommand({ command: 'toggleReaderMode' });
             })
         }
+        // 资源嗅探：列出当前页面被引擎识别出的媒体/图片资源并支持下载。
+        this.MenuItem($r('app.media.aura_globe'), '资源嗅探', '', (): void => {
+          this.closeMenuCard();
+          this.openResourceSniffPanel();
+        })
       }
       if (this.incognito) {
         this.MenuItem($r('app.media.aura_incognito'), '退出无痕', '', (): void => {
@@ -4768,6 +4773,16 @@ export struct MobileBrowserOverlay {
     this.sheetPage = 'tabs';
     router.pushUrl({ url: 'pages/panels/DownloadsPanelPage' }).catch((error: Error): void => {
       console.error('openDownloadsPanel pushUrl failed:', error);
+    });
+  }
+
+  // 资源嗅探：独立路由页，列出当前页被引擎识别出的媒体/图片资源。
+  private openResourceSniffPanel(): void {
+    this.menuVisible = false;
+    this.menuCardVisible = false;
+    this.sheetPage = 'tabs';
+    router.pushUrl({ url: 'pages/panels/ResourceSniffPanelPage' }).catch((error: Error): void => {
+      console.error('openResourceSniffPanel pushUrl failed:', error);
     });
   }
 
