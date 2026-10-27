@@ -2128,27 +2128,32 @@ void RunExtensionAction(BrowserWindowInterface* browser,
       ExtensionPopupAnchorFor(browser, parent, *id);
 
   // The popup is a native bubble widget parented to the browser window, above
-  // the web layer. Without a scrim, the active tab's page (new-tab page or
-  // chrome://bookmarks) shows through in the area above the popup. Park a
-  // full-window translucent scrim behind it, below the popup; it is torn down
-  // together with the popup by ExtensionPopupCloseWatcher.
-  gfx::Rect window_bounds = parent->GetWindowBoundsInScreen();
-  auto backdrop_widget = std::make_unique<views::Widget>();
-  {
-    views::Widget::InitParams params(
-        views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
-        views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
-    params.parent = parent->GetNativeView();
-    params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
-    params.bounds = gfx::Rect(window_bounds.size());
-    params.name = "ExtensionPopupBackdrop";
-    backdrop_widget->Init(std::move(params));
+  // the web layer. On a native Chromium page (new-tab / bookmarks) that page's
+  // own content would otherwise show through in the area above the popup, so
+  // park a full-window translucent scrim behind it, below the popup, and tear
+  // it down together with the popup via ExtensionPopupCloseWatcher.
+  // On a normal http(s) web page the page itself is the content, and a
+  // full-window scrim would only darken it for no reason -- skip it there.
+  std::unique_ptr<views::Widget> backdrop_widget;
+  if (active && !active->GetVisibleURL().SchemeIsHTTPOrHTTPS()) {
+    gfx::Rect window_bounds = parent->GetWindowBoundsInScreen();
+    backdrop_widget = std::make_unique<views::Widget>();
+    {
+      views::Widget::InitParams params(
+          views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
+          views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
+      params.parent = parent->GetNativeView();
+      params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
+      params.bounds = gfx::Rect(window_bounds.size());
+      params.name = "ExtensionPopupBackdrop";
+      backdrop_widget->Init(std::move(params));
+    }
+    auto backdrop_view = std::make_unique<views::View>();
+    backdrop_view->SetBackground(
+        views::CreateSolidBackground(SkColorSetARGB(0xEE, 0, 0, 0)));
+    backdrop_widget->SetContentsView(std::move(backdrop_view));
+    backdrop_widget->Show();
   }
-  auto backdrop_view = std::make_unique<views::View>();
-  backdrop_view->SetBackground(
-      views::CreateSolidBackground(SkColorSetARGB(0xA0, 0, 0, 0)));
-  backdrop_widget->SetContentsView(std::move(backdrop_view));
-  backdrop_widget->Show();
 
   ExtensionPopup::ShowPopupAtShellRect(browser, std::move(host), parent,
                                        anchor.rect, anchor.arrow,
@@ -2164,7 +2169,7 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   if (popup_widget) {
     new ExtensionPopupCloseWatcher(popup_widget, std::move(backdrop_widget),
                                   profile, *id);
-  } else {
+  } else if (backdrop_widget) {
     // No popup surfaced (shouldn't happen); drop the scrim we just raised.
     backdrop_widget->CloseNow();
   }
