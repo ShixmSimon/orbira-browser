@@ -578,6 +578,13 @@ export default class EntryAbility extends UIAbility {
       hilog.warn(DOMAIN, 'AuraShell', 'System bar properties update is unavailable: %{public}s', JSON.stringify(error));
     }
 
+    // 网页全屏（video / requestFullscreen）期间，系统栏归 AuraShell 的
+    // setPageFullscreen 管：本函数每次旋转、窗口尺寸变化、路由刷新都会再跑
+    // 一遍，若照旧无条件打开状态栏，就会把刚藏起来的那次顶回来 —— 真机实测
+    // 「竖屏进全屏 → 转横屏 → 状态栏又出现了」正是这条。
+    const pageFullscreen: boolean = AppStorage.get<boolean>('auraPageFullscreen') === true;
+    const systemBarVisible: boolean = !pageFullscreen;
+
     if (routing.windowPolicy === WindowPolicy.FULLSCREEN) {
       // Immersive layout: the shell draws BEHIND the status bar and the
       // navigation pill (their heights reach the shell as avoid-area insets),
@@ -585,8 +592,8 @@ export default class EntryAbility extends UIAbility {
       win.setWindowLayoutFullScreen(true).catch(() => {
       });
       try {
-        win.setSpecificSystemBarEnabled('status', true);
-        win.setSpecificSystemBarEnabled('navigationIndicator', true);
+        win.setSpecificSystemBarEnabled('status', systemBarVisible);
+        win.setSpecificSystemBarEnabled('navigationIndicator', systemBarVisible);
       } catch (error) {
       }
       this.updateSafeAreaInsets(win, true);
@@ -594,8 +601,8 @@ export default class EntryAbility extends UIAbility {
       win.setWindowLayoutFullScreen(false).catch(() => {
       });
       try {
-        win.setSpecificSystemBarEnabled('status', true);
-        win.setSpecificSystemBarEnabled('navigationIndicator', true);
+        win.setSpecificSystemBarEnabled('status', systemBarVisible);
+        win.setSpecificSystemBarEnabled('navigationIndicator', systemBarVisible);
       } catch (error) {
       }
       this.updateSafeAreaInsets(win, false);

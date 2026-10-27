@@ -354,9 +354,22 @@ export struct ResourceSniffPanel {
     })
   }
 
+  // 注意：@Builder 的**按值参数不会随状态刷新**（挂载时算一次就定住）。
+  // 「全部 N」的 N 必须在 builder 内部读 state 算，不能当字符串参数传进来
+  // ——之前传进来，列表加载完了它还停在「全部 0」。
+  private chipLabel(id: string): string {
+    if (id === CAT_ALL) {
+      return `全部 ${this.items.length}`;
+    }
+    if (id === 'refresh') {
+      return '刷新';
+    }
+    return '清空列表';
+  }
+
   @Builder
-  private FilterChip(id: string, label: string) {
-    Text(label)
+  private FilterChip(id: string) {
+    Text(this.chipLabel(id))
       .fontSize(13)
       .fontColor(this.activeCat === CAT_ALL && id === CAT_ALL ?
         $r('app.color.on_accent') : $r('app.color.text_primary'))
@@ -460,9 +473,9 @@ export struct ResourceSniffPanel {
             .margin({ bottom: 10 })
 
             Row({ space: 8 }) {
-              this.FilterChip(CAT_ALL, `全部 ${this.countIn(CAT_ALL)}`)
-              this.FilterChip('refresh', '刷新')
-              this.FilterChip('clear', '清空列表')
+              this.FilterChip(CAT_ALL)
+              this.FilterChip('refresh')
+              this.FilterChip('clear')
             }
             .width('100%')
             .margin({ bottom: 10 })
@@ -494,7 +507,8 @@ export struct ResourceSniffPanel {
             } else {
               ForEach(this.visibleItems(), (item: ResourceItem) => {
                 this.ResourceCard(item)
-              }, (item: ResourceItem): string => `${item.id}|${this.activeCat}`)
+              }, (item: ResourceItem): string =>
+                `${item.id}|${this.activeCat}|${item.totalBytes}|${item.downloadable ? 1 : 0}`)
             }
 
             Text('HLS / DASH 等流媒体清单（m3u8 / mpd）不能直接下载，请复制链接到播放器使用。')
