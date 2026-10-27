@@ -120,16 +120,35 @@ export struct SiteQuickPanel {
     }
   }
 
+  // 标签 id 在引擎↔外壳之间可能以字符串/数字两种形态出现（外壳存的是字符串，
+  // 引擎回包有时按数字原样回传 / 有时干脆不回传）。统一转字符串再比；若回包
+  // 没带 tabId 也照常接受（面板本就只服务当前标签，不存在跨标签污染）。
+  private tabMatches(payloadTabId: string | number | undefined): boolean {
+    if (payloadTabId === undefined || payloadTabId === null) {
+      return true;
+    }
+    const a: string = String(payloadTabId);
+    if (a.length === 0) {
+      return true;
+    }
+    const b: string = this.tabId;
+    return a === b;
+  }
+
   private applyAdBlock(payload: SiteQuickEvent, isWriteReply: boolean): void {
     // 只认当前标签的回包（快速切标签时旧回包不能污染新面板）。
-    if ((payload.tabId ?? '') !== this.tabId) {
+    if (!this.tabMatches(payload.tabId)) {
       return;
     }
     this.abContextId = payload.contextId ?? '';
     this.abRevision = payload.revision ?? -1;
     this.abNavigationId = payload.navigationId ?? '';
+    // blockedRequests 缺失（部分站点/协议不报拦截数）时归 0，避免副标题
+    // 永远停在「正在读取…」；有值才用真实值。
     if (payload.blockedRequests !== undefined) {
       this.blockedCount = payload.blockedRequests;
+    } else {
+      this.blockedCount = 0;
     }
     if (isWriteReply) {
       this.pendingAdBlockWrite = false;
@@ -150,11 +169,15 @@ export struct SiteQuickPanel {
         this.adBlockOn = payload.siteEnabled;
       }
       this.adBlockCanToggle = payload.canToggle === true;
+      // 读到状态即清掉「正在读取状态…」兜底提示（refresh 已清过，这里再保险一次）。
+      if (this.statusLine.length > 0 && this.statusLine !== '已更新') {
+        this.statusLine = '';
+      }
     }
   }
 
   private applyProtection(payload: SiteQuickEvent, isWriteReply: boolean): void {
-    if ((payload.tabId ?? '') !== this.tabId) {
+    if (!this.tabMatches(payload.tabId)) {
       return;
     }
     this.prContextId = payload.contextId ?? '';
@@ -178,6 +201,9 @@ export struct SiteQuickPanel {
         this.protectionOn = payload.siteEnabled;
       }
       this.protectionCanToggle = payload.canOverride === true;
+      if (this.statusLine.length > 0 && this.statusLine !== '已更新') {
+        this.statusLine = '';
+      }
     }
   }
 
