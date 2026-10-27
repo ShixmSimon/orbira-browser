@@ -1997,6 +1997,9 @@ export struct MobileBrowserOverlay {
     TextInput({ text: this.addressDraft, placeholder: '搜索或输入网址',
       controller: this.addressController })
       .id('mobile_address_input')
+      .onBlur((): void => {
+        this.onAddressInputBlur();
+      })
       .layoutWeight(1)
       .height(40)
       .fontSize(16)
@@ -2076,6 +2079,23 @@ export struct MobileBrowserOverlay {
     }
   }
 
+  // 输入框失焦就退出编辑态。原来只有「取消 / 提交 / 返回」会退出 —— 点一下网页
+  // 只会被系统收走键盘，条带却卡在「输入框 + 取消」形态（用户实拍：Chrome 风格
+  // 底置地址栏点完网页后，主页/标签/菜单都不见了，只剩一个空输入框）。
+  // 延后一拍 + epoch 校验：点「取消」本身也会先触发 blur，别让两条路径互相打断；
+  // 也不能把刚重新进入的编辑态误杀（beginAddressEdit 会 ++epoch）。
+  private onAddressInputBlur(): void {
+    if (!this.editingAddress) {
+      return;
+    }
+    const epoch: number = this.addressEditEpoch;
+    setTimeout((): void => {
+      if (this.editingAddress && this.addressEditEpoch === epoch) {
+        this.cancelAddressEdit();
+      }
+    }, 60);
+  }
+
   // dock 内地址栏胶囊：浏览态显示锁 + 域名（点按编辑），编辑态显示输入框 + 关闭。
   @Builder
   private DockAddressCapsule() {
@@ -2084,6 +2104,9 @@ export struct MobileBrowserOverlay {
         TextInput({ text: this.addressDraft, placeholder: '搜索或输入网址',
           controller: this.addressController })
           .id('mobile_address_input')
+          .onBlur((): void => {
+            this.onAddressInputBlur();
+          })
           .layoutWeight(1)
           .height(40)
           .fontSize(16)
@@ -2706,6 +2729,9 @@ export struct MobileBrowserOverlay {
         TextInput({ text: this.addressDraft, placeholder: '搜索或输入网址',
           controller: this.addressController })
           .id('mobile_address_input')
+          .onBlur((): void => {
+            this.onAddressInputBlur();
+          })
           .layoutWeight(1)
           .height(40)
           .fontSize(16)
