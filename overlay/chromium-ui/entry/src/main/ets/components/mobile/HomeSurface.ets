@@ -93,6 +93,7 @@ interface PanelEventPayload {
 interface HomeAutocompletePayload {
   requestId?: number;
   items?: AutocompleteItem[];
+  done?: boolean;
 }
 
 // 首页默认书签（首次运行时种入「首页」文件夹）。
@@ -1064,6 +1065,10 @@ export struct HomeSurface {
           description: typeof parsed.description === 'string' ? parsed.description : ''
         } as AutocompleteItem);
       }
+      // 同地址栏：中间包（done=false）直接丢，最后一包一次性上屏，避免每包重建列表。
+      if (payload.done === false) {
+        return;
+      }
       this.suggestItems = items;
     } catch (error) {
     }
@@ -1134,14 +1139,17 @@ export struct HomeSurface {
           }
         }
         .width('100%')
-      }, (item: AutocompleteItem, index: number): string => `${index}|${item.type}|${item.url}|${item.title}`)
+      }, (item: AutocompleteItem, index: number): string =>
+        `${item.type}|${item.url}|${item.title}`)
     }
     .width('100%')
     .borderRadius(16)
     .backgroundColor($r('app.color.card_background'))
     .clip(true)
-    .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+    .shadow({ radius: 10, color: $r('app.color.shadow'), offsetY: 4 })
     .margin({ top: 8 })
+    // 轻微淡入：卡片是随首个回包插入的，硬切会像"闪一下"。
+    .transition(TransitionEffect.OPACITY.animation({ duration: 110, curve: Curve.Friction }))
   }
 
   private openBookmark(node: BookmarkNode): void {
@@ -1947,7 +1955,7 @@ export struct HomeSurface {
         Blank()
           .height(Math.max(0, 18 + this.custom.tilesOffset))
 
-        if (!this.incognito && this.custom.showTiles && !this.suggestActive()) {
+        if (!this.incognito && this.custom.showTiles) {
           if (this.tilesError) {
             Row({ space: 10 }) {
               Text('书签加载失败')
@@ -1965,7 +1973,13 @@ export struct HomeSurface {
             .height(40)
             .justifyContent(FlexAlign.Center)
           } else {
+            // 联想期间只做 Visibility.None（节点留着），不要用 if 把整块磁贴
+            // 拆掉 —— 那会连图标一起销毁重建，第一次弹联想时明显一顿。
+            Column() {
               this.BookmarkGrid()
+            }
+            .width('100%')
+            .visibility(this.suggestActive() ? Visibility.None : Visibility.Visible)
           }
         }
 
