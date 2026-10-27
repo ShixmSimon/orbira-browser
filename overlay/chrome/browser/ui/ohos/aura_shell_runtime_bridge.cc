@@ -2130,12 +2130,24 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   // The popup is a native bubble widget parented to the browser window, above
   // the web layer. On a native Chromium page (new-tab / bookmarks) that page's
   // own content would otherwise show through in the area above the popup, so
-  // park a full-window translucent scrim behind it, below the popup, and tear
-  // it down together with the popup via ExtensionPopupCloseWatcher.
-  // On a normal http(s) web page the page itself is the content, and a
-  // full-window scrim would only darken it for no reason -- skip it there.
+  // park a full-window opaque scrim behind it, below the popup, and tear it
+  // down together with the popup via ExtensionPopupCloseWatcher. The scrim is
+  // fully opaque so the native page is completely hidden, and it follows the
+  // current color scheme (dark scheme -> dark scrim, light scheme -> light
+  // scrim) so it never looks wrong under either theme.
+  // On a normal http(s) web page the page itself is the content, and a scrim
+  // would only hide it for no reason -- skip it there.
   std::unique_ptr<views::Widget> backdrop_widget;
   if (active && !active->GetVisibleURL().SchemeIsHTTPOrHTTPS()) {
+    const ui::NativeTheme* native_theme =
+        ui::NativeTheme::GetInstanceForNativeUi();
+    const bool is_dark =
+        native_theme &&
+        native_theme->preferred_color_scheme() ==
+            ui::NativeTheme::PreferredColorScheme::kDark;
+    const SkColor scrim_color =
+        is_dark ? SkColorSetARGB(0xFF, 0x12, 0x12, 0x12)
+                : SkColorSetARGB(0xFF, 0xF5, 0xF5, 0xF5);
     gfx::Rect window_bounds = parent->GetWindowBoundsInScreen();
     backdrop_widget = std::make_unique<views::Widget>();
     {
@@ -2149,8 +2161,7 @@ void RunExtensionAction(BrowserWindowInterface* browser,
       backdrop_widget->Init(std::move(params));
     }
     auto backdrop_view = std::make_unique<views::View>();
-    backdrop_view->SetBackground(
-        views::CreateSolidBackground(SkColorSetARGB(0xEE, 0, 0, 0)));
+    backdrop_view->SetBackground(views::CreateSolidBackground(scrim_color));
     backdrop_widget->SetContentsView(std::move(backdrop_view));
     backdrop_widget->Show();
   }
