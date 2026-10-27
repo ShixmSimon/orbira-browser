@@ -2054,9 +2054,12 @@ class ExtensionPopupCloseWatcher : public views::WidgetObserver {
     NotifyAuraShellExtensionPopupClosed(profile_, extension_id_);
     // The scrim we parked behind the popup rides along in backdrop_. Rather than
     // hard-removing it (which flashes the layer underneath for a frame while the
-    // shell restores the home surface), fade it out, then free this watcher once
-    // the fade has played. Safe: OnWidgetDestroyed is the last call in the
-    // widget's observer sweep and ScopedObservation removes us before we free.
+    // shell restores the home surface), fade it out and hand it to a task that
+    // keeps it alive for the fade and then destroys it.
+    // The scrim, not this watcher, must outlive the popup: this watcher has to
+    // be freed synchronously below, because observation_ still points at the
+    // widget being destroyed and can only detach safely while that widget is
+    // still alive.
     if (backdrop_) {
       views::View* contents = backdrop_->GetContentsView();
       if (contents) {
@@ -2070,17 +2073,16 @@ class ExtensionPopupCloseWatcher : public views::WidgetObserver {
       }
       base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
           FROM_HERE,
-          base::BindOnce(&ExtensionPopupCloseWatcher::SelfDelete,
-                         base::Unretained(this)),
+          base::BindOnce([](std::unique_ptr<views::Widget> scrim) {},
+                         std::move(backdrop_)),
           base::Milliseconds(150));
-      return;
     }
+    // Safe: we were already notified (OnWidgetDestroyed is the last call in the
+    // widget's observer sweep); ScopedObservation removes us before we free.
     delete this;
   }
 
  private:
-  void SelfDelete() { delete this; }
-
   ~ExtensionPopupCloseWatcher() override = default;
 
   // Full-window translucent scrim shown behind the popup; null when the popup
