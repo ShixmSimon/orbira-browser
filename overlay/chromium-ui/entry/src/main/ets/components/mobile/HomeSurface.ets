@@ -44,6 +44,9 @@ const MAX_CHAIN_RETRIES: number = 3;
 // 长按菜单卡宽度（与 ⋮ 卡/网页长按卡同一家族）。
 const MENU_CARD_VP: number = 190;
 const MENU_CARD_H: number = 204;
+// 页面顶部常驻工具条的占高（vp）：简约风格是「主页 / 标签数 / ⋮」，Chrome
+// 风格是上置 dock。真机 dump 到该行 168px ≈ 56vp。主页内容不能落进这条带里。
+const TOP_CHROME_EXTENT_VP: number = 56;
 // 磁贴底板边长（vp）。底板是磁贴的「托盘」，图标画在它里面。
 const TILE_ICON_VP: number = 46;
 // 磁贴底板圆角（约边长 28%，与原 54/15 的比例一致）。
@@ -1837,7 +1840,12 @@ export struct HomeSurface {
   // 「Logo」微调 logoOffset 叠加在锚点之上，负值可上移。
   private homeTopBlankVp(): number {
     const anchor: number = (this.custom.showLogo || this.incognito) ? 0.22 : 0.335;
-    return Math.max(0, this.windowH * anchor - this.topSafeVp - 24 + this.custom.logoOffset);
+    const anchored: number = this.windowH * anchor - this.topSafeVp - 24 + this.custom.logoOffset;
+    // 下限：页面最上面常驻一条 56vp 的工具条（简约风格的主页/标签数/⋮，或
+    // Chrome 风格的上置 dock），Blank 再小也不能把首行塞到它下面去 —— 横屏时
+    // 窗高只有 ~419vp，算出来的 Blank 本来就只 68vp，一旦 windowH 被读小，
+    // 整行 Logo 会钻到工具条背后、只露出图底部一条弧线（2026-10-27 实测）。
+    return Math.max(TOP_CHROME_EXTENT_VP + 8, anchored);
   }
 
   build() {
@@ -2019,15 +2027,32 @@ export struct HomeSurface {
     }
     .width('100%')
     .height('100%')
-    // 旋转/分屏/窗口尺寸变化都从这里拿真实窗高，锚点才会跟着重算。
-    // 阈值 0.5vp：只在真的变了才写 state，避免每帧无谓重绘。
+    // 旋转/分屏/窗口尺寸变化都从这里重算锚点，但**不能直接用这一帧的 area**。
+    // 实测（2026-10-27 横屏 logo 只剩一条弧线）：转屏时 onAreaChange 先以
+    // 「宽度已变、高度还是键盘压矮后的值」的中间帧回调一次 —— 竖屏 419×920、
+    // 键盘占 210vp 时，那一帧是 920×209，把它记成 windowH 后锚点全部错位：
+    // Blank 从 68vp 塌到 22vp，Logo 行整条钻到顶部工具条背后。
+    // 所以：宽度变了 → 用**物理屏**尺寸重算（display 会跟随方向），不采信中间帧；
+    //       同宽下窗高变大（键盘收起 / 转屏收尾）→ 跟进；变小（键盘弹出）→ 忽略。
     .onAreaChange((_old: Area, now: Area): void => {
       const w: number = Number(now.width);
       const h: number = Number(now.height);
-      // 判据只看**宽度**：键盘弹起时窗口可能被压矮，若跟着改 windowH，主页会在
-      // 打字时整体跳一下；而旋转一定会换宽高，拿宽度变化当「真的转了」的信号。
-      if (w > 0 && h > 0 && Math.abs(w - this.windowW) > 0.5) {
+      if (w <= 0 || h <= 0) {
+        return;
+      }
+      if (Math.abs(w - this.windowW) > 0.5) {
         this.windowW = w;
+        let screenH: number = 0;
+        try {
+          const dsp = display.getDefaultDisplaySync();
+          screenH = dsp.height / dsp.densityPixels;
+        } catch (error) {
+          screenH = 0;
+        }
+        this.windowH = screenH > 0 ? screenH : h;
+        return;
+      }
+      if (h > this.windowH + 0.5) {
         this.windowH = h;
       }
     })
