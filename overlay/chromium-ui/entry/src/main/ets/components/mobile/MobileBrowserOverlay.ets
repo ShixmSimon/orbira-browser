@@ -1657,7 +1657,7 @@ export struct MobileBrowserOverlay {
     })
     .accessibilityText('主页')
     .onClick((): void => {
-      this.issueCommand({ command: 'home' });
+      this.pressHome();
     })
     // 1.0.109（用户定案）：Chrome 风格主页上，长按左上角主页图标 → 弹出
     // 「自定义网址」选项。与轻点（回主页）在手势层天然互斥——按住 450ms
@@ -1818,7 +1818,7 @@ export struct MobileBrowserOverlay {
             Row({ space: 2 }) {
               this.ChromeBarIconButton($r('app.media.aura_home'), '主页', true, 'dockHome',
                 (): void => {
-                  this.issueCommand({ command: 'home' });
+                  this.pressHome();
                 })
               this.ChromeBarAddress()
               // 1.0.110：图标变体走 showStopVariant（延迟切换，快速加载不闪 X）；
@@ -3087,7 +3087,7 @@ export struct MobileBrowserOverlay {
         this.issueCommand({ command: 'forward' });
       }
     } else if (slot === '主页') {
-      this.issueCommand({ command: 'home' });
+      this.pressHome();
     } else if (slot === '标签页') {
       this.requestTabThumbnails();
       this.menuVisible = true;
@@ -3120,7 +3120,7 @@ export struct MobileBrowserOverlay {
       // surface without pushing a duplicate of the current URL.
       this.DockButton($r('app.media.aura_home'), '主页', true,
         (): void => {
-          this.issueCommand({ command: 'home' });
+          this.pressHome();
         })
 
       Button({ type: ButtonType.Normal, stateEffect: true }) {
@@ -3884,7 +3884,7 @@ export struct MobileBrowserOverlay {
           Row({ space: 6 }) {
             this.PanelEntryButton('主页', $r('app.media.aura_home'), (): void => {
               this.closeMenuCard();
-              this.issueCommand({ command: 'home' });
+              this.pressHome();
             })
             this.PanelEntryButton('分享', $r('app.media.aura_share'), (): void => {
               this.closeMenuCard();
@@ -4026,6 +4026,17 @@ export struct MobileBrowserOverlay {
 
   private isHomeSurface(): boolean {
     return this.engineHomeCover || this.isNewTabUrl(this.browserState.url);
+  }
+
+  // 主页键统一入口。**已经在主页时**先让主页自己复位（清空搜索框 + 收起联想 +
+  // 收掉键盘）：引擎侧 'home' 命令对已经停在 newtab 的标签页是空操作，所以以前
+  // 在主页输入内容、联想弹着的时候按主页键「没有任何反应」。
+  private pressHome(): void {
+    if (this.isHomeSurface()) {
+      const seq: number = Number(AppStorage.get('auraHomeReset') ?? 0);
+      AppStorage.setOrCreate('auraHomeReset', seq + 1);
+    }
+    this.issueCommand({ command: 'home' });
   }
 
   private menuDomainText(): string {
