@@ -95,6 +95,14 @@
     {
       "name": "danger",
       "value": "#FF6B6B"
+    },
+    {
+      "name": "home_scrim",
+      "value": "#F21D1D1F"
+    },
+    {
+      "name": "home_scrim_fade",
+      "value": "#001D1D1F"
     }
   ]
 }

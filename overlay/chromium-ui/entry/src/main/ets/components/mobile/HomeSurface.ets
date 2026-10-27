@@ -2087,6 +2087,31 @@ export struct HomeSurface {
       .backgroundColor(this.bgUri.length > 0 && !this.incognito
         ? Color.Transparent : $r('app.color.surface_primary'))
 
+      // 顶部「渐变模糊」纱幕（1.0.4）：主页能滚动之后，内容会滑到状态栏底下，
+      // Logo 被切掉一半很难看（用户实拍）。面板页用的是 HDS 标题栏的官方渐变
+      // 模糊；主页没有标题栏，这里自绘同一套观感 —— 状态栏那一条做实底 + 背景
+      // 模糊（backdropBlur），再往下渐隐到透明：内容滑进来先糊掉、再淡出。
+      // 画在滚动内容之上、弹层之下（弹层在后面继续叠）。
+      Column()
+        .width('100%')
+        .height(this.topSafeVp + 8)
+        .backdropBlur(24)
+        .hitTestBehavior(HitTestMode.None)
+      Column()
+        .width('100%')
+        .height(this.topSafeVp + 48)
+        .linearGradient({
+          angle: 180,
+          colors: [
+            [$r('app.color.home_scrim'), 0.0],
+            // 模糊带的下沿（topSafe + 8）处仍是实底，模糊边缘不会露出硬线。
+            [$r('app.color.home_scrim'),
+              Math.max(0.02, (this.topSafeVp + 8) / (this.topSafeVp + 48))],
+            [$r('app.color.home_scrim_fade'), 1.0]
+          ]
+        })
+        .hitTestBehavior(HitTestMode.None)
+
       // 1.0.96：主页右上角菜单按钮已去掉——简约风格底栏 dock 自带 ⋮ 菜单
       // （返回/前进/主页/标签页/菜单），Chrome 风格 dock 也有菜单槽位，主页
       // 页面再放一个是冗余入口。连带清理 MobileBrowserOverlay.onRequestMenuOpen
