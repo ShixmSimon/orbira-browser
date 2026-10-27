@@ -2034,6 +2034,10 @@ struct AuraShell {
         JSON.stringify({ chromiumVersion: about.chromiumVersion ?? '' }));
       return;
     }
+    if (event.event === 'browsingDataCounts') {
+      AppStorage.setOrCreate('auraBrowsingDataCounts', JSON.stringify(event));
+      return;
+    }
     if (event.event === 'bookmarkCreated' ||
       event.event === 'bookmarksChanged' || event.event === 'historyChanged' ||
       event.event === 'prefsChanged' || event.event === 'clearBrowsingDataDone' ||
