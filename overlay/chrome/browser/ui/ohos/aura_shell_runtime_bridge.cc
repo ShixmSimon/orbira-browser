@@ -1873,27 +1873,14 @@ ExtensionPopupAnchor ExtensionPopupAnchorFor(BrowserWindowInterface* browser,
     return {rect, views::BubbleBorder::TOP_RIGHT};
   }
 
-  // Nothing reported -- a phone, with no toolbar to point at: a point at
-  // the middle of the window's width, just above whatever the shell draws
-  // over the bottom of the page (setViewportInsets), so the popup opens
-  // upward from there, centred. It used to hang from a strip across the
-  // bottom edge, which put it against the left side and under the shell's
-  // bottom bar.
-  int bottom_inset = 0;
-  {
-    RuntimeBridgeState& state = GetState();
-    base::AutoLock lock(state.lock);
-    auto inset = state.viewport_bottom_inset.find(widget);
-    if (inset != state.viewport_bottom_inset.end()) {
-      bottom_inset = inset->second;
-    }
-    // A dock that hides with the page is not in the inset; it is showing
-    // when an extension button on it is tapped, so open above it.
-    bottom_inset += state.bottom_controls_height;
-  }
-  return {gfx::Rect(window.CenterPoint().x(), window.bottom() - bottom_inset,
-                    0, 0),
-          views::BubbleBorder::BOTTOM_CENTER};
+  // Nothing reported -- a phone, with no toolbar to point at. Float the
+  // popup over the middle of the window: FLOAT draws no arrow and centres
+  // the bubble over the anchor rect, so an anchor at the window's centre
+  // point puts the popup in the middle of the screen (both axes). It used to
+  // open upward from the bottom edge, which sat it against the bottom bar
+  // and out of the way of a thumb reaching for the middle of the screen.
+  return {gfx::Rect(window.CenterPoint().x(), window.CenterPoint().y(), 0, 0),
+          views::BubbleBorder::FLOAT};
 }
 
 // The same thing as clicking the button on Chromium's toolbar: the extension
