@@ -1030,6 +1030,8 @@ export struct PasswordsPanel {
         .width('100%')
         .scrollBar(BarState.Off)
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+        // 密码条目走 LazyForEach：缓存视口外几屏，避免快速滑动时边滑边建而顿一下。
+        .cachedCount(6)
         .align(Alignment.TopStart)
         .onDidScroll(() => {
           // 搜索框随列表滚走后，在标题栏右侧（⋯ 菜单旁）浮现搜索按钮。
