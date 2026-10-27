@@ -177,6 +177,7 @@ export struct SettingsPanel {
   @StorageLink('auraPanelEngines') @Watch('onEnginesPayload') enginesJson: string = '';
   @StorageLink('auraPanelAbout') @Watch('onAboutPayload') aboutJson: string = '';
   @StorageLink('auraPanelEvent') @Watch('onPanelEvent') panelEventJson: string = '';
+  @StorageLink('auraBrowsingDataCounts') @Watch('onBrowsingCounts') browsingCountsJson: string = '';
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
   onBack: () => void = (): void => {};
   onOpenExtensions: () => void = (): void => {};
@@ -251,6 +252,9 @@ export struct SettingsPanel {
   @State private osVersion: string = '';
   @State private clearRange: BrowsingDataTimeRange = 'last4Weeks';
   @State private clearing: boolean = false;
+  @State private browsingHistoryCount: number = -1;
+  @State private browsingCacheBytes: number = -1;
+  @State private browsingSiteCount: number = -1;
   @State private colorModeSetting: ColorModeSetting = 'system';
   @State private textScalePercent: number = 100;
   @StorageLink('auraHideStatusBarOnScroll') hideStatusBarOnScroll: boolean = false;
@@ -844,6 +848,9 @@ export struct SettingsPanel {
   // 从搜索结果进入二级页：清掉搜索词，落到对应二级页（返回后显示完整设置）。
   private openSubPage(target: string): void {
     this.searchText = '';
+    if (target === 'clear') {
+      this.refreshBrowsingCounts();
+    }
     this.pushPage(target);
   }
 
@@ -873,6 +880,70 @@ export struct SettingsPanel {
       types: CLEAR_TYPES,
       timeRange: this.clearRange
     });
+  }
+
+  // 进入「清除浏览数据」页或切换时间范围时，向引擎拉取各类型数据占用概览。
+  private refreshBrowsingCounts(): void {
+    this.requestSeq += 1;
+    this.onCommand({
+      command: 'getBrowsingDataCounts',
+      requestId: this.requestSeq,
+      timeRange: this.clearRange
+    });
+  }
+
+  // 引擎回包（browsingDataCounts）写进 AppStorage 后由 @Watch 触发；-1 = 未知。
+  private onBrowsingCounts(): void {
+    if (this.browsingCountsJson.length === 0) {
+      return;
+    }
+    let payload: object | null = null;
+    try {
+      payload = JSON.parse(this.browsingCountsJson) as {
+        event?: string; historyCount?: number; cacheBytes?: number; siteCount?: number;
+      };
+    } catch (error) {
+      return;
+    }
+    if (payload === null || (payload as { event?: string }).event !== 'browsingDataCounts') {
+      return;
+    }
+    const p = payload as { historyCount?: number; cacheBytes?: number; siteCount?: number };
+    this.browsingHistoryCount = p.historyCount ?? -1;
+    this.browsingCacheBytes = p.cacheBytes ?? -1;
+    this.browsingSiteCount = p.siteCount ?? -1;
+  }
+
+  private formatBytes(bytes: number): string {
+    if (bytes < 1024) {
+      return `${bytes} B`;
+    }
+    const kb = bytes / 1024;
+    if (kb < 1024) {
+      return `${kb.toFixed(1)} KB`;
+    }
+    const mb = kb / 1024;
+    if (mb < 1024) {
+      return `${mb.toFixed(1)} MB`;
+    }
+    const gb = mb / 1024;
+    return `${gb.toFixed(2)} GB`;
+  }
+
+  @Builder
+  private CountRow(label: string, value: string) {
+    Row() {
+      Text(label)
+        .fontSize(14)
+        .fontColor($r('app.color.text_primary'))
+      Blank()
+      Text(value)
+        .fontSize(14)
+        .fontColor($r('app.color.text_secondary'))
+    }
+    .width('100%')
+    .constraintSize({ minHeight: 44 })
+    .padding({ left: 16, right: 16 })
   }
 
   // 二级页标题按路由名取（name = pushPathByName 传入的路由名）。
@@ -1450,6 +1521,15 @@ export struct SettingsPanel {
             .width('100%')
             .margin({ top: 4, bottom: 12 })
 
+          // 数据占用概览（按所选时间范围；"—" 表示引擎暂未返回）。
+          Column() {
+            this.CountRow('历史记录', this.browsingHistoryCount >= 0 ? `${this.browsingHistoryCount} 项` : '—')
+            this.CountRow('缓存', this.browsingCacheBytes >= 0 ? this.formatBytes(this.browsingCacheBytes) : '—')
+            this.CountRow('站点数据', this.browsingSiteCount >= 0 ? `${this.browsingSiteCount} 个` : '—')
+          }
+          .width('100%')
+          .margin({ bottom: 12 })
+
           ForEach(CLEAR_RANGES, (row: RangeRow) => {
             Row() {
               Text(row.label)
@@ -1470,6 +1550,7 @@ export struct SettingsPanel {
               $r('app.color.surface_secondary') : Color.Transparent)
             .onClick(() => {
               this.clearRange = row.key;
+              this.refreshBrowsingCounts();
             })
           }, (row: RangeRow): string => row.key)
         }
