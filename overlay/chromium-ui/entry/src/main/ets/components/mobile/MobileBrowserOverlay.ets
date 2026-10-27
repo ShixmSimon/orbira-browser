@@ -4880,10 +4880,12 @@ export struct MobileBrowserOverlay {
       return;
     }
     this.addressSuggestText = query;
-    this.suggestItems = [];
-    this.onlineSuggestWords = [];
+    // 1.0.4：**不清空**上一份列表。清空后卡里只剩我们自己造的那条兜底行
+    // （搜索“xxx”），在真结果回来之前看起来就是「没展开」—— 录屏实测
+    // 「石家庄1」那次塌着一行停了 0.6s 才长出来。Chrome 的做法是保留旧列表，
+    // 新结果到了整份替换；只有最后一包确实为空时才真的收掉。
     this.autocompletePending = -1;
-    // 新的一轮输入：恢复到「还没上屏」，让引擎第一包立刻把卡弹出来。
+    // 新的一轮输入：恢复到「还没上屏」，让引擎第一包立刻替换掉旧列表。
     this.suggestShownFor = -1;
     this.cancelSuggestFlush();
     this.addressSuggestTimer = setTimeout((): void => {
@@ -5027,19 +5029,40 @@ export struct MobileBrowserOverlay {
     const rows: AutocompleteItem[] = [];
     const query = this.addressSuggestText;
     const searchLike = !this.looksLikeUrl(query);
+    const seen: Set<string> = new Set<string>();
     if (searchLike && query.length > 0) {
       rows.push(this.searchSuggestRow(query));
+      seen.add(query);
     }
     if (searchLike) {
+      // 引擎自带的搜索建议（ShellMatchType 把所有 SEARCH_* 都映射成 'search'，
+      // 含 SEARCH_SUGGEST）走浏览器自己的网络栈，连接是热的；而我们下面那条
+      // 在线接口每次 createHttp 都要重新握手。以前这里把引擎的 search 行全部
+      // 丢掉、只等自己那趟 HTTP —— 录屏里「输入后要等 0.6~0.8s 才展开」就是它。
+      for (const item of this.suggestItems) {
+        if (item.type !== 'search') {
+          continue;
+        }
+        const title: string = item.title.trim();
+        if (title.length === 0 || seen.has(title)) {
+          continue;
+        }
+        if (rows.length >= 8) {
+          break;
+        }
+        rows.push(this.searchSuggestRow(title));
+        seen.add(title);
+      }
       for (const word of this.onlineSuggestWords) {
         if (rows.length >= 8) {
           break;
         }
-        // 百度/搜狗常在首位回显查询词 —— 与首行「搜索」重复，跳过。
-        if (word === query) {
+        // 百度/搜狗常在首位回显查询词 —— 与首行「搜索」/引擎行重复，跳过。
+        if (word.length === 0 || seen.has(word)) {
           continue;
         }
         rows.push(this.searchSuggestRow(word));
+        seen.add(word);
       }
     }
     const localCap = searchLike ? 3 : 6;
