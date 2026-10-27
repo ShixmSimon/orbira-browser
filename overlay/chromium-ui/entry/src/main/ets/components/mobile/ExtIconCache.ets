@@ -13,7 +13,10 @@ import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 
 const STORE_NAME = 'shell_ui_prefs';
-const KEY_ICONS = 'extIconCache';
+// 1.0.4：键名带版本。旧版引擎对启用中的扩展取的是**工具栏 action 图标**
+// （floccus 这类扩展的 action 是单色灰版），那段灰图标已经被写进旧键；
+// 换键让它们一次性作废，新引擎给的彩色 logo 重新落盘。
+const KEY_ICONS = 'extIconCache2';
 // 图标是 base64 PNG（每个几 KB）；32 个远超真实用量，防 prefs 无限膨胀。
 const MAX_ENTRIES: number = 32;
 // 落盘防抖：开关扩展会连着回好几包，别一包写一次盘。
