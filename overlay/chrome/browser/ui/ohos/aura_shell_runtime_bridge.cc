@@ -2136,6 +2136,7 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   auto backdrop_widget = std::make_unique<views::Widget>();
   {
     views::Widget::InitParams params(
+        views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
         views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
     params.parent = parent->GetNativeView();
     params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
