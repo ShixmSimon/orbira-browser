@@ -39,6 +39,9 @@ interface BrowsingDataCountsPayload {
   historyCount?: number;
   cacheBytes?: number;
   siteCount?: number;
+  passwordCount?: number;
+  formDataCount?: number;
+  siteSettingsCount?: number;
 }
 
 interface PrefRow {
@@ -61,6 +64,11 @@ interface RangeRow {
   label: string;
 }
 
+interface ClearTypeRow {
+  key: BrowsingDataType;
+  label: string;
+}
+
 const CLEAR_RANGES: RangeRow[] = [
   { key: 'lastHour', label: '过去 1 小时' },
   { key: 'lastDay', label: '过去 24 小时' },
@@ -69,9 +77,22 @@ const CLEAR_RANGES: RangeRow[] = [
   { key: 'all', label: '全部时间' }
 ];
 
-// Passwords are deliberately left out: clearing them is a separate, riskier
-// action the settings page does not offer yet.
-const CLEAR_TYPES: BrowsingDataType[] = ['history', 'cookies', 'cache', 'siteSettings', 'formData', 'downloads'];
+// 「清除浏览数据」页的数据类型清单（顺序对齐主流浏览器的对话框）：
+// 每类各占一行、各带勾选框，右侧显示该时间范围内的实际数量。
+const CLEAR_TYPE_ROWS: ClearTypeRow[] = [
+  { key: 'history', label: '浏览记录' },
+  { key: 'cookies', label: 'Cookie 和网站数据' },
+  { key: 'cache', label: '缓存的图片和文件' },
+  { key: 'passwords', label: '已保存的密码' },
+  { key: 'formData', label: '自动填充表单数据' },
+  { key: 'siteSettings', label: '网站设置' },
+  { key: 'downloads', label: '下载记录' }
+];
+
+// 默认勾选：前三种（与主流浏览器一致）+ 下载记录（历史上本页一直清它，
+// 取消默认勾选等于悄悄改变行为）。密码/自动填充/网站设置关掉 —— 它们
+// 是不可逆的账号与站点偏好，用户主动勾了才清。
+const CLEAR_TYPES_DEFAULT: BrowsingDataType[] = ['history', 'cookies', 'cache', 'downloads'];
 
 // 1.0.142：「法律许可」页内联文本。应用自身按 Chromium BSD 3-Clause 发布
 // （复制自仓库 LICENSE，与上游一致）；Apache-2.0 / MIT / MPL / LGPL 等是捆绑进
@@ -256,9 +277,14 @@ export struct SettingsPanel {
   @State private osVersion: string = '';
   @State private clearRange: BrowsingDataTimeRange = 'last4Weeks';
   @State private clearing: boolean = false;
+  // 已勾选的数据类型（默认 history/cookies/cache/downloads，见 CLEAR_TYPES_DEFAULT）。
+  @State private clearTypes: BrowsingDataType[] = CLEAR_TYPES_DEFAULT.slice();
   @State private browsingHistoryCount: number = -1;
   @State private browsingCacheBytes: number = -1;
   @State private browsingSiteCount: number = -1;
+  @State private browsingPasswordCount: number = -1;
+  @State private browsingFormDataCount: number = -1;
+  @State private browsingSiteSettingsCount: number = -1;
   @State private colorModeSetting: ColorModeSetting = 'system';
   @State private textScalePercent: number = 100;
   @StorageLink('auraHideStatusBarOnScroll') hideStatusBarOnScroll: boolean = false;
@@ -876,12 +902,15 @@ export struct SettingsPanel {
   }
 
   private clearData(): void {
+    if (this.clearTypes.length === 0) {
+      return;
+    }
     this.clearing = true;
     this.requestSeq += 1;
     this.onCommand({
       command: 'clearBrowsingData',
       requestId: this.requestSeq,
-      types: CLEAR_TYPES,
+      types: this.clearTypes.slice(),
       timeRange: this.clearRange
     });
   }
@@ -914,6 +943,9 @@ export struct SettingsPanel {
     this.browsingHistoryCount = p.historyCount ?? -1;
     this.browsingCacheBytes = p.cacheBytes ?? -1;
     this.browsingSiteCount = p.siteCount ?? -1;
+    this.browsingPasswordCount = p.passwordCount ?? -1;
+    this.browsingFormDataCount = p.formDataCount ?? -1;
+    this.browsingSiteSettingsCount = p.siteSettingsCount ?? -1;
   }
 
   private formatBytes(bytes: number): string {
@@ -932,20 +964,49 @@ export struct SettingsPanel {
     return `${gb.toFixed(2)} GB`;
   }
 
-  @Builder
-  private CountRow(label: string, value: string) {
-    Row() {
-      Text(label)
-        .fontSize(14)
-        .fontColor($r('app.color.text_primary'))
-      Blank()
-      Text(value)
-        .fontSize(14)
-        .fontColor($r('app.color.text_secondary'))
+  private clearTypeChecked(key: BrowsingDataType): boolean {
+    return this.clearTypes.indexOf(key) >= 0;
+  }
+
+  private toggleClearType(key: BrowsingDataType): void {
+    const next: BrowsingDataType[] = [];
+    let found: boolean = false;
+    for (const item of this.clearTypes) {
+      if (item === key) {
+        found = true;
+      } else {
+        next.push(item);
+      }
     }
-    .width('100%')
-    .constraintSize({ minHeight: 44 })
-    .padding({ left: 16, right: 16 })
+    if (!found) {
+      next.push(key);
+    }
+    this.clearTypes = next;
+  }
+
+  // 每行右侧的数量；引擎算不出来（-1）就不显示数字，只留类别名——这也正是
+  // 主流浏览器对话框的做法（算不出的类别右侧为空）。
+  private clearCountLabel(key: BrowsingDataType): string {
+    if (key === 'history') {
+      return this.browsingHistoryCount >= 0 ? `${this.browsingHistoryCount} 条` : '';
+    }
+    if (key === 'cookies') {
+      return this.browsingSiteCount >= 0 ? `${this.browsingSiteCount} 个网站` : '';
+    }
+    if (key === 'cache') {
+      return this.browsingCacheBytes >= 0 ? this.formatBytes(this.browsingCacheBytes) : '';
+    }
+    if (key === 'passwords') {
+      return this.browsingPasswordCount >= 0 ? `${this.browsingPasswordCount} 条` : '';
+    }
+    if (key === 'formData') {
+      return this.browsingFormDataCount >= 0 ? `${this.browsingFormDataCount} 项` : '';
+    }
+    if (key === 'siteSettings') {
+      return this.browsingSiteSettingsCount >= 0 ?
+        `${this.browsingSiteSettingsCount} 个网站` : '';
+    }
+    return '';
   }
 
   // 二级页标题按路由名取（name = pushPathByName 传入的路由名）。
@@ -1507,52 +1568,138 @@ export struct SettingsPanel {
     .height('100%')
   }
 
+  // 时间范围行：右侧单选圈（选中 = 实心 accent + 白勾），整行可点。
+  @Builder
+  private ClearRangeRow(row: RangeRow) {
+    Row() {
+      Text(row.label)
+        .fontSize(15)
+        .fontColor($r('app.color.text_primary'))
+      Blank()
+      Stack() {
+        if (row.key === this.clearRange) {
+          Text('✓')
+            .fontSize(13)
+            .fontColor($r('app.color.on_accent'))
+        }
+      }
+      .width(22)
+      .height(22)
+      .borderRadius(11)
+      .backgroundColor(row.key === this.clearRange ?
+        $r('app.color.accent_primary') : Color.Transparent)
+      .border({
+        width: 1.5,
+        color: row.key === this.clearRange ?
+          $r('app.color.accent_primary') : $r('app.color.divider')
+      })
+    }
+    .width('100%')
+    .constraintSize({ minHeight: 56 })
+    .padding({ left: 16, right: 16 })
+    .onClick(() => {
+      if (row.key !== this.clearRange) {
+        this.clearRange = row.key;
+        this.refreshBrowsingCounts();
+      }
+    })
+  }
+
+  // 数据类型行：左侧勾选框 + 名称 + 右侧该时间范围内的实际数量。
+  @Builder
+  private ClearTypeRow(row: ClearTypeRow) {
+    Row({ space: 12 }) {
+      Stack() {
+        if (this.clearTypeChecked(row.key)) {
+          Text('✓')
+            .fontSize(13)
+            .fontColor($r('app.color.on_accent'))
+        }
+      }
+      .width(22)
+      .height(22)
+      .borderRadius(11)
+      .backgroundColor(this.clearTypeChecked(row.key) ?
+        $r('app.color.accent_primary') : Color.Transparent)
+      .border({
+        width: 1.5,
+        color: this.clearTypeChecked(row.key) ?
+          $r('app.color.accent_primary') : $r('app.color.divider')
+      })
+
+      Text(row.label)
+        .fontSize(15)
+        .fontColor($r('app.color.text_primary'))
+        .layoutWeight(1)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+      if (this.clearCountLabel(row.key).length > 0) {
+        Text(this.clearCountLabel(row.key))
+          .fontSize(13)
+          .fontColor($r('app.color.text_secondary'))
+      }
+    }
+    .width('100%')
+    .constraintSize({ minHeight: 56 })
+    .padding({ left: 16, right: 16 })
+    .onClick(() => {
+      this.toggleClearType(row.key);
+    })
+  }
+
   @Builder
   private ClearView() {
     Column() {
-      // 1.0.104：时间范围列表改由 Scroll 承载（Spring 回弹）；「清除数据」钮留在
-      // 滚动容器外仍然钉在底部——原先是靠 Blank() 撑到底，套进 Scroll 后 Blank
-      // 会塌成 0 高度、按钮跑到列表正下方。
+      // 时间范围与数据类型各成一张卡（对齐主流浏览器「清除浏览数据」的形态）：
+      // 范围单选在右、类型勾选在左且各带数量。「清除数据」钮留在滚动容器外，
+      // 仍然钉在底部。
       Scroll(this.clearScroller) {
         Column() {
-          Text('将清除所选时间范围内的历史记录、Cookie、缓存、站点数据与下载记录。书签和密码不受影响。')
+          Text('按所选时间范围清除勾选的数据类型。书签和已下载的文件本身不受影响。')
             .fontSize(13)
             .fontColor($r('app.color.text_secondary'))
             .width('100%')
             .margin({ top: 4, bottom: 12 })
 
-          // 数据占用概览（按所选时间范围；"—" 表示引擎暂未返回）。
+          // 时间范围
           Column() {
-            this.CountRow('历史记录', this.browsingHistoryCount >= 0 ? `${this.browsingHistoryCount} 项` : '—')
-            this.CountRow('缓存', this.browsingCacheBytes >= 0 ? this.formatBytes(this.browsingCacheBytes) : '—')
-            this.CountRow('站点数据', this.browsingSiteCount >= 0 ? `${this.browsingSiteCount} 个` : '—')
+            ForEach(CLEAR_RANGES, (row: RangeRow, index: number) => {
+              Column() {
+                this.ClearRangeRow(row)
+                if (index < CLEAR_RANGES.length - 1) {
+                  Divider()
+                    .color($r('app.color.divider'))
+                    .margin({ left: 16 })
+                }
+              }
+              .width('100%')
+            }, (row: RangeRow): string => `${row.key}|${this.clearRange}`)
           }
           .width('100%')
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
           .margin({ bottom: 12 })
 
-          ForEach(CLEAR_RANGES, (row: RangeRow) => {
-            Row() {
-              Text(row.label)
-                .fontSize(15)
-                .fontColor($r('app.color.text_primary'))
-              Blank()
-              if (row.key === this.clearRange) {
-                Text('已选')
-                  .fontSize(13)
-                  .fontColor($r('app.color.accent_primary'))
+          // 数据类型（数量随范围/回包变化，键里带上，避免旧行不重跑）
+          Column() {
+            ForEach(CLEAR_TYPE_ROWS, (row: ClearTypeRow, index: number) => {
+              Column() {
+                this.ClearTypeRow(row)
+                if (index < CLEAR_TYPE_ROWS.length - 1) {
+                  Divider()
+                    .color($r('app.color.divider'))
+                    .margin({ left: 50 })
+                }
               }
-            }
-            .width('100%')
-            .constraintSize({ minHeight: 56 })
-            .padding({ left: 16, right: 16 })
-            .borderRadius(10)
-            .backgroundColor(row.key === this.clearRange ?
-              $r('app.color.surface_secondary') : Color.Transparent)
-            .onClick(() => {
-              this.clearRange = row.key;
-              this.refreshBrowsingCounts();
-            })
-          }, (row: RangeRow): string => row.key)
+              .width('100%')
+            }, (row: ClearTypeRow): string => `${row.key}|${this.clearTypeChecked(row.key) ? 1 : 0}|${this.clearCountLabel(row.key)}`)
+          }
+          .width('100%')
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
         }
         .width('100%')
         // 1.0.122：同 HomeStyleView —— 内缩放滚动内容上，别压在外层（会丢顶部渐变模糊）。
@@ -1570,9 +1717,10 @@ export struct SettingsPanel {
         .height(46)
         .fontSize(16)
         .fontColor($r('app.color.on_accent'))
-        .backgroundColor($r('app.color.accent_primary'))
+        .backgroundColor($r('app.color.danger'))
         .borderRadius(10)
-        .enabled(!this.clearing)
+        .enabled(!this.clearing && this.clearTypes.length > 0)
+        .opacity(this.clearing || this.clearTypes.length === 0 ? 0.5 : 1)
         .onClick(() => {
           this.clearData();
         })
