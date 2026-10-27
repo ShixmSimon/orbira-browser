@@ -2210,16 +2210,31 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   ExtensionPopup* popup = ExtensionPopup::last_popup_for_testing();
   views::Widget* popup_widget = popup ? popup->GetWidget() : nullptr;
   if (popup_widget) {
-    // The scrim spans the whole window, including the area the popup occupies.
-    // Force it underneath the popup so a tap on the popup's own controls lands
-    // on the popup; otherwise the full-window scrim swallows it, the popup
-    // deactivates and closes, and none of its buttons can be used.
+    // The scrim must not overlap the popup at all. While it covered the popup's
+    // area it swallowed taps aimed at the popup's own controls, so the popup
+    // closed as though the tap had landed outside it and none of its buttons
+    // could be used (stacking it below was not enough). The popup is anchored to
+    // the bottom of the window, so shrink the scrim to the strip above it --
+    // that strip is exactly where the native page used to show through, and
+    // keeping it covered still blocks taps aimed at the page.
     if (backdrop_widget) {
-      aura::Window* scrim_window = backdrop_widget->GetNativeWindow();
-      aura::Window* popup_window = popup_widget->GetNativeWindow();
-      if (scrim_window && popup_window && scrim_window->parent() &&
-          scrim_window->parent() == popup_window->parent()) {
-        scrim_window->parent()->StackChildBelow(scrim_window, popup_window);
+      const gfx::Rect window_rect = parent->GetWindowBoundsInScreen();
+      const gfx::Rect popup_rect = popup_widget->GetWindowBoundsInScreen();
+      const int popup_top = popup_rect.y() - window_rect.y();
+      const int popup_bottom = popup_rect.bottom() - window_rect.y();
+      if (!popup_rect.IsEmpty() && popup_bottom >= window_rect.height() - 1 &&
+          popup_top > 0 && popup_top < window_rect.height()) {
+        backdrop_widget->SetBounds(
+            gfx::Rect(0, 0, window_rect.width(), popup_top));
+      } else {
+        // Could not keep the scrim clear of the popup (it is not bottom
+        // anchored). Fall back to making the scrim purely visual so that it can
+        // never swallow a tap aimed at the popup.
+        aura::Window* scrim_window = backdrop_widget->GetNativeWindow();
+        if (scrim_window) {
+          scrim_window->SetEventTargetingPolicy(
+              aura::EventTargetingPolicy::kNone);
+        }
       }
     }
     new ExtensionPopupCloseWatcher(popup_widget, std::move(backdrop_widget),
