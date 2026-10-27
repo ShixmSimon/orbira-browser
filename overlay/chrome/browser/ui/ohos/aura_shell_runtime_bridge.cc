@@ -2210,6 +2210,18 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   ExtensionPopup* popup = ExtensionPopup::last_popup_for_testing();
   views::Widget* popup_widget = popup ? popup->GetWidget() : nullptr;
   if (popup_widget) {
+    // The scrim spans the whole window, including the area the popup occupies.
+    // Force it underneath the popup so a tap on the popup's own controls lands
+    // on the popup; otherwise the full-window scrim swallows it, the popup
+    // deactivates and closes, and none of its buttons can be used.
+    if (backdrop_widget) {
+      aura::Window* scrim_window = backdrop_widget->GetNativeWindow();
+      aura::Window* popup_window = popup_widget->GetNativeWindow();
+      if (scrim_window && popup_window && scrim_window->parent() &&
+          scrim_window->parent() == popup_window->parent()) {
+        scrim_window->parent()->StackChildBelow(scrim_window, popup_window);
+      }
+    }
     new ExtensionPopupCloseWatcher(popup_widget, std::move(backdrop_widget),
                                   profile, *id);
   } else if (backdrop_widget) {
