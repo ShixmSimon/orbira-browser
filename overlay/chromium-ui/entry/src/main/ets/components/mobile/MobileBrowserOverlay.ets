@@ -2905,15 +2905,19 @@ export struct MobileBrowserOverlay {
   @Builder
   private SuggestCard() {
     Column() {
+      // 键里**不能带 index**：首行「搜索 “输入”」每敲一个字就变，带 index 会让
+      // 整张卡（8 行 + 图标）全部销毁重建 —— 打字时列表一顿一顿就是这个。
+      // 用 type|url|title 作键，只有真正变了的那一行重建。
       ForEach(this.suggestRows(), (item: AutocompleteItem, index: number) => {
         this.AddressSuggestRow(item, index)
       }, (item: AutocompleteItem, index: number): string =>
-        `${index}|${item.type}|${item.url}|${item.title}`)
+        `${item.type}|${item.url}|${item.title}`)
     }
     .width('100%')
     .borderRadius(16)
     .backgroundColor($r('app.color.menu_glass'))
-    .shadow({ radius: 24, color: $r('app.color.shadow'), offsetY: 8 })
+    // 阴影半径 24 → 12：每次重排都要重新模糊一遍，浮层上这块最费。
+    .shadow({ radius: 12, color: $r('app.color.shadow'), offsetY: 6 })
     .clip(true)
   }
 
@@ -4883,6 +4887,12 @@ export struct MobileBrowserOverlay {
           description: typeof parsed.description === 'string' ? parsed.description : ''
         } as AutocompleteItem);
       }
+      // 引擎的一次输入会推 2~5 包（每个 provider 完成各推一次，done 标最后那包）。
+      // 每包都落 UI 就是「打字时列表一顿一顿」的主因 —— 中间包直接丢，等最后一包
+      // 一次性上屏（期间保留旧列表，不闪）。
+      if (payload.done === false) {
+        return;
+      }
       this.suggestItems = normalized;
     } catch (error) {
     }
@@ -4989,11 +4999,15 @@ export struct MobileBrowserOverlay {
     }
     this.suggestHttpSeq += 1;
     const seq = this.suggestHttpSeq;
-    http.createHttp().request(endpoint, {
+    // 每次按键都建一个 HttpRequest，用完必须 destroy：不释放的话输入过程中会
+    // 持续堆对象，配合列表重排更容易出现掉帧。
+    const client: http.HttpRequest = http.createHttp();
+    client.request(endpoint, {
       method: http.RequestMethod.GET,
       connectTimeout: 4000,
       readTimeout: 4000
     }).then((response: http.HttpResponse): void => {
+      client.destroy();
       // 过期回包（已继续输入 / 已离开编辑 / 已收起列表）直接丢弃。
       if (seq !== this.suggestHttpSeq || query !== this.addressSuggestText ||
         !this.editingAddress || !this.suggestVisible) {
@@ -5001,6 +5015,7 @@ export struct MobileBrowserOverlay {
       }
       this.onlineSuggestWords = parseSuggestionWords(String(response.result ?? ''));
     }).catch((error: Error): void => {
+      client.destroy();
       if (seq === this.suggestHttpSeq) {
         this.onlineSuggestWords = [];
       }
