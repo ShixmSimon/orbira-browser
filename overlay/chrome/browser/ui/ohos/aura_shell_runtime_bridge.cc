@@ -225,6 +225,8 @@
 #include "ui/shell_dialogs/select_file_dialog_ohos.h"
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/focus/focus_manager.h"
+#include "third_party/skia/include/core/SkColor.h"
+#include "ui/views/background.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "url/gurl.h"
@@ -2034,9 +2036,12 @@ namespace {
 class ExtensionPopupCloseWatcher : public views::WidgetObserver {
  public:
   ExtensionPopupCloseWatcher(views::Widget* widget,
+                             std::unique_ptr<views::Widget> backdrop,
                              Profile* profile,
                              const std::string& extension_id)
-      : profile_(profile), extension_id_(extension_id) {
+      : backdrop_(std::move(backdrop)),
+        profile_(profile),
+        extension_id_(extension_id) {
     observation_.Observe(widget);
   }
   ExtensionPopupCloseWatcher(const ExtensionPopupCloseWatcher&) = delete;
@@ -2047,12 +2052,17 @@ class ExtensionPopupCloseWatcher : public views::WidgetObserver {
     NotifyAuraShellExtensionPopupClosed(profile_, extension_id_);
     // Safe: we were already notified (OnWidgetDestroyed is the last call in the
     // widget's observer sweep); ScopedObservation removes us before we free.
+    // The scrim we parked behind the popup rides along in backdrop_ and is
+    // torn down with this object.
     delete this;
   }
 
  private:
   ~ExtensionPopupCloseWatcher() override = default;
 
+  // Full-window translucent scrim shown behind the popup; null when the popup
+  // was torn down before a watcher could attach (caller closes it directly).
+  std::unique_ptr<views::Widget> backdrop_;
   raw_ptr<Profile> profile_;
   std::string extension_id_;
   base::ScopedObservation<views::Widget, views::WidgetObserver> observation_{
@@ -2116,6 +2126,29 @@ void RunExtensionAction(BrowserWindowInterface* browser,
 
   const ExtensionPopupAnchor anchor =
       ExtensionPopupAnchorFor(browser, parent, *id);
+
+  // The popup is a native bubble widget parented to the browser window, above
+  // the web layer. Without a scrim, the active tab's page (new-tab page or
+  // chrome://bookmarks) shows through in the area above the popup. Park a
+  // full-window translucent scrim behind it, below the popup; it is torn down
+  // together with the popup by ExtensionPopupCloseWatcher.
+  gfx::Rect window_bounds = parent->GetWindowBoundsInScreen();
+  auto backdrop_widget = std::make_unique<views::Widget>();
+  {
+    views::Widget::InitParams params(
+        views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
+    params.parent = parent->GetNativeView();
+    params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
+    params.bounds = gfx::Rect(window_bounds.size());
+    params.name = "ExtensionPopupBackdrop";
+    backdrop_widget->Init(std::move(params));
+  }
+  auto backdrop_view = std::make_unique<views::View>();
+  backdrop_view->SetBackground(
+      views::CreateSolidBackground(SkColorSetARGB(0xA0, 0, 0, 0)));
+  backdrop_widget->SetContentsView(std::move(backdrop_view));
+  backdrop_widget->Show();
+
   ExtensionPopup::ShowPopupAtShellRect(browser, std::move(host), parent,
                                        anchor.rect, anchor.arrow,
                                        PopupShowAction::kShow,
@@ -2125,10 +2158,14 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   // restore the home surface without waiting for the 8-second timeout fallback.
   // last_popup_for_testing() is the popup we just created (set in its ctor,
   // synchronously, before ShowPopupAtShellRect returns).
-  if (ExtensionPopup* popup = ExtensionPopup::last_popup_for_testing()) {
-    if (views::Widget* widget = popup->GetWidget()) {
-      new ExtensionPopupCloseWatcher(widget, profile, *id);
-    }
+  ExtensionPopup* popup = ExtensionPopup::last_popup_for_testing();
+  views::Widget* popup_widget = popup ? popup->GetWidget() : nullptr;
+  if (popup_widget) {
+    new ExtensionPopupCloseWatcher(popup_widget, std::move(backdrop_widget),
+                                  profile, *id);
+  } else {
+    // No popup surfaced (shouldn't happen); drop the scrim we just raised.
+    backdrop_widget->CloseNow();
   }
 }
 

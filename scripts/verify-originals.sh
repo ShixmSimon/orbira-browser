@@ -39,9 +39,10 @@ check "5-EXT-ORIGIN (blink)"   third_party/blink/renderer/platform/loader/fetch/
 check "5-EXT-ORIGIN (network)" services/network/cors/cors_url_loader.cc                           "extension-initiated requests do not advertise" || fail=1
 check "6-BROWSE-COUNT"       chrome/browser/ui/ohos/shell_browsing_data_counts_ohos.cc            "PasswordsCounter"                            || fail=1
 check "7-EXT-LOGO"           chrome/browser/ui/ohos/aura_shell_runtime_bridge.cc                  "The page draws the extension"               || fail=1
+check "8-POPUP-SCRIM"         chrome/browser/ui/ohos/aura_shell_runtime_bridge.cc                  "ExtensionPopupBackdrop"                     || fail=1
 
 if [[ "${fail}" == 0 ]]; then
-  echo "ORIGINALS_VERIFY_OK: all 7 original blocks present in src."
+  echo "ORIGINALS_VERIFY_OK: all 8 original blocks present in src."
 else
   echo "ORIGINALS_VERIFY_FAIL: one or more originals missing — DO NOT build until restored."
 fi
