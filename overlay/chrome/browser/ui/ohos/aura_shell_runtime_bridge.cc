@@ -1873,14 +1873,16 @@ ExtensionPopupAnchor ExtensionPopupAnchorFor(BrowserWindowInterface* browser,
     return {rect, views::BubbleBorder::TOP_RIGHT};
   }
 
-  // Nothing reported -- a phone, with no toolbar to point at. Float the
-  // popup over the middle of the window: FLOAT draws no arrow and centres
-  // the bubble over the anchor rect, so an anchor at the window's centre
-  // point puts the popup in the middle of the screen (both axes). It used to
-  // open upward from the bottom edge, which sat it against the bottom bar
-  // and out of the way of a thumb reaching for the middle of the screen.
-  return {gfx::Rect(window.CenterPoint().x(), window.CenterPoint().y(), 0, 0),
-          views::BubbleBorder::FLOAT};
+  // Nothing reported -- a phone, with no toolbar to point at. Keep the same
+  // placement as before (BOTTOM_CENTER: the popup opens upward from the anchor)
+  // and only raise the anchor, so the popup sits in the middle of the screen
+  // instead of against the bottom bar. Moving the anchor is the whole change;
+  // the size stays as it was -- note ExtensionPopup::GetMaxBounds measures the
+  // room from the anchor, so raising it would silently shrink the height cap;
+  // that is pinned to the whole work area there instead (local block 9).
+  return {gfx::Rect(window.CenterPoint().x(),
+                   window.y() + window.height() * 7 / 10, 0, 0),
+          views::BubbleBorder::BOTTOM_CENTER};
 }
 
 // The same thing as clicking the button on Chromium's toolbar: the extension
