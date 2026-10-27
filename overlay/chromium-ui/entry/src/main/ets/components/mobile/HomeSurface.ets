@@ -258,6 +258,11 @@ export struct HomeSurface {
   private suggestPending: number = -1;
   private suggestSeq: number = HOME_SUGGEST_SEQ_BASE;
   private suggestTimer: number = -1;
+  // 已经「上过屏」的 requestId：首包判断用（同一轮只立即上屏一次，后续包合并刷）。
+  private suggestShownFor: number = -1;
+  // 合并刷新的定时器与暂存（避免每个 provider 包都重建整张卡）。
+  private suggestFlushTimer: number = -1;
+  private suggestQueued: AutocompleteItem[] = [];
   // 无痕会话：主页换成无痕的标题与说明，书签磁贴与主页布局入口都不出现。
   @Prop incognito: boolean = false;
   // 状态栏避让由本组件内部承担：surface_primary 背景能铺满状态栏条带。
@@ -1042,6 +1047,8 @@ export struct HomeSurface {
       this.suggestItems = [];
       return;
     }
+    // 新输入 = 新的一轮：恢复到「还没上屏」，这样引擎第一包能立刻把卡弹出来。
+    this.suggestShownFor = -1;
     this.suggestTimer = setTimeout((): void => {
       this.suggestTimer = -1;
       this.suggestSeq += 1;
@@ -1050,7 +1057,9 @@ export struct HomeSurface {
       }
       this.suggestPending = this.suggestSeq;
       this.onCommand({ command: 'autocomplete', requestId: this.suggestSeq, text: text });
-    }, 130);
+      // 1.0.4：防抖 130 → 90ms。上游还有 130ms 才发请求，加上引擎各 provider
+      // 耗时，用户感知就是「慢半拍」；90ms 仍足够合并连打。
+    }, 90);
   }
 
   // 引擎回包：只认最新 requestId（旧包丢弃）。
@@ -1072,11 +1081,38 @@ export struct HomeSurface {
           description: typeof parsed.description === 'string' ? parsed.description : ''
         } as AutocompleteItem);
       }
-      // 同地址栏：中间包（done=false）直接丢，最后一包一次性上屏，避免每包重建列表。
-      if (payload.done === false) {
+      // 引擎对一次输入会推 2~5 包（每个 provider 各推一包，done 只在最后那包
+      // 为 true）。全等 done 才有内容 → 弹窗得等最慢的 provider（搜索建议要走
+      // 网络，几百毫秒），用户感知就是「弹出来慢」。
+      // 所以分两段：**首包立刻上屏**（本地 provider 最快，先把卡弹出来），
+      // 后续包不直接重建，攒最新一份 120ms 合并刷一次；done 到了立即刷。
+      if (payload.done === true) {
+        this.cancelSuggestFlush();
+        this.suggestItems = items;
+        this.suggestShownFor = payload.requestId;
         return;
       }
-      this.suggestItems = items;
+      // 空包（这个 provider 没结果）：既不清空已有内容，也不占用「首包」机会。
+      if (items.length === 0) {
+        return;
+      }
+      if (this.suggestShownFor !== payload.requestId) {
+        this.cancelSuggestFlush();
+        this.suggestItems = items;
+        this.suggestShownFor = payload.requestId;
+        return;
+      }
+      this.suggestQueued = items;
+      if (this.suggestFlushTimer !== -1) {
+        return;
+      }
+      this.suggestFlushTimer = setTimeout((): void => {
+        this.suggestFlushTimer = -1;
+        if (this.suggestQueued.length > 0) {
+          this.suggestItems = this.suggestQueued;
+          this.suggestQueued = [];
+        }
+      }, 120);
     } catch (error) {
     }
   }
@@ -1086,8 +1122,19 @@ export struct HomeSurface {
       clearTimeout(this.suggestTimer);
       this.suggestTimer = -1;
     }
+    this.cancelSuggestFlush();
     this.suggestPending = -1;
+    this.suggestShownFor = -1;
     this.suggestItems = [];
+  }
+
+  // 取消待合并的刷新（新请求 / 收起列表时调用，避免旧包把新结果盖回去）。
+  private cancelSuggestFlush(): void {
+    if (this.suggestFlushTimer !== -1) {
+      clearTimeout(this.suggestFlushTimer);
+      this.suggestFlushTimer = -1;
+    }
+    this.suggestQueued = [];
   }
 
   private suggestActive(): boolean {
