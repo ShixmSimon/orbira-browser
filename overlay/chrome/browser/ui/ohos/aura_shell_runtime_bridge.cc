@@ -2152,51 +2152,15 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   const ExtensionPopupAnchor anchor =
       ExtensionPopupAnchorFor(browser, parent, *id);
 
-  // The popup is a native bubble widget parented to the browser window, above
-  // the web layer. We always park a full-window backdrop behind it: it sits
-  // below the popup and above the page, so an outside tap lands on the
-  // backdrop (and is consumed) instead of leaking through to the page content.
-  //  - On a native Chromium page (new-tab / bookmarks) that page's own content
-  //    would otherwise show through above the popup, so the backdrop is fully
-  //    opaque and tinted to the current color scheme.
-  //  - On a normal http(s) web page the page is the content the user wants to
-  //    see, so the backdrop is fully transparent (invisible) but still catches
-  //    the outside tap so dismissing the popup never clicks the page.
-  // The backdrop fades out (rather than being hard-removed) when the popup
-  // closes -- see ExtensionPopupCloseWatcher -- which avoids a one-frame flash
-  // of the layer underneath while the shell restores the home surface.
-  std::unique_ptr<views::Widget> backdrop_widget;
-  {
-    const bool is_native_page =
-        active && !active->GetVisibleURL().SchemeIsHTTPOrHTTPS();
-    const ui::NativeTheme* native_theme =
-        ui::NativeTheme::GetInstanceForNativeUi();
-    const bool is_dark =
-        native_theme &&
-        native_theme->preferred_color_scheme() ==
-            ui::NativeTheme::PreferredColorScheme::kDark;
-    const SkColor scrim_color =
-        !is_native_page
-            ? SK_ColorTRANSPARENT
-            : (is_dark ? SkColorSetARGB(0xFF, 0x12, 0x12, 0x12)
-                       : SkColorSetARGB(0xFF, 0xF5, 0xF5, 0xF5));
-    gfx::Rect window_bounds = parent->GetWindowBoundsInScreen();
-    backdrop_widget = std::make_unique<views::Widget>();
-    {
-      views::Widget::InitParams params(
-          views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
-          views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
-      params.parent = parent->GetNativeView();
-      params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
-      params.bounds = gfx::Rect(window_bounds.size());
-      params.name = "ExtensionPopupBackdrop";
-      backdrop_widget->Init(std::move(params));
-    }
-    auto backdrop_view = std::make_unique<views::View>();
-    backdrop_view->SetBackground(views::CreateSolidBackground(scrim_color));
-    backdrop_widget->SetContentsView(std::move(backdrop_view));
-    backdrop_widget->Show();
-  }
+  // No full-window scrim behind the popup. One was tried here (to hide the
+  // native page that shows through above the popup, and to stop an outside tap
+  // from reaching the page), but any extra window alongside the popup breaks
+  // it: taps on the popup's own controls close the popup as though they had
+  // landed outside, so none of the popup's buttons can be used. Stacking the
+  // scrim below the popup, then shrinking it clear of the popup, both failed to
+  // help -- the popup only behaves once no second window is around. Leave it
+  // alone. ExtensionPopupCloseWatcher still accepts a scrim (null here); its
+  // fade path simply does nothing without one.
 
   ExtensionPopup::ShowPopupAtShellRect(browser, std::move(host), parent,
                                        anchor.rect, anchor.arrow,
@@ -2210,38 +2174,7 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   ExtensionPopup* popup = ExtensionPopup::last_popup_for_testing();
   views::Widget* popup_widget = popup ? popup->GetWidget() : nullptr;
   if (popup_widget) {
-    // The scrim must not overlap the popup at all. While it covered the popup's
-    // area it swallowed taps aimed at the popup's own controls, so the popup
-    // closed as though the tap had landed outside it and none of its buttons
-    // could be used (stacking it below was not enough). The popup is anchored to
-    // the bottom of the window, so shrink the scrim to the strip above it --
-    // that strip is exactly where the native page used to show through, and
-    // keeping it covered still blocks taps aimed at the page.
-    if (backdrop_widget) {
-      const gfx::Rect window_rect = parent->GetWindowBoundsInScreen();
-      const gfx::Rect popup_rect = popup_widget->GetWindowBoundsInScreen();
-      const int popup_top = popup_rect.y() - window_rect.y();
-      const int popup_bottom = popup_rect.bottom() - window_rect.y();
-      if (!popup_rect.IsEmpty() && popup_bottom >= window_rect.height() - 1 &&
-          popup_top > 0 && popup_top < window_rect.height()) {
-        backdrop_widget->SetBounds(
-            gfx::Rect(0, 0, window_rect.width(), popup_top));
-      } else {
-        // Could not keep the scrim clear of the popup (it is not bottom
-        // anchored). Fall back to making the scrim purely visual so that it can
-        // never swallow a tap aimed at the popup.
-        aura::Window* scrim_window = backdrop_widget->GetNativeWindow();
-        if (scrim_window) {
-          scrim_window->SetEventTargetingPolicy(
-              aura::EventTargetingPolicy::kNone);
-        }
-      }
-    }
-    new ExtensionPopupCloseWatcher(popup_widget, std::move(backdrop_widget),
-                                  profile, *id);
-  } else if (backdrop_widget) {
-    // No popup surfaced (shouldn't happen); drop the scrim we just raised.
-    backdrop_widget->CloseNow();
+    new ExtensionPopupCloseWatcher(popup_widget, nullptr, profile, *id);
   }
 }
 
