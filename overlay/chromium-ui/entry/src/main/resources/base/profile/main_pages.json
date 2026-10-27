@@ -10,6 +10,7 @@
     "pages/panels/ExtensionPanelPage",
     "pages/panels/PasswordsPanelPage",
     "pages/panels/SitePermissionsPanelPage",
-    "pages/panels/SiteSettingsPanelPage"
+    "pages/panels/SiteSettingsPanelPage",
+    "pages/panels/ResourceSniffPanelPage"
   ]
 }

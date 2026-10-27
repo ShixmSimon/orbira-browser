@@ -1697,6 +1697,23 @@ struct AuraShell {
       return;
     }
 
+    // 资源嗅探：引擎拦截媒体/图片子资源并归类后，经以下事件与外壳通信。
+    // resourceList：listResources 的回包（含 resources 列表）；resourceActionResult：
+    // downloadResource / clearResources 的回执；resourcesChanged：页面继续加载时
+    // 引擎广播“有新增资源”，外壳据此重拉一次列表。
+    if (event.event === 'resourceList') {
+      AppStorage.setOrCreate('auraPanelResourceList', JSON.stringify(event));
+      return;
+    }
+    if (event.event === 'resourceActionResult') {
+      AppStorage.setOrCreate('auraPanelEvent', JSON.stringify(event));
+      return;
+    }
+    if (event.event === 'resourcesChanged') {
+      AppStorage.setOrCreate('auraPanelResourceTick', Date.now());
+      return;
+    }
+
     if (event.event === 'tabThumbnails') {
       AppStorage.setOrCreate('auraTabThumbnails',
         JSON.stringify(shellEvent<TabThumbnailsEvent>(event).items ?? []));

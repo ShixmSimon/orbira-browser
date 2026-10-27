@@ -250,7 +250,8 @@ export interface BrowserRuntimeEvent {
     'protectionRuleSources' | 'protectionRuleSourceResult' | 'protectionRuleSourcesChanged' |
     'siteProtectionState' | 'siteProtectionConfigResult' | 'siteProtectionStateChanged' |
     'savedPasswords' | 'passwordRevealed' | 'passwordCommandResult' |
-    'passwordsExported' | 'passwordsImported' | 'savedPasswordsChanged';
+    'passwordsExported' | 'passwordsImported' | 'savedPasswordsChanged' |
+    'resourceList' | 'resourceActionResult' | 'resourcesChanged' | 'resourcesRequested';
   // gpuContextLost: whether the engine could rebuild after the GPU lost
   // its context. False means the picture will not come back on its own.
   recovered?: boolean;
