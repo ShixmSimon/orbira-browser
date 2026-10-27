@@ -12,7 +12,7 @@
  * 回包；面板在别处操作书签会发 bookmarkCreated/bookmarksChanged（'auraPanelEvent'），
  * 主页借此刷新磁贴。
  */
-import { BookmarkNode, BrowserCommandPayload, FaviconImage } from 'engine';
+import { AutocompleteItem, BookmarkNode, BrowserCommandPayload, FaviconImage } from 'engine';
 import { common } from '@kit.AbilityKit';
 import { promptAction, display, curves } from '@kit.ArkUI';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
@@ -27,6 +27,8 @@ import { HomeCache, HomeCacheData } from '../../utils/appearance/HomeCache';
 const HOME_FOLDER_TITLE: string = '首页';
 // 主页的请求序号段（书签面板从 0 起；以此区分谁的回包）。
 const HOME_SEQ_BASE: number = 700000;
+// 主页搜索框联想的序号段（与书签段、面板段都错开，回包只认自己这一段）。
+const HOME_SUGGEST_SEQ_BASE: number = 950000;
 // 主页序号在这段里循环（[700000, 900000)），始终高于书签面板的 600000 上限。
 const HOME_SEQ_SPAN: number = 200000;
 // 模块级序号抬升：每次挂载 +1000（同 BookmarksPanel 的 panelSeqBump）。
@@ -50,11 +52,12 @@ const TILE_ICON_RADIUS: number = 13;
 // 引擎按 sizeVp×deviceScaleFactor 生成 PNG（overlay/chrome/browser/ui/ohos/
 // shell_favicons_ohos.cc: size_px = clamp(sizeVp) × PrimaryDisplayScale()），
 // 站点只给 16/32px 的 favicon 时会被拉大 —— 画得越大越糊（46vp 满铺 =
-// 138px，实测发虚）。收到 24vp 画（磁贴就是这个比例：
-// 大托盘 + 小图标），小图不再被硬撑，视觉也稳。
-const TILE_FAVICON_VP: number = 24;
-// 底板里 favicon 的圆角（小图不需要大圆角，按约 25% 收）。
-const TILE_FAVICON_RADIUS: number = 6;
+// 138px，实测发虚）。24vp 又太小：磁贴里只剩中间一小块，和「没有图标时
+// 铺满底板的字母」完全不是一个观感（用户实拍对比）。
+// 取 36vp：比 24 明显接近底板尺寸，放大倍率（108px）仍低于实测发虚的 138px。
+const TILE_FAVICON_VP: number = 36;
+// 底板里 favicon 的圆角（按边长约 25% 收）。
+const TILE_FAVICON_RADIUS: number = 9;
 // 向引擎请求的尺寸（vp）= 绘制尺寸 × 2：站点声明了 touch / web-manifest 大图
 // 时能拿到真像素再**缩着画**（Interpolation.High），比放大清楚；没有大图的
 // 站点退化为和以前一样的放大，那一档靠上面的小绘制尺寸兜住。
@@ -83,6 +86,13 @@ interface BookmarkListPayload {
 interface PanelEventPayload {
   kind?: string;
   revision?: number;
+}
+
+// 引擎 autocomplete 回包（与地址栏共用同一条命令与同一个存储键，
+// 各按自己的 requestId 过滤）。
+interface HomeAutocompletePayload {
+  requestId?: number;
+  items?: AutocompleteItem[];
 }
 
 // 首页默认书签（首次运行时种入「首页」文件夹）。
@@ -237,6 +247,13 @@ export struct HomeSurface {
   @StorageLink('auraPanelBookmarkList') @Watch('onBookmarkListChanged') bookmarkListJson: string = '';
   @StorageLink('auraPanelEvent') @Watch('onPanelEvent') panelEventJson: string = '';
   @StorageLink('auraFavicons') @Watch('onFaviconsChanged') faviconsJson: string = '';
+  // 主页搜索框联想：与地址栏同一条 autocomplete 通道（存储键 'auraAutocomplete'），
+  // 用独立序号段 + requestId 过滤自己的回包，互不串。
+  @StorageLink('auraAutocomplete') @Watch('onHomeAutocomplete') autocompleteJson: string = '';
+  @State private suggestItems: AutocompleteItem[] = [];
+  private suggestPending: number = -1;
+  private suggestSeq: number = HOME_SUGGEST_SEQ_BASE;
+  private suggestTimer: number = -1;
   // 无痕会话：主页换成无痕的标题与说明，书签磁贴与主页布局入口都不出现。
   @Prop incognito: boolean = false;
   // 状态栏避让由本组件内部承担：surface_primary 背景能铺满状态栏条带。
@@ -999,9 +1016,132 @@ export struct HomeSurface {
   private submitQuery(): void {
     const target = normalizeAddress(this.query);
     this.query = '';
+    this.clearSuggest();
     if (target.length > 0) {
       this.onCommand({ command: 'navigate', url: target });
     }
+  }
+
+  // 主页搜索框联想：输入即问引擎（与地址栏同一条 autocomplete 命令）。
+  // 只有非空输入才发，130ms 防抖——和地址栏一样的手感。
+  private requestSuggest(text: string): void {
+    if (this.suggestTimer !== -1) {
+      clearTimeout(this.suggestTimer);
+      this.suggestTimer = -1;
+    }
+    if (text.trim().length === 0) {
+      this.suggestPending = -1;
+      this.suggestItems = [];
+      return;
+    }
+    this.suggestTimer = setTimeout((): void => {
+      this.suggestTimer = -1;
+      this.suggestSeq += 1;
+      if (this.suggestSeq > HOME_SUGGEST_SEQ_BASE + HOME_SEQ_SPAN) {
+        this.suggestSeq = HOME_SUGGEST_SEQ_BASE + 1;
+      }
+      this.suggestPending = this.suggestSeq;
+      this.onCommand({ command: 'autocomplete', requestId: this.suggestSeq, text: text });
+    }, 130);
+  }
+
+  // 引擎回包：只认最新 requestId（旧包丢弃）。
+  private onHomeAutocomplete(): void {
+    if (this.autocompleteJson.length === 0) {
+      return;
+    }
+    try {
+      const payload = JSON.parse(this.autocompleteJson) as HomeAutocompletePayload;
+      if (payload.requestId !== this.suggestPending) {
+        return;
+      }
+      const items: AutocompleteItem[] = [];
+      for (const parsed of payload.items ?? []) {
+        items.push({
+          type: parsed.type,
+          title: typeof parsed.title === 'string' ? parsed.title : '',
+          url: typeof parsed.url === 'string' ? parsed.url : '',
+          description: typeof parsed.description === 'string' ? parsed.description : ''
+        } as AutocompleteItem);
+      }
+      this.suggestItems = items;
+    } catch (error) {
+    }
+  }
+
+  private clearSuggest(): void {
+    if (this.suggestTimer !== -1) {
+      clearTimeout(this.suggestTimer);
+      this.suggestTimer = -1;
+    }
+    this.suggestPending = -1;
+    this.suggestItems = [];
+  }
+
+  private suggestActive(): boolean {
+    return this.query.trim().length > 0 && this.suggestItems.length > 0;
+  }
+
+  private openSuggestion(item: AutocompleteItem): void {
+    const target: string = item.url.length > 0 ? item.url : normalizeAddress(item.title);
+    this.clearSuggest();
+    this.query = '';
+    if (target.length > 0) {
+      this.onCommand({ command: 'navigate', url: target });
+    }
+  }
+
+  @Builder
+  private HomeSuggestCard() {
+    Column() {
+      ForEach(this.suggestItems, (item: AutocompleteItem, index: number) => {
+        Column() {
+          Row({ space: 10 }) {
+            Image(item.type === 'search' ?
+              $r('app.media.chromium_search') : $r('app.media.aura_clock'))
+              .width(16)
+              .height(16)
+              .fillColor($r('app.color.icon_secondary'))
+            Column({ space: 2 }) {
+              Text(item.title.length > 0 ? item.title : item.url)
+                .fontSize(15)
+                .fontColor($r('app.color.text_primary'))
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .width('100%')
+              if (item.url.length > 0) {
+                Text(item.url)
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_secondary'))
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .width('100%')
+              }
+            }
+            .layoutWeight(1)
+            .alignItems(HorizontalAlign.Start)
+          }
+          .width('100%')
+          .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+          .onClick((): void => {
+            this.openSuggestion(item);
+          })
+
+          if (index < this.suggestItems.length - 1) {
+            Divider()
+              .color($r('app.color.divider'))
+              .margin({ left: 40 })
+          }
+        }
+        .width('100%')
+      }, (item: AutocompleteItem, index: number): string => `${index}|${item.type}|${item.url}|${item.title}`)
+    }
+    .width('100%')
+    .borderRadius(16)
+    .backgroundColor($r('app.color.card_background'))
+    .clip(true)
+    .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
+    .margin({ top: 8 })
   }
 
   private openBookmark(node: BookmarkNode): void {
@@ -1161,7 +1301,7 @@ export struct HomeSurface {
             .draggable(false)
         } else {
           Text(initialOf(node))
-            .fontSize(17)
+            .fontSize(20)
             .fontWeight(FontWeight.Medium)
             .fontColor(Color.White)
             .textAlign(TextAlign.Center)
@@ -1759,6 +1899,8 @@ export struct HomeSurface {
               .enterKeyType(EnterKeyType.Go)
               .onChange((value: string) => {
                 this.query = value;
+                // 与地址栏一致：输入即弹联想。
+                this.requestSuggest(value);
               })
               .onSubmit(() => {
                 this.submitQuery();
@@ -1785,6 +1927,12 @@ export struct HomeSurface {
           .margin({ top: 0 })
         }
 
+        // 联想列表：紧贴搜索框下方的一张卡（输入期间顶掉下面的磁贴，
+        // 和地址栏联想一样是「盖住内容」而不是把内容推下去）。
+        if (this.suggestActive()) {
+          this.HomeSuggestCard()
+        }
+
         if (this.incognito) {
           Text('无痕标签页不会保存浏览记录、Cookie 和表单数据；下载的文件和书签会保留。')
             .fontSize(12)
@@ -1799,7 +1947,7 @@ export struct HomeSurface {
         Blank()
           .height(Math.max(0, 18 + this.custom.tilesOffset))
 
-        if (!this.incognito && this.custom.showTiles) {
+        if (!this.incognito && this.custom.showTiles && !this.suggestActive()) {
           if (this.tilesError) {
             Row({ space: 10 }) {
               Text('书签加载失败')

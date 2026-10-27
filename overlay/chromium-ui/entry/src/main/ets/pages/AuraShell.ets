@@ -60,6 +60,7 @@ import {
   FaviconsEvent,
   HistoryResultsEvent,
   BookmarkListEvent,
+  PageFullscreenChangedEvent,
   PasswordCommandResultEvent,
   PasswordRevealedEvent,
   PasswordsExportedEvent,
@@ -198,6 +199,9 @@ struct AuraShell {
     }
   }
   private statusBarHiddenByScroll: boolean = false;
+  // 网页自己进了全屏（video / requestFullscreen）。引擎把页面铺满自己的区域，
+  // 外围的状态栏与条带要让开：隐藏系统栏 + 控件高度清零（见 setPageFullscreen）。
+  private pageFullscreen: boolean = false;
   // 1.0.103：顶栏是否已「完全收起」（贴状态栏底模式的静息态）。视口底部内距按它
   // 追加 topSafe 补偿——否则滚到页尾最后 ~topSafe 够不到（见 applyDockViewportInset
   // 与 computeTopBarHiddenForInset）。
@@ -505,6 +509,22 @@ struct AuraShell {
   // 把顶栏的 browser controls（高度 + 收起许可）发给引擎：启动、设置开关
   // 切换、启动后的兜底重发共用这一份。
   private sendBrowserControls(): void {
+    if (this.pageFullscreen) {
+      // 网页全屏：控件区整体让位 —— top/minTop/bottom 全 0 且直接切 hidden，
+      // 页面铺满整屏（此前不发这条，状态栏那一条始终占着，视频只能缩着放）。
+      this.executeBrowserCommand({
+        command: 'setBrowserControls',
+        top: 0,
+        minTop: 0,
+        bottom: 0
+      });
+      this.executeBrowserCommand({
+        command: 'setBrowserControlsState',
+        state: 'hidden',
+        animate: false
+      });
+      return;
+    }
     const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
     if (this.homeStyle === 'chrome') {
       // 1.0.99：顶置回传统通栏几何（用户三图定案，看得是状态栏/网页/地址栏相对
@@ -697,6 +717,15 @@ struct AuraShell {
   // （1.0.131 移除 syncTopPushInset：随 ratio 每帧重发 setViewportInsets 会频繁
   // resize renderer → 页面跳动 + 滚动发卡。补偿改回常量后无需再挂 ratio 事件。）
   private applyDockViewportInset(): void {
+    if (this.pageFullscreen) {
+      // 网页全屏：底部也不留任何内距，视口就是整屏。
+      this.lastTopPushSent = 0;
+      this.executeBrowserCommand({
+        command: 'setViewportInsets',
+        bottom: 0
+      });
+      return;
+    }
     const bottomSafe = Number(AppStorage.get('auraBottomSafeVp') ?? 0);
     const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
     // 与 ratio 事件同步一次标志（幂等）：设置类变更路径直接调用本函数时，
@@ -1022,10 +1051,51 @@ struct AuraShell {
     if (!context) {
       return;
     }
+    // 网页全屏期间状态栏归全屏逻辑管，滚动显隐不能把它又打开。
+    if (this.pageFullscreen) {
+      return;
+    }
     window.getLastWindow(context).then((win: window.Window): void => {
       win.setSpecificSystemBarEnabled('status', !hidden);
     }).catch((error: Error) => {
       hilog.warn(0x0000, 'AuraShell', 'Status bar toggle failed: %{public}s', JSON.stringify(error));
+    });
+  }
+
+  // 网页全屏开关：进 → 藏系统栏（状态栏 + 导航条）、控件高度清零、视口铺满；
+  // 出 → 按当前设置把状态栏/控件还回去。
+  private setPageFullscreen(on: boolean): void {
+    if (this.pageFullscreen === on) {
+      return;
+    }
+    this.pageFullscreen = on;
+    AppStorage.setOrCreate('auraPageFullscreen', on);
+    this.applyFullscreenSystemBars(on);
+    this.sendBrowserControls();
+    this.applyDockViewportInset();
+  }
+
+  private applyFullscreenSystemBars(on: boolean): void {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (!context) {
+      return;
+    }
+    window.getLastWindow(context).then((win: window.Window): void => {
+      try {
+        if (on) {
+          win.setSpecificSystemBarEnabled('status', false);
+          win.setSpecificSystemBarEnabled('navigationIndicator', false);
+        } else {
+          win.setSpecificSystemBarEnabled('status', !this.statusBarHiddenByScroll);
+          win.setSpecificSystemBarEnabled('navigationIndicator', true);
+        }
+      } catch (error) {
+        hilog.warn(0x0000, 'AuraShell', 'Fullscreen system bar toggle failed: %{public}s',
+          JSON.stringify(error));
+      }
+    }).catch((error: Error) => {
+      hilog.warn(0x0000, 'AuraShell', 'Fullscreen window lookup failed: %{public}s',
+        JSON.stringify(error));
     });
   }
 
@@ -1881,6 +1951,14 @@ struct AuraShell {
     if (event.event === 'historyResults') {
       AppStorage.setOrCreate('auraPanelHistory',
         JSON.stringify(shellEvent<HistoryResultsEvent>(event).items ?? []));
+      return;
+    }
+    // 网页全屏（video / requestFullscreen）：契约要求外壳收起自己的条带并把
+    // 窗口切沉浸（见 ShellServiceTypes.PageFullscreenChangedEvent）。此前外壳
+    // 完全没接这条事件 —— 视频全屏时状态栏还占着一条、页面视口少一截，
+    // 画面只能缩在黑边里（用户实拍对比 Lumie）。
+    if (event.event === 'pageFullscreenChanged') {
+      this.setPageFullscreen(shellEvent<PageFullscreenChangedEvent>(event).fullscreen === true);
       return;
     }
     // 地址栏联想（autocomplete 命令的回包）：引擎会按同一 requestId 流式推
