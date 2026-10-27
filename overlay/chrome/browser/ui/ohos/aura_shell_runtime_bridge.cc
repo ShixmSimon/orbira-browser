@@ -1769,10 +1769,21 @@ void SendExtensionActions(gfx::AcceleratedWidget widget,
       base::DictValue item;
       item.Set("id", id);
       item.Set("name", extension->name());
-      ExtensionIconSource* icons = IconSourceFor(profile, *extension, action);
-      item.Set("iconPngBase64",
-               icons ? EncodeExtensionIcon(icons->GetIcon(tab_id), icon_size_px)
-                     : std::string());
+      // The page draws the extension's **logo**, not its toolbar button.
+      // Many extensions ship a monochrome action icon (floccus is one: a grey
+      // cloud) and a colour logo under "icons" -- chrome://extensions shows the
+      // logo, and the shell looked wrong next to it (grey on an enabled row).
+      // So: manifest icon first, action icon only when the manifest declares
+      // none (extensions that only set action.default_icon).
+      // The manifest icon loads asynchronously and reports OnIconUpdated /
+      // extensionActionsChanged when it lands, and the shell refetches then.
+      gfx::Image icon =
+          chrome::ohos::ExtensionManifestIcon(profile, *extension, icon_size_px);
+      if (icon.IsEmpty()) {
+        ExtensionIconSource* icons = IconSourceFor(profile, *extension, action);
+        icon = icons ? icons->GetIcon(tab_id) : gfx::Image();
+      }
+      item.Set("iconPngBase64", EncodeExtensionIcon(icon, icon_size_px));
       item.Set("badgeText",
                action ? action->GetDisplayBadgeText(tab_id) : std::string());
       // #AARRGGBB, which is what the shell's colour parser takes.
@@ -1796,13 +1807,13 @@ void SendExtensionActions(gfx::AcceleratedWidget widget,
       base::DictValue item;
       item.Set("id", extension->id());
       item.Set("name", extension->name());
-      // A disabled extension usually has no action to take the icon from;
-      // the page still shows its icon, from the manifest.
-      ExtensionIconSource* icons = IconSourceFor(profile, *extension, action);
-      const gfx::Image icon =
-          icons ? icons->GetIcon(tab_id)
-                : chrome::ohos::ExtensionManifestIcon(profile, *extension,
-                                                      icon_size_px);
+      // Same order as the enabled rows above: the logo, then the action icon.
+      gfx::Image icon =
+          chrome::ohos::ExtensionManifestIcon(profile, *extension, icon_size_px);
+      if (icon.IsEmpty()) {
+        ExtensionIconSource* icons = IconSourceFor(profile, *extension, action);
+        icon = icons ? icons->GetIcon(tab_id) : gfx::Image();
+      }
       item.Set("iconPngBase64", EncodeExtensionIcon(icon, icon_size_px));
       item.Set("badgeText", std::string());
       item.Set("badgeColor", "#00000000");

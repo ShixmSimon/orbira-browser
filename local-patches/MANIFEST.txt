@@ -1,7 +1,9 @@
 # 本地原创引擎修改 — 受保护清单与指纹
-# 生成时间: 2026-10-21 22:15（2026-10-23 09:10 增补第 5 块 EXT-ORIGIN）
+# 生成时间: 2026-10-21 22:15（2026-10-23 09:10 增补第 5 块 EXT-ORIGIN；2026-10-27 增补第 6/7 块）
 # 用途: 同步上游前/后核对这些文件未被覆盖；local-patches/snapshots/ 是独立副本，可一键还原
 # 注意: navigation_throttles.cc 已在 8de67840 回退为 stock，不属原创，已移出本清单
+# 第 6/7 块均为 overlay 承载文件（155 重编靠 SYNC_PATHS 把 overlay→src），改动须落在 overlay 副本，
+#   勿只改引擎源树（会被 overlay→src 定向同步覆盖）。详见《引擎侧本地资产总账》。
 
 BLOCK | FILE | GIT_BLOB_SHA | SRC_VERIFY_MARKER | NOTE
 1-UA-PIN | overlay/chrome/browser/ui/ohos/shell_store_user_agent_ohos.cc | 46f1b1e618a96e6421f4ad6e3c8dbf72de5d7333 | SetAuraShellUserAgentPinned | UA pin 存储/应用（桌面站点，对抗状态轮询打回）
@@ -15,3 +17,5 @@ BLOCK | FILE | GIT_BLOB_SHA | SRC_VERIFY_MARKER | NOTE
 4-VULKAN-GATE | overlay/ui/ozone/platform/ohos/ohos_phone_gpu_channel.h | dede256e3e14d91337b727795850592f05c88013 | IsOhosPhoneVulkanEnabled | Vulkan 闸门头文件
 5-EXT-ORIGIN | patches/ohos-extension-origin.patch | 569984b65b95cdebd3c34a205e49135c85c3c119 | requests made by an extension | 扩展请求不带 chrome-extension:// Origin（Blink 层 SetHTTPOrigin，3G签到「跨域检测无效」根因之一）
 5-EXT-ORIGIN | patches/ohos-extension-origin.patch | 569984b65b95cdebd3c34a205e49135c85c3c119 | extension-initiated requests do not advertise | 同一补丁的网络层部分（cors_url_loader.cc 按 request_initiator 补头，真正生效的一处）
+6-BROWSE-COUNT | overlay/chrome/browser/ui/ohos/shell_browsing_data_counts_ohos.cc | b6c0a48a98d917b629b850baee6f60aaf8f76ef1 | PasswordsCounter | 扩展「清除浏览数据」三项计数（密码/自动填充/网站设置），回包补 passwordCount/formDataCount/siteSettingsCount；此前不在 SYNC_PATHS，已补（否则重编丢）
+7-EXT-LOGO | overlay/chrome/browser/ui/ohos/aura_shell_runtime_bridge.cc | b6ee27831eb69a4331163f9af56b823a10ece076 | The page draws the extension | 扩展列表图标改用 manifest 彩色 logo（floccus 灰云→蓝云），不再用 action 单色图标；manifest 异步加载，到位后 extensionActionsChanged 触发外壳重拉
