@@ -298,6 +298,9 @@ export struct MobileBrowserOverlay {
   // Safe-area insets (status bar / navigation pill) in vp, from EntryAbility.
   @StorageProp('auraTopSafeVp') topSafeVp: number = 0;
   @StorageProp('auraBottomSafeVp') bottomSafeVp: number = 0;
+  // 网页自己进了全屏（video / requestFullscreen），由 AuraShell 写进 AppStorage。
+  // 全屏时状态栏已被藏起来，外壳不能再按"有状态栏"垫底（见状态栏垫底层）。
+  @StorageProp('auraPageFullscreen') pageFullscreen: boolean = false;
   @Prop @Watch('onBrowserStateChanged') browserState: BrowserStateSnapshot;
   // 引擎那边**其实正停在自己的新标签页**（导航失败没提交，browserState.url 还
   // 挂着那个连不上的地址，画面却是原生新标签页 + 外壳已用 HomeSurface 盖住）。
@@ -2234,7 +2237,7 @@ export struct MobileBrowserOverlay {
       // 垫在条带之下：同色（surface_primary），全显时被条带完全盖住，收起途中接管
       // 那一带，和下面那条固定 0~topSafe 的常驻垫底配合，预留区全程无露底。
       // 与条带同宽同色、纯装饰 hitTest None：不影响任何命中与手势。
-      if (!this.isHomeSurface() && this.topBarReserveVp() > 0.5) {
+      if (!this.isHomeSurface() && !this.pageFullscreen && this.topBarReserveVp() > 0.5) {
         Column()
           .width('100%')
           .height(this.topBarReserveVp())
@@ -2290,7 +2293,11 @@ export struct MobileBrowserOverlay {
       // 仅「上滑时隐藏状态栏」关着时铺（开着时网页沉浸、常铺会盖住网页顶部，用户曾明确否决）。
       // 说明：简约分支 minTop 已恒为 0（沉浸），此垫层会盖住沉浸页顶部那一条——
       // 这正是用户要的「状态栏垫层」观感（表面色垫底），与底部裁切修复互不冲突。
-      if (!this.hideStatusBarOnScroll && !this.isHomeSurface()) {
+      // 例外：topSafeVp 为 0（网页全屏把状态栏藏了）时**不铺**——没有状态栏要垫，
+      // 这里再画 topSafeVp + 2 就在视频顶上留一条 2vp 白线（真机实拍：全屏后顶部
+      // 一条 7px 纯白）。全屏标志一并判断，双保险。
+      if (!this.hideStatusBarOnScroll && !this.isHomeSurface() &&
+        this.topSafeVp > 0 && !this.pageFullscreen) {
         Column()
           .width('100%')
           .height(this.topSafeVp + 2)
