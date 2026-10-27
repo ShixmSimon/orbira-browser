@@ -91,6 +91,9 @@ export struct SiteQuickPanel {
       this.statusLine = '当前没有网页';
       return;
     }
+    // 打开即清掉「正在读取状态…」默认提示：状态回包只填数据、不动 statusLine，
+    // 不清除会永远停在「正在读取」（实测回包正常：canToggle/blockedRequests 都有）。
+    this.statusLine = '';
     this.onCommand({ command: 'getAdBlockPageState', requestId: this.nextRequestId(), tabId: this.tabId });
     this.onCommand({ command: 'getSiteProtectionState', requestId: this.nextRequestId(), tabId: this.tabId });
   }

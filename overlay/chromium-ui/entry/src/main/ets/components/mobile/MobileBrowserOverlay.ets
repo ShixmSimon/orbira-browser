@@ -2463,7 +2463,8 @@ export struct MobileBrowserOverlay {
     // 整屏归它，直接全屏响应区，顺带把网页挡在后面（菜单卡/联想列表点外
     // 收起时不再误点页面）。
     if (this.panelPage !== 'none' || this.menuCardVisible || this.homeTileMenuVisible ||
-      this.homeUrlFormVisible || this.contextMenuJson.length > 0 || this.suggestListActive()) {
+      this.homeUrlFormVisible || this.contextMenuJson.length > 0 || this.suggestListActive() ||
+      this.siteQuickVisible) {
       const full: Rectangle = { x: 0, y: 0, width: '100%', height: '100%' };
       regions.push(full);
       return regions;
@@ -2618,7 +2619,7 @@ export struct MobileBrowserOverlay {
   // 条带外照常落网页。若沿用 Transparent，命中 snackbar 的触摸会继续下发
   // WebWindow（点穿到网页——七连败第②败同款）。
   const modal: boolean = this.panelPage !== 'none' ||
-    this.menuCardVisible || this.contextMenuJson.length > 0 ||
+    this.menuCardVisible || this.contextMenuJson.length > 0 || this.siteQuickVisible ||
     this.suggestListActive() || this.findVisible || this.downloadSnackVisible;
   return modal ? HitTestMode.Default : HitTestMode.Transparent;
   }
