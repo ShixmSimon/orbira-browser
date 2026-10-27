@@ -316,8 +316,12 @@ export struct HomeSurface {
   @State private pressedGear: boolean = false;
 
   @State private query: string = '';
-  private windowW: number = 360;
-  private windowH: number = 780;
+  // 窗宽/窗高（vp）：主页所有锚点（Logo 22% / 搜索框 33.5% 窗高等）都基于它们。
+  // 必须是 @State + 跟根节点 onAreaChange 更新：只在 aboutToAppear 读一次
+  // display 尺寸的话，横竖屏切换后仍按旧值排版 —— 用户实拍「退出全屏转回竖屏后
+  // 主页整体位移、logo 显示不全」就是这个（display 尺寸在挂载时是竖屏值）。
+  @State private windowW: number = 360;
+  @State private windowH: number = 780;
 
   // -- 书签发现链状态 ----------------------------------------------------------
   // step: idle | root | mobile | tiles | creating | done
@@ -2015,5 +2019,17 @@ export struct HomeSurface {
     }
     .width('100%')
     .height('100%')
+    // 旋转/分屏/窗口尺寸变化都从这里拿真实窗高，锚点才会跟着重算。
+    // 阈值 0.5vp：只在真的变了才写 state，避免每帧无谓重绘。
+    .onAreaChange((_old: Area, now: Area): void => {
+      const w: number = Number(now.width);
+      const h: number = Number(now.height);
+      // 判据只看**宽度**：键盘弹起时窗口可能被压矮，若跟着改 windowH，主页会在
+      // 打字时整体跳一下；而旋转一定会换宽高，拿宽度变化当「真的转了」的信号。
+      if (w > 0 && h > 0 && Math.abs(w - this.windowW) > 0.5) {
+        this.windowW = w;
+        this.windowH = h;
+      }
+    })
   }
 }
