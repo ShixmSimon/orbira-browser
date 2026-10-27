@@ -392,12 +392,6 @@ export struct MobileBrowserOverlay {
   private thumbnailRetryTimer: number = 0;
   // 标签页排布：'grid' 两列卡片 / 'list' 单行列表（preferences 持久化）。
   @State private tabLayout: string = 'grid';
-  // Which full-screen shell page is open ('none' while browsing). The shell's
-  // sub-pages are full-screen, not part of the bottom sheet.
-  @State private panelPage: string = 'none';
-  // True while the extensions page was opened from settings, so its back
-  // button returns there instead of closing to the browser.
-  private extensionsFromSettings: boolean = false;
   // 0..1, from the engine: how much of the top bar the page is showing.
   // 1 keeps both bars in place; 0 has scrolled both fully away. Applied
   // straight from the storage link so one engine update is one render pass.
@@ -445,28 +439,8 @@ export struct MobileBrowserOverlay {
   private readonly dockMaterialActive: boolean = isDockMaterialAvailable();
   // 视口高度（vp），首次布局即上报；dock 条带的响应区以它为底边基准。
   @State private viewportHeightVp: number = 0;
-  // 视口宽度（vp）：面板（二级页）开合动效的位移基准。
+  // 视口宽度（vp）：页面切换帘幕（见 navVeilShift）的位移基准。
   @State private viewportWidthVp: number = 0;
-  // 面板开合动效（2026-10-10 用户要求补动效）：1 = 就位；0 = 整体停在屏幕
-  // 右侧外。打开先落 0 再由 PanelLayer.onAppear 弹到 1（弹簧回弹）；关闭弹
-  // 回 0、动画收尾后才卸载。
-  @State private panelShift: number = 1;
-  // 面板内二级切换（设置→扩展程序/密码…）的内容层位移方向：±1 = 从右/左
-  // 滑入，0 = 就位。见 switchPanel。
-  @State private panelContentShift: number = 0;
-  // 1.0.160：常驻挂载 + 转场旧页。visitedPages = 访问过的面板（不卸载）；
-  // outgoingPage = 跨面板转场期间移出的旧页（parallax + 变暗），收尾清空。
-  @State private visitedPages: string[] = [];
-  @State private outgoingPage: string = '';
-  // 转场方向：true = 前进（push，新页整屏滑入）；false = 后退（pop，旧页整屏
-  // 滑出、新页 parallax 揭示）。旧页位移/变暗方向由它决定。
-  @State private panelSwitchForward: boolean = true;
-  // 1.0.163：左边缘右滑返回手势状态。
-  @State private panelDragX: number = 0;          // 当前页跟手右移位移（vp）
-  @State private panelDragging: boolean = false;  // 是否正在右滑返回
-  @State private panelInnerNavActive: boolean = false; // 当前面板是否有激活的内层子页（避免与原生子页返回手势打架）
-  // 关闭动画的作废令牌：动画期间再次打开面板时，旧的卸载定时器不再生效。
-  private panelCloseToken: number = 0;
   // 页面切换柔和过渡帘幕（2026-10-10）：URL 变化（地址栏提交搜索 / 点链接 /
   // 切标签 / 前进后退）时"横向扫过"—— 从右侧扫入盖上、继续向左扫出（新页
   // 从右侧揭开，方向感对齐二级页滑入）；主页（新标签页）不扫（见 watcher）。
@@ -607,10 +581,6 @@ export struct MobileBrowserOverlay {
     }
     if (this.menuVisible) {
       this.closeMenuSheet();
-      return true;
-    }
-    if (this.panelPage !== 'none') {
-      this.closePanel();
       return true;
     }
     // Back on the home surface there is nothing left of ours to unwind --
@@ -1763,8 +1733,7 @@ export struct MobileBrowserOverlay {
       Column()
         .width('100%')
         .height(this.topSafeVp + CHROME_DOCK_EXTENT_VP + 3)
-        .backgroundColor(this.panelPage === 'none' ?
-          $r('app.color.surface_primary') : Color.Transparent)
+        .backgroundColor($r('app.color.surface_primary'))
         .hitTestBehavior(HitTestMode.None)
 
       Row({ space: 8 }) {
@@ -2231,7 +2200,7 @@ export struct MobileBrowserOverlay {
         .width('100%')
         .height('100%')
         .backgroundColor($r('app.color.surface_primary'))
-        .translate({ x: this.navVeilShift * this.panelWidthVp() })
+        .translate({ x: this.navVeilShift * this.pageWidthVp() })
         .hitTestBehavior(HitTestMode.None)
 
       // 引擎顶部预留区垫底（1.0.104，用户录屏逐帧实测定位）：网页 window 是满屏的，
@@ -2242,7 +2211,7 @@ export struct MobileBrowserOverlay {
       // 垫在条带之下：同色（surface_primary），全显时被条带完全盖住，收起途中接管
       // 那一带，和下面那条固定 0~topSafe 的常驻垫底配合，预留区全程无露底。
       // 与条带同宽同色、纯装饰 hitTest None：不影响任何命中与手势。
-      if (this.panelPage === 'none' && !this.isHomeSurface() && this.topBarReserveVp() > 0.5) {
+      if (!this.isHomeSurface() && this.topBarReserveVp() > 0.5) {
         Column()
           .width('100%')
           .height(this.topBarReserveVp())
@@ -2298,8 +2267,7 @@ export struct MobileBrowserOverlay {
       // 仅「上滑时隐藏状态栏」关着时铺（开着时网页沉浸、常铺会盖住网页顶部，用户曾明确否决）。
       // 说明：简约分支 minTop 已恒为 0（沉浸），此垫层会盖住沉浸页顶部那一条——
       // 这正是用户要的「状态栏垫层」观感（表面色垫底），与底部裁切修复互不冲突。
-      if (!this.hideStatusBarOnScroll && this.panelPage === 'none' &&
-        !this.isHomeSurface()) {
+      if (!this.hideStatusBarOnScroll && !this.isHomeSurface()) {
         Column()
           .width('100%')
           .height(this.topSafeVp + 2)
@@ -2310,7 +2278,7 @@ export struct MobileBrowserOverlay {
 
       // 下拉刷新指示器（1.0.104）：引擎判定并 reload，外壳只画这个圆 + 转圈。
       // 画在 bars 之后 = 压在条带之上（与垫底同层），网页区上半部。
-      if (this.pullPhase !== 'idle' && this.panelPage === 'none' && !this.isHomeSurface()) {
+      if (this.pullPhase !== 'idle' && !this.isHomeSurface()) {
         this.PullRefreshIndicator()
       }
 
@@ -2319,10 +2287,6 @@ export struct MobileBrowserOverlay {
       // Regions —— 联想在场时整屏归 overlay，顺带挡住网页）。
       if (this.suggestListActive()) {
         this.AddressSuggestLayer()
-      }
-
-      if (this.panelPage !== 'none') {
-        this.PanelLayer()
       }
 
       // 页内查找 bar sits under the status area, above everything else.
@@ -2462,7 +2426,7 @@ export struct MobileBrowserOverlay {
     // 模态层（七页面板 / ⋮ 悬浮菜单卡 / 长按菜单 / 地址栏联想列表）在场：
     // 整屏归它，直接全屏响应区，顺带把网页挡在后面（菜单卡/联想列表点外
     // 收起时不再误点页面）。
-    if (this.panelPage !== 'none' || this.menuCardVisible || this.homeTileMenuVisible ||
+    if (this.menuCardVisible || this.homeTileMenuVisible ||
       this.homeUrlFormVisible || this.contextMenuJson.length > 0 || this.suggestListActive() ||
       this.siteQuickVisible) {
       const full: Rectangle = { x: 0, y: 0, width: '100%', height: '100%' };
@@ -2618,9 +2582,9 @@ export struct MobileBrowserOverlay {
   // 「dock + snackbar」单条连续带（见 buildChromeTouchRegions 1.0.2 分支），
   // 条带外照常落网页。若沿用 Transparent，命中 snackbar 的触摸会继续下发
   // WebWindow（点穿到网页——七连败第②败同款）。
-  const modal: boolean = this.panelPage !== 'none' ||
-    this.menuCardVisible || this.contextMenuJson.length > 0 || this.siteQuickVisible ||
-    this.suggestListActive() || this.findVisible || this.downloadSnackVisible;
+  const modal: boolean = this.menuCardVisible || this.contextMenuJson.length > 0 ||
+    this.siteQuickVisible || this.suggestListActive() || this.findVisible ||
+    this.downloadSnackVisible;
   return modal ? HitTestMode.Default : HitTestMode.Transparent;
   }
 
@@ -2665,12 +2629,10 @@ export struct MobileBrowserOverlay {
       Column()
         .width('100%')
         .height(this.topSafeVp + TOP_BAR_EXTENT_VP + 3)
-        // 二级页（书签/历史/设置/扩展…）铺满全屏时，它自己的沉浸玻璃纱幕会
-        // 覆盖状态栏区域 —— 此处必须让位：不透明实色会把纱幕"顶"成一条死
-        // 色带，既没有渐变模糊、又和页面底色对不上（真机反馈）。无面板时
-        // 才画，保证网页页的状态栏条 + 地址栏区连成一条同色带。
-        .backgroundColor(this.panelPage === 'none' ?
-          $r('app.color.surface_primary') : Color.Transparent)
+        // 恒为不透明实色：面板已全部改为独立路由页（A' 面板页化），本层不会画在
+        // 面板之下，因此不再需要「有面板时让位成透明」。保证网页页的状态栏条 +
+        // 地址栏区连成一条同色带。
+        .backgroundColor($r('app.color.surface_primary'))
         // 纯装饰层：完全不参与命中，滑动照常下发到网页。
         .hitTestBehavior(HitTestMode.None)
 
@@ -3230,148 +3192,6 @@ export struct MobileBrowserOverlay {
     // system material behind this content -- a solid fill here would hide
     // it. See UI-DESIGN-SPEC.md section 8.5.
     .backgroundColor(Color.Transparent)
-  }
-
-  // The shell's own pages (bookmarks / history / downloads / settings /
-  // extensions) are full-screen pages — no sheet around them,
-  // which also removes the sheet's top gap on those pages.
-  // 单个面板槽位（1.0.160）：按 page 渲染对应面板，并按角色（当前页 / 转场
-  // 中的旧页 / 闲置）施加可见性、位移、变暗与层级。常驻挂载 + 可见性切换替代
-  // if/else 销毁重建——跨面板切换时各面板滚动位置与已加载数据保留。
-  @Builder
-  private PanelSlot(page: string) {
-    Column() {
-      // A' 面板页化（Phase 3 完成）：全部面板已迁为独立路由页，
-      // 本槽位已无面板可渲染（整套 machinery 留待 Phase 4 拆除）。
-    }
-    .width('100%')
-    .height('100%')
-    .visibility(this.panelSlotVisible(page) ? Visibility.Visible : Visibility.None)
-    .translate({ x: this.panelSlotShiftX(page) })
-    .opacity(this.panelSlotDim(page))
-    .zIndex(this.panelPage === page ? 2 : (this.outgoingPage === page ? 1 : 0))
-  }
-
-  // 1.0.160：常驻挂载标记——访问过的面板不卸载（否则跨面板返回后滚动归顶、
-  // 数据重载）。仅在面板层关闭（panelPage='none'）时随层整体卸载。
-  private markVisited(page: string): void {
-    if (this.visitedPages.indexOf(page) < 0) {
-      this.visitedPages = this.visitedPages.concat([page]);
-    }
-  }
-
-  private pageMounted(page: string): boolean {
-    return this.visitedPages.indexOf(page) >= 0;
-  }
-
-  private panelSlotVisible(page: string): boolean {
-    return this.panelPage === page || this.outgoingPage === page;
-  }
-
-  // 位移：当前页 = 内容层位移（±1 → 0）；转场中的旧页 = parallax。前进
-  // （push）：新页整屏宽滑入、旧页左移 30% 屏宽；后退（pop）：旧页
-  // 整屏右移出让、新页只做 30% parallax 揭示——模仿原生层级转场。
-  private panelSlotShiftX(page: string): number {
-    const width: number = this.panelWidthVp();
-    const progress: number = Math.abs(this.panelContentShift);
-    if (this.panelPage === page) {
-      return this.panelContentShift * width * (this.panelSwitchForward ? 1 : 0.30);
-    }
-    if (this.outgoingPage === page) {
-      return this.panelSwitchForward
-        ? (progress - 1) * 0.30 * width
-        : (1 - progress) * width;
-    }
-    return 0;
-  }
-
-  // 1.0.161：去掉转场旧面板变暗——与扩展详情页（原生 NavPathStack push-pop，
-  // 旧页只左移 parallax、不变暗）对齐。parallax 位移已保留层级纵深，无需再压暗。
-  private panelSlotDim(_page: string): number {
-    return 1;
-  }
-
-
-  @Builder
-  private PanelLayer() {
-    Column() {
-      // 1.0.160：各面板**常驻挂载**（首次访问时挂载，之后只切可见性）。
-      // 旧结构 if/else 单分支：跨面板切换（设置→扩展程序/密码/网站权限）会
-      // 销毁旧面板重建新面板——设置页滚到中段进二级页再返回**滚回顶端**，
-      // 且每次进网站权限都重新「加载中…」（装机录屏实锤）。转场期间旧面板
-      // 不卸载：parallax 移出 + 变暗、新页滑入，模仿原生 push-pop。
-      // 槽位逻辑（可见性/位移/变暗/层级）见 PanelSlot。
-      Stack({ alignContent: Alignment.TopStart }) {
-        // A' 面板页化（Phase 3 完成）：全部面板已迁为独立路由页（Phase 4 拆除本层）。
-      }
-      .width('100%')
-      .height('100%')
-    }
-    .width('100%')
-    .height('100%')
-    // 2026-10-10：面板已升级为全屏页（HdsNavigation 自管状态栏/底部指示条
-    // 安全区），宿主不再让位 —— 旧的 { top: 8+topSafeVp, bottom: bottomSafeVp }
-    // 会把面板整体下压一个状态栏高度、顶部露出一条、底部多出一条空区
-    // （真机反馈「顶部没到顶、底部多一块区域」的根源）。
-    .backgroundColor($r('app.color.page_background'))
-    // 面板开合动效（2026-10-10）：整屏从右侧滑入/滑出。
-    // 位移基准 = 视口宽度（vp）；挂载首帧一定先以"屏外"位置渲染（panelShift=0
-    // 与 panelPage 同帧生效），再由 onAppear 里起动画 —— 不会闪一帧在屏幕内。
-    // 注：此前这里挂了两条 .transition()（后者覆盖前者）+ 百分比位移，真机上
-    // 打开/关闭都没有可见动画 —— 改为显式 animateTo 驱动。
-    // ⚠️ 阻尼 0.84 不要动：全屏转场过冲会越过屏幕边界露底板 ——
-    // 0.84 过冲 2.8vp 不可见，0.70 → 16.6vp 露底，0.55 → 45.5vp 严重露底。
-    // 宁可慢，不要弹。回弹只用于按压反馈 / 滑动过界（详见 ref/04 §3.1）。
-    // 1.0.155 曾把 response 提到 0.48 求「更从容」，真机反馈不合适，1.0.156
-    // 已回退 0.34 —— 0.34/0.84 是页面转场的成熟常量，这个值没问题，
-    // 手感差异来自机制（手写位移 vs 官方转场），不来自快慢。
-    .translate({ x: (1 - this.panelShift) * this.panelWidthVp() + this.panelDragX })
-    // 1.0.163：左边缘右滑返回手势——手指跟手右移当前页，松手过阈值走 panelBack()
-    // （与各面板 onBack 行为一致），未过阈值弹回。panelInnerNavActive 为真时
-    // （当前面板有激活的内层子页）交还给系统原生子页返回手势，避免冲突。
-    .gesture(
-      PanGesture({ direction: PanDirection.Horizontal, fingers: 1 })
-        .onActionStart((event: GestureEvent): void => {
-          if (this.panelPage === 'none' || this.panelDragging || this.panelInnerNavActive) {
-            return;
-          }
-          if (event.fingerList.length === 0) {
-            return;
-          }
-          const startX: number = event.fingerList[0].globalX;
-          if (startX > 32) {
-            return;
-          }
-          this.panelDragging = true;
-        })
-        .onActionUpdate((event: GestureEvent): void => {
-          if (!this.panelDragging) {
-            return;
-          }
-          const dx: number = event.offsetX;
-          this.panelDragX = dx > 0 ? dx : 0;
-        })
-        .onActionEnd((): void => {
-          if (!this.panelDragging) {
-            return;
-          }
-          this.panelDragging = false;
-          const threshold: number = this.panelWidthVp() * 0.33;
-          if (this.panelDragX > threshold) {
-            this.panelDragX = 0;
-            this.panelBack();
-          } else {
-            animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
-              this.panelDragX = 0;
-            });
-          }
-        })
-    )
-    .onAppear((): void => {
-      animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
-        this.panelShift = 1;
-      });
-    })
   }
 
   @Builder
@@ -4712,7 +4532,8 @@ export struct MobileBrowserOverlay {
     }
   }
 
-  private panelWidthVp(): number {
+  // 视口宽度（vp）兜底：页面切换帘幕的位移基准。
+  private pageWidthVp(): number {
     return this.viewportWidthVp > 0 ? this.viewportWidthVp : 360;
   }
 
@@ -4728,7 +4549,7 @@ export struct MobileBrowserOverlay {
   // 于是出现「点 dock 扩展提示先开网页、点设置扩展却能开」的分裂。守卫的
   // 位置错了，不是守卫的松紧错了。
   // A' 面板页化（Phase 3）：扩展程序改为独立路由页（系统栈自动区分来源：
-  // 菜单进入返回回浏览器、设置进入返回回设置页），不再需要 extensionsFromSettings。
+  // 菜单进入返回回浏览器、设置进入返回回设置页）。
   private openExtensionPanelPage(): void {
     this.menuVisible = false;
     this.menuCardVisible = false;
@@ -4809,93 +4630,6 @@ export struct MobileBrowserOverlay {
     router.pushUrl({ url: 'pages/panels/RecentPanelPage' }).catch((error: Error): void => {
       console.error('openRecentPanel pushUrl failed:', error);
     });
-  }
-
-  private openPanel(page: string): void {
-    this.menuVisible = false;
-    this.menuCardVisible = false;
-    this.sheetPage = 'tabs';
-    this.extensionsFromSettings = false;
-    // 已在目标面板：不触发任何转场。
-    if (this.panelPage === page) {
-      return;
-    }
-    // 1.0.161：面板已在场（菜单内再点别的面板入口）时改走 push 式转场——
-    // 新页整屏右滑入、旧页左移 30% parallax，与扩展详情页原生层级转场一致；
-    // 不再把整层 PanelLayer 重新右滑入场（旧页会瞬移屏外再滑回，观感割裂）。
-    if (this.panelPage !== 'none') {
-      this.switchPanel(page, true);
-      return;
-    }
-    // 关闭态 → 整层右滑入场（首屏 push）。
-    this.markVisited(page);
-    this.outgoingPage = '';
-    this.panelCloseToken++;
-    this.panelShift = 0;
-    this.panelContentShift = 0;
-    this.panelPage = page;
-  }
-
-  private closePanel(): void {
-    this.extensionsFromSettings = false;
-    // 关闭动效：滑出到右侧**之后**才卸载（动画期间内容保留在场）。
-    // 1.0.161：曲线与 push 对齐（0.34/0.84），开合手感统一。
-    const token: number = ++this.panelCloseToken;
-    animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
-      this.panelShift = 0;
-    });
-    setTimeout((): void => {
-      if (token === this.panelCloseToken) {
-        this.panelPage = 'none';
-        this.panelShift = 1;
-        this.panelContentShift = 0;
-      }
-    }, 420);
-  }
-
-  // 面板内二级切换（设置→扩展程序/网站权限/密码、扩展→设置返回…）。
-  // 1.0.160：改常驻挂载 + 双层视差转场（旧页 parallax 移出并变暗、新页滑入），
-  // 模仿原生 push-pop。旧实现 if/else 销毁重建：跨面板返回后设置页滚动归顶、
-  // 每次进网站权限都重新「加载中…」（装机录屏实锤）。槽位逻辑见 PanelSlot。
-  private switchPanel(page: string, forward: boolean): void {
-    if (this.panelPage === 'none') {
-      this.openPanel(page);
-      return;
-    }
-    if (this.panelPage === page) {
-      return;
-    }
-    this.markVisited(page);
-    this.panelSwitchForward = forward;
-    this.outgoingPage = this.panelPage;
-    this.panelContentShift = forward ? 1 : -1;
-    this.panelPage = page;
-    setTimeout((): void => {
-      // 与 openPanel 的 panelShift 同一条弹簧（0.34 / 0.84），观感一致。
-      animateTo({ curve: curves.springMotion(0.34, 0.84) }, (): void => {
-        this.panelContentShift = 0;
-        this.outgoingPage = '';
-      });
-    }, 32);
-  }
-
-  // 1.0.163：面板级返回（边缘右滑 / 返回钮统一走这里）。
-  // 与各面板 PanelSlot 里接的 onBack 行为完全一致：顶层面板关闭整层；
-  // 网站权限/密码恒回设置；扩展程序依来源回设置或关闭。
-  private panelBack(): void {
-    const page: string = this.panelPage;
-    if (page === 'passwords' || page === 'sitepermissions') {
-      this.switchPanel('settings', false);
-    } else if (page === 'extensions') {
-      if (this.extensionsFromSettings) {
-        this.extensionsFromSettings = false;
-        this.switchPanel('settings', false);
-      } else {
-        this.closePanel();
-      }
-    } else {
-      this.closePanel();
-    }
   }
 
   // 页面切换："横向扫过"帘幕（1.0.67，替代纯淡入淡出）—— 从右侧扫入盖上、
