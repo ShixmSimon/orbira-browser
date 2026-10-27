@@ -34,6 +34,13 @@ import {
   ShellPrefValue
 } from 'engine';
 
+interface BrowsingDataCountsPayload {
+  event?: string;
+  historyCount?: number;
+  cacheBytes?: number;
+  siteCount?: number;
+}
+
 interface PrefRow {
   key: ShellPrefKey;
   label: string;
@@ -899,16 +906,14 @@ export struct SettingsPanel {
     }
     let payload: object | null = null;
     try {
-      payload = JSON.parse(this.browsingCountsJson) as {
-        event?: string; historyCount?: number; cacheBytes?: number; siteCount?: number;
-      };
+      payload = JSON.parse(this.browsingCountsJson) as BrowsingDataCountsPayload;
     } catch (error) {
       return;
     }
-    if (payload === null || (payload as { event?: string }).event !== 'browsingDataCounts') {
+    if (payload === null || (payload as BrowsingDataCountsPayload).event !== 'browsingDataCounts') {
       return;
     }
-    const p = payload as { historyCount?: number; cacheBytes?: number; siteCount?: number };
+    const p = payload as BrowsingDataCountsPayload;
     this.browsingHistoryCount = p.historyCount ?? -1;
     this.browsingCacheBytes = p.cacheBytes ?? -1;
     this.browsingSiteCount = p.siteCount ?? -1;

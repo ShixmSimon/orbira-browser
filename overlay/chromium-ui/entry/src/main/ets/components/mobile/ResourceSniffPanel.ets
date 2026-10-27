@@ -33,6 +33,13 @@ interface ResourceListPayload {
   resources?: ResourceItem[];
 }
 
+interface ResourceActionPayload {
+  event?: string;
+  ok?: boolean;
+  reason?: string;
+  navigationId?: string;
+}
+
 function formatBytes(bytes: number): string {
   if (bytes <= 0) {
     return '';
@@ -146,8 +153,7 @@ export struct ResourceSniffPanel {
       return;
     }
     try {
-      const payload = JSON.parse(this.panelEventJson) as
-        { event?: string; ok?: boolean; reason?: string };
+      const payload = JSON.parse(this.panelEventJson) as ResourceActionPayload;
       if (payload.event !== 'resourceActionResult') {
         return;
       }
