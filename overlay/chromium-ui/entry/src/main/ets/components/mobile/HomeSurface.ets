@@ -2013,6 +2013,10 @@ export struct HomeSurface {
         .layoutWeight(1)
         .scrollBar(BarState.Off)
         .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+        // 必须显式顶端对齐：Scroll 在「内容比视口短」时默认居中，主页内容本来
+        // 就比视口矮（竖屏 ~516 vs 832vp），不写这行整组会被下移半个差值
+        // （用户实测「改完竖屏靠下了」）。项目里其余 Scroll 也都带这行。
+        .align(Alignment.TopStart)
       }
       .width('100%')
       .height('100%')
