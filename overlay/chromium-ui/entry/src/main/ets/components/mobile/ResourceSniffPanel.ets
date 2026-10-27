@@ -1,18 +1,16 @@
 /*
- * 资源嗅探面板（手机）：列出当前页面被引擎自动识别出的媒体 / 图片等资源，
- * 支持逐个下载与一键清空。
+ * 资源嗅探面板（手机）：列出当前页面被引擎自动识别出的媒体 / 图片等资源。
  * 数据流：进入页 → listResources 命令（带当前 tabId）；引擎回 resourceList
  * （AuraShell 转存到 'auraPanelResourceList'）；页面继续加载时引擎广播
  * resourcesChanged（AuraShell bump 'auraPanelResourceTick'），本页重拉。
  * 动作：downloadResource / clearResources（带 tabId + navigationId 防伪，
- * 避免对一个已跳转/重载的页面误下）。
+ * 避免对一个已跳转/重载的页面误下）；HLS / DASH 清单不可直下，只提供复制链接。
  * 引擎侧实现见 chrome/browser/ohos/resource_collector.cc（拦截 media/image
  * 子资源 GET 请求并归类，命令 listResources/downloadResource/clearResources）。
  */
-import router from '@ohos.router';
 import { BrowserCommandPayload } from 'engine';
+import { pasteboard } from '@kit.BasicServicesKit';
 import { GlassPage, glassHeaderInsetVp } from './GlassPage';
-import { curves } from '@kit.ArkUI';
 
 interface ResourceItem {
   id: string;
@@ -40,6 +38,12 @@ interface ResourceActionPayload {
   navigationId?: string;
 }
 
+// 分类：音视频 = 视频 / 音频 / 两种流媒体清单；图片；其余归"文件"。
+const CAT_ALL: string = 'all';
+const CAT_AV: string = 'av';
+const CAT_IMAGE: string = 'image';
+const CAT_FILE: string = 'file';
+
 function formatBytes(bytes: number): string {
   if (bytes <= 0) {
     return '';
@@ -62,10 +66,56 @@ function kindLabel(kind: string): string {
     case 'video': return '视频';
     case 'audio': return '音频';
     case 'image': return '图片';
-    case 'hls': return 'HLS 流';
-    case 'dash': return 'DASH 流';
+    case 'hls': return 'HLS 清单';
+    case 'dash': return 'DASH 清单';
     default: return kind;
   }
+}
+
+function categoryOf(item: ResourceItem): string {
+  if (item.kind === 'image') {
+    return CAT_IMAGE;
+  }
+  if (item.kind === 'video' || item.kind === 'audio' ||
+    item.kind === 'hls' || item.kind === 'dash') {
+    return CAT_AV;
+  }
+  return CAT_FILE;
+}
+
+// 从 URL 里取主机名（不引 @kit.ArkTS 的 url 模块，避免多一层异常处理）。
+function hostOf(raw: string): string {
+  let text: string = raw;
+  const scheme: number = text.indexOf('://');
+  if (scheme >= 0) {
+    text = text.substring(scheme + 3);
+  }
+  const slash: number = text.indexOf('/');
+  if (slash >= 0) {
+    text = text.substring(0, slash);
+  }
+  const query: number = text.indexOf('?');
+  if (query >= 0) {
+    text = text.substring(0, query);
+  }
+  return text;
+}
+
+// 没有名字的资源用 URL 最后一段兜底（去掉查询串），比整条 URL 好看。
+function fileNameOf(item: ResourceItem): string {
+  if (item.name.length > 0) {
+    return item.name;
+  }
+  let text: string = item.url;
+  const query: number = text.indexOf('?');
+  if (query >= 0) {
+    text = text.substring(0, query);
+  }
+  const slash: number = text.lastIndexOf('/');
+  if (slash >= 0 && slash < text.length - 1) {
+    text = text.substring(slash + 1);
+  }
+  return text.length > 0 ? text : item.url;
 }
 
 @Component
@@ -82,6 +132,7 @@ export struct ResourceSniffPanel {
   @State private navigationId: string = '';
   @State private truncated: boolean = false;
   @State private loading: boolean = true;
+  @State private activeCat: string = CAT_ALL;
   private listScroller: Scroller = new Scroller();
   private requestSeq: number = 0;
   private lastReloadAt: number = 0;
@@ -164,11 +215,68 @@ export struct ResourceSniffPanel {
           payload.reason === 'manifestOnly' ? '该清单 / 流媒体无法直接下载' :
           payload.reason === 'staleDocument' ? '页面已跳转，请重新打开' : '操作失败';
       }
-      this.getUIContext().getPromptAction().showToast({ message: message, duration: 2000 });
+      this.showToast(message);
       if (ok) {
         setTimeout((): void => { this.reload(); }, 600);
       }
     } catch (error) {
+    }
+  }
+
+  private showToast(message: string): void {
+    this.getUIContext().getPromptAction().showToast({ message: message, duration: 2000 });
+  }
+
+  private countIn(cat: string): number {
+    if (cat === CAT_ALL) {
+      return this.items.length;
+    }
+    let count: number = 0;
+    for (const item of this.items) {
+      if (categoryOf(item) === cat) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  private visibleItems(): ResourceItem[] {
+    if (this.activeCat === CAT_ALL) {
+      return this.items;
+    }
+    const shown: ResourceItem[] = [];
+    for (const item of this.items) {
+      if (categoryOf(item) === this.activeCat) {
+        shown.push(item);
+      }
+    }
+    return shown;
+  }
+
+  private metaLine(item: ResourceItem): string {
+    const parts: string[] = [kindLabel(item.kind)];
+    const size: string = formatBytes(item.totalBytes);
+    if (size.length > 0) {
+      parts.push(size);
+    }
+    const host: string = hostOf(item.url);
+    if (host.length > 0) {
+      parts.push(host);
+    }
+    return parts.join(' · ');
+  }
+
+  private copyLink(item: ResourceItem): void {
+    try {
+      const data: pasteboard.PasteData =
+        pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, item.url);
+      pasteboard.getSystemPasteboard().setData(data).then((): void => {
+        this.showToast('链接已复制');
+      }).catch((): void => {
+        this.showToast('复制失败');
+      });
+    } catch (error) {
+      this.showToast('复制失败');
     }
   }
 
@@ -187,7 +295,7 @@ export struct ResourceSniffPanel {
   }
 
   private clearAll(): void {
-    if (this.navigationId.length === 0) {
+    if (this.navigationId.length === 0 || this.items.length === 0) {
       return;
     }
     this.requestSeq += 1;
@@ -200,62 +308,135 @@ export struct ResourceSniffPanel {
     setTimeout((): void => { this.reload(); }, 400);
   }
 
+  // 按类型换图标（原来一律用地球图标，分不出音视频/图片/清单）。
   @Builder
-  private ResourceRow(item: ResourceItem, index: number) {
-    Column() {
-      Row({ space: 12 }) {
-        Image($r('app.media.aura_globe'))
-          .width(22)
-          .height(22)
-          .fillColor($r('app.color.icon_primary'))
+  private KindIcon(kind: string) {
+    if (kind === 'video') {
+      Image($r('app.media.aura_res_video')).width(20).height(20).fillColor('#E8663D')
+    } else if (kind === 'audio') {
+      Image($r('app.media.aura_res_audio')).width(20).height(20).fillColor('#9B6BDF')
+    } else if (kind === 'image') {
+      Image($r('app.media.aura_res_image')).width(20).height(20).fillColor('#2FA36B')
+    } else if (kind === 'hls' || kind === 'dash') {
+      Image($r('app.media.aura_res_stream')).width(20).height(20).fillColor('#E0A32E')
+    } else {
+      Image($r('app.media.aura_res_file')).width(20).height(20)
+        .fillColor($r('app.color.icon_secondary'))
+    }
+  }
 
+  @Builder
+  private CategoryTab(cat: string, label: string) {
+    Column({ space: 4 }) {
+      Row({ space: 6 }) {
+        Text(label)
+          .fontSize(15)
+          .fontWeight(this.activeCat === cat ? FontWeight.Medium : FontWeight.Regular)
+          .fontColor(this.activeCat === cat ?
+            $r('app.color.accent_primary') : $r('app.color.text_primary'))
+        Text(`${this.countIn(cat)}`)
+          .fontSize(13)
+          .fontColor($r('app.color.text_secondary'))
+      }
+      .height(24)
+
+      Column()
+        .width(18)
+        .height(3)
+        .borderRadius(2)
+        .backgroundColor(this.activeCat === cat ?
+          $r('app.color.accent_primary') : Color.Transparent)
+    }
+    .layoutWeight(1)
+    .alignItems(HorizontalAlign.Center)
+    .onClick((): void => {
+      this.activeCat = cat;
+    })
+  }
+
+  @Builder
+  private FilterChip(id: string, label: string) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(this.activeCat === CAT_ALL && id === CAT_ALL ?
+        $r('app.color.on_accent') : $r('app.color.text_primary'))
+      .padding({ left: 14, right: 14, top: 7, bottom: 7 })
+      .borderRadius(16)
+      .backgroundColor(this.activeCat === CAT_ALL && id === CAT_ALL ?
+        $r('app.color.accent_primary') : $r('app.color.surface_secondary'))
+      .onClick((): void => {
+        if (id === CAT_ALL) {
+          this.activeCat = CAT_ALL;
+        } else if (id === 'refresh') {
+          this.reload();
+        } else if (id === 'clear') {
+          this.clearAll();
+        }
+      })
+  }
+
+  @Builder
+  private ActionText(label: string, onTap: () => void) {
+    Text(label)
+      .fontSize(13)
+      .fontColor($r('app.color.accent_primary'))
+      .padding({ left: 14, right: 14, top: 7, bottom: 7 })
+      .borderRadius(14)
+      .backgroundColor($r('app.color.surface_secondary'))
+      .onClick((): void => {
+        onTap();
+      })
+  }
+
+  @Builder
+  private ResourceCard(item: ResourceItem) {
+    Column() {
+      Row({ space: 10 }) {
+        this.KindIcon(item.kind)
         Column({ space: 2 }) {
-          Text(item.name.length > 0 ? item.name : item.url)
+          Text(fileNameOf(item))
             .fontSize(15)
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.text_primary'))
+            .maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+          Text(this.metaLine(item))
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .width('100%')
-          Row({ space: 8 }) {
-            Text(kindLabel(item.kind))
-              .fontSize(12)
-              .fontColor($r('app.color.text_secondary'))
-            if (item.totalBytes > 0) {
-              Text(formatBytes(item.totalBytes))
-                .fontSize(12)
-                .fontColor($r('app.color.text_secondary'))
-            }
-          }
-          .width('100%')
         }
-        .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start)
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Top)
 
+      Text(item.url)
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .maxLines(2)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width('100%')
+        .margin({ top: 8 })
+
+      Row({ space: 8 }) {
+        this.ActionText('复制链接', (): void => this.copyLink(item))
         if (item.downloadable) {
-          Text('下载')
-            .fontSize(13)
-            .fontColor($r('app.color.accent_primary'))
-            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-            .borderRadius(8)
-            .backgroundColor($r('app.color.surface_secondary'))
-            .onClick((): void => this.download(item))
-        } else {
-          Text('流媒体')
-            .fontSize(12)
-            .fontColor($r('app.color.text_secondary'))
+          this.ActionText('下载', (): void => this.download(item))
         }
       }
       .width('100%')
-      .padding({ left: 16, right: 12, top: 12, bottom: 12 })
-
-      if (index < this.items.length - 1) {
-        Divider()
-          .color($r('app.color.divider'))
-          .margin({ left: 50 })
-      }
+      .margin({ top: 10 })
     }
     .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    .padding(14)
+    .borderRadius(16)
+    .backgroundColor($r('app.color.card_background'))
+    .margin({ bottom: 10 })
   }
 
   build() {
@@ -265,67 +446,70 @@ export struct ResourceSniffPanel {
       onBack: (): void => { this.onBack(); }
     }) {
       Column() {
-        if (this.items.length > 0) {
-          Row() {
-            Text(`共 ${this.items.length} 项`)
-              .fontSize(13)
-              .fontColor($r('app.color.text_secondary'))
-            Blank()
-            Text('清空')
-              .fontSize(13)
-              .fontColor($r('app.color.danger'))
-              .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-              .borderRadius(8)
-              .backgroundColor($r('app.color.surface_secondary'))
-              .onClick((): void => this.clearAll())
-          }
-          .width('100%')
-          .padding({ left: 4, right: 4, bottom: 8 })
-        }
-
-        if (this.items.length === 0) {
+        Scroll(this.listScroller) {
           Column() {
-            Text(this.loading ? '正在嗅探当前页面的资源…' : '本页面暂未发现可下载的资源')
-              .fontSize(15)
-              .fontColor($r('app.color.text_secondary'))
-          }
-          .width('100%')
-          .layoutWeight(1)
-          .justifyContent(FlexAlign.Center)
-        } else {
-          Scroll(this.listScroller) {
-            Column() {
-              if (this.truncated) {
-                Text('列表较长，已截断显示最新的一部分。')
-                  .fontSize(12)
-                  .fontColor($r('app.color.text_secondary'))
-                  .width('100%')
-                  .padding({ left: 4, right: 4, top: 4, bottom: 8 })
-              }
-              Column() {
-                ForEach(this.items, (item: ResourceItem, index: number) => {
-                  this.ResourceRow(item, index)
-                }, (item: ResourceItem): string => item.id)
-              }
-              .width('100%')
-              .borderRadius(16)
-              .backgroundColor($r('app.color.card_background'))
-              .clip(true)
+            // 分类 + 动作 chip 都在滚动内容里，靠 glassHeaderInsetVp 让开状态栏
+            // （原来这一行在 Scroll 外，没吃到内距 → 压到状态栏上）。
+            Row() {
+              this.CategoryTab(CAT_AV, '音视频')
+              this.CategoryTab(CAT_IMAGE, '图片')
+              this.CategoryTab(CAT_FILE, '文件')
+            }
+            .width('100%')
+            .padding({ left: 4, right: 4 })
+            .margin({ bottom: 10 })
 
-              Text('点击「下载」交给系统下载；HLS / DASH 等流媒体清单无法直接下载。')
+            Row({ space: 8 }) {
+              this.FilterChip(CAT_ALL, `全部 ${this.countIn(CAT_ALL)}`)
+              this.FilterChip('refresh', '刷新')
+              this.FilterChip('clear', '清空列表')
+            }
+            .width('100%')
+            .margin({ bottom: 10 })
+
+            Text('记录当前页面已请求的资源。清单仅支持复制链接，暂不合并流媒体分片。')
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+              .margin({ bottom: 10 })
+
+            if (this.truncated) {
+              Text('列表较长，已截断显示最新的一部分。')
                 .fontSize(12)
                 .fontColor($r('app.color.text_secondary'))
                 .width('100%')
-                .padding({ left: 4, right: 4, top: 10 })
+                .margin({ bottom: 10 })
             }
-            .width('100%')
-            .padding({ top: glassHeaderInsetVp() })
+
+            if (this.visibleItems().length === 0) {
+              Column() {
+                Text(this.loading ? '正在嗅探当前页面的资源…' :
+                  (this.items.length === 0 ? '本页面暂未发现资源' : '该分类下暂无资源'))
+                  .fontSize(15)
+                  .fontColor($r('app.color.text_secondary'))
+              }
+              .width('100%')
+              .padding({ top: 60 })
+              .justifyContent(FlexAlign.Center)
+            } else {
+              ForEach(this.visibleItems(), (item: ResourceItem) => {
+                this.ResourceCard(item)
+              }, (item: ResourceItem): string => `${item.id}|${this.activeCat}`)
+            }
+
+            Text('HLS / DASH 等流媒体清单（m3u8 / mpd）不能直接下载，请复制链接到播放器使用。')
+              .fontSize(12)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+              .padding({ top: 2, bottom: 8 })
           }
-          .layoutWeight(1)
-          .scrollBar(BarState.Off)
-          .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-          .align(Alignment.TopStart)
+          .width('100%')
+          .padding({ top: glassHeaderInsetVp() })
         }
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+        .align(Alignment.TopStart)
       }
       .width('100%')
       .height('100%')

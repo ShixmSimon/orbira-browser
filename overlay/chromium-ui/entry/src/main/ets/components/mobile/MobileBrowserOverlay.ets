@@ -3881,7 +3881,7 @@ export struct MobileBrowserOverlay {
             })
         }
         // 资源嗅探：列出当前页面被引擎识别出的媒体/图片资源并支持下载。
-        this.MenuItem($r('app.media.aura_globe'), '资源嗅探', '', (): void => {
+        this.MenuItem($r('app.media.aura_sniff'), '资源嗅探', '', (): void => {
           this.closeMenuCard();
           this.openResourceSniffPanel();
         })
