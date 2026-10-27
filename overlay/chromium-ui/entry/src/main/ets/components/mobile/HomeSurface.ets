@@ -57,10 +57,10 @@ const TILE_ICON_RADIUS: number = 13;
 // 站点只给 16/32px 的 favicon 时会被拉大 —— 画得越大越糊（46vp 满铺 =
 // 138px，实测发虚）。24vp 又太小：磁贴里只剩中间一小块，和「没有图标时
 // 铺满底板的字母」完全不是一个观感（用户实拍对比）。
-// 取 36vp：比 24 明显接近底板尺寸，放大倍率（108px）仍低于实测发虚的 138px。
-const TILE_FAVICON_VP: number = 36;
+// 1.0.4：36 → 30（用户定稿，磁贴里更收敛一点，仍远低于 46 的糊边门槛）。
+const TILE_FAVICON_VP: number = 30;
 // 底板里 favicon 的圆角（按边长约 25% 收）。
-const TILE_FAVICON_RADIUS: number = 9;
+const TILE_FAVICON_RADIUS: number = 8;
 // 向引擎请求的尺寸（vp）= 绘制尺寸 × 2：站点声明了 touch / web-manifest 大图
 // 时能拿到真像素再**缩着画**（Interpolation.High），比放大清楚；没有大图的
 // 站点退化为和以前一样的放大，那一档靠上面的小绘制尺寸兜住。
@@ -1867,137 +1867,152 @@ export struct HomeSurface {
       }
 
       Column() {
-        // 1.0.180：内容组按设计稿锚定——顶部是**按窗高算出的固定占位**
-        // （Logo 行/搜索框的中心 22% / 33.5% 窗高，见 homeTopBlankVp），
-        // 下方留一个弹性占位吸收剩余空间。（1.0.178 的上下对半劈会把内容
-        // 压到窗高 36% 一带，低于设计稿。）
-        // 主页布局弹层的「Logo」微调叠加在锚点上：锚点是固定基数，负值
-        // 可上移（1.0.178 弹性占位时代负值无效，那套限制随本次移除）。
-        Blank()
-          .height(this.homeTopBlankVp())
+        // 主页内容进 Scroll：横屏可用高只有 ~377vp（419 窗高 − 42 状态栏），
+        // Logo 46 + 搜索框 48 + 磁贴两行几乎占满，再多一个书签就完全看不到、
+        // 也没法挪 —— 原来是固定布局 + 弹性占位，超出视口的部分直接被裁掉
+        // （用户实拍横屏问「是不是该能上下滚动」）。
+        // 锚点不变：Blank 仍是滚动内容的第一段，未滚动时位置和以前一模一样。
+        Scroll() {
+          Column() {
+            // 1.0.180：内容组按设计稿锚定——顶部是**按窗高算出的固定占位**
+            // （Logo 行/搜索框的中心 22% / 33.5% 窗高，见 homeTopBlankVp）。
+            // 内容高过视口时整组随 Scroll 上移，不再像以前那样被裁掉。
+            // （1.0.178 的上下对半劈会把内容压到窗高 36% 一带，低于设计稿。）
+            // 主页布局弹层的「Logo」微调叠加在锚点上：锚点是固定基数，负值
+            // 可上移（1.0.178 弹性占位时代负值无效，那套限制随本次移除）。
+            Blank()
+              .height(this.homeTopBlankVp())
 
-        if (this.custom.showLogo || this.incognito) {
-          Row({ space: 8 }) {
-            if (this.incognito) {
-              Image($r('app.media.aura_incognito'))
-                .width(26)
-                .height(26)
-                .fillColor($r('app.color.text_primary'))
-            } else {
-              // 浏览器 logo（深浅色自适应：浅色 navy / 深色白）在文字前。
-              Image($r('app.media.orbira_logo'))
-                .width(42)
-                .height(30)
-                .draggable(false)
+            if (this.custom.showLogo || this.incognito) {
+              Row({ space: 8 }) {
+                if (this.incognito) {
+                  Image($r('app.media.aura_incognito'))
+                    .width(26)
+                    .height(26)
+                    .fillColor($r('app.color.text_primary'))
+                } else {
+                  // 浏览器 logo（深浅色自适应：浅色 navy / 深色白）在文字前。
+                  Image($r('app.media.orbira_logo'))
+                    .width(42)
+                    .height(30)
+                    .draggable(false)
+                }
+                Text(this.incognito ? '无痕浏览' : 'Orbira')
+                  .fontSize(34)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor($r('app.color.text_primary'))
+              }
             }
-            Text(this.incognito ? '无痕浏览' : 'Orbira')
-              .fontSize(34)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_primary'))
-          }
-        }
 
-        // Logo 行中心 ↔ 搜索框中心的锚点差 = 11.5% 窗高（设计稿 22% → 33.5%
-        // 实测），减去两行半高（24 + 24）即为此处间隙；「搜索框」微调
-        // searchOffset 照旧叠加。行高变化时两个锚点各偏半个误差，可接受。
-        Blank()
-          .height(Math.max(0, this.windowH * 0.115 - 48 + this.custom.searchOffset))
+            // Logo 行中心 ↔ 搜索框中心的锚点差 = 11.5% 窗高（设计稿 22% → 33.5%
+            // 实测），减去两行半高（24 + 24）即为此处间隙；「搜索框」微调
+            // searchOffset 照旧叠加。行高变化时两个锚点各偏半个误差，可接受。
+            Blank()
+              .height(Math.max(0, this.windowH * 0.115 - 48 + this.custom.searchOffset))
 
-        if (this.custom.showSearch || this.incognito) {
-          Row({ space: 10 }) {
-            Image($r('app.media.chromium_search'))
-              .width(20)
-              .height(20)
-              .fillColor($r('app.color.text_secondary'))
-            TextInput({ text: this.query, placeholder: '搜索或输入网址' })
-              .layoutWeight(1)
+            if (this.custom.showSearch || this.incognito) {
+              Row({ space: 10 }) {
+                Image($r('app.media.chromium_search'))
+                  .width(20)
+                  .height(20)
+                  .fillColor($r('app.color.text_secondary'))
+                TextInput({ text: this.query, placeholder: '搜索或输入网址' })
+                  .layoutWeight(1)
+                  .height(48)
+                  .fontSize(15)
+                  .fontColor($r('app.color.text_primary'))
+                  .placeholderColor($r('app.color.text_secondary'))
+                  .backgroundColor(Color.Transparent)
+                  .enterKeyType(EnterKeyType.Go)
+                  .onChange((value: string) => {
+                    this.query = value;
+                    // 与地址栏一致：输入即弹联想。
+                    this.requestSuggest(value);
+                  })
+                  .onSubmit(() => {
+                    this.submitQuery();
+                  })
+                Button({ type: ButtonType.Circle, stateEffect: true }) {
+                  Image($r('app.media.chromium_scan'))
+                    .width(20)
+                    .height(20)
+                    .fillColor($r('app.color.text_secondary'))
+                }
+                .width(36)
+                .height(36)
+                .backgroundColor(Color.Transparent)
+                .accessibilityText('扫一扫')
+                .onClick(() => {
+                  this.startScan();
+                })
+              }
+              .width('100%')
               .height(48)
-              .fontSize(15)
-              .fontColor($r('app.color.text_primary'))
-              .placeholderColor($r('app.color.text_secondary'))
-              .backgroundColor(Color.Transparent)
-              .enterKeyType(EnterKeyType.Go)
-              .onChange((value: string) => {
-                this.query = value;
-                // 与地址栏一致：输入即弹联想。
-                this.requestSuggest(value);
-              })
-              .onSubmit(() => {
-                this.submitQuery();
-              })
-            Button({ type: ButtonType.Circle, stateEffect: true }) {
-              Image($r('app.media.chromium_scan'))
-                .width(20)
-                .height(20)
-                .fillColor($r('app.color.text_secondary'))
+              .borderRadius(24)
+              .backgroundColor($r('app.color.surface_secondary'))
+              .padding({ left: 16, right: 10 })
+              .margin({ top: 0 })
             }
-            .width(36)
-            .height(36)
-            .backgroundColor(Color.Transparent)
-            .accessibilityText('扫一扫')
-            .onClick(() => {
-              this.startScan();
-            })
+
+            // 联想列表：紧贴搜索框下方的一张卡（输入期间顶掉下面的磁贴，
+            // 和地址栏联想一样是「盖住内容」而不是把内容推下去）。
+            if (this.suggestActive()) {
+              this.HomeSuggestCard()
+            }
+
+            if (this.incognito) {
+              Text('无痕标签页不会保存浏览记录、Cookie 和表单数据；下载的文件和书签会保留。')
+                .fontSize(12)
+                .fontColor($r('app.color.text_secondary'))
+                .textAlign(TextAlign.Center)
+                .maxLines(3)
+                .width('100%')
+                .padding({ left: 12, right: 12 })
+                .margin({ top: 16 })
+            }
+
+            Blank()
+              .height(Math.max(0, 18 + this.custom.tilesOffset))
+
+            if (!this.incognito && this.custom.showTiles) {
+              if (this.tilesError) {
+                Row({ space: 10 }) {
+                  Text('书签加载失败')
+                    .fontSize(13)
+                    .fontColor($r('app.color.text_secondary'))
+                  Text('重试')
+                    .fontSize(13)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor($r('app.color.accent_primary'))
+                    .onClick(() => {
+                      this.refreshBookmarks();
+                    })
+                }
+                .width('100%')
+                .height(40)
+                .justifyContent(FlexAlign.Center)
+              } else {
+                // 联想期间只做 Visibility.None（节点留着），不要用 if 把整块磁贴
+                // 拆掉 —— 那会连图标一起销毁重建，第一次弹联想时明显一顿。
+                Column() {
+                  this.BookmarkGrid()
+                }
+                .width('100%')
+                .visibility(this.suggestActive() ? Visibility.None : Visibility.Visible)
+              }
+            }
+
+            // 底部呼吸（替代原弹性占位）：底色由外层 Column 负责，
+            // 内容比视口短时不必撑满，只留一点余量免得最后一行贴边。
+            Blank()
+              .height(24)
           }
           .width('100%')
-          .height(48)
-          .borderRadius(24)
-          .backgroundColor($r('app.color.surface_secondary'))
-          .padding({ left: 16, right: 10 })
-          .margin({ top: 0 })
         }
-
-        // 联想列表：紧贴搜索框下方的一张卡（输入期间顶掉下面的磁贴，
-        // 和地址栏联想一样是「盖住内容」而不是把内容推下去）。
-        if (this.suggestActive()) {
-          this.HomeSuggestCard()
-        }
-
-        if (this.incognito) {
-          Text('无痕标签页不会保存浏览记录、Cookie 和表单数据；下载的文件和书签会保留。')
-            .fontSize(12)
-            .fontColor($r('app.color.text_secondary'))
-            .textAlign(TextAlign.Center)
-            .maxLines(3)
-            .width('100%')
-            .padding({ left: 12, right: 12 })
-            .margin({ top: 16 })
-        }
-
-        Blank()
-          .height(Math.max(0, 18 + this.custom.tilesOffset))
-
-        if (!this.incognito && this.custom.showTiles) {
-          if (this.tilesError) {
-            Row({ space: 10 }) {
-              Text('书签加载失败')
-                .fontSize(13)
-                .fontColor($r('app.color.text_secondary'))
-              Text('重试')
-                .fontSize(13)
-                .fontWeight(FontWeight.Medium)
-                .fontColor($r('app.color.accent_primary'))
-                .onClick(() => {
-                  this.refreshBookmarks();
-                })
-            }
-            .width('100%')
-            .height(40)
-            .justifyContent(FlexAlign.Center)
-          } else {
-            // 联想期间只做 Visibility.None（节点留着），不要用 if 把整块磁贴
-            // 拆掉 —— 那会连图标一起销毁重建，第一次弹联想时明显一顿。
-            Column() {
-              this.BookmarkGrid()
-            }
-            .width('100%')
-            .visibility(this.suggestActive() ? Visibility.None : Visibility.Visible)
-          }
-        }
-
-        // 下方弹性占位：内容组锚在窗高上 1/3（设计稿），剩余空间全留白。
-        Column()
-          .layoutWeight(1)
+        .width('100%')
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
       }
       .width('100%')
       .height('100%')
