@@ -2095,7 +2095,10 @@ export struct HomeSurface {
       Column()
         .width('100%')
         .height(this.topSafeVp + 8)
-        .backdropBlur(24)
+        // 背景模糊要按帧重采样背后内容：主页一滚动，这条带子底下就一直在动，
+        // 半径越大采样越贵。24 → 12 后滚动开销明显下降，糊掉 Logo 的观感仍在。
+        // 还想再省就把这行去掉、只留下面的渐变（视觉差别不大，最省）。
+        .backdropBlur(12)
         .hitTestBehavior(HitTestMode.None)
       Column()
         .width('100%')

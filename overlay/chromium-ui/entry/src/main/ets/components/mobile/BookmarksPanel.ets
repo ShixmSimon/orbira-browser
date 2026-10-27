@@ -1947,6 +1947,9 @@ export struct BookmarksPanel {
           .constraintSize({ maxHeight: 380 })
           .scrollBar(BarState.Off)
           .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+          // 缓存视口外的条目：LazyForEach 默认只建可见项，快速滑动时会边滑边建
+          // 而顿一下。这里预留几屏的量，滑动过程中提前建好。
+          .cachedCount(6)
           .width('100%')
         }
         .width('100%')
