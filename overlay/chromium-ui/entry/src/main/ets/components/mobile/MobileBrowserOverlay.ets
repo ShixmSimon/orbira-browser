@@ -2269,6 +2269,11 @@ export struct MobileBrowserOverlay {
         (this.chromeDockAtTop() ? FlexAlign.Start : FlexAlign.End) :
         (this.isHomeSurface() ? FlexAlign.End : FlexAlign.SpaceBetween))
       .hitTestBehavior(HitTestMode.Transparent)
+      // 网页全屏（video / requestFullscreen）期间**整条 chrome 不显示**：
+      // 引擎在页面滚动/触摸时会把浏览器控件重新"显示"（controlsRatio 回 1），
+      // 外壳若还画着条带，地址栏就会在全屏视频上滑出来（用户实测：全屏播放时
+      // 滑动会冒出地址栏）。Visibility.None 既不出现在布局里，也不参与命中。
+      .visibility(this.pageFullscreen ? Visibility.None : Visibility.Visible)
       .bindSheet($$this.menuVisible, this.MenuSheet, {
         height: SheetSize.LARGE,
         showClose: false,
@@ -2453,6 +2458,11 @@ export struct MobileBrowserOverlay {
   // 矩形"，因此只会与 Transparent 组合出现（行为与旧实现一致）。
   private buildChromeTouchRegions(): Array<Rectangle> {
     const regions: Array<Rectangle> = [];
+    // 网页全屏：外壳不画条带，也就没有要拦的条区 —— 整屏交给网页，
+    // 否则顶部/底部那两条响应区会吃掉视频的点击与滑动。
+    if (this.pageFullscreen) {
+      return regions;
+    }
     // 模态层（七页面板 / ⋮ 悬浮菜单卡 / 长按菜单 / 地址栏联想列表）在场：
     // 整屏归它，直接全屏响应区，顺带把网页挡在后面（菜单卡/联想列表点外
     // 收起时不再误点页面）。
