@@ -302,6 +302,11 @@ export struct HomeSurface {
   @State private layoutDragging: boolean = false;
   // 1.0.91 设置-主页设置「自定义主页布局」经此信号请求打开主页布局弹层。
   @StorageLink('auraOpenHomeLayout') @Watch('onOpenHomeLayout') openHomeLayoutSignal: number = 0;
+  // 已在主页时按主页键：overlay 这里自增，主页收到后清空搜索框 + 收起联想
+  // （Chrome 里在新建标签页按主页键就是重开一个新标签页）。
+  @StorageLink('auraHomeReset') @Watch('onHomeResetRequest') homeResetSignal: number = 0;
+  // 主页搜索框的输入控制器：清空时要连系统键盘一起收掉（stopEditing）。
+  private homeInputController: TextInputController = new TextInputController();
   // （1.0.111 移除 auraOpenHomeTile 信号：「网址主页」语义纠正为"设置自定义主页
   // 网址"，表单落在 overlay 层，与主页磁贴/书签无关。）
 
@@ -1884,6 +1889,14 @@ export struct HomeSurface {
 
   // （1.0.111：onOpenHomeTile 随信号一并移除。）
 
+  // 已在主页时按了主页键：清空搜索框、收起联想、收掉系统键盘（缺这三步就是
+  // 「按主页键没反应」——引擎侧 home 对已在 newtab 的标签页是空操作）。
+  private onHomeResetRequest(): void {
+    this.homeInputController.stopEditing();
+    this.query = '';
+    this.clearSuggest();
+  }
+
   // 首页内容组的顶部锚点占位（1.0.180）：把 Logo 行中心钉在 22% 窗高
   // （设计稿 440×956 实测 21.9%）；Logo 关闭时改为把搜索框中心钉在 33.5%
   // （实测 33.6%）。减去的 24 = 行半高（Logo 行与搜索框都是 48 高）。
@@ -1966,7 +1979,7 @@ export struct HomeSurface {
                   .width(20)
                   .height(20)
                   .fillColor($r('app.color.text_secondary'))
-                TextInput({ text: this.query, placeholder: '搜索或输入网址' })
+                TextInput({ text: this.query, placeholder: '搜索或输入网址', controller: this.homeInputController })
                   .layoutWeight(1)
                   .height(48)
                   .fontSize(15)
