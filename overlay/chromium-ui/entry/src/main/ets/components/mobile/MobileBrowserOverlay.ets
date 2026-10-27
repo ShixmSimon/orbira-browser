@@ -476,6 +476,11 @@ export struct MobileBrowserOverlay {
   @State private suggestVisible: boolean = false;
   private autocompleteSeq: number = 0;
   private autocompletePending: number = -1;
+  // 已经「上过屏」的 requestId：首包判断用（同一轮只立即上屏一次，后续包合并刷）。
+  private suggestShownFor: number = -1;
+  // 合并刷新：攒最新一份 120ms 刷一次，避免每个 provider 包都重建整张卡。
+  private suggestFlushTimer: number = -1;
+  private suggestQueuedItems: AutocompleteItem[] = [];
   private addressSuggestText: string = '';
   private addressSuggestTimer: number = -1;
   private suggestHttpSeq: number = 0;
@@ -4878,6 +4883,9 @@ export struct MobileBrowserOverlay {
     this.suggestItems = [];
     this.onlineSuggestWords = [];
     this.autocompletePending = -1;
+    // 新的一轮输入：恢复到「还没上屏」，让引擎第一包立刻把卡弹出来。
+    this.suggestShownFor = -1;
+    this.cancelSuggestFlush();
     this.addressSuggestTimer = setTimeout((): void => {
       this.addressSuggestTimer = -1;
       if (!this.editingAddress) {
@@ -4893,7 +4901,7 @@ export struct MobileBrowserOverlay {
       });
       // 在线联想词（仅搜索型输入；URL 型输入不该发给搜索引擎）。
       this.fetchOnlineSuggest(query);
-    }, 130);
+    }, 90);
   }
 
   // 收起联想（提交 / 取消编辑 / 点列表外 / 页面已跳走）。
@@ -4904,6 +4912,8 @@ export struct MobileBrowserOverlay {
     }
     this.autocompletePending = -1;
     this.suggestHttpSeq += 1;
+    this.cancelSuggestFlush();
+    this.suggestShownFor = -1;
     this.addressSuggestText = '';
     this.suggestItems = [];
     this.onlineSuggestWords = [];
@@ -4931,14 +4941,48 @@ export struct MobileBrowserOverlay {
         } as AutocompleteItem);
       }
       // 引擎的一次输入会推 2~5 包（每个 provider 完成各推一次，done 标最后那包）。
-      // 每包都落 UI 就是「打字时列表一顿一顿」的主因 —— 中间包直接丢，等最后一包
-      // 一次性上屏（期间保留旧列表，不闪）。
-      if (payload.done === false) {
+      // 之前为了不「一顿一顿」改成只认最后一包，结果**弹窗要等最慢的 provider**
+      // （搜索建议走网络，几百 ms），用户感知变成「弹出来慢」。
+      // 现在：首包立刻上屏（本地 provider 最快，先把卡弹出来），后续包攒最新
+      // 一份、120ms 合并刷一次；done 到了立即刷。
+      if (payload.done === true) {
+        this.cancelSuggestFlush();
+        this.suggestItems = normalized;
+        this.suggestShownFor = payload.requestId;
         return;
       }
-      this.suggestItems = normalized;
+      // 空包（这个 provider 没结果）：既不清空已有内容，也不占用「首包」机会。
+      if (normalized.length === 0) {
+        return;
+      }
+      if (this.suggestShownFor !== payload.requestId) {
+        this.cancelSuggestFlush();
+        this.suggestItems = normalized;
+        this.suggestShownFor = payload.requestId;
+        return;
+      }
+      this.suggestQueuedItems = normalized;
+      if (this.suggestFlushTimer !== -1) {
+        return;
+      }
+      this.suggestFlushTimer = setTimeout((): void => {
+        this.suggestFlushTimer = -1;
+        if (this.suggestQueuedItems.length > 0) {
+          this.suggestItems = this.suggestQueuedItems;
+          this.suggestQueuedItems = [];
+        }
+      }, 120);
     } catch (error) {
     }
+  }
+
+  // 取消待合并的刷新（新请求 / 收起列表时调用，避免旧包把新结果盖回去）。
+  private cancelSuggestFlush(): void {
+    if (this.suggestFlushTimer !== -1) {
+      clearTimeout(this.suggestFlushTimer);
+      this.suggestFlushTimer = -1;
+    }
+    this.suggestQueuedItems = [];
   }
 
   // 列表是否真的该显示：在"联想模式"、有输入、有行（搜索行/在线词/本地项）。
