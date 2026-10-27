@@ -216,10 +216,12 @@
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/compositor/layer.h"
+#include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/transform.h"
 #include "ui/native_theme/native_theme.h"
+#include "ui/gfx/animation/tween.h"
 #include "ui/ozone/platform/ohos/ohos_event_source.h"
 #include "ui/ozone/platform/ohos/ohos_native_window_registry.h"
 #include "ui/shell_dialogs/select_file_dialog_ohos.h"
@@ -2050,14 +2052,35 @@ class ExtensionPopupCloseWatcher : public views::WidgetObserver {
 
   void OnWidgetDestroyed(views::Widget* widget) override {
     NotifyAuraShellExtensionPopupClosed(profile_, extension_id_);
-    // Safe: we were already notified (OnWidgetDestroyed is the last call in the
-    // widget's observer sweep); ScopedObservation removes us before we free.
-    // The scrim we parked behind the popup rides along in backdrop_ and is
-    // torn down with this object.
+    // The scrim we parked behind the popup rides along in backdrop_. Rather than
+    // hard-removing it (which flashes the layer underneath for a frame while the
+    // shell restores the home surface), fade it out, then free this watcher once
+    // the fade has played. Safe: OnWidgetDestroyed is the last call in the
+    // widget's observer sweep and ScopedObservation removes us before we free.
+    if (backdrop_) {
+      views::View* contents = backdrop_->GetContentsView();
+      if (contents) {
+        contents->SetPaintToLayer();
+        contents->layer()->SetOpacity(1.0f);
+        ui::ScopedLayerAnimationSettings settings(
+            contents->layer()->GetAnimator());
+        settings.SetTransitionDuration(base::Milliseconds(120));
+        settings.SetTweenType(gfx::Tween::EASE_OUT);
+        contents->layer()->SetOpacity(0.0f);
+      }
+      base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+          FROM_HERE,
+          base::BindOnce(&ExtensionPopupCloseWatcher::SelfDelete,
+                         base::Unretained(this)),
+          base::Milliseconds(150));
+      return;
+    }
     delete this;
   }
 
  private:
+  void SelfDelete() { delete this; }
+
   ~ExtensionPopupCloseWatcher() override = default;
 
   // Full-window translucent scrim shown behind the popup; null when the popup
@@ -2128,17 +2151,22 @@ void RunExtensionAction(BrowserWindowInterface* browser,
       ExtensionPopupAnchorFor(browser, parent, *id);
 
   // The popup is a native bubble widget parented to the browser window, above
-  // the web layer. On a native Chromium page (new-tab / bookmarks) that page's
-  // own content would otherwise show through in the area above the popup, so
-  // park a full-window opaque scrim behind it, below the popup, and tear it
-  // down together with the popup via ExtensionPopupCloseWatcher. The scrim is
-  // fully opaque so the native page is completely hidden, and it follows the
-  // current color scheme (dark scheme -> dark scrim, light scheme -> light
-  // scrim) so it never looks wrong under either theme.
-  // On a normal http(s) web page the page itself is the content, and a scrim
-  // would only hide it for no reason -- skip it there.
+  // the web layer. We always park a full-window backdrop behind it: it sits
+  // below the popup and above the page, so an outside tap lands on the
+  // backdrop (and is consumed) instead of leaking through to the page content.
+  //  - On a native Chromium page (new-tab / bookmarks) that page's own content
+  //    would otherwise show through above the popup, so the backdrop is fully
+  //    opaque and tinted to the current color scheme.
+  //  - On a normal http(s) web page the page is the content the user wants to
+  //    see, so the backdrop is fully transparent (invisible) but still catches
+  //    the outside tap so dismissing the popup never clicks the page.
+  // The backdrop fades out (rather than being hard-removed) when the popup
+  // closes -- see ExtensionPopupCloseWatcher -- which avoids a one-frame flash
+  // of the layer underneath while the shell restores the home surface.
   std::unique_ptr<views::Widget> backdrop_widget;
-  if (active && !active->GetVisibleURL().SchemeIsHTTPOrHTTPS()) {
+  {
+    const bool is_native_page =
+        active && !active->GetVisibleURL().SchemeIsHTTPOrHTTPS();
     const ui::NativeTheme* native_theme =
         ui::NativeTheme::GetInstanceForNativeUi();
     const bool is_dark =
@@ -2146,8 +2174,10 @@ void RunExtensionAction(BrowserWindowInterface* browser,
         native_theme->preferred_color_scheme() ==
             ui::NativeTheme::PreferredColorScheme::kDark;
     const SkColor scrim_color =
-        is_dark ? SkColorSetARGB(0xFF, 0x12, 0x12, 0x12)
-                : SkColorSetARGB(0xFF, 0xF5, 0xF5, 0xF5);
+        !is_native_page
+            ? SK_ColorTRANSPARENT
+            : (is_dark ? SkColorSetARGB(0xFF, 0x12, 0x12, 0x12)
+                       : SkColorSetARGB(0xFF, 0xF5, 0xF5, 0xF5));
     gfx::Rect window_bounds = parent->GetWindowBoundsInScreen();
     backdrop_widget = std::make_unique<views::Widget>();
     {
