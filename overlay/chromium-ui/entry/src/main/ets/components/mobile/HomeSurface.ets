@@ -1086,14 +1086,17 @@ export struct HomeSurface {
       // 网络，几百毫秒），用户感知就是「弹出来慢」。
       // 所以分两段：**首包立刻上屏**（本地 provider 最快，先把卡弹出来），
       // 后续包不直接重建，攒最新一份 120ms 合并刷一次；done 到了立即刷。
+      // 空包一律不落 UI，包括「done=true 但结果为空」那种：引擎的
+      // AutocompleteController::Start() 会先 Stop 上一次请求，Stop 同步冲出一包
+      // 「空结果 + done=true」，且带着**新**的 requestId。照单清空就会把卡片刷成
+      // 只剩一行兜底行（观感「偶尔不展开」）。保留上一份列表更稳。
+      if (items.length === 0) {
+        return;
+      }
       if (payload.done === true) {
         this.cancelSuggestFlush();
         this.suggestItems = items;
         this.suggestShownFor = payload.requestId;
-        return;
-      }
-      // 空包（这个 provider 没结果）：既不清空已有内容，也不占用「首包」机会。
-      if (items.length === 0) {
         return;
       }
       if (this.suggestShownFor !== payload.requestId) {

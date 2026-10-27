@@ -4947,14 +4947,20 @@ export struct MobileBrowserOverlay {
       // （搜索建议走网络，几百 ms），用户感知变成「弹出来慢」。
       // 现在：首包立刻上屏（本地 provider 最快，先把卡弹出来），后续包攒最新
       // 一份、120ms 合并刷一次；done 到了立即刷。
+      // 空包一律不落 UI —— 包括「done=true 但结果为空」那种。
+      // 原因（引擎 shell_omnibox_ohos.cc）：AutocompleteController::Start() 会先把
+      // 上一次请求 Stop 掉，Stop 同步触发一次 OnResultChanged，此时 result() 是空的、
+      // done() 为 true，而 request_id_ 已经换成**新**的 id。也就是说每次输入的头一个
+      // 包是这个「空 + done」，照单清空就会把卡片刷成只剩一行兜底行 —— 观感就是
+      // 「偶尔一行不展开」。真正的「这个查询没有建议」也走这条，保留上一份列表即可
+      // （顶行永远是当前输入，不会认错）。
+      if (normalized.length === 0) {
+        return;
+      }
       if (payload.done === true) {
         this.cancelSuggestFlush();
         this.suggestItems = normalized;
         this.suggestShownFor = payload.requestId;
-        return;
-      }
-      // 空包（这个 provider 没结果）：既不清空已有内容，也不占用「首包」机会。
-      if (normalized.length === 0) {
         return;
       }
       if (this.suggestShownFor !== payload.requestId) {
