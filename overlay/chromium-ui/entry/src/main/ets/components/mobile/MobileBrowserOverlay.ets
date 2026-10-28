@@ -3351,8 +3351,6 @@ export struct MobileBrowserOverlay {
   private TabGrid() {
     Grid() {
       ForEach(this.browserState.tabs, (tab: BrowserTabState) => {
-        // 缩略图一卡只取一次：原来 if 判空一次、Image 又一次，同一次构建里查了两遍。
-        const thumbnail: string = this.thumbnailFor(tab);
         GridItem() {
           Column() {
             Row() {
@@ -3383,8 +3381,8 @@ export struct MobileBrowserOverlay {
             .padding({ left: 10, right: 4 })
 
             Stack() {
-              if (thumbnail.length > 0) {
-                Image(thumbnail)
+              if (this.thumbnailFor(tab).length > 0) {
+                Image(this.thumbnailFor(tab))
                   // 1.0.89：以前没有尺寸，Image 按图片固有像素大小画（在
                   // Stack 里既不对齐也可能画成 0），显式铺满卡片 + Cover。
                   .width('100%')
