@@ -181,6 +181,7 @@ struct AuraShell {
   private popupHoldTimer: number = -1;
 
   private onPopupHomeHoldChanged(): void {
+    hilog.info(0x0000, 'ExtPanel', 'popupHomeHold -> %{public}d', this.popupHomeHold);
     if (this.popupHomeHold > 0) {
       if (this.popupHoldTimer !== -1) {
         clearTimeout(this.popupHoldTimer);
@@ -2082,6 +2083,7 @@ struct AuraShell {
     // 原生扩展 popup 关闭：立刻收回主页盖层，不必再等兜底超时
     // （@Watch('onPopupHomeHoldChanged') 见 popupHomeHold 声明处）。
     if (event.event === 'extensionPopupClosed') {
+      hilog.info(0x0000, 'ExtPanel', 'extensionPopupClosed received, hold -> 0');
       AppStorage.setOrCreate('auraPopupHomeHold', 0);
       return;
     }

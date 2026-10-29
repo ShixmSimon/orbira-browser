@@ -2169,7 +2169,13 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   const std::string* id = command.FindString("id");
   content::WebContents* active =
       browser ? browser->GetTabStripModel()->GetActiveWebContents() : nullptr;
+  // 诊断「点扩展没反应」：这条链路上所有早退都是静默的，先让每一步可见。
+  LOG(WARNING) << "OHOS extension popup: entry browser="
+               << (browser ? 1 : 0) << " id="
+               << (id ? *id : std::string("(null)")) << " active="
+               << (active ? 1 : 0);
   if (!profile || !id || id->empty() || !active) {
+    LOG(WARNING) << "OHOS extension popup: drop at entry args";
     return;
   }
   extensions::ExtensionRegistry* registry =
@@ -2179,6 +2185,8 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   extensions::ExtensionActionRunner* runner =
       extensions::ExtensionActionRunner::GetForWebContents(active);
   if (!extension || !runner) {
+    LOG(WARNING) << "OHOS extension popup: drop extension="
+                 << (extension ? 1 : 0) << " runner=" << (runner ? 1 : 0);
     return;
   }
 
@@ -2190,6 +2198,8 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   // does this in ExtensionActionViewModel::ExecuteUserAction().
   const extensions::ExtensionAction::ShowAction show_action =
       runner->RunAction(extension, /*grant_tab_permissions=*/true);
+  LOG(WARNING) << "OHOS extension popup: RunAction -> "
+               << static_cast<int>(show_action);
   if (show_action != extensions::ExtensionAction::ShowAction::kShowPopup) {
     return;
   }
@@ -2200,12 +2210,15 @@ void RunExtensionAction(BrowserWindowInterface* browser,
       actions ? actions->GetExtensionAction(*extension) : nullptr;
   const int tab_id = sessions::SessionTabHelper::IdForTab(active).id();
   if (!action || !action->HasPopup(tab_id)) {
+    LOG(WARNING) << "OHOS extension popup: drop HasPopup action="
+                 << (action ? 1 : 0) << " tab_id=" << tab_id;
     return;
   }
 
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
   views::Widget* parent = browser_view ? browser_view->GetWidget() : nullptr;
   if (!parent) {
+    LOG(WARNING) << "OHOS extension popup: drop no parent widget";
     return;
   }
 
@@ -2213,11 +2226,14 @@ void RunExtensionAction(BrowserWindowInterface* browser,
       extensions::ExtensionViewHostFactory::CreatePopupHost(
           *extension, action->GetPopupUrl(tab_id), browser);
   if (!host) {
+    LOG(WARNING) << "OHOS extension popup: drop CreatePopupHost";
     return;
   }
 
   const ExtensionPopupAnchor anchor =
       ExtensionPopupAnchorFor(browser, parent, *id);
+  LOG(WARNING) << "OHOS extension popup: anchor rect=" << anchor.rect.ToString()
+               << " arrow=" << static_cast<int>(anchor.arrow);
 
   // No full-window scrim behind the popup. One was tried here (to hide the
   // native page that shows through above the popup, and to stop an outside tap
@@ -2240,6 +2256,8 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   // synchronously, before ShowPopupAtShellRect returns).
   ExtensionPopup* popup = ExtensionPopup::last_popup_for_testing();
   views::Widget* popup_widget = popup ? popup->GetWidget() : nullptr;
+  LOG(WARNING) << "OHOS extension popup: shown widget="
+               << (popup_widget ? 1 : 0);
   if (popup_widget) {
     new ExtensionPopupCloseWatcher(popup_widget, nullptr, profile, *id);
   }
