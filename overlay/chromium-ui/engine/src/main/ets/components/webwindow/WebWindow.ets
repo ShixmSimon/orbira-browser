@@ -616,6 +616,11 @@ export struct WebWindow {
         this.notifyWindowId();
         this.notifyCurrentBounds();
         this.notifyWindowStatus();
+        try {
+          win.on('freeWindowModeChange', (): void => this.notifyWindowId());
+        } catch (error) {
+          // Older systems retain the conservative foreground-tab fallback.
+        }
         win.on('windowSizeChange', (size: window.Size) => {
           this.handleWindowSizeChange(size);
         });
@@ -676,7 +681,13 @@ export struct WebWindow {
     try {
       const windowId = Number(this.activeWindow.getWindowProperties().id);
       if (windowId > 0) {
-        this.nativeContext.OnWindowIdChanged(windowId);
+        let freeWindowMode: boolean = false;
+        try {
+          freeWindowMode = this.activeWindow.isInFreeWindowMode();
+        } catch (error) {
+          // API 22+: unknown support must not open an unusable fullscreen popup.
+        }
+        this.nativeContext.OnWindowIdChanged(windowId, freeWindowMode);
       }
     } catch (error) {
     }
@@ -689,6 +700,10 @@ export struct WebWindow {
 
     try {
       this.activeWindow.off('windowSizeChange');
+    } catch (error) {
+    }
+    try {
+      this.activeWindow.off('freeWindowModeChange');
     } catch (error) {
     }
     try {
@@ -761,6 +776,12 @@ export struct WebWindow {
           operation = this.activeWindow.minimize();
           break;
         case 'restore':
+          // Free-window mode may already have opened this ability floating.
+          // recover() then rejects with a repeated-operation error, which is
+          // not a popup creation failure.
+          if (this.activeWindow.getWindowStatus() === window.WindowStatusType.FLOATING) {
+            return;
+          }
           operation = this.activeWindow.recover();
           break;
         case 'startMoving':
@@ -771,12 +792,24 @@ export struct WebWindow {
       }
     } catch (error) {
       this.reportError(this.normalizeError(error));
+      if (action === 'restore') {
+        this.fallbackPopupToTab();
+      }
       return;
     }
 
     operation.catch((error: Error) => {
       this.reportError(error);
+      if (action === 'restore') {
+        this.fallbackPopupToTab();
+      }
     });
+  }
+
+  private fallbackPopupToTab(): void {
+    if (this.xComponentId.startsWith('aura_win_')) {
+      this.nativeContext?.ExecuteBrowserCommand(JSON.stringify({ command: 'fallbackWebPopupToTab' }));
+    }
   }
 
   private handleWindowSizeChange(size: window.Size): void {
@@ -830,6 +863,7 @@ export struct WebWindow {
 
     if (event === window.WindowEventType.WINDOW_ACTIVE ||
       event === window.WindowEventType.WINDOW_SHOWN) {
+      this.notifyWindowId();
       this.notifyCurrentBounds();
       this.restoreXComponentFocus(80);
       return;
