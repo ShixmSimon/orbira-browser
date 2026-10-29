@@ -8,6 +8,7 @@
 import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
 import { BrowserCommandPayload, ExtensionActionItem, ExtensionDetailsEvent, ExtensionSiteAccess } from 'engine';
 import { glassHeaderInsetVp } from './GlassPage';
@@ -482,6 +483,13 @@ export struct ExtensionPanel {
     if (item.hasPopup && this.isNewTabUrl(this.currentUrl)) {
       AppStorage.setOrCreate('auraPopupHomeHold', Date.now());
     }
+    // 偶发「点扩展没反应」诊断：记下当时的 hasPopup / URL / 是否让位。复现时
+    // hilog 一抓即可区分「没让位（主页盖住了 popup）」还是「让位了但 popup
+    // 没创建（引擎侧早退）」。只在点扩展时打一条，量极低。
+    hilog.info(0x0000, 'ExtPanel',
+      'runExtension id=%{public}s popup=%{public}s hold=%{public}s url=%{public}s',
+      item.id, String(item.hasPopup),
+      String(item.hasPopup && this.isNewTabUrl(this.currentUrl)), this.currentUrl);
     // The extension's popup panel is drawn by native above the web layer --
     // under this full-screen page. Dismiss the page so the popup is
     // visible; reopen the extensions page to see list changes.
@@ -491,6 +499,12 @@ export struct ExtensionPanel {
 
   // 与 MobileBrowserOverlay.isNewTabUrl 同一份判据（引擎换 URL 写法时一起改）。
   private isNewTabUrl(url: string): boolean {
+    // 空 URL 按主页处理：引擎还没上报（冷启动 / 刚回主页）时 HomeSurface 正盖
+    // 着整屏，popup 必须让它让位，否则表现为「点扩展没反应」。与
+    // MobileBrowserOverlay.isNewTabUrl 保持同一份判据。
+    if (url.length === 0) {
+      return true;
+    }
     return url.startsWith('chrome://newtab') ||
       url.startsWith('chrome://new-tab-page') ||
       url.startsWith('chrome://new-tab-page-third-party') ||
@@ -759,8 +773,11 @@ export struct ExtensionPanel {
       // and a new-tab page is covered by the home surface too. Dismiss this
       // page, park a new-tab on the extensions WebUI, then hand the file to
       // the engine so the dialog lands on visible content.
+      // .zip 走的是「解压到 unpacked 目录」的安装方式，引擎**不会**弹确认框
+      // （只有 .crx 会走 ExtensionInstallPrompt）。这里必须按类型分文案，
+      // 否则用户会干等一个永远不出现的确认框。
       this.getUIContext().getPromptAction().showToast({
-        message: '请在弹出的窗口中确认安装',
+        message: isZip ? '正在安装扩展…' : '请在弹出的窗口中确认安装',
         duration: 3000
       });
       this.onClose();
