@@ -8277,7 +8277,7 @@ index 19b58e11263f194a50736c6b6fe8a681eab93f5b..98c7bb524ff3cb6a3c32d29e1087ba97
        media_router::MediaRouterDialogController::GetOrCreateForWebContents(
            browser->GetTabStripModel()->GetActiveWebContents());
 diff --git a/chrome/browser/ui/browser_tabstrip.cc b/chrome/browser/ui/browser_tabstrip.cc
-index 039a885a6ef00dacccfce6034b500fcf42bf9df7..41dfad030b3eb144fd29f9a62b895f368ae1a5da 100644
+index 039a885a6ef00dacccfce6034b500fcf42bf9df7..45fde96119943b4dcb8f62c0d5c64cd5c24fe064 100644
 --- a/chrome/browser/ui/browser_tabstrip.cc
 +++ b/chrome/browser/ui/browser_tabstrip.cc
 @@ -4,6 +4,12 @@
@@ -8293,19 +8293,16 @@ index 039a885a6ef00dacccfce6034b500fcf42bf9df7..41dfad030b3eb144fd29f9a62b895f36
  #include <optional>
  
  #include "base/command_line.h"
-@@ -109,6 +115,22 @@ content::WebContents* AddWebContents(
+@@ -109,6 +115,19 @@ content::WebContents* AddWebContents(
    // Can't create a new contents for the current tab - invalid case.
    DCHECK(disposition != WindowOpenDisposition::CURRENT_TAB);
  
 +#if BUILDFLAG(IS_OHOS)
-+  // A phone shows one browser window, full screen. A popup -- window.open()
-+  // with window features, which is how sites open "Sign in with Google" or a
-+  // payment -- became a Browser window of its own, which the shell could only
-+  // draw as a small floating box clamped to a third of the screen, its page
-+  // cut off. Open it as a tab, as Chrome on Android does: the opener link
-+  // survives, so the page can still talk to it and window.close() it, and the
-+  // tab joins the opener's group below.
-+  if (chrome::ohos::IsAuraShellMobilePhoneUi() &&
++  // The main shell reports the tablet's system free-window setting. If
++  // floating windows are unavailable, use the phone's foreground-tab path
++  // instead of creating a fullscreen window or an embedded login drawer.
++  // Reusing new_contents preserves opener communication and window.close().
++  if (!chrome::ohos::SupportsAuraShellFloatingWebPopups() &&
 +      browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL &&
 +      (disposition == WindowOpenDisposition::NEW_POPUP ||
 +       disposition == WindowOpenDisposition::NEW_WINDOW)) {
@@ -8316,7 +8313,7 @@ index 039a885a6ef00dacccfce6034b500fcf42bf9df7..41dfad030b3eb144fd29f9a62b895f36
    NavigateParams params(browser, std::move(new_contents));
    params.source_contents = source_contents;
    params.url = target_url;
-@@ -123,7 +145,39 @@ content::WebContents* AddWebContents(
+@@ -123,7 +142,39 @@ content::WebContents* AddWebContents(
  
    ConfigureTabGroupForNavigation(&params);
  
@@ -8360,18 +8357,18 @@ diff --git a/chrome/browser/ui/browser_web_contents_delegate/browser_web_content
 index d3fa7eea6db807d9a9b3467da4f468c555468b26..d8f2e52bd84404db020d4a6c04c3c74c5b5b8e3f 100644
 --- a/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
 +++ b/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
-@@ -3,6 +3,11 @@
- // found in the LICENSE file.
+@@ -4,6 +4,11 @@
  
  #include "chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.h"
-+
+ 
 +#include "build/build_config.h"
 +#if BUILDFLAG(IS_OHOS)
 +#include "chrome/browser/ui/ohos/shell_tab_groups_ohos.h"
 +#endif
- 
++
  #include "base/check_deref.h"
  #include "base/metrics/histogram_macros.h"
+ #include "base/notimplemented.h"
 @@ -35,6 +40,9 @@
  #include "chrome/browser/ui/browser_window.h"
  #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
@@ -8395,7 +8392,7 @@ index d3fa7eea6db807d9a9b3467da4f468c555468b26..d8f2e52bd84404db020d4a6c04c3c74c
  // Kill switch for merge safety for a fix for https://crbug.com/489205993
  // TODO(crbug.com/489205993): Remove in M150 or later.
  BASE_FEATURE(kBackgroundActorTaskPopupsOpenInBackground,
-@@ -373,15 +387,51 @@
+@@ -373,15 +387,51 @@ void BrowserWebContentsDelegate::CancelKeyboardLockRequest(
  void BrowserWebContentsDelegate::SetTopControlsShownRatio(
      content::WebContents* web_contents,
      float ratio) {
@@ -8418,8 +8415,8 @@ index d3fa7eea6db807d9a9b3467da4f468c555468b26..d8f2e52bd84404db020d4a6c04c3c74c
 +  }
 +#endif
    return window_->GetTopControlsHeight();
-+}
-+
+ }
+ 
 +int BrowserWebContentsDelegate::GetTopControlsMinHeight() {
 +#if BUILDFLAG(IS_OHOS)
 +  if (app_browser_controller_) {
@@ -8429,8 +8426,8 @@ index d3fa7eea6db807d9a9b3467da4f468c555468b26..d8f2e52bd84404db020d4a6c04c3c74c
 +#else
 +  return content::WebContentsDelegate::GetTopControlsMinHeight();
 +#endif
- }
- 
++}
++
  bool BrowserWebContentsDelegate::DoBrowserControlsShrinkRendererSize(
      content::WebContents* contents) {
 +#if BUILDFLAG(IS_OHOS)
@@ -8447,7 +8444,7 @@ index d3fa7eea6db807d9a9b3467da4f468c555468b26..d8f2e52bd84404db020d4a6c04c3c74c
    return window_->DoBrowserControlsShrinkRendererSize(contents);
  }
  
-@@ -594,8 +644,36 @@
+@@ -594,9 +644,37 @@ content::WebContents* BrowserWebContentsDelegate::OpenURLFromTab(
  
    chrome::ConfigureTabGroupForNavigation(popup_delegate->nav_params());
  
@@ -8470,7 +8467,7 @@ index d3fa7eea6db807d9a9b3467da4f468c555468b26..d8f2e52bd84404db020d4a6c04c3c74c
 +
    base::WeakPtr<content::NavigationHandle> navigation_handle =
        Navigate(popup_delegate->nav_params());
-+
+ 
 +#if BUILDFLAG(IS_OHOS)
 +  if (opened_from_context_menu) {
 +    content::WebContents* opened =
@@ -8481,10 +8478,11 @@ index d3fa7eea6db807d9a9b3467da4f468c555468b26..d8f2e52bd84404db020d4a6c04c3c74c
 +    chrome::ohos::AnnouncePageOpenedInGroup(opened);
 +  }
 +#endif
- 
++
    if (navigation_handle_callback && navigation_handle) {
      std::move(navigation_handle_callback).Run(*navigation_handle);
-@@ -798,6 +876,14 @@
+   }
+@@ -798,6 +876,14 @@ void BrowserWebContentsDelegate::SetContentsBounds(content::WebContents* source,
  
  void BrowserWebContentsDelegate::UpdateTargetURL(content::WebContents* source,
                                                   const GURL& url) {
@@ -10959,10 +10957,18 @@ index f7bc0a3e5e82e928f91958e881df6e15bc1e87bb..5c871d1e31f375997ead9e303922b98f
    }
  
 diff --git a/chrome/browser/ui/views/frame/browser_frame_view_factory_views.cc b/chrome/browser/ui/views/frame/browser_frame_view_factory_views.cc
-index 8a4dd7514fb0c18087bb738ad248d565a609af48..90051f41798cdf0bb2bbfc1fc74944894e952dbd 100644
+index 8a4dd7514fb0c18087bb738ad248d565a609af48..35474f8fd0d6683063ec67639807b7078f3db1ce 100644
 --- a/chrome/browser/ui/views/frame/browser_frame_view_factory_views.cc
 +++ b/chrome/browser/ui/views/frame/browser_frame_view_factory_views.cc
-@@ -93,6 +93,17 @@ std::unique_ptr<BrowserFrameView> CreateBrowserFrameViewLinux(
+@@ -7,6 +7,7 @@
+ #include "build/build_config.h"
+ #include "chrome/browser/themes/theme_service.h"
+ #include "chrome/browser/themes/theme_service_factory.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/opaque_browser_frame_view.h"
+ #include "chrome/browser/ui/views/frame/opaque_browser_frame_view_layout.h"
+@@ -93,6 +94,24 @@ std::unique_ptr<BrowserFrameView> CreateBrowserFrameViewLinux(
  }
  #endif  // BUILDFLAG(IS_LINUX)
  
@@ -10970,8 +10976,15 @@ index 8a4dd7514fb0c18087bb738ad248d565a609af48..90051f41798cdf0bb2bbfc1fc7494489
 +std::unique_ptr<BrowserFrameView> CreateBrowserFrameViewOhos(
 +    BrowserWidget* widget,
 +    BrowserView* browser_view) {
++  auto* layout = new OpaqueBrowserFrameViewLayout();
++  if (browser_view->browser()->GetType() ==
++      BrowserWindowInterface::Type::TYPE_POPUP) {
++    // Embedded popups need a close button; their host does not implement
++    // system minimize/maximize controls.
++    layout->SetButtonOrdering({}, {views::FrameButton::kClose});
++  }
 +  auto opaque_browser_view = std::make_unique<OpaqueBrowserFrameView>(
-+      widget, browser_view, new OpaqueBrowserFrameViewLayout());
++      widget, browser_view, layout);
 +  opaque_browser_view->InitViews();
 +  return opaque_browser_view;
 +}
@@ -10980,7 +10993,7 @@ index 8a4dd7514fb0c18087bb738ad248d565a609af48..90051f41798cdf0bb2bbfc1fc7494489
  #if BUILDFLAG(IS_WIN)
  std::unique_ptr<BrowserFrameView> CreateBrowserFrameViewWin(
      BrowserWidget* widget,
-@@ -122,6 +133,8 @@ std::unique_ptr<BrowserFrameView> CreateBrowserFrameView(
+@@ -122,6 +141,8 @@ std::unique_ptr<BrowserFrameView> CreateBrowserFrameView(
      BrowserView* browser_view) {
  #if BUILDFLAG(IS_WIN)
    return CreateBrowserFrameViewWin(widget, browser_view);
@@ -11276,27 +11289,48 @@ index 778997a0f1aec1982a2421bb18faf5918347af51..eb42875e8ecc3bb0429401b1a0f1a009
      return views::Widget::GetWidgetForNativeView(
          browser_view_layout_->delegate().GetHostViewForAnchoring());
 diff --git a/chrome/browser/ui/views/frame/opaque_browser_frame_view.cc b/chrome/browser/ui/views/frame/opaque_browser_frame_view.cc
-index 62f69255e0ecb978bc8837b89f43474b45f5b689..a017cfd122f31d15636df5d2527a098db80e5f74 100644
+index 62f69255e0ecb978bc8837b89f43474b45f5b689..6bc326fa2fb7054376a2222479432724a4b07e41 100644
 --- a/chrome/browser/ui/views/frame/opaque_browser_frame_view.cc
 +++ b/chrome/browser/ui/views/frame/opaque_browser_frame_view.cc
-@@ -531,7 +531,11 @@ gfx::Size OpaqueBrowserFrameView::GetBrowserViewMinimumSize() const {
+@@ -10,9 +10,13 @@
+ #include "base/trace_event/trace_event.h"
+ #include "build/build_config.h"
+ #include "build/buildflag.h"
++#if BUILDFLAG(IS_OHOS)
++#include "chrome/browser/ui/ohos/aura_shell_runtime_bridge.h"
++#endif
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/layout_constants.h"
+ #include "chrome/browser/ui/views/frame/browser_native_widget.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/browser_widget.h"
+ #include "chrome/browser/ui/views/frame/caption_button_placeholder_container.h"
+@@ -531,7 +535,15 @@ gfx::Size OpaqueBrowserFrameView::GetBrowserViewMinimumSize() const {
  }
  
  bool OpaqueBrowserFrameView::ShouldShowCaptionButtons() const {
 +#if BUILDFLAG(IS_OHOS)
-+  return false;
++  // The main app owns its system caption, but an embedded web popup has no
++  // system caption to close it. Keep Chromium's own close controls there.
++  return GetBrowserView()->browser()->GetType() ==
++             BrowserWindowInterface::Type::TYPE_POPUP &&
++         !chrome::ohos::SupportsAuraShellFloatingWebPopups();
 +#else
    return GetShowWindowTitleBar();
 +#endif
  }
  
  bool OpaqueBrowserFrameView::IsRegularOrGuestSession() const {
-@@ -872,6 +876,11 @@ void OpaqueBrowserFrameView::WindowIconPressed() {
+@@ -872,6 +884,14 @@ void OpaqueBrowserFrameView::WindowIconPressed() {
  }
  
  bool OpaqueBrowserFrameView::GetShowWindowTitleBar() const {
 +#if BUILDFLAG(IS_OHOS)
-+  if (GetBrowserView()->GetIsWebAppType()) {
++  if (GetBrowserView()->GetIsWebAppType() ||
++      (GetBrowserView()->browser()->GetType() ==
++           BrowserWindowInterface::Type::TYPE_POPUP &&
++       chrome::ohos::SupportsAuraShellFloatingWebPopups())) {
 +    return false;
 +  }
 +#endif
@@ -31377,7 +31411,7 @@ diff --git a/gpu/ipc/client/BUILD.gn b/gpu/ipc/client/BUILD.gn
 index 0e1f21d207fd33c013f6d6c4019662e429aa68c5..01dd903e5338eac60c3a3f5d96a6f7ef20c8bb24 100644
 --- a/gpu/ipc/client/BUILD.gn
 +++ b/gpu/ipc/client/BUILD.gn
-@@ -24,6 +24,9 @@
+@@ -24,6 +24,9 @@ component("client") {
      "shared_image_interface_proxy.cc",
      "shared_image_interface_proxy.h",
    ]
@@ -31401,7 +31435,7 @@ index e1ec5be3cf7352196a49c868c1cf840bbdc6c506..59992647f39e57df9349ac02b0a9d939
  #include "gpu/command_buffer/common/gpu_memory_allocation.h"
  #include "gpu/command_buffer/common/sync_token.h"
  #include "gpu/ipc/client/gpu_channel_host.h"
-@@ -506,6 +509,11 @@
+@@ -506,6 +509,11 @@ scoped_refptr<gpu::Buffer> CommandBufferProxyImpl::CreateTransferBuffer(
    std::tie(shared_memory_region, shared_memory_mapping) =
        AllocateAndMapSharedMemory(size, transfer_buffer_mapper_);
    if (!shared_memory_mapping.IsValid()) {
@@ -31413,7 +31447,7 @@ index e1ec5be3cf7352196a49c868c1cf840bbdc6c506..59992647f39e57df9349ac02b0a9d939
      if (last_state_.error == gpu::error::kNoError &&
          option != TransferBufferAllocationOption::kReturnNullOnOOM)
        OnClientError(gpu::error::kOutOfBounds);
-@@ -516,6 +524,9 @@
+@@ -516,6 +524,9 @@ scoped_refptr<gpu::Buffer> CommandBufferProxyImpl::CreateTransferBuffer(
    if (last_state_.error == gpu::error::kNoError) {
      base::UnsafeSharedMemoryRegion region = shared_memory_region.Duplicate();
      if (!region.IsValid()) {
@@ -31423,7 +31457,7 @@ index e1ec5be3cf7352196a49c868c1cf840bbdc6c506..59992647f39e57df9349ac02b0a9d939
        if (last_state_.error == gpu::error::kNoError)
          OnClientError(gpu::error::kLostContext);
        return nullptr;
-@@ -772,7 +783,11 @@
+@@ -772,7 +783,11 @@ void CommandBufferProxyImpl::SetStateFromMessageReply(
  void CommandBufferProxyImpl::TryUpdateState() {
    CheckLock();
    if (last_state_.error == gpu::error::kNoError) {
@@ -31435,7 +31469,7 @@ index e1ec5be3cf7352196a49c868c1cf840bbdc6c506..59992647f39e57df9349ac02b0a9d939
      if (last_state_.error != gpu::error::kNoError)
        OnGpuStateError();
    }
-@@ -780,7 +795,11 @@
+@@ -780,7 +795,11 @@ void CommandBufferProxyImpl::TryUpdateState() {
  
  void CommandBufferProxyImpl::TryUpdateStateThreadSafe() {
    if (last_state_.error == gpu::error::kNoError) {
@@ -31447,7 +31481,7 @@ index e1ec5be3cf7352196a49c868c1cf840bbdc6c506..59992647f39e57df9349ac02b0a9d939
      if (last_state_.error != gpu::error::kNoError) {
        default_task_runner_->PostTask(
            FROM_HERE,
-@@ -792,7 +811,11 @@
+@@ -792,7 +811,11 @@ void CommandBufferProxyImpl::TryUpdateStateThreadSafe() {
  
  void CommandBufferProxyImpl::TryUpdateStateDontReportError() {
    if (last_state_.error == gpu::error::kNoError)
@@ -31567,10 +31601,20 @@ index 410fa477919ec6ed3b7519a6f8bacf8af3874aff..04001c2d8ec5c60629a9b1c3177e5ee8
    }
    return gpu_channel;
 diff --git a/gpu/ipc/service/gpu_channel_manager.cc b/gpu/ipc/service/gpu_channel_manager.cc
-index 661ec6c7216e9f34649b211854d0f8eecfdb631d..77761d0b153cba9ef16443afea40b3a19a4858dc 100644
+index 661ec6c7216e9f34649b211854d0f8eecfdb631d..fa26403ae193433a34338dc2c7726f1a25086f63 100644
 --- a/gpu/ipc/service/gpu_channel_manager.cc
 +++ b/gpu/ipc/service/gpu_channel_manager.cc
-@@ -53,9 +53,11 @@
+@@ -47,15 +47,21 @@
+ #include "gpu/ipc/common/memory_stats.h"
+ #include "gpu/ipc/service/gpu_channel.h"
+ #include "gpu/ipc/service/gpu_channel_manager_delegate.h"
++#if BUILDFLAG(IS_OHOS)
++#include "gpu/ipc/service/ohos_gpu_context_recovery.h"
++#include "ui/ozone/platform/ohos/ohos_gpu_child_channel.h"
++#endif
+ #include "gpu/ipc/service/gpu_watchdog_thread.h"
+ #include "third_party/perfetto/include/perfetto/tracing/track.h"
+ #include "third_party/skia/include/core/SkGraphics.h"
  #include "third_party/skia/include/gpu/ganesh/GrDirectContext.h"
  #include "third_party/skia/include/gpu/ganesh/GrTypes.h"
  #include "ui/gl/gl_bindings.h"
@@ -31582,12 +31626,36 @@ index 661ec6c7216e9f34649b211854d0f8eecfdb631d..77761d0b153cba9ef16443afea40b3a1
  #include "ui/gl/gl_surface_egl.h"
  #include "ui/gl/gl_version_info.h"
  #include "ui/gl/init/gl_factory.h"
-@@ -955,8 +957,15 @@ scoped_refptr<SharedContextState> GpuChannelManager::GetSharedContextState(
+@@ -900,6 +906,21 @@ scoped_refptr<SharedContextState> GpuChannelManager::GetSharedContextState(
+     ContextResult* result) {
+   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+ 
++  // A failed context cannot be reused after an OHOS device reset. Exit the
++  // isolated GPU service on fatal creation failure so Chromium starts a fresh
++  // process, EGL display and device instead of spinning on the lost one.
++  const auto fail_shared_context =
++      [result, delegate = delegate_.get()](ContextResult failure) {
++    *result = failure;
++#if BUILDFLAG(IS_OHOS)
++    RestartOhosGpuAfterSharedContextFailure(ui::IsOhosGpuChildProcess(),
++                                          failure, delegate);
++#else
++    static_cast<void>(delegate);
++#endif
++    return scoped_refptr<SharedContextState>();
++  };
++
+   if (shared_context_state_ && !shared_context_state_->context_lost()) {
+     *result = ContextResult::kSuccess;
+     return shared_context_state_;
+@@ -955,10 +976,16 @@ scoped_refptr<SharedContextState> GpuChannelManager::GetSharedContextState(
        // TODO(piman): This might not be fatal, we could recurse into
        // CreateGLContext to get more info, tho it should be exceedingly
        // rare and may not be recoverable anyway.
 -      LOG(ERROR) << "ContextResult::kFatalFailure: "
 -                    "Failed to create shared context for virtualization.";
+-      *result = ContextResult::kFatalFailure;
+-      return nullptr;
 +      // Exceedingly rare it is not, when GL never came up at all: every
 +      // channel that is established tries again. Say the first few and
 +      // then thin it out, so what ANGLE said stays readable.
@@ -31597,10 +31665,41 @@ index 661ec6c7216e9f34649b211854d0f8eecfdb631d..77761d0b153cba9ef16443afea40b3a1
 +                      "Failed to create shared context for virtualization. ("
 +                   << failures << ")";
 +      }
-       *result = ContextResult::kFatalFailure;
-       return nullptr;
++      return fail_shared_context(ContextResult::kFatalFailure);
      }
-@@ -1095,6 +1104,38 @@ void GpuChannelManager::OnContextLost(
+     // Ensure that context creation did not lose track of the intended share
+     // group.
+@@ -979,8 +1006,7 @@ scoped_refptr<SharedContextState> GpuChannelManager::GetSharedContextState(
+   if (!context->MakeCurrent(surface.get())) {
+     LOG(ERROR)
+         << "ContextResult::kTransientFailure, failed to make context current";
+-    *result = ContextResult::kTransientFailure;
+-    return nullptr;
++    return fail_shared_context(ContextResult::kTransientFailure);
+   }
+ 
+   // TODO(penghuang): https://crbug.com/899735 Handle device lost for Vulkan.
+@@ -999,8 +1025,7 @@ scoped_refptr<SharedContextState> GpuChannelManager::GetSharedContextState(
+           gpu_preferences_, gpu_driver_bug_workarounds(), gpu_feature_info())) {
+     LOG(ERROR) << "ContextResult::kFatalFailure: Failed to Initialize GL for "
+                   " SharedContextState";
+-    *result = ContextResult::kFatalFailure;
+-    return nullptr;
++    return fail_shared_context(ContextResult::kFatalFailure);
+   }
+ 
+   // Log crash reports when GL errors are generated.
+@@ -1019,8 +1044,7 @@ scoped_refptr<SharedContextState> GpuChannelManager::GetSharedContextState(
+           persistent_cache(), use_shader_cache_shm_count_, watchdog_)) {
+     LOG(ERROR) << "ContextResult::kFatalFailure: Failed to initialize Skia for "
+                   "SharedContextState";
+-    *result = ContextResult::kFatalFailure;
+-    return nullptr;
++    return fail_shared_context(ContextResult::kFatalFailure);
+   }
+ 
+   shared_context_state_ = std::move(shared_context_state);
+@@ -1095,6 +1119,38 @@ void GpuChannelManager::OnContextLost(
    if (force_restart || gpu_driver_bug_workarounds_.exit_on_context_lost ||
        (shared_context_state_ && !shared_context_state_->GrContextIsGL())) {
      delegate_->MaybeExitOnContextLost(context_lost_reason);

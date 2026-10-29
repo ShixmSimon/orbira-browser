@@ -90,6 +90,8 @@ struct AuraStartupConfig {
   // process.
   std::string skia_backend;
   bool jitless = false;
+  // Explicit embedder opt-in to the firmware-specific JIT request.
+  bool jit_compatibility = false;
   bool fullscreen_requested = true;
   // Runs without a window next to another web engine, e.g. for Sync.
   bool headless = false;

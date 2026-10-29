@@ -325,6 +325,7 @@ struct RuntimeBridgeState {
   std::optional<std::string> pending_theme_font_id GUARDED_BY(lock);
   std::optional<std::string> requested_theme_font_id GUARDED_BY(lock);
   std::string ui_family GUARDED_BY(lock) = "mobile_phone";
+  bool free_window_mode GUARDED_BY(lock) = false;
   std::string color_scheme GUARDED_BY(lock) = "light";
   std::string print_output_directory GUARDED_BY(lock);
   AuraShellBrowserStateCallback browser_state_callback GUARDED_BY(lock);
@@ -465,6 +466,60 @@ BrowserWindowInterface* FindBrowserForWebContents(
     });
   }
   return match;
+}
+
+bool MoveWebPopupToTab(BrowserWindowInterface* popup) {
+  if (!popup ||
+      popup->GetType() != BrowserWindowInterface::Type::TYPE_POPUP) {
+    return false;
+  }
+  TabStripModel* source = popup->GetTabStripModel();
+  if (!source || source->count() != 1) {
+    return false;
+  }
+  content::WebContents* contents = source->GetWebContentsAt(0);
+  content::WebContents* opener = chrome::ohos::PageOpenerOf(contents);
+  BrowserWindowInterface* destination = FindBrowserForWebContents(opener);
+  auto usable = [popup](BrowserWindowInterface* candidate) {
+    return candidate && candidate != popup &&
+           candidate->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL &&
+           candidate->GetProfile() == popup->GetProfile();
+  };
+  if (!usable(destination)) {
+    destination = nullptr;
+    if (auto* browsers = GlobalBrowserCollection::GetInstance()) {
+      browsers->ForEach([&](BrowserWindowInterface* candidate) {
+        if (usable(candidate)) {
+          destination = candidate;
+          return false;
+        }
+        return true;
+      });
+    }
+  }
+  if (!destination || !destination->GetTabStripModel()) {
+    return false;
+  }
+  TabStripModel* target = destination->GetTabStripModel();
+  const int opener_index = target->GetIndexOfWebContents(opener);
+  const int index = (opener_index == TabStripModel::kNoTab
+                         ? target->active_index()
+                         : opener_index) + 1;
+  const auto group = chrome::ohos::GroupForPageOpenedFrom(target, opener);
+  // Transfer the existing page, including its JS state and renderer opener.
+  // Detaching the last tab closes the empty popup; never reload its URL.
+  auto detached = source->DetachWebContentsAtForInsertion(0);
+  const int inserted_index = target->InsertWebContentsAt(
+      index, std::move(detached),
+      AddTabTypes::ADD_ACTIVE | AddTabTypes::ADD_INHERIT_OPENER, group);
+  if (opener_index != TabStripModel::kNoTab) {
+    target->SetOpenerOfTabAt(inserted_index, target->GetTabAtIndex(opener_index));
+  }
+  chrome::ohos::RecordPageOpener(contents, opener);
+  destination->GetWindow()->Show();
+  destination->GetWindow()->Activate();
+  LOG(WARNING) << "OHOS web popup moved to opener window as a tab";
+  return true;
 }
 
 void DispatchRuntimeEvent(gfx::AcceleratedWidget widget,
@@ -4624,6 +4679,25 @@ void ExecuteBrowserCommandOnUiThread(gfx::AcceleratedWidget widget,
 
   BrowserWindowInterface* browser = FindBrowserForWidget(widget);
   TabStripModel* tabs = browser ? browser->GetTabStripModel() : nullptr;
+  if (*name == "fallbackWebPopupToTab") {
+    const double popup_widget = command.FindDouble("popupWidget").value_or(0);
+    if (popup_widget > 0 && std::isfinite(popup_widget) &&
+        std::floor(popup_widget) == popup_widget &&
+        popup_widget < static_cast<double>(
+                           std::numeric_limits<gfx::AcceleratedWidget>::max())) {
+      browser = FindBrowserForWidget(
+          static_cast<gfx::AcceleratedWidget>(popup_widget));
+    }
+    MoveWebPopupToTab(browser);
+    return;
+  }
+  if (*name == "startupProbe") {
+    if (tabs && widget != gfx::kNullAcceleratedWidget) {
+      WatchBrowserState(tabs);
+      GetBrowserStateWatchers().at(tabs)->RequestStartup(widget, command);
+    }
+    return;
+  }
   if (*name == "pictureInPictureAction") {
     const double target = command.FindDouble("pipWidget").value_or(0);
     const std::string* action = command.FindString("pipAction");
@@ -5981,6 +6055,7 @@ bool PostBrowserCommand(gfx::AcceleratedWidget widget,
       "closeTabById",
       "moveTab",
       "moveTabToNewWindow",
+      "fallbackWebPopupToTab",
       "setRequestDesktopSite",
       "setTabMuted",
       "setZoom",
@@ -6214,13 +6289,13 @@ std::optional<bool> IsAuraShellPictureInPictureWindow(
 }
 
 void RestoreAuraShellPopupWindow(gfx::AcceleratedWidget widget) {
+  if (!SupportsAuraShellFloatingWebPopups()) {
+    return;
+  }
   scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner;
   {
     RuntimeBridgeState& state = GetState();
     base::AutoLock lock(state.lock);
-    if (state.ui_family != "aura_pc") {
-      return;
-    }
     ui_task_runner = state.ui_task_runner;
   }
   if (!ui_task_runner) {
@@ -6263,18 +6338,16 @@ std::optional<AuraShellWindowMetadata> GetAuraShellWindowMetadata(
       browser->GetType() == BrowserWindowInterface::Type::TYPE_POPUP;
   bool desktop_popup = false;
   if (browser->GetType() == BrowserWindowInterface::Type::TYPE_POPUP) {
-    RuntimeBridgeState& state = GetState();
-    base::AutoLock lock(state.lock);
-    // Tablet Window.recover() may reject floating windows even when it can
-    // create another fullscreen ability. Keep tablets on the embedded native
-    // popup path, which also works in the sample shell without Lumie.
-    desktop_popup = state.ui_family == "aura_pc";
+    // A mode change affects the next popup. Do not reparent one whose shell
+    // has already attached its own system window and action callback.
+    desktop_popup = SupportsAuraShellFloatingWebPopups() ||
+                    ui::HasOhosWindowActionCallback(widget);
   }
   // A desktop window.open() popup owns a browser and its WebContents, just
   // like a normal browser window. Give it a system-window surface and input
   // target; auxiliary surfaces are height-clamped notification bars and
   // anchored menus, and cannot provide this window's move/resize actions.
-  // Tablets and phones retain in-app popup presentation.
+  // Devices without floating support open ordinary web popups as tabs.
   metadata.is_browser =
       browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL ||
       desktop_popup;
@@ -6778,6 +6851,22 @@ bool IsAuraShellDesktopUi() {
   RuntimeBridgeState& state = GetState();
   base::AutoLock lock(state.lock);
   return state.ui_family == "aura_pc";
+}
+
+bool SupportsAuraShellFloatingWebPopups() {
+  RuntimeBridgeState& state = GetState();
+  base::AutoLock lock(state.lock);
+  return state.ui_family == "aura_pc" ||
+         (state.ui_family == "aura_tablet" && state.free_window_mode);
+}
+
+void UpdateAuraShellFreeWindowMode(bool enabled) {
+  RuntimeBridgeState& state = GetState();
+  base::AutoLock lock(state.lock);
+  if (state.free_window_mode != enabled) {
+    LOG(WARNING) << "OHOS system free-window mode=" << enabled;
+    state.free_window_mode = enabled;
+  }
 }
 
 // File-local: the header exposes the two accessors, not the storage.

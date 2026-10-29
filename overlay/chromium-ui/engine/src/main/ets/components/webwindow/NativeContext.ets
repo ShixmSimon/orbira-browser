@@ -489,6 +489,9 @@ export interface DroppedFileRef {
 }
 
 export interface BrowserCommandPayload {
+  popupWidget?: number;
+  startupToken?: string;
+  startupPhase?: 'ready' | 'frame' | 'cancel';
   command: string;
   // URL/site protection: native-issued identity and atomic policy revision.
   contextId?: string;
@@ -716,6 +719,9 @@ export interface AuxiliaryWindowState {
   // A popup, menu or tooltip Chromium placed next to page content: draw it
   // at x/y, not where the shell would put a window of its own.
   anchored?: boolean;
+  // A web window.open() popup: a full native browser view hosted within this
+  // window, with its own geometry, focus and title-bar move/resize controls.
+  browserPopup?: boolean;
   // Chromium's picture-in-picture window. It floats over the page with no
   // close button of its own, which is also what a page's window.open() popup
   // looks like -- but back should close the popup and leave the video alone,
@@ -745,7 +751,7 @@ export interface INativeContext extends BluetoothNativePort, UsbNativePort, Syst
   OnSurfaceDestroyed(xComponentId: string): void;
   OnVisibilityChanged(xComponentId: string, visible: boolean): void;
   OnFocusChanged(xComponentId: string, focused: boolean): void;
-  OnWindowIdChanged(xComponentId: string, windowId: number): void;
+  OnWindowIdChanged(xComponentId: string, windowId: number, freeWindowMode?: boolean): void;
   OnThemeFontChanged(xComponentId: string, fontId: string): void;
   DispatchPointerEvent(xComponentId: string, eventJson: string): void;
   DispatchKeyEvent(xComponentId: string, eventJson: string): boolean;
@@ -854,9 +860,9 @@ export class NativeContext {
     });
   }
 
-  OnWindowIdChanged(windowId: number): void {
+  OnWindowIdChanged(windowId: number, freeWindowMode: boolean = false): void {
     this.callVoid('OnWindowIdChanged', () => {
-      this.nativeContext!.OnWindowIdChanged(this.xComponentId, windowId);
+      this.nativeContext!.OnWindowIdChanged(this.xComponentId, windowId, freeWindowMode);
     });
   }
 

@@ -8,8 +8,11 @@
 #include <hilog/log.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <cmath>
 #include <limits>
 #include <utility>
 
@@ -24,6 +27,8 @@
 #include "base/path_service.h"
 #include "base/process/fork_server_ohos.h"
 #include "base/process/launch_ohos.h"
+#include "base/process/ohos_jit_startup.h"
+#include "base/process/ohos_jit_memory.h"
 #include "chrome/browser/ui/ohos/aura_shell_runtime_bridge.h"
 #include "ohos_nweb/src/nweb_hilog.h"
 #include "ui/ozone/platform/ohos/ohos_gpu_child_channel.h"
@@ -35,6 +40,10 @@ extern "C" int ChromeMain(int argc, const char** argv);
 namespace ohos_nweb {
 namespace {
 
+using base::internal::JitCompatibilityRequest;
+using base::internal::JitlessRequested;
+using base::internal::PrepareJitStartup;
+
 // The ArkWeb DFX logging macros compile out when enable_arkweb=false, which
 // would hide startup failures of a runtime that has no window to show them.
 #define AURA_LOG_I(...) \
@@ -43,21 +52,62 @@ namespace {
   OH_LOG_Print(LOG_APP, LOG_ERROR, 0xc233, "AuraShell", __VA_ARGS__)
 
 
-// Whether this process may make anonymous memory executable, which V8's JIT
-// needs. HarmonyOS withdraws that from apps in some security modes, and V8
-// then dies while its first isolate reserves the JIT code range ("V8 process
-// OOM (Failed to reserve virtual memory for CodeRange)") -- a crash on every
-// launch. Asked once per process, before Chromium starts.
-bool ProcessCanJit() {
-  const size_t size = static_cast<size_t>(getpagesize());
-  void* page = mmap(nullptr, size, PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (page == MAP_FAILED) {
-    return false;
+JitCompatibilityRequest RequestJitCompatibility() {
+  // WineHua's ohos_jit_enable ABI (suboperation 0), not JITFORT init (5).
+  // Optional firmware compatibility: do not assume the return value grants
+  // executable memory, and do not issue the unverified disable operation.
+  errno = 0;
+  const int result = prctl(0x6a6974, 0UL, 0UL, 0UL, 0UL);
+  return {result, result < 0 ? errno : 0};
+}
+
+void ConfigureJitStartup(const AuraStartupConfig& config,
+                         std::vector<std::string>* output,
+                         bool allow_compatibility) {
+  if (config.headless) {
+    return;
   }
-  const bool executable = mprotect(page, size, PROT_READ | PROT_EXEC) == 0;
-  munmap(page, size);
-  return executable;
+  auto& arguments = *output;
+  // Resolve explicit V8 options before probing, and apply the interpreter
+  // fallback last so additionalSwitches cannot accidentally replace it.
+  const base::CommandLine configured_command_line(arguments);
+  const std::string js_flags =
+      configured_command_line.GetSwitchValueASCII("js-flags");
+  const auto jit = PrepareJitStartup(
+      config.jitless || JitlessRequested(js_flags),
+      allow_compatibility && config.jit_compatibility,
+      &base::internal::ProbeOhosJitMemory, &RequestJitCompatibility);
+  AURA_LOG_I("AuraShell JIT %{public}s (config jitless=%{public}d "
+             "compatibility=%{public}d requested=%{public}d)",
+             jit.disabled ? "disabled" :
+                 (jit.after.available ? "available" : "unavailable"),
+             config.jitless, config.jit_compatibility, jit.request_attempted);
+  if (jit.request_attempted || (!jit.disabled && !jit.after.available)) {
+    AURA_LOG_I("AuraShell JIT probe: before=%{public}d/%{public}d/%{public}d "
+               "request=%{public}d errno=%{public}d "
+               "after=%{public}d/%{public}d/%{public}d",
+               jit.before.map_error, jit.before.protect_error,
+               jit.before.unmap_error, jit.request.result, jit.request.error,
+               jit.after.map_error, jit.after.protect_error,
+               jit.after.unmap_error);
+  }
+  if (!jit.disabled && !jit.after.available) {
+    AURA_LOG_E("AuraShell JIT CodeRange probe failed stage=%{public}s "
+               "map=%{public}d protect=%{public}d discard=%{public}d "
+               "unmap=%{public}d; using interpreter",
+               jit.after.failure_stage ? jit.after.failure_stage : "unknown",
+               jit.after.map_error, jit.after.protect_error,
+               jit.after.discard_error, jit.after.unmap_error);
+  }
+  if (jit.disabled || !jit.after.available) {
+    std::erase_if(arguments, [](const std::string& argument) {
+      return argument == "--js-flags" || argument.starts_with("--js-flags=");
+    });
+    arguments.insert(arguments.begin() + 1,
+                     "--js-flags=" + js_flags +
+                         (js_flags.empty() ? "" : " ") +
+                         "--jitless --wasm-jitless");
+  }
 }
 
 // Points ICU, and so every page's Date and Intl, at the system time zone.
@@ -263,7 +313,12 @@ bool OhosChromeMainRunner::EnsureStarted(const AuraStartupConfig& config) {
 
   std::lock_guard<std::mutex> lock(mutex_);
   if (started_) {
-    if (startup_config_.experimental_phone_fork !=
+    if (startup_config_.jitless != config.jitless ||
+        startup_config_.jit_compatibility != config.jit_compatibility ||
+        startup_config_.vulkan_output_mode != config.vulkan_output_mode ||
+        startup_config_.vulkan_hdr_white_nits != config.vulkan_hdr_white_nits ||
+        startup_config_.vulkan_hdr_peak_nits != config.vulkan_hdr_peak_nits ||
+        startup_config_.experimental_phone_fork !=
             config.experimental_phone_fork ||
         (config.experimental_phone_fork &&
          startup_config_.gpu_process != config.gpu_process)) {
@@ -304,6 +359,11 @@ bool OhosChromeMainRunner::EnsureStarted(const AuraStartupConfig& config) {
                  "already initialized; startup refused");
       return false;
     }
+  }
+  // All mode validation has passed. Prepare executable memory before the fork
+  // server takes its process snapshot and before Chromium initializes V8.
+  ConfigureJitStartup(config, &arguments_, /*allow_compatibility=*/true);
+  if (config.experimental_phone_fork) {
     if (config.gpu_process == "separate") {
       const bool prepared = ui::phone_gpu::PrepareSharedBufferAllocator();
       AURA_LOG_I("AuraShell phone GPU shared-buffer allocator prepared=%{public}d", prepared);
@@ -325,6 +385,7 @@ bool OhosChromeMainRunner::EnsureStarted(const AuraStartupConfig& config) {
                "same UID, no renderer sandbox");
   }
   started_ = true;
+  jit_visible_ = false;
   if (!config.headless) {
     mcp_server_.Start();
   }
@@ -367,6 +428,38 @@ void OhosChromeMainRunner::SetBrowserStateCallback(
 
 void OhosChromeMainRunner::SetVisible(const std::string& component_id,
                                       bool visible) {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const bool resumed = visible && !jit_visible_;
+    jit_visible_ = visible;
+    if (resumed && started_ && !startup_config_.headless &&
+        startup_config_.jit_compatibility) {
+      const base::CommandLine configured_command_line(arguments_);
+      const bool disabled = startup_config_.jitless || JitlessRequested(
+          configured_command_line.GetSwitchValueASCII("js-flags"));
+      // Firmware executable-memory availability can change while this PID is
+      // alive. Refresh before showing pages, with the original explicit opt-in.
+      // V8 is already initialized here: never change its flags in this process.
+      const auto jit = PrepareJitStartup(
+          disabled, /*allow_compatibility=*/true,
+          &base::internal::ProbeOhosJitMemory, &RequestJitCompatibility);
+      if (!jit.disabled &&
+          (jit.request_attempted || !jit.after.available)) {
+        AURA_LOG_E("AuraShell JIT resume available=%{public}d "
+                   "requested=%{public}d request_errno=%{public}d "
+                   "before_stage=%{public}s protect_errno=%{public}d "
+                   "after_stage=%{public}s map=%{public}d "
+                   "protect=%{public}d discard=%{public}d unmap=%{public}d",
+                   jit.after.available, jit.request_attempted,
+                   jit.request.error,
+                   jit.before.failure_stage ? jit.before.failure_stage : "none",
+                   jit.before.protect_error,
+                   jit.after.failure_stage ? jit.after.failure_stage : "none",
+                   jit.after.map_error, jit.after.protect_error,
+                   jit.after.discard_error, jit.after.unmap_error);
+      }
+    }
+  }
   const gfx::AcceleratedWidget widget =
       ui::GetOhosAcceleratedWidgetForNativeSurface(component_id);
   if (widget == gfx::kNullAcceleratedWidget && component_id != "aura_shell") {
@@ -407,7 +500,10 @@ std::vector<std::string> OhosChromeMainRunner::arguments_for_testing() const {
 
 std::vector<std::string> OhosChromeMainRunner::BuildArgumentsForTesting(
     const AuraStartupConfig& config) const {
-  return BuildArgumentsLocked(config);
+  auto arguments = BuildArgumentsLocked(config);
+  // Argument inspection must never issue a state-changing private request.
+  ConfigureJitStartup(config, &arguments, /*allow_compatibility=*/false);
+  return arguments;
 }
 
 std::vector<std::string> OhosChromeMainRunner::BuildArgumentsLocked(
@@ -435,12 +531,6 @@ std::vector<std::string> OhosChromeMainRunner::BuildArgumentsLocked(
   } else {
     arguments.push_back("--remote-debugging-address=127.0.0.1");
     arguments.push_back("--remote-debugging-port=9222");
-    const bool can_jit = ProcessCanJit();
-    AURA_LOG_I("AuraShell JIT %{public}s (config jitless=%{public}d)",
-               can_jit ? "available" : "unavailable", config.jitless);
-    if (config.jitless || !can_jit) {
-      arguments.push_back("--js-flags=--jitless --wasm-jitless");
-    }
 
     // Unset on purpose almost always: the blocklist already takes
     // rasterization off a GPU whose fences do not work, which is what the
@@ -614,6 +704,11 @@ std::vector<std::string> OhosChromeMainRunner::BuildArgumentsLocked(
           "AuraShell ignored skiaBackend vulkan: the GPU is not in a "
           "separate GPU process");
     }
+  } else if (gpu_in_own_process && !config.experimental_phone_fork) {
+    // M155's late Graphite check otherwise selects Graphite merely because a
+    // GPU child is available. An explicit GL selection must stay Ganesh GL.
+    arguments.push_back("--disable-skia-graphite");
+    AppendToListSwitch(&arguments, "disable-features", "Vulkan");
   }
 
   for (const AuraAdditionalSwitch& additional_switch :

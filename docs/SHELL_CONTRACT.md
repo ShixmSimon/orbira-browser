@@ -610,6 +610,7 @@ BookmarkNode {
   id, parentId, type: 'url' | 'folder', title, url?, dateAdded, index,
   childCount?,   // 文件夹的直接子项数量，不递归
   rootType?,     // 'mobile' | 'bookmarkBar' | 'other'，仅三个根文件夹
+  deleted?,      // 默认根容器已删除且为空，书签页不展示；仍可作为新书签的目的地
   path?          // 仅 searchBookmarks：从根文件夹到父文件夹的标题
 }
 ```
@@ -631,13 +632,21 @@ bookmarkOpResult { requestId, ok, error?, failedIds? }
 | `error` | 含义 |
 |---|---|
 | `notFound` | `id` 不存在 |
-| `permanentNode` | 试图修改、移动或删除三个根文件夹 |
+| `permanentNode` | 试图改名、移动默认根文件夹，或修改其它内核永久节点 |
 | `invalidParent` | 目标 `parentId` 不存在或不是文件夹 |
 | `cycle` | 试图把文件夹移到它自己或它的子孙里 |
 | `invalidUrl` | `url` 不是合法网址，或对文件夹设网址 |
 | `unknown` | 其它失败，包括被策略管理的书签 |
 
 `updateBookmark` 先校验后写：`url` 会被拒时，`title` 也不会改。空 `title` 是允许的。
+
+`removeBookmark` / `removeBookmarks` 允许删除默认根文件夹：递归删除其子项，
+保留 Chromium 必需的根容器及固定 UUID，并在该节点元数据保存删除标记。
+书签页及侧栏隐藏 `deleted: true` 的空根容器；目的地选择仍可使用这些容器，
+新增或移入内容时清除标记并恢复显示。元数据随书签模型持久保存，重启后不会
+凭空恢复空文件夹。同步继续保留固定根 UUID，子项删除通过现有墓碑流程同步；
+根容器的显示标记是本机状态，不作为云端根节点删除。
+用户须确认文件夹及其内容一起删除；外壳等待成功回执，超时不能当作删除成功。
 
 批量命令（`moveBookmarks` / `removeBookmarks`）整批在一次 `BeginExtensiveChanges`
 里完成，**只推一次 `bookmarksChanged`**。同一批里同时包含某个文件夹和它的子孙
@@ -743,6 +752,55 @@ Chromium 首次访问时重新抓。这是一直如此，不是偶尔。
 `types`：`history`、`cookies`、`cache`、`siteSettings`、`formData`、`passwords`、`downloads`。`timeRange`：`lastHour`、`lastDay`、`lastWeek`、`last4Weeks`、`all`。
 
 偏好键（只接受这些）：`blockThirdPartyCookies`、`doNotTrack`、`safeBrowsing`（`'off' | 'standard' | 'enhanced'`）、`preloadPages`、`popupsBlocked`、`javascriptEnabled`、`textScale`、`autofillAddresses`、`autofillCards`、`downloadAskWhereToSave`、`passwordVault`、`forceDarkWebContents`(网页强制深色,已打开的标签页立即生效)。
+
+`secureDns` 是新增的字符串偏好：内容为 JSON `{ "mode": "off" | "automatic" | "secure", "templates": "...", "managed": false }`。
+读取时 `managed` 必有；写入只需 `mode`、`templates`，不能用 `managed` 绕过策略。它存于当前 user-data-dir 的 **Local State**，不是 Profile 偏好；同一进程的普通/无痕窗口共用，手机一次性无痕 user-data-dir 独立、退出清除。旧 HAR 不返回这个键，外壳应显示不可用。
+`secure` 需要有效的非空 DoH 配置；`automatic` 加空模板表示尝试升级当前 DNS，可能回落明文；`off` 关闭 DoH。写入前一起校验模式、全部模板和两项策略权限，拒绝 HTTP、凭据、片段及过长配置；切入严格模式先写服务地址，退出时先写模式，避免严格模式观察到空服务列表。保存后外壳必须 `getPrefs` 读回确认，不能将 `prefsChanged` 当作 ECH 握手成功。
+ECH 保留 Chromium 的协商/重试逻辑；`secure` 是严格 DNS 模式，不要求所有网站都支持 ECH。连接验收见 [OHOS_SECURE_DNS_ECH.md](OHOS_SECURE_DNS_ECH.md)。
+
+
+`thirdPartyCookies` 与 `httpsFirst` 是新增的字符串偏好（内容为 JSON）。
+
+| 键 | 读取结构 | 写入结构 |
+|---|---|---|
+| `thirdPartyCookies` | `{ "mode": "incognito" \| "block", "managed": boolean }` | `{ "mode": "incognito" \| "block" }` |
+| `httpsFirst` | `{ "mode": "off" \| "balanced" \| "strict", "managed": boolean, "balancedAvailable": boolean }` | `{ "mode": "off" \| "balanced" \| "strict" }` |
+
+- 两者存于当前实例的原始 Profile，普通/无痕窗口共享。手机一次性无痕实例使用独立 user-data-dir，退出清除。读取不写入默认值。
+- `thirdPartyCookies` 复用 `kCookieControlsMode`；`incognito` 写入 `kIncognitoOnly`，`block` 写入 `kBlockThirdParty`。旧 `blockThirdPartyCookies` 布尔键继续兼容。此处是偏好，不是对站点例外/策略后的最终 Cookie 可访问性的诊断，也不会清除 Cookie。
+- `httpsFirst` 通过 `HttpsFirstModeService::GetCurrentSetting/UpdatePrefs` 读写，不绕过内核平衡模式及双偏好同步。`balancedAvailable` 为 false 时不可选 `balanced`。策略或 Advanced Protection 锁定时 `managed` 为 true，写入被拒绝。
+- OHOS 使用 Chromium 原生整页 HTTPS-First 警告，避开需要桌面 TabInterface 对话框承载的新 UI。升级、超时、回退、继续访问后的 HTTP host 例外和证书检查仍由原有内核实现。
+- 关闭 HTTPS-First 不会禁用 HSTS、其他自动升级或全部无痕/启发式保护。两项都不控制 NetworkKit 等系统网络请求。
+- 外壳必须 `getPrefs` 读回确认；缺键表示旧 HAR 不支持，应禁用控件。`prefsChanged` 仅用于通知，不能证明写入或网络行为成功。验收步骤见 [OHOS_PRIVACY_SETTINGS.md](OHOS_PRIVACY_SETTINGS.md)。
+
+
+`preloading` 是字符串偏好，读取 JSON `{ "mode": "off" | "standard" | "extended", "managed": boolean }`，写入只需 `{ "mode": "..." }`。
+它通过 `prefetch::GetPreloadPagesState/SetPreloadPagesState` 读取/修改 `prefetch::prefs::kNetworkPredictionOptions`，不会把已有扩展模式压成普通布尔值，也不会在打开页面时写入默认值。
+注册检查、策略拒写、旧 HAR 缺键禁用、写后读回和 Profile 范围与以上设置一致。旧 `preloadPages` 布尔接口保留，并加入相同的注册/策略检查；已是扩展模式时写入 true 保持扩展，关闭后再启用则使用标准模式。
+这是预加载偏好，不代表当前导航实际会执行预加载；无痕、节省模式、功能配置和站点条件仍由原内核判断，不保证仅用 Wi-Fi。
+
+
+`addressAutofill`、`paymentAutofill` 是带策略元数据的字符串偏好，读取 JSON `{ "mode": "off" | "on", "managed": boolean }`，写入只需 `{ "mode": "off" | "on" }`。
+两项分别使用 `autofill::prefs::kAutofillProfileEnabled`、`kAutofillCreditCardEnabled`，通过 Chromium 的 `Is/SetAutofillProfileEnabled`、`Is/SetAutofillPaymentMethodsEnabled` 读写；地址和付款方式独立，打开设置不修改默认值。
+缺失注册时不返回键，策略不可写时 `managed` 为 true，写入拒绝；旧 `autofillAddresses`、`autofillCards` 布尔接口继续兼容同一底层偏好和原有策略检查。
+读取/写入作用于当前实例的原始 Profile，遵循上述普通/无痕实例范围。外壳需读回确认，旧 HAR 缺键时禁用。关闭仅修改自动保存/填充偏好，不删除资料、不控制密码或 Password Vault、不授予付款云同步，也不绕过身份验证或无痕限制。
+
+
+`defaultSiteSettings` 是字符串偏好，读取 JSON `{ "items": [{ "type": "camera", "setting": "ask", "managed": false, "choices": ["block", "ask"] }] }`，写入只需 `{ "type": "camera", "setting": "block" }`。
+读取支持的类型与网站权限白名单一致，但只返回已在 ContentSettingsRegistry 注册、能提供标准默认值的类型。每项 `choices` 由 `IsDefaultSettingValid` 计算，不能照搬逐网站的“允许/询问/恢复默认”菜单；全局没有移除单个网站例外的 `default` 选项。
+有效默认值的 provider 为用户偏好或内置默认时允许修改；策略、扩展或其他 provider 控制时 `managed` 为 true，写入拒绝。旧 `setDefaultSiteSetting` 命令及 `popupsBlocked` / `javascriptEnabled` 布尔偏好统一使用相同保护，不能写入被遮蔽的用户默认值再报告成功。
+这仅设置默认规则，不修改已有站点例外或存储，不代表某站点实际权限或系统授权；相机/麦克风/定位等系统权限和安全上下文限制仍适用。作用于当前实例原始 Profile，遵循普通/无痕范围。旧 HAR 缺键禁用，保存后必须读回确认。
+
+
+`webRtcIpHandling` 是字符串偏好，读取 JSON `{ "mode": "default" | "default_public_and_private_interfaces" | "default_public_interface_only" | "disable_non_proxied_udp", "managed": boolean, "hasUrlOverrides": boolean }`，写入只需 `{ "mode": "..." }`。
+它读写原始 Profile 的 `prefs::kWebRTCIPHandlingPolicy`，四个值使用 Blink 常量，旧的空/未知值读取时按 renderer 的转换规则显示为 default，不在读取时重写偏好。注册缺失不返回键，策略/扩展不可写时拒写；外壳缺键禁用、保存后读回。
+`hasUrlOverrides` 仅表示已注册的 `kWebRTCIPHandlingUrl` 列表非空，不是当前网页实际命中规则的诊断。写入全局模式不会修改逐 URL 规则、mDNS、UDP 端口范围、媒体权限或现有连接。
+此项不是关闭 WebRTC 或强制全部流量走代理，也不保证隐藏所有 IP；禁止非代理 UDP 仍可能通过 TCP 直连，并可能影响通话。修改后应重新打开网页并建立新 PeerConnection，真实 ICE/代理路径需用新 HAR 验收。
+
+
+`cookieStorage` 是字符串偏好，读取 JSON `{ "mode": "allow" | "session_only" | "block", "managed": boolean }`，写入只需 `{ "mode": "..." }`。
+它读取/修改 HostContentSettingsMap 的 `ContentSettingsType::COOKIES` 全局默认值：对应 ALLOW、SESSION_ONLY、BLOCK。使用与默认网站权限相同的注册表合法性和有效 provider 检查；策略/扩展控制时禁用并拒写，旧 HAR 缺键禁用，写入后必须读回。
+这是 Cookie 默认保存策略，与第三方 Cookie 控制、站点例外共同决定实际行为；修改不重置例外、不修改第三方偏好、不立即清除已有资料。会话 Cookie 的结束/恢复按内核现有机制处理，不保证强制结束应用或恢复会话后立即删除，也不等同于退出清理全部网站数据。范围仍为当前实例原始 Profile。
 
 - `textScale` 是 50–200 的百分比。桌面版 Chromium 没有只放大文字的设置，所以这里改的是网页的默认缩放比例，整页一起放大。网页实际的默认缩放还要乘上系统字体大小（设置 > 显示 > 字体大小，`Configuration.fontSizeScale`，限制在 0.8–2.0），由引擎 HAR 的 `fontscale` 服务自动跟随，外壳不用处理；`textScale` 读出来的仍是外壳设的值，不含系统字体部分。自己设过缩放的网站保持自己的比例。`--disable-features=OhosFollowSystemFontSize` 可关闭跟随。
 - `urlProtectionApiVersion>=1` 将 `safeBrowsing` 映射为独立 OHOS 防钓鱼总开关，见下方“防钓鱼”。新配置默认关闭、来源 local；已有 standard/enhanced 不视为云查询同意。旧版/没有该能力字段时不能承诺安全浏览保护。新版使用原子配置接口切换来源；legacy `setPref` 仍作用于普通 Profile，且不会授予云查询权限。
@@ -1241,6 +1299,25 @@ ANGLE/Skia Vulkan、NativePixmap 互操作；具体限制和验收见 [手机 fo
 
 ## 10. 权限
 
+### JIT 启动策略（154 / 155，2026-10-27）
+
+`AuraStartupConfig.jitCompatibility?: boolean` 为外壳显式启用的兼容请求，内核默认
+`false`。非 headless 启动在 V8 和手机 fork server 创建前执行：先探测匿名 RW→RX；
+仅在 mmap/munmap 成功而 mprotect 返回 EINVAL/EACCES/EPERM 时，最多请求一次
+`prctl(0x6a6974, 0UL, 0UL, 0UL, 0UL)`，然后无论请求返回值如何都重新探测。
+仍失败时追加 `--jitless --wasm-jitless`，保留其他 V8 参数；后传的
+`additionalSwitches` 不能覆盖这项回退。`jitless:true` 或有效的 V8 `--jitless`
+选择优先，完全跳过探测和请求。headless 模式不发兼容请求。
+
+多窗口共用首次启动决定，更改 `jitless` / `jitCompatibility` 要冷启动。
+内存结果不持久化，下次启动重新探测。该私有接口不是通用授权；现有 ACL 与签名
+要求继续适用，不发送未验证的“关闭”子操作。已知实测条件、跨进程现象和未验证
+范围见 [JIT 调查](OHOS_JIT_AUTHORIZATION_INVESTIGATION.md)。
+
+`aboutInfo.jitEnabled` 表示本次引擎启动的 JIT 模式，不能由 ACL 授予、prctl 返回值
+或上次进程结果推断；也不等于每一个网页函数已执行 JIT 机器码。
+
+
 **JIT 需要重新签名（必须做）**：引擎 HAR 声明了 `ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY`，这是个 ACL 权限，外壳的签名 profile 里也必须带上它，否则会出现两种情况：
 - 安装时报 `9568289 grant request permissions failed`；
 - 装上后系统不给 JIT，引擎退回解释器（日志 `AuraShell JIT unavailable`）。JS 会慢好几倍，Cloudflare 人机验证也会失败（600010）。
@@ -1262,7 +1339,7 @@ HAR 的 `module.json5` 声明了 13 项权限(包括 WebAuthn 用到的 `ACCESS_
 | 一个进程只能有一个浏览器 `WebWindow` | 同一个进程里只能初始化一次 Chromium。多窗口(PWA)通过 `onAuxiliaryWindowState` 的 `pwa` 角色另开窗口。 |
 | 手机上默认是单进程模式 | 手机上网页和浏览器默认在同一个进程里(`--single-process`)。平板和 2in1 是多进程。可显式开启默认关闭的 `experimentalPhoneFork` 实验，验证范围见第 8 节。 |
 | 远程调试端口始终打开 | 非 headless 模式下,引擎监听 `127.0.0.1:9222`。**发布正式版之前必须关闭**,目前还没有开关。 |
-| JIT 取决于启动环境 | 构建包含 JIT 编译器，启动时探测能否映射可执行内存：能则启用（平板、2in1、调试签名的手机包），不能则用解释器（手机正式包，JS 简单循环约慢 5 倍），启动配置也可以要求 jitless。本次启动状态看 `aboutInfo.jitEnabled`。解释器模式下 WebAssembly 由 DrumBrake 解释器执行，能用但比 JIT 慢。 |
+| JIT 取决于启动环境 | 构建包含 JIT 编译器；匿名可执行内存探测失败时，可由外壳通过 `jitCompatibility:true` 尝试兼容请求并复测，仍失败则使用解释器。显式 jitless 优先。实际模式看 `aboutInfo.jitEnabled`，不由手机/平板或签名类型直接推断。解释器模式下 WebAssembly 使用 DrumBrake。 |
 | SURFACE 模式下的旋转未验证 | 手机横竖屏、平板和折叠屏的展开折叠,还需要在真机上确认。 |
 | 投屏、PWA 菜单的实现还在 `entry/` 里 | 新外壳需要的话,先从参考实现复制,之后会移进 HAR。 |
 
@@ -1273,3 +1350,23 @@ HAR 的 `module.json5` 声明了 13 项权限(包括 WebAuthn 用到的 `ACCESS_
 - HAR 和引擎来自同一次构建,不存在单独升级引擎的情况。换 HAR 就是换引擎。
 - `BrowserStateSnapshot`、`BrowserRuntimeEvent`、`AuxiliaryWindowState` 都带有 `version` 字段。从这份文档起约定:只新增字段时版本号不变;删除字段或修改字段含义时,版本号加 1。外壳应当容忍未知字段和未知事件,遇到时忽略即可,不要报错。
 - 这份文档跟随仓库更新。接口有变化时,改动 `engine/Index.ets` 的同一个提交里要同步修改这份文档。
+
+## Viewport bilingual translation (protocolVersion 1)
+
+The HAR exports `TranslationTypes` and translation fields on `BrowserCommandPayload`.
+The eight commands are `getTranslationCapabilities`, `getTranslationState`,
+`startTranslation`, `takeTranslationBatch`, `applyTranslationBatch`,
+`releaseTranslationBatch`, `setTranslationPresentation`, `stopTranslation`.
+Full identities, fields, error codes, examples, budgets and lifecycle policy are
+specified in [OHOS_VIEWPORT_TRANSLATION.md](OHOS_VIEWPORT_TRANSLATION.md).
+
+This first implementation reports `frameScope: mainFrame`; it does not translate
+iframes, shadow DOM, PDFs or internal pages. No provider networking or credentials
+enter the kernel. The shell must obtain explicit user consent and pull batches;
+ordinary page loading never uploads text. `standard`, `quote`, `gray` presentation
+changes do not create new translation requests. Native device acceptance is pending.
+
+
+### 图片默认加载策略
+
+`imageLoading` 是字符串偏好，读取 JSON `{ "mode": "allow" | "block", "managed": boolean }`，写入 `{ "mode": "allow" | "block" }`。使用当前 Profile 的 IMAGES 默认内容设置，仅接受注册表允许的默认值；策略或扩展控制时拒写。保留站点例外，不改 Cookie、JavaScript 或媒体权限。未注册或旧 HAR 缺键时不可用；外壳保存后必须读回确认。修改后重新加载页面，已加载图片不保证立即移除；不代表阻止所有媒体或所有图片相关流量。

@@ -407,6 +407,43 @@ TEST(NWebAuraShellTest, ChromiumArgumentsPlaceTheGpuProcess) {
   EXPECT_FALSE(ContainsArgument(arguments, "--use-vulkan=native"));
 }
 
+TEST(NWebAuraShellTest, IsolatedTabletGlDoesNotImplicitlyEnableGraphite) {
+  AuraStartupConfig config;
+  config.device_class = "tablet";
+  config.ui_family = "aura_tablet";
+  config.gpu_process = "separate";
+  config.skia_backend = "gl";
+  OhosChromeMainRunner runner;
+  const auto arguments = runner.BuildArgumentsForTesting(config);
+  EXPECT_FALSE(ContainsArgument(arguments, "--in-process-gpu"));
+  EXPECT_TRUE(ContainsArgument(arguments, "--disable-skia-graphite"));
+  EXPECT_TRUE(ContainsArgument(arguments, "--disable-features=Vulkan"));
+  EXPECT_FALSE(ContainsArgument(arguments, "--use-vulkan=native"));
+}
+
+TEST(NWebAuraShellTest, GraphiteRequiresSeparateGpuAndKeepsGaneshAvailable) {
+  OhosChromeMainRunner runner;
+  AuraStartupConfig config;
+  config.skia_backend = "graphite";
+  config.gpu_process = "separate";
+  for (const std::string device : {"phone", "tablet"}) {
+    config.device_class = device;
+    config.experimental_phone_fork = device == "phone";
+    const auto arguments = runner.BuildArgumentsForTesting(config);
+    EXPECT_TRUE(ContainsArgument(arguments, "--enable-skia-graphite"));
+    EXPECT_TRUE(ContainsArgument(arguments, "--skia-graphite-dawn-backend=vulkan"));
+    EXPECT_TRUE(ContainsArgument(arguments, "--use-vulkan=native"));
+  }
+  config.device_class = "phone";
+  config.experimental_phone_fork = false;
+  EXPECT_FALSE(ContainsArgument(runner.BuildArgumentsForTesting(config),
+                                "--enable-skia-graphite"));
+  config.device_class = "tablet";
+  config.skia_backend = "vulkan";
+  EXPECT_TRUE(ContainsArgument(runner.BuildArgumentsForTesting(config),
+                               "--disable-skia-graphite"));
+}
+
 TEST(NWebAuraShellTest,
      PhoneForkDefaultsToInProcessGpuAndAllowsExplicitGlRelay) {
   AuraStartupConfig config;
@@ -565,6 +602,20 @@ TEST(NWebAuraShellTest, JitlessFollowsTheStartupConfig) {
   config.jitless = true;
   EXPECT_TRUE(ContainsArgument(runner.BuildArgumentsForTesting(config),
                                "--js-flags=--jitless --wasm-jitless"));
+}
+
+TEST(NWebAuraShellTest, ExplicitJitlessSurvivesAdditionalV8Flags) {
+  AuraStartupConfig config;
+  config.jitless = true;
+  config.jit_compatibility = true;
+  config.additional_switches = {{"js-flags", "--trace-gc --nojitless"}};
+  OhosChromeMainRunner runner;
+  const auto arguments = runner.BuildArgumentsForTesting(config);
+  EXPECT_EQ(1, std::ranges::count_if(arguments, [](const std::string& argument) {
+              return argument.starts_with("--js-flags=");
+            }));
+  EXPECT_TRUE(ContainsArgument(
+      arguments, "--js-flags=--trace-gc --nojitless --jitless --wasm-jitless"));
 }
 
 TEST(NWebAuraShellTest, TabletUsesNativeChildProcessMode) {

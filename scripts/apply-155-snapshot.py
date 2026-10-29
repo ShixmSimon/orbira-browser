@@ -27,6 +27,12 @@ def lf_bytes(patch):
     so normalize before both hashing and applying.
     """
     return patch.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+def validate_source(path):
+    src = Path(path).resolve()
+    if src not in (Path('/root/chromium-155/src'),
+                   Path('/mnt/chromium-155/source/src')):
+        raise ValueError('Migration requires an isolated Chromium 155 source tree')
+    return src
 
 
 def apply_snapshot(target, patch):

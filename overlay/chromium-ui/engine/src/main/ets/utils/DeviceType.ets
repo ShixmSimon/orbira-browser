@@ -143,6 +143,20 @@ export interface AuraStartupConfig {
   icuDataOffset?: number;
   icuDataLength?: number;
   jitless: boolean;
+  // Opt in to the OHOS JIT compatibility request after a failed memory probe.
+  // jitless always wins. Omitted/false keeps probe-only startup.
+  jitCompatibility?: boolean;
+  // Off the GPU when the GPU's fences do not work. Unset lets the engine
+  // decide, which is what a device should do; set only to run the
+  // comparison the other way without a rebuild.
+  gpuRasterization?: boolean;
+  // The last resort: draw the page without the GPU at all. Unset lets the
+  // engine decide, which is what a device should do.
+  gpuCompositing?: boolean;
+  // Chromium's frame-rate counter, drawn over the page and over its own
+  // UI. For checking a 120Hz panel is driven at 120 and that a still page
+  // stops asking for frames.
+  showFrameRate?: boolean;
   // Which of ANGLE's backends draws. Unset or 'gles' is ANGLE on
   // HarmonyOS's own EGL/GLES, which is what a device should use; 'vulkan'
   // is for measuring Vulkan against it. Read once, at startup.

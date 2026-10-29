@@ -521,6 +521,7 @@ void DispatchAuxiliaryWindowEvent(const ui::OhosLogicalWindowState& state) {
       chrome::ohos::GetAuraShellWindowMetadata(state.widget);
   if (metadata) {
     event.Set("incognito", metadata->is_incognito);
+    event.Set("browserPopup", metadata->is_web_popup);
   }
   if (metadata && metadata->is_pwa) {
     event.Set("windowRole", "pwa");
@@ -529,9 +530,9 @@ void DispatchAuxiliaryWindowEvent(const ui::OhosLogicalWindowState& state) {
     event.Set("url", metadata->url);
     event.Set("pwaStartUrl", metadata->start_url);
   } else if (metadata && metadata->is_browser) {
-    // Not a popup: a browser window of its own. Saying so keeps the shell from
-    // drawing it as an auxiliary window -- clamped to a fraction of the screen
-    // and hung in the middle.
+    // A browser window of its own, including desktop window.open() popups.
+    // Keep its system-window surface and input routing out of the auxiliary
+    // layout, which clamps notification bars to a fraction of the screen.
     event.Set("windowRole", "browser");
     event.Set("componentId", std::string(kBrowserSurfacePrefix) +
                                  base::NumberToString(state.widget));
@@ -1190,6 +1191,13 @@ AuraStartupConfig ParseStartupConfig(const std::string& config_json) {
     config.skia_backend = *skia_backend;
   }
 
+  ReadStringField(dict, "vulkanOutputMode", &config.vulkan_output_mode);
+  config.vulkan_hdr_white_nits =
+      dict.FindDouble("vulkanHdrWhiteNits").value_or(0);
+  config.vulkan_hdr_peak_nits =
+      dict.FindDouble("vulkanHdrPeakNits").value_or(0);
+
+  config.jit_compatibility = dict.FindBool("jitCompatibility").value_or(false);
   std::optional<bool> jitless = dict.FindBool("jitless");
   if (jitless.has_value()) {
     config.jitless = *jitless;
@@ -1343,8 +1351,8 @@ napi_value OnThemeFontChanged(napi_env env, napi_callback_info info) {
 }
 
 napi_value OnWindowIdChanged(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value args[2] = {nullptr};
+  size_t argc = 3;
+  napi_value args[3] = {nullptr};
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   if (argc < 2) {
     return MakeUndefined(env);
@@ -1354,8 +1362,24 @@ napi_value OnWindowIdChanged(napi_env env, napi_callback_info info) {
   const double value = ReadNumber(env, args[1]);
   if (value > 0.0 &&
       value <= static_cast<double>(std::numeric_limits<int32_t>::max())) {
+    // Only the primary window reports device-wide mode. A newly-created
+    // child must not overwrite it while that child's window is initializing.
+    if (component_id == "aura_shell" && argc >= 3) {
+      chrome::ohos::UpdateAuraShellFreeWindowMode(ReadBool(env, args[2]));
+    }
+    const gfx::AcceleratedWidget widget =
+        ui::GetOhosAcceleratedWidgetForNativeSurface(component_id);
+    const int32_t previous_window_id =
+        ui::GetOhosApplicationWindowIdForWidget(widget);
     ui::SetOhosApplicationWindowIdForNativeSurface(component_id,
                                                    static_cast<int32_t>(value));
+    // OnWindowIdChanged follows the shell's getLastWindow() completion, so
+    // restore cannot race an unset activeWindow. Do not force floating again
+    // when size/focus notifications repeat for the same system window.
+    if (widget != gfx::kNullAcceleratedWidget &&
+        previous_window_id != static_cast<int32_t>(value)) {
+      chrome::ohos::RestoreAuraShellPopupWindow(widget);
+    }
   }
   return MakeUndefined(env);
 }
