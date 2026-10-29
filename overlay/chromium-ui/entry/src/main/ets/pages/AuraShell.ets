@@ -2643,13 +2643,17 @@ struct AuraShell {
   // 仍是 EMPTY_BROWSER_STATE（url = chrome://newtab），照旧判定会先闪一帧内置
   // 启动页。预热期返回 false，交给 NavCoverView 那块同色底顶着。
   private homeSurfaceVisible(): boolean {
-    if (this.homeHold || this.homeReturnCover) {
-      return true;
-    }
-    // 扩展 popup 让位中：原生 popup 画在窗口层，主页盖层必须暂时收起才不
-    // 把它压在底下。返回键（overlay 的 handleSystemBack）或导航离开主页时清零。
+    // 扩展 popup 让位**最先判**：原生 popup 画在窗口层，主页盖层留着就会把它
+    // 压在底下，用户看到的是「点扩展没反应」。这条必须压过 homeHold /
+    // homeReturnCover —— 那两者是导航落地期的遮盖，从扩展页 back 回浏览器
+    // 那一刻可能仍为真，顺序反了就会把 popup 盖回去（偶发「有时候弹不出来」）。
+    // 清零来源：返回键（overlay 的 handleSystemBack）、导航离开主页、引擎的
+    // extensionPopupClosed 事件；另有 10 分钟兜底。
     if (this.popupHomeHold > 0) {
       return false;
+    }
+    if (this.homeHold || this.homeReturnCover) {
+      return true;
     }
     if (this.navCover) {
       return false;

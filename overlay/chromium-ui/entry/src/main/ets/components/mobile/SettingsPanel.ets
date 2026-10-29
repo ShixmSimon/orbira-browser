@@ -118,7 +118,10 @@ const THIRD_PARTY_LICENSE_NOTE: string = `除应用自身采用上述 BSD 3-Clau
 · Symphonia（Rust 音频库）：MPL-2.0
 · 可选的威胁情报列表：HaGeZi DNS Blocklists（GPL-3.0）、PhishDestroy Destroylist（MIT，© 2019 PhishDestroy）
 
-上述组件的完整许可文本与署名见仓库中的 licenses/THIRD_PARTY_LICENSES.html。`;
+上述组件的许可文本与署名已随安装包分发，位于应用资源 resources/rawfile/licenses/
+（BSD-3-Clause-Chromium.txt、OPEN_SOURCE_NOTICES.md、Apache-2.0.txt、MPL-2.0.txt、
+MPL-1.1.txt、LGPL-2.1.txt、BLINK-WEBKIT-LICENSES.txt、adblock-rust-*.txt、
+adblock-resources-LICENSE.txt）。Chromium 完整的第三方许可清单约 20MB，未随包分发。`;
 
 interface PrefToggleItem {
   key: ShellPrefKey;

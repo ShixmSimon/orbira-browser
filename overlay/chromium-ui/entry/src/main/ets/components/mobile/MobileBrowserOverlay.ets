@@ -311,7 +311,8 @@ export struct MobileBrowserOverlay {
   @Prop incognito: boolean = false;
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
 
-  @State private menuVisible: boolean = false;
+  // @Watch 收键盘：见 onMenuVisibleChanged / dismissKeyboardForOverlay。
+  @State @Watch('onMenuVisibleChanged') private menuVisible: boolean = false;
   @State @Watch('onEditingAddressChanged') private editingAddress: boolean = false;
   // Fix B/E（点搜索跳一下）：提交地址栏导航后保持编辑态与键盘，等导航 commit
   // 并出首帧后再收起（最后统一回弹顶栏）。实测地址栏提交时"键盘收起动画"
@@ -342,7 +343,8 @@ export struct MobileBrowserOverlay {
   @State private sheetPage: string = 'tabs';
   // The ⋮ menu is a floating card above the dock, not a
   // sheet; the sheet hosts the tab switcher only.
-  @State private menuCardVisible: boolean = false;
+  // @Watch 收键盘：见 onMenuCardVisibleChanged / dismissKeyboardForOverlay。
+  @State @Watch('onMenuCardVisibleChanged') private menuCardVisible: boolean = false;
   // 小锁快捷面板：浏览态点锁图标弹出（当前站点快捷开关）。
   @State private siteQuickVisible: boolean = false;
   // 1.0.109：「自定义网址」入口菜单（长按 dock 主页图标弹出，自绘卡片）。
@@ -1744,6 +1746,30 @@ export struct MobileBrowserOverlay {
         .backgroundColor($r('app.color.surface_primary'))
         .hitTestBehavior(HitTestMode.None)
 
+      // 条带下沿渐隐：**仅主页**需要。主页内容是外壳自绘的 ArkUI（logo /
+      // 搜索框 / 磁贴），滑到不透明条带下沿会被**硬切一半**（用户实测
+      // 「Chrome 风格主页滑动顶部没有渐变」）—— 遮挡边界本身是硬的，所以
+      // 要在条带下方接一条「同色 → 全透明」的渐变带，等于让条带渐变收边。
+      // ⚠️ 网页上绝不能加：引擎渲染的页面本来就该被顶栏遮住（Chrome 同款），
+      // 在它上面多压一条暗带就是「网页顶部有黑影」（用户实测立刻反馈）。
+      // home_scrim_fade 是 surface_primary 的 0 透明度版本（#001D1D1F），起点
+      // 与条带底同色、无接缝；高度 20vp 不会压暗静止状态下的主页 logo；
+      // 溢出 Stack 底边靠 .clip(false)，且随整条 dock 的 translate 一起收起。
+      if (this.isHomeSurface()) {
+        Column()
+          .width('100%')
+          .height(20)
+          .linearGradient({
+            angle: 180,
+            colors: [
+              [$r('app.color.surface_primary'), 0.0],
+              [$r('app.color.home_scrim_fade'), 1.0]
+            ]
+          })
+          .position({ x: 0, y: this.topSafeVp + CHROME_DOCK_EXTENT_VP + 3 })
+          .hitTestBehavior(HitTestMode.None)
+      }
+
       Row({ space: 8 }) {
         this.GoogleDockButtons()
       }
@@ -1754,6 +1780,8 @@ export struct MobileBrowserOverlay {
     }
     .width('100%')
     .height(this.topSafeVp + CHROME_DOCK_EXTENT_VP)
+    // 下沿渐隐条故意溢出本 Stack 底边（见上一段注释），显式关掉裁剪。
+    .clip(false)
     // 自身透明、子节点（按钮/地址胶囊）照常拦截——条带区的滑动下发到网页。
     .hitTestBehavior(HitTestMode.Transparent)
     // 滚动隐藏：整条上移离屏，行程=整条高（含多铺 3vp）——完全隐入无残留。
@@ -2084,6 +2112,38 @@ export struct MobileBrowserOverlay {
         this.issueCommand({ command: 'setBrowserControlsState', state: 'both', animate: true });
       } catch (error) {
       }
+    }
+  }
+
+  // 打开菜单 / 菜单卡片前统一收键盘。
+  // 用户实测：「地址栏输入中，点菜单，输入法不消失，直接挡住菜单」。
+  // 用 @Watch 挂在 menuVisible / menuCardVisible 上，一处覆盖全部 9 个入口
+  // （顶栏 ⋮、底栏 ⋮、标签页按钮、Google dock 槽位、边缘手势…），以后新增
+  // 入口也不会再漏一次。
+  // 走 cancelAddressEdit 而不是只 hideTextInput：后者只收键盘，地址栏仍停在
+  // 编辑态（选区、光标、搜索面板都在），菜单关掉后用户看到的是半截编辑态。
+  private onMenuVisibleChanged(): void {
+    if (this.menuVisible) {
+      this.dismissKeyboardForOverlay();
+    }
+  }
+
+  private onMenuCardVisibleChanged(): void {
+    if (this.menuCardVisible) {
+      this.dismissKeyboardForOverlay();
+    }
+  }
+
+  private dismissKeyboardForOverlay(): void {
+    if (this.editingAddress) {
+      this.cancelAddressEdit();
+      return;
+    }
+    // 非编辑态也可能有残留键盘（刚提交过导航、联想面板刚收），统一再关一次，
+    // 成本只有一次 IPC。
+    try {
+      inputMethod.getController().hideTextInput().catch((): void => {});
+    } catch (error) {
     }
   }
 
@@ -4779,6 +4839,10 @@ export struct MobileBrowserOverlay {
   // popup 时）。打开扩展列表面板本身不需要网页上下文，这里不再判。
 
   private isNewTabUrl(url: string): boolean {
+    // 空 URL 按主页处理（与 ExtensionPanel.isNewTabUrl 同一份判据）。
+    if (url.length === 0) {
+      return true;
+    }
     return url.startsWith('chrome://newtab') ||
       url.startsWith('chrome://new-tab-page') ||
       url.startsWith('chrome://new-tab-page-third-party') ||
@@ -4828,8 +4892,29 @@ export struct MobileBrowserOverlay {
           this.getUIContext().getFocusController().requestFocus('mobile_address_input');
         } catch (error) {
         }
+        // 80ms 这一档（首帧聚焦基本已生效）把整条网址选中，点中地址栏即处于
+        // 「全选待替换」状态，和 Chrome 一致。只做一次：addressEdited 之后
+        // 用户已经在输入，不能再抢选区（1.0.110 常驻 selectAll 吞第一次点按的
+        // 老坑就是这么来的）。
+        if (delay === 80 && !this.addressEdited) {
+          this.selectAllAddressText();
+        }
       }, delay));
     });
+  }
+
+  // 选中地址栏里的整条网址。setTextSelection 是一次性动作，不挂常驻选区属性，
+  // 因此不会出现「常驻选区吞掉第一次点按」的老问题。
+  private selectAllAddressText(): void {
+    const length: number = this.addressDraft.length;
+    if (length === 0) {
+      return;
+    }
+    try {
+      this.addressController.setTextSelection(0, length);
+    } catch (error) {
+      console.error('select address text failed:', error);
+    }
   }
 
   private submitAddress(): void {

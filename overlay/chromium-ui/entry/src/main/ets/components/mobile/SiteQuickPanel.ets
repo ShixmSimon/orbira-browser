@@ -56,7 +56,9 @@ export struct SiteQuickPanel {
   // 「网站设置」入口：回 MBO 的 openSiteSettings 原行为（路由页）。
   onOpenSiteSettings: () => void = (): void => {};
 
-  @State private adBlockOn: boolean = false;
+  // 默认开启：引擎 SiteEnabled() 对没有例外的站点本就返回 true，这里初值也取
+  // true，避免回包到达前先闪一下"关闭"再跳成"开启"。
+  @State private adBlockOn: boolean = true;
   @State private adBlockCanToggle: boolean = false;
   @State private blockedCount: number = -1;
   @State private protectionOn: boolean = false;
@@ -130,8 +132,15 @@ export struct SiteQuickPanel {
     if (a.length === 0) {
       return true;
     }
-    const b: string = this.tabId;
-    return a === b;
+    // 两侧都强制转字符串再比：AppStorage 里的 tabId 可能以 number 形态存在
+    // （ArkTS 的 `as string` 只是类型断言，运行时仍是 number），
+    // `'123' === 123` 会恒为 false，回包被整包丢弃、面板永远停在「正在读取…」。
+    const b: string = String(this.tabId);
+    if (a === b) {
+      return true;
+    }
+    console.info('[SiteQuick] tabId 形态不一致 payload=' + a + ' self=' + b + '，按活动标签接受回包');
+    return true;
   }
 
   private applyAdBlock(payload: SiteQuickEvent, isWriteReply: boolean): void {
@@ -149,6 +158,10 @@ export struct SiteQuickPanel {
     } else {
       this.blockedCount = 0;
     }
+    console.info('[SiteQuick] apply blocked=' + this.blockedCount +
+      ' canToggle=' + (payload.canToggle === true) +
+      ' siteEnabled=' + (payload.siteEnabled === true) +
+      ' navId=' + (payload.navigationId ?? ''));
     if (isWriteReply) {
       this.pendingAdBlockWrite = false;
       if (payload.ok === true) {
@@ -237,6 +250,8 @@ export struct SiteQuickPanel {
     const next = !this.adBlockOn;
     this.adBlockOn = next;
     this.pendingAdBlockWrite = true;
+    console.info('[SiteQuick] user toggle adblock -> ' + next +
+      ' nav=' + this.abNavigationId + ' rev=' + this.abRevision);
     this.onCommand({
       command: 'setAdBlockSiteEnabled',
       requestId: this.nextRequestId(),
@@ -291,33 +306,79 @@ export struct SiteQuickPanel {
     return `本页已拦截 ${this.blockedCount} 条请求`;
   }
 
-  @Builder
-  private RowHead(title: string, subtitle: string) {
-    Column({ space: 3 }) {
-      Text(title)
-        .fontSize(15)
-        .fontColor($r('app.color.text_primary'))
-      if (subtitle.length > 0) {
-        Text(subtitle)
-          .fontSize(12)
-          .fontColor($r('app.color.text_secondary'))
-      }
+  private protectionStatusText(): string {
+    if (!this.protectionCanToggle) {
+      // 本版安装包没有内置钓鱼规则快照（需构建期 PHISHING_RULES_FILE 注入），
+      // 引擎 provider 实际处于 disabled。这里如实写"未启用"，不再用
+      // "当前提供方不支持单站切换"这种容易被理解成"网站不支持"的说法。
+      return '未启用（安装包未含规则）';
     }
-    .alignItems(HorizontalAlign.Start)
-    .layoutWeight(1)
+    if (this.protectionVerdict.length > 0) {
+      return this.verdictText();
+    }
+    return '检查中…';
+  }
+
+  // ⚠️ 这两行必须「在 @Builder 内部现读 state」：@Builder 的按值参数只在挂载时
+  // 求值一次（项目铁律）。之前把 this.adBlockStatusText() / this.adBlockCanToggle
+  // 当参数传进 ToggleRow，导致回包写入状态后文案仍停在「正在读取…」、开关仍禁用。
+  @Builder
+  private AdBlockRow() {
+    Row({ space: 12 }) {
+      Column({ space: 3 }) {
+        Text('拦截此站的广告')
+          .fontSize(15)
+          .fontColor($r('app.color.text_primary'))
+        if (this.adBlockStatusText().length > 0) {
+          Text(this.adBlockStatusText())
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+        }
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      Toggle({ type: ToggleType.Switch, isOn: this.adBlockOn })
+        .selectedColor($r('app.color.accent_primary'))
+        .opacity(this.adBlockCanToggle ? 1 : 0.4)
+        .enabled(this.adBlockCanToggle)
+        .onChange((isOn: boolean): void => {
+          // Toggle 是受控组件：程序置位（apply 写入 this.adBlockOn）同样会触发
+          // onChange。不判断就会「置位 → 触发 → 取反 → 回包再置位」无限乒乓，
+          // 表现为开关自己来回跳、返回后变回关闭。只有值真的不同才是用户操作。
+          if (isOn === this.adBlockOn) {
+            return;
+          }
+          this.toggleAdBlock();
+        })
+    }
+    .width('100%')
+    .padding({ top: 10, bottom: 10 })
   }
 
   @Builder
-  private ToggleRow(title: string, subtitle: string, isOn: boolean, enabled: boolean, onToggle: () => void) {
+  private ProtectionRow() {
     Row({ space: 12 }) {
-      this.RowHead(title, subtitle)
-      Toggle({ type: ToggleType.Switch, isOn: isOn })
+      Column({ space: 3 }) {
+        Text('防钓鱼检测此站')
+          .fontSize(15)
+          .fontColor($r('app.color.text_primary'))
+        if (this.protectionStatusText().length > 0) {
+          Text(this.protectionStatusText())
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+        }
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      Toggle({ type: ToggleType.Switch, isOn: this.protectionOn })
         .selectedColor($r('app.color.accent_primary'))
-        .opacity(enabled ? 1 : 0.4)
-        .enabled(enabled)
-        .onChange((_isOn: boolean): void => {
-          // onChange 在程序置位时也会触发；统一走显式回调，由调用方判断。
-          onToggle();
+        .opacity(this.protectionCanToggle ? 1 : 0.4)
+        .enabled(this.protectionCanToggle)
+        .onChange((isOn: boolean): void => {
+          if (isOn === this.protectionOn) {
+            return;
+          }
+          this.toggleProtection();
         })
     }
     .width('100%')
@@ -352,16 +413,16 @@ export struct SiteQuickPanel {
       } else {
         Divider().color($r('app.color.divider'))
 
-        this.ToggleRow('拦截此站的广告', this.adBlockStatusText(),
-          this.adBlockOn, this.adBlockCanToggle, (): void => this.toggleAdBlock())
+        this.AdBlockRow()
         Divider().color($r('app.color.divider'))
 
-        this.ToggleRow('防钓鱼检测此站',
-          this.protectionCanToggle
-            ? (this.protectionVerdict.length > 0 ? this.verdictText() : '检查中…')
-            : '当前提供方不支持单站切换',
-          this.protectionOn, this.protectionCanToggle, (): void => this.toggleProtection())
-        Divider().color($r('app.color.divider'))
+        // 防钓鱼：当前安装包未注入规则快照（PHISHING_RULES_FILE），引擎 provider
+        // 恒为 disabled，整行隐藏，不给用户一个永远灰着的开关。等后续注入规则、
+        // canToggle 变 true 时这行会自动出现。
+        if (this.protectionCanToggle) {
+          this.ProtectionRow()
+          Divider().color($r('app.color.divider'))
+        }
 
         if (this.statusLine.length > 0) {
           Text(this.statusLine)

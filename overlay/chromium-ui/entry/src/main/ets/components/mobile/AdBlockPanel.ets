@@ -16,6 +16,8 @@ import { BrowserCommandPayload } from 'engine';
 import { AdBlockSource, AdBlockStateEvent } from 'engine';
 import { glassBottomInsetVp, glassHeaderInsetVp } from './GlassPage';
 import { promptAction } from '@kit.ArkUI';
+import { fileIo as fs, picker } from '@kit.CoreFileKit';
+import { common } from '@kit.AbilityKit';
 
 @Component
 export struct AdBlockPanel {
@@ -285,13 +287,37 @@ export struct AdBlockPanel {
     promptAction.showToast({ message: '自定义规则已保存', duration: 2000 });
   }
 
-  private importFileHint(): void {
-    // 文件选择器还要接 DocumentViewPicker（选择 → 读 → importAdBlockFile{path,name}），
-    // 这一版先给出可用的替代路径，避免点上去没反应。
-    promptAction.showToast({
-      message: '暂不支持从文件导入，可把规则文本粘贴到「我的规则」',
-      duration: 2600
-    });
+  private async importFile(): Promise<void> {
+    // 引擎只接受「文件名 adblock-import-*.txt + 位于应用 cache 目录」的路径
+    // （见 OpenImport 的白名单校验），所以这里必须先选文件、原样拷进 cache，
+    // 再把沙箱路径交给 importAdBlockFile。
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      const options = new picker.DocumentSelectOptions();
+      options.maxSelectNumber = 1;
+      options.fileSuffixFilters = ['.txt'];
+      const uris: string[] = await new picker.DocumentViewPicker(context).select(options);
+      if (uris.length === 0) {
+        return;
+      }
+      const source = fs.openSync(uris[0], fs.OpenMode.READ_ONLY);
+      const destPath: string = `${context.cacheDir}/adblock-import-${Date.now()}.txt`;
+      fs.copyFileSync(source.fd, destPath);
+      fs.closeSync(source);
+      const segments: string[] = uris[0].split('/');
+      let name: string = segments.length > 0 ? segments[segments.length - 1] : '';
+      if (name.length === 0 || name.length > 240) {
+        name = '导入规则.txt';
+      }
+      const payload: BrowserCommandPayload = this.write('importAdBlockFile');
+      payload.path = destPath;
+      payload.name = name;
+      this.send(payload);
+      promptAction.showToast({ message: '正在导入规则…', duration: 2000 });
+    } catch (error) {
+      console.error('adblock import failed:', error);
+      promptAction.showToast({ message: '导入失败，请重试', duration: 2200 });
+    }
   }
 
   private removeException(host: string): void {
@@ -412,7 +438,7 @@ export struct AdBlockPanel {
               this.showRules = false;
             })
             this.RuleButton('导入文件', (): void => {
-              this.importFileHint();
+              this.importFile();
             })
             this.RuleButton('我的规则', (): void => {
               this.showRules = !this.showRules;
