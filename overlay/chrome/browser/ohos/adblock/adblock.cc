@@ -5,10 +5,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <deque>
 #include <map>
 #include <set>
+#include <string_view>
 #include "base/callback_list.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
@@ -16,6 +18,7 @@
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
+#include "base/logging.h"
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
@@ -343,6 +346,9 @@ class Service {
         base::BindOnce(&Service::Installed, weak_.GetWeakPtr(), false,
                        Reply()));
     timer_.Start(FROM_HERE, base::Minutes(5), this, &Service::AutoUpdate);
+    // 注：曾在此处加过「启动 8 秒后补一次 AutoUpdate」，实测会把规则下载 +
+    // 重编译压到首屏时间窗内（日志：启动 22s 后才 compile ok），反而更卡。
+    // 更新一律交给上面的 5 分钟定时器。
   }
   ~Service() = default;
   base::WeakPtr<Service> weak() { return weak_.GetWeakPtr(); }
@@ -369,6 +375,45 @@ class Service {
             std::ranges::any_of(config().sources, [](const Source& source) {
               return source.enabled && source.rules > 0;
             }));
+  }
+  // ---- 负缓存（见 allow_streak_ / clean_hosts_ 注释）----
+  // 参数用 string_view（GURL::host() 返回 string_view），map 用 std::less<>
+  // 透明比较，避免每条请求都构造一个 std::string。
+  bool KnownClean(std::string_view host) {
+    if (host.empty())
+      return false;
+    auto it = clean_hosts_.find(host);
+    if (it == clean_hosts_.end())
+      return false;
+    if (it->second <= base::Time::Now()) {
+      clean_hosts_.erase(it);
+      return false;
+    }
+    return true;
+  }
+  void NoteAllowed(std::string_view host) {
+    if (host.empty())
+      return;
+    if (clean_hosts_.size() > 4096)
+      clean_hosts_.clear();
+    if (allow_streak_.size() > 8192)
+      allow_streak_.clear();
+    auto it = allow_streak_.try_emplace(std::string(host), 0).first;
+    it->second = std::min(it->second + 1, 4);
+    if (it->second >= 3) {
+      clean_hosts_.insert_or_assign(std::string(host),
+                                    base::Time::Now() + base::Minutes(5));
+    }
+  }
+  void NoteBlocked(std::string_view host) {
+    if (host.empty())
+      return;
+    // 注意：libc++ 尚未实现 C++23 的 map::erase 异构重载，string_view 直接传
+    // 会匹配不到（error: no matching member function for call to 'erase'）。
+    // 这里显式转成 key；这条路径只在"命中规则"时走，构造成本可忽略。
+    const std::string key(host);
+    allow_streak_.erase(key);
+    clean_hosts_.erase(key);
   }
   uint64_t revision() const { return revision_; }
   const std::string& context() const { return context_; }
@@ -511,6 +556,23 @@ class Service {
   void Installed(bool persist, Reply reply, Compiled compiled) {
     busy_ = false;
     int line = compiled.info.FindInt("errorLine").value_or(0);
+    {
+      // 诊断：编译结果与规则规模。adblock 全链路原先没有任何日志，出问题只能猜。
+      size_t sources = 0;
+      int rules = 0;
+      for (const auto& s : compiled.config.sources) {
+        if (s.enabled && s.rules > 0) {
+          ++sources;
+          rules += s.rules;
+        }
+      }
+      LOG(WARNING) << "[adblock] compile " << (compiled.engine ? "ok" : "FAILED")
+                   << " reason=" << Str(compiled.info, "reason")
+                   << " line=" << line << " sources=" << sources
+                   << " rules=" << rules
+                   << " userRules=" << compiled.config.user_rule_count
+                   << " enabled=" << compiled.config.enabled;
+    }
     if (compiled.engine) {
       // Exceptions/toggles can change while compilation runs. Preserve those
       // newer values.
@@ -588,9 +650,11 @@ class Service {
   raw_ptr<Profile> profile_;
   scoped_refptr<base::SequencedTaskRunner> worker_;
   // Updating a list must not queue existing-page requests behind compilation.
-  scoped_refptr<base::SequencedTaskRunner> matcher_ =
-      base::ThreadPool::CreateSequencedTaskRunner(
-          {base::TaskPriority::USER_VISIBLE});
+  // 并发匹配：Rust 侧 Snapshot 全字段只读（无 RefCell/Cell/Mutex），query(&Snapshot)
+  // 天然可并发。原来用 SequencedTaskRunner 会让所有请求的匹配串成一条队，
+  // 一个慢查询拖住整页子资源（队头阻塞），首屏体感明显变慢。
+  scoped_refptr<base::TaskRunner> matcher_ =
+      base::ThreadPool::CreateTaskRunner({base::TaskPriority::USER_VISIBLE});
   base::FilePath path_;
   Config config_;
   std::shared_ptr<Engine> engine_;
@@ -598,6 +662,12 @@ class Service {
   std::string error_, active_;
   std::deque<std::string> queue_;
   std::map<std::string, base::Time> retry_;
+  // 负缓存（性能）：同一 host 连续 3 条未命中后，5 分钟内该 host 直接放行，
+  // 不再跨进程往返 + 排队匹配。首屏动辄几十条同 host 静态资源，这一层能砍掉
+  // 大部分检查；一旦该 host 命中规则，立刻清除，保证不漏拦。
+  // 用 std::less<> 透明比较，允许直接以 string_view 查找，省一次 std::string 构造。
+  std::map<std::string, int, std::less<>> allow_streak_;
+  std::map<std::string, base::Time, std::less<>> clean_hosts_;
   std::map<std::string, int> failures_;
   std::unique_ptr<network::SimpleURLLoader> loader_;
   base::RepeatingTimer timer_;
@@ -1050,6 +1120,11 @@ void CheckRequest(Service* service,
     std::move(callback).Run(mojom::Decision::New());
     return;
   }
+  // 负缓存命中：同 host 近期连续未命中，直接放行，省掉一次 IPC + 匹配。
+  if (service->KnownClean(url.host())) {
+    std::move(callback).Run(mojom::Decision::New());
+    return;
+  }
   auto navigation = page ? page->navigation() : "";
   auto weak_page = page ? page->weak() : base::WeakPtr<Page>();
   const auto revision = service->revision();
@@ -1081,9 +1156,30 @@ void CheckRequest(Service* service,
             bool blocked = owner && owner->Active(site) &&
                            owner->revision() == revision &&
                            result.FindBool("blocked").value_or(false);
+            if (owner) {
+              if (blocked)
+                owner->NoteBlocked(url.host());
+              else
+                owner->NoteAllowed(url.host());
+            }
             if (blocked && page)
               page->Record(navigation, url, type,
                            owner->SourceName(Str(result, "sourceId")));
+            if (blocked) {
+              // 采样打印，避免刷爆 hilog：前 300 条足够判断链路是否命中。
+              static std::atomic<int> logged{0};
+              if (logged.fetch_add(1) < 300) {
+                LOG(WARNING) << "[adblock] BLOCK type=" << type << " url=" << url
+                             << " site=" << site
+                             << " src=" << Str(result, "sourceId");
+              }
+            } else {
+              static std::atomic<int> allowed{0};
+              if (allowed.fetch_add(1) < 40) {
+                LOG(WARNING) << "[adblock] allow type=" << type << " url=" << url
+                             << " site=" << site;
+              }
+            }
             auto decision = mojom::Decision::New();
             if (owner && owner->Active(site) && owner->revision() == revision) {
               decision->blocked = blocked;
@@ -1390,9 +1486,23 @@ bool HandleCommand(const ShellCommandContext& context,
         }
       }
     std::string error;
-    if (!page)
+    if (!page && tabs) {
+      // 外壳的 tabId 与引擎的 TabId() 可能不同源（字符串/数字、会话 id 与
+      // session tab id 混用）。硬匹配失败时退回当前活动标签——面板本就只服务
+      // 当前标签，这比让 UI 永远停在"正在读取…"要好。
+      if (auto* active = tabs->GetActiveWebContents()) {
+        if (active->GetBrowserContext() == context.profile) {
+          page = Page::Get(active);
+          LOG(WARNING) << "[adblock] pageState tabId=" << Str(command, "tabId")
+                       << " miss, fallback to active tab " << page->TabId();
+        }
+      }
+    }
+    if (!page) {
       error = "invalidTab";
-    else if (name == "setAdBlockSiteEnabled") {
+      LOG(WARNING) << "[adblock] pageState tabId=" << Str(command, "tabId")
+                   << " unresolved (tabs=" << (tabs ? tabs->count() : -1) << ")";
+    } else if (name == "setAdBlockSiteEnabled") {
       error = service->CheckRevision(command);
       if (error.empty() &&
           (page->navigation() != Str(command, "navigationId") ||

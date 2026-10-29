@@ -1,9 +1,11 @@
 // Copyright 2026 The Chromium Authors. BSD-style license in LICENSE.
 #include "chrome/renderer/ohos/adblock.h"
+#include <atomic>
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
+#include "base/logging.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
 #include "chrome/common/chrome_isolated_world_ids.h"
@@ -108,6 +110,11 @@ class Throttle : public DecisionThrottle {
     if (!remote_.is_connected())
       return;
     *defer = true;
+    static std::atomic<int> sent{0};
+    if (sent.fetch_add(1) < 20) {
+      LOG(WARNING) << "[adblock] renderer check type=" << type_
+                   << " url=" << url.spec();
+    }
     remote_->Check(
         frame_, url, source_, type_, method_,
         mojo::WrapCallbackWithDefaultInvokeIfNotRun(
@@ -277,6 +284,11 @@ class CosmeticObserver
 }  // namespace
 Provider::Provider(blink::ThreadSafeBrowserInterfaceBrokerProxy* broker) {
   broker->GetInterface(pending_.InitWithNewPipeAndPassReceiver());
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    LOG(WARNING) << "[adblock] renderer provider created";
+  }
 }
 Provider::Provider(mojo::PendingRemote<mojom::Filter> pending)
     : pending_(std::move(pending)) {}
@@ -293,10 +305,28 @@ std::unique_ptr<blink::URLLoaderThrottle> Provider::Create(
     const network::ResourceRequest& request) {
   if (blink::IsRequestDestinationFrame(request.destination))
     return nullptr;
+  // 字体 / manifest / 报告类请求不会承载广告，直接跳过：这类请求每页都有，
+  // 砍掉能少一大批跨进程往返（renderer → browser → 匹配 → 回包）。
+  switch (request.destination) {
+    case network::mojom::RequestDestination::kFont:
+    case network::mojom::RequestDestination::kManifest:
+    case network::mojom::RequestDestination::kReport:
+      return nullptr;
+    default:
+      break;
+  }
   if (pending_)
     remote_.Bind(std::move(pending_));
-  if (!remote_.is_connected())
+  if (!remote_.is_connected()) {
+    // 渲染器没拿到 browser 侧的 Filter 管道时，这里会静默返回 nullptr，
+    // 表现为"页面内广告完全不拦、但地址栏导航能拦"。打一条采样日志。
+    static std::atomic<int> miss{0};
+    if (miss.fetch_add(1) < 5) {
+      LOG(WARNING) << "[adblock] renderer filter pipe disconnected, skip "
+                   << request.url.spec();
+    }
     return nullptr;
+  }
   mojo::PendingRemote<mojom::Filter> pending;
   remote_->Clone(pending.InitWithNewPipeAndPassReceiver());
   return std::make_unique<Throttle>(

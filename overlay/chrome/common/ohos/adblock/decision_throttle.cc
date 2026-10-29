@@ -5,9 +5,11 @@
 // semantics. This implementation preserves request origin/response tainting.
 #include "chrome/common/ohos/adblock/decision_throttle.h"
 #include <algorithm>
+#include <atomic>
 #include "base/byte_size.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/data_pipe.h"
 #include "net/base/data_url.h"
@@ -114,6 +116,12 @@ void DecisionThrottle::Resolve(mojom::DecisionPtr decision) {
         delegate_->Resume();
         return;
       }
+    }
+    static std::atomic<int> cancelled{0};
+    if (cancelled.fetch_add(1) < 300) {
+      LOG(WARNING) << "[adblock] CANCEL " << request_.url.spec()
+                   << " reason="
+                   << (decision->reason.empty() ? "matched" : decision->reason);
     }
     delegate_->CancelWithError(net::ERR_BLOCKED_BY_CLIENT,
                                decision->reason == "missingRedirectResource"
