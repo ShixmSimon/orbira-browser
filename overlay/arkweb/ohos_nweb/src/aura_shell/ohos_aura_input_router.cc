@@ -38,9 +38,10 @@ constexpr double kCrossSourcePointerSlop = 4.0;
 
 // OHOS input never reports a touch size, so every touch reached Aura with
 // radius_x == radius_y == 0 and therefore touch_major == 0. Chromium's gesture
-// detector reads that as a low-quality panel and multiplies the tap slop by
-// kExpandSlopFactorForZeroTouchMajor (4x), turning the standard 8dp slop into a
-// ~112 physical px dead zone on a 3.5dpr phone: a scroll would not begin until
+// detector reads that as a low-quality panel and multiplies the squared slop
+// distance by kExpandSlopFactorForZeroTouchMajor (4, i.e. 2x the distance),
+// turning the standard 8dp slop into a ~56 physical px dead zone on a 3.5dpr
+// phone: a scroll would not begin until
 // the finger had already travelled that far, and short fast swipes were
 // classified as taps instead. Reporting a plausible fingertip radius keeps
 // has_native_touch_major true, so the detector uses its normal 8dp slop.
