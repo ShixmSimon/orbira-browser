@@ -119,13 +119,20 @@ OhosVSyncProvider::OhosVSyncProvider(int32_t window_id, bool polling)
   }
   ApplyFrameRate(kMaxFrameRate);
 
-  // This provider samples hardware timing independently of frame completion.
-  // DVSync instead requires requesting the next callback after the preceding
-  // frame completes, and presenting that frame with the callback's timestamp.
-  // Our EGL/WSI outputs do not implement that contract. Future DVSync ticks
-  // must not be used as the hardware timebase for Chromium's own scheduler.
-  if (OH_NativeVSync_DVSyncSwitch(native_vsync_, false) != 0) {
-    LOG(WARNING) << "OHOS NativeVSync could not select normal VSync";
+  // Decoupled VSync lets the system drive frame callbacks early instead of
+  // strictly after the previous frame is presented; HarmonyOS documents it as
+  // smoother for self-drawn content. On device the 154 line (DVSync on) scrolls
+  // visibly smoother than the 155 line with it off, while the frame-rate
+  // constants (60..120 Hz) and the 2 ms begin-frame phase offset below are
+  // identical in both trees -- this switch is the only difference.
+  //
+  // Caveat kept from upstream: this provider samples hardware timing
+  // independently of frame completion, so a DVSync tick must not be read as
+  // proof that the previous frame was presented. If that ever surfaces as
+  // jitter or a stalled frame, flip this back to false; it is the single knob
+  // that separates the two lines' scrolling behaviour.
+  if (OH_NativeVSync_DVSyncSwitch(native_vsync_, true) != 0) {
+    LOG(WARNING) << "OHOS NativeVSync refused DVSync; staying on normal VSync";
   }
 
   const base::TimeDelta hardware_interval = ReadHardwareInterval();

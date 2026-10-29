@@ -4,6 +4,7 @@
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
+#include "base/logging.h"
 #include "base/task/sequenced_task_runner.h"
 namespace chrome::ohos::adblock {
 namespace {
@@ -53,6 +54,17 @@ std::shared_ptr<Engine> Engine::Compile(const base::DictValue& input,
                                         base::DictValue* info) {
   auto& api = GetApi();
   if (!api.valid()) {
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      LOG(WARNING) << "[adblock] engineUnavailable dlopen="
+                   << (api.library ? "ok" : "FAILED")
+                   << " abi=" << (api.version ? api.version() : 0u)
+                   << " symbols=" << (api.compile && api.query && api.free &&
+                                              api.free_string
+                                          ? "ok"
+                                          : "MISSING");
+    }
     info->Set("reason", "engineUnavailable");
     return nullptr;
   }

@@ -68,6 +68,7 @@
 #include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/performance_manager/public/background_tab_loading_policy.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
+#include "chrome/browser/ohos/adblock/adblock.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_manager_observer.h"
@@ -1070,6 +1071,9 @@ class OhosWebPermissionWatcher : public content_settings::Observer,
 
   // ProfileManagerObserver:
   void OnProfileAdded(Profile* profile) override {
+    // 冷启即建广告过滤服务：规则编译（约 15 万条，实测 20s 量级）放到启动阶段
+    // 后台跑，避免首次导航才触发编译、让首屏一直等 initialized_。
+    chrome::ohos::adblock::EnsureService(profile);
     HostContentSettingsMap* map =
         HostContentSettingsMapFactory::GetForProfile(profile);
     if (!map || !observed_maps_.insert(map).second) {
@@ -1980,10 +1984,26 @@ void InstallExtensionFromFile(gfx::AcceleratedWidget widget,
   if (is_zip) {
     extensions::ExtensionRegistrar* registrar =
         extensions::ExtensionRegistrar::Get(browser->GetProfile());
+    extensions::ZipFileInstaller::DoneCallback register_cb =
+        extensions::MakeRegisterInExtensionServiceCallback(
+            browser->GetProfile());
     extensions::ZipFileInstaller::Create(
         extensions::GetExtensionFileTaskRunner(),
-        extensions::MakeRegisterInExtensionServiceCallback(
-            browser->GetProfile()))
+        base::BindOnce(
+            [](gfx::AcceleratedWidget widget, std::string path,
+               extensions::ZipFileInstaller::DoneCallback inner,
+               const base::FilePath& zip_file, const base::FilePath& unzip_dir,
+               const std::string& error) {
+              if (!error.empty()) {
+                // .zip 不走确认框，失败时若只留给注册回调，外壳会一直停在
+                // 「正在安装…」且用户看不到任何反馈——这里补一条失败事件。
+                DispatchExtensionInstallFailed(
+                    widget, path, "other",
+                    base::UTF8ToUTF16(error.substr(0, 200)));
+              }
+              std::move(inner).Run(zip_file, unzip_dir, error);
+            },
+            widget, path, std::move(register_cb)))
         ->InstallZipFileToUnpackedExtensionsDir(
             file, registrar->unpacked_install_directory());
     return;
