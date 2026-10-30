@@ -329,7 +329,7 @@ export class DeviceRoutingPolicy {
     // --ohos-delayed-resume-ms（aura_shell_runtime_bridge.cc 的
     // DelayedResumeDelay）。真机 trace 实测：解锁动画占 GPU 期间首滑被系统
     // 合成层跳帧 100~400ms，而 Chromium 自身稳定 120Hz。
-    const RESUME_DELAY_MS: number = 300;
+    const RESUME_DELAY_MS: number = 0;
     if (RESUME_DELAY_MS > 0) {
       const resumeDelay: AuraCommandLineSwitch = {
         key: 'ohos-delayed-resume-ms',
