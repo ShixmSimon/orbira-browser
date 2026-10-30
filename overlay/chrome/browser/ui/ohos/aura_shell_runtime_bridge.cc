@@ -4540,18 +4540,34 @@ bool CloseTopBrowserDialog(BrowserWindowInterface* browser) {
   return true;
 }
 
-void ApplyWindowStateOnUiThread(gfx::AcceleratedWidget widget, int attempt) {
-  ScopedBrowserStateUpdate update_state;
+// Experimental: postpone showing the browser window after it becomes visible
+// again. The screen-off resume path is the reason: for a few hundred
+// milliseconds after the screen comes back, the unlock animation still owns the
+// GPU, and the first swipe lands in that window. Measured there on a phone:
+// Chromium kept a steady 120 Hz while the system compositor stalled 100-400 ms
+// per resume (three runs: 290/359/197 ms), i.e. frames were submitted but not
+// presented. Postponing the show lets the browser's first composite happen
+// after the animation instead of competing with it.
+//
+// Off by default. --ohos-delayed-resume-ms=300 turns it on for A/B testing;
+// values are clamped to 2000 ms and a missing/zero value keeps upstream timing.
+base::TimeDelta DelayedResumeDelay() {
+  const std::string value = base::CommandLine::ForCurrentProcess()
+                                ->GetSwitchValueASCII("ohos-delayed-resume-ms");
+  int ms = 0;
+  if (value.empty() || !base::StringToInt(value, &ms) || ms <= 0) {
+    return base::TimeDelta();
+  }
+  return base::Milliseconds(std::min(ms, 2000));
+}
+
+// Shows the browser window, restores focus and asks for one layout/paint pass.
+// Split out of ApplyWindowStateOnUiThread so the delayed-resume path can run it
+// later and both paths share one implementation. Re-reads the visibility state
+// because a delayed run may arrive after the window was hidden again.
+void ShowWindowOnUiThread(gfx::AcceleratedWidget widget) {
   BrowserWindowInterface* browser = FindBrowserForWidget(widget);
   if (!browser || !browser->GetWindow()) {
-    if (attempt >= kMaxBrowserLookupAttempts) {
-      LOG(ERROR) << "OHOS Aura shell could not apply browser window state";
-      return;
-    }
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-        FROM_HERE,
-        base::BindOnce(&ApplyWindowStateOnUiThread, widget, attempt + 1),
-        kBrowserLookupDelay);
     return;
   }
 
@@ -4567,14 +4583,12 @@ void ApplyWindowStateOnUiThread(gfx::AcceleratedWidget widget, int attempt) {
     focused =
         focus == state.window_focus.end() ? state.app_focused : focus->second;
   }
-
-  ui::BaseWindow* window = browser->GetWindow();
   if (!visible) {
-    window->Deactivate();
-    window->Hide();
+    // Hidden again while the delay ran; that path already hid the window.
     return;
   }
 
+  ui::BaseWindow* window = browser->GetWindow();
   window->ShowInactive();
   if (focused) {
     // Regaining focus must not take activation from the browser's own bubble.
@@ -4602,6 +4616,49 @@ void ApplyWindowStateOnUiThread(gfx::AcceleratedWidget widget, int attempt) {
     browser_view->InvalidateLayout();
     browser_view->SchedulePaint();
   }
+}
+
+void ApplyWindowStateOnUiThread(gfx::AcceleratedWidget widget, int attempt) {
+  ScopedBrowserStateUpdate update_state;
+  BrowserWindowInterface* browser = FindBrowserForWidget(widget);
+  if (!browser || !browser->GetWindow()) {
+    if (attempt >= kMaxBrowserLookupAttempts) {
+      LOG(ERROR) << "OHOS Aura shell could not apply browser window state";
+      return;
+    }
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&ApplyWindowStateOnUiThread, widget, attempt + 1),
+        kBrowserLookupDelay);
+    return;
+  }
+
+  bool visible = true;
+  {
+    RuntimeBridgeState& state = GetState();
+    base::AutoLock lock(state.lock);
+    const auto visibility = state.window_visibility.find(widget);
+    visible = visibility == state.window_visibility.end() ? state.app_visible
+                                                          : visibility->second;
+  }
+
+  ui::BaseWindow* window = browser->GetWindow();
+  if (!visible) {
+    window->Deactivate();
+    window->Hide();
+    return;
+  }
+
+  const base::TimeDelta delay = DelayedResumeDelay();
+  if (delay.is_positive()) {
+    LOG(WARNING) << "OHOS delayed resume: show postponed by "
+                 << delay.InMilliseconds() << "ms";
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE, base::BindOnce(&ShowWindowOnUiThread, widget), delay);
+    return;
+  }
+
+  ShowWindowOnUiThread(widget);
 }
 
 // Pull-to-refresh, reported to the shell as pullToRefresh { state, ... },
