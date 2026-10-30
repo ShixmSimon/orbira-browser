@@ -2118,7 +2118,17 @@ class ExtensionPopupCloseWatcher : public views::WidgetObserver {
       delete;
 
   void OnWidgetDestroyed(views::Widget* widget) override {
-    NotifyAuraShellExtensionPopupClosed(profile_, extension_id_);
+    // A newer popup replaced this one: the user clicked the action again while
+    // the previous popup was still open, and RunExtensionAction built a new
+    // bubble before this widget went away. Reporting this teardown as "popup
+    // closed" would drop the home-surface hold the new popup just took, and
+    // the new popup would end up hidden behind the home surface (the shell
+    // cannot tell the two popups apart: the event only carries the extension
+    // id). Only report a close when this was the most recently created popup.
+    ExtensionPopup* latest = ExtensionPopup::last_popup_for_testing();
+    if (!latest || !latest->GetWidget() || latest->GetWidget() == widget) {
+      NotifyAuraShellExtensionPopupClosed(profile_, extension_id_);
+    }
     // The scrim we parked behind the popup rides along in backdrop_. Rather than
     // hard-removing it (which flashes the layer underneath for a frame while the
     // shell restores the home surface), fade it out and hand it to a task that
