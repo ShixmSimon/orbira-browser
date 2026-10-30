@@ -2985,6 +2985,35 @@ export struct MobileBrowserOverlay {
     return this.viewportHeightVp > total ? this.viewportHeightVp - total : 0;
   }
 
+  // 联想卡的滚动控制器。地址栏在底时卡内倒序（见 suggestRowsForLayout），
+  // 视口要停在**底部**，让紧贴地址栏的那条一进来就可见。
+  private suggestScroller: Scroller = new Scroller();
+
+  // 底置形态把滚动视口钉到底部；顶置/竖屏直接返回，行为一点不变。
+  private pinSuggestScrollToBottom(): void {
+    if (!this.suggestAboveBottomBar()) {
+      return;
+    }
+    try {
+      this.suggestScroller.scrollEdge(Edge.Bottom);
+    } catch (error) {
+    }
+  }
+
+  // 联想行的渲染顺序。
+  //
+  // 地址栏在**底**时倒序：卡片贴着地址栏往上长，视线从地址栏往上扫，离它
+  // 最近的那条最可能被点 —— 所以「搜索 “输入”」（suggestRows 的第一条）要
+  // 排在最下面、紧挨地址栏，其余候选依次往上。
+  // 地址栏在顶（含竖屏）保持原序，逐值不变。
+  private suggestRowsForLayout(): AutocompleteItem[] {
+    const rows: AutocompleteItem[] = this.suggestRows();
+    if (!this.suggestAboveBottomBar()) {
+      return rows;
+    }
+    return rows.slice().reverse();
+  }
+
   // 联想卡的高度上限（vp）。
   //
   // 联想卡最多 8 行（每行 46/54vp，合计约 370vp）。竖屏整屏高时放得下，
@@ -3070,17 +3099,22 @@ export struct MobileBrowserOverlay {
     // 外壳从 Column 换成 Scroll：横屏 + 键盘占位时可用高度不足（见
     // suggestCardMaxHeightVp），卡片按上限收缩、超出的行进卡内滚动，
     // 而不是被裁掉。圆角/底色/阴影/裁剪跟着挪到 Scroll 上，外观不变。
-    Scroll() {
+    Scroll(this.suggestScroller) {
       Column() {
         // 键里**不能带 index**：首行「搜索 “输入”」每敲一个字就变，带 index 会让
         // 整张卡（8 行 + 图标）全部销毁重建 —— 打字时列表一顿一顿就是这个。
-        // 用 type|url|title 作键，只有真正变了的那一行重建。
-        ForEach(this.suggestRows(), (item: AutocompleteItem, index: number) => {
+        // 用 type|url|title 作键，只有真正变了那一行重建。
+        ForEach(this.suggestRowsForLayout(), (item: AutocompleteItem, index: number) => {
           this.AddressSuggestRow(item, index)
         }, (item: AutocompleteItem, index: number): string =>
           `${item.type}|${item.url}|${item.title}`)
       }
       .width('100%')
+      // 内容尺寸变化（打字、候选增减）时底置形态重新贴底，保证紧挨地址栏的
+      // 那条始终可见；顶置/竖屏该调用直接返回，行为不变。
+      .onAreaChange((_old: Area, _next: Area): void => {
+        this.pinSuggestScrollToBottom();
+      })
     }
     .width('100%')
     .constraintSize({ maxHeight: this.suggestCardMaxHeightVp() })
