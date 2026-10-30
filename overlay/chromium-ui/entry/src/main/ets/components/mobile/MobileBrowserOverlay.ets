@@ -3186,6 +3186,14 @@ export struct MobileBrowserOverlay {
       }
     }
     .width('100%')
+    // 新行淡入、旧行不播退场：候选是分两三批到达的（本地首包 → 在线词），
+    // 之前每批到达都是「高度瞬间撑高」，观感上就是一层一层地跳、很生硬。
+    // 进场 130ms 淡入让追加的行"长出来"；退场 0ms 保持列表替换的干净（否则
+    // 整份替换时 8 行同时淡出会闪）。
+    .transition(TransitionEffect.asymmetric(
+      TransitionEffect.OPACITY.animation({ duration: 130, curve: Curve.EaseOut }),
+      TransitionEffect.OPACITY.animation({ duration: 0 })
+    ))
   }
 
   // 简约 dock 材质板。无参 @Builder：宽度/底距每次现读 state，
@@ -5121,7 +5129,9 @@ export struct MobileBrowserOverlay {
       });
       // 在线联想词（仅搜索型输入；URL 型输入不该发给搜索引擎）。
       this.fetchOnlineSuggest(query);
-    }, 90);
+      // 90 → 60ms：防抖只是把连打合并，引擎侧本来就有 Stop 旧请求的机制，
+      // 60ms 足够合并一次连打，但首包能早 30ms 出来。
+    }, 60);
   }
 
   // 收起联想（提交 / 取消编辑 / 点列表外 / 页面已跳走）。
@@ -5197,7 +5207,10 @@ export struct MobileBrowserOverlay {
           this.suggestItems = this.suggestQueuedItems;
           this.suggestQueuedItems = [];
         }
-      }, 120);
+        // 120 → 160ms：中间包本来就会多次到达，窗口放宽能把「本地首包之后
+        // 的零星刷新」并成一次，少一层高度跳变（首包仍然是立即上屏，不增加
+        // 弹出延迟）。
+      }, 160);
     } catch (error) {
     }
   }
