@@ -342,6 +342,22 @@ export default class EntryAbility extends UIAbility {
       hilog.info(DOMAIN, 'AuraShell', 'Rotation observer is unavailable: %{public}s', JSON.stringify(error));
     }
 
+    // 键盘避让区 → AppStorage('auraKeyboardVp')：横屏时键盘能吃掉半屏以上，
+    // 地址栏联想卡、任何贴底的浮层都要按"键盘上方"的可用高来收缩
+    // （见 MobileBrowserOverlay.suggestCardMaxHeightVp）。窗口若被压缩
+    // （RESIZE 模式）这里收到 0，不会与视口高重复扣减。
+    try {
+      win.on('avoidAreaChange', (options: window.AvoidAreaOptions): void => {
+        if (options.type !== window.AvoidAreaType.TYPE_KEYBOARD) {
+          return;
+        }
+        this.publishKeyboardInset(options.area.bottomRect.height);
+      });
+    } catch (error) {
+      hilog.info(DOMAIN, 'AuraShell', 'Keyboard avoid-area observer is unavailable: %{public}s',
+        JSON.stringify(error));
+    }
+
     if (DeviceRoutingPolicy.isFoldable()) {
       try {
         display.on('foldStatusChange', this.foldStatusChanged);
@@ -384,6 +400,10 @@ export default class EntryAbility extends UIAbility {
       }
       try {
         this.mainWindow.off('rotationChange', this.windowRotationChanged);
+      } catch (error) {
+      }
+      try {
+        this.mainWindow.off('avoidAreaChange');
       } catch (error) {
       }
     }
@@ -613,6 +633,20 @@ export default class EntryAbility extends UIAbility {
   // the navigation pill, so the mobile chrome needs their heights as vp
   // insets (AppStorage 'auraTopSafeVp' / 'auraBottomSafeVp'). Non-fullscreen
   // windows get the system's own insets, so the values reset to zero.
+  // 键盘占用高度（px → vp）写入 AppStorage，供外壳挑浮层高度用。
+  // 取 bottomRect：OHOS 把软键盘报在底部避让区里。
+  private publishKeyboardInset(bottomPx: number): void {
+    try {
+      const density = display.getDefaultDisplaySync().densityPixels;
+      if (density <= 0) {
+        return;
+      }
+      AppStorage.setOrCreate('auraKeyboardVp', Math.max(0, Math.round(bottomPx / density)));
+    } catch (error) {
+      AppStorage.setOrCreate('auraKeyboardVp', 0);
+    }
+  }
+
   private updateSafeAreaInsets(win: window.Window, fullscreen: boolean): void {
     if (!fullscreen) {
       AppStorage.setOrCreate('auraTopSafeVp', 0);

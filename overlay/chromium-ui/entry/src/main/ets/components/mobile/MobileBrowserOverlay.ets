@@ -289,6 +289,10 @@ export struct MobileBrowserOverlay {
   // Safe-area insets (status bar / navigation pill) in vp, from EntryAbility.
   @StorageProp('auraTopSafeVp') topSafeVp: number = 0;
   @StorageProp('auraBottomSafeVp') bottomSafeVp: number = 0;
+  // 键盘占用高度（vp），由 EntryAbility 从 TYPE_KEYBOARD 避让区写入。
+  // 横屏时键盘能吃掉半屏以上，联想卡的高度上限必须把它刨掉，否则底部几行
+  // 直接落到键盘下面被裁（用户报「横屏联想框被截断」）。
+  @StorageProp('auraKeyboardVp') keyboardVp: number = 0;
   // 网页自己进了全屏（video / requestFullscreen），由 AuraShell 写进 AppStorage。
   // 全屏时状态栏已被藏起来，外壳不能再按"有状态栏"垫底（见状态栏垫底层）。
   @StorageProp('auraPageFullscreen') pageFullscreen: boolean = false;
@@ -2981,6 +2985,28 @@ export struct MobileBrowserOverlay {
     return this.viewportHeightVp > total ? this.viewportHeightVp - total : 0;
   }
 
+  // 联想卡的高度上限（vp）。
+  //
+  // 联想卡最多 8 行（每行 46/54vp，合计约 370vp）。竖屏整屏高时放得下，
+  // **横屏 + 键盘弹起就放不下了**：可用高度只剩两三百 vp，卡片多出来的行
+  // 直接落到键盘下面被裁掉 —— 用户报的「横屏联想框被截断」。
+  // 上限之外还让卡片可滚动（见 SuggestCard），行数多时仍能全部翻到。
+  private suggestCardMaxHeightVp(): number {
+    const viewport: number = this.viewportHeightVp > 0 ? this.viewportHeightVp : 780;
+    // 键盘若仍是浮层（窗口没被压缩）就从可用高里再刨掉它；RESIZE 模式下
+    // viewport 已含压缩结果、keyboardVp 为 0，不会二次扣减。
+    const usable: number = Math.max(160, viewport - Math.max(this.keyboardVp, 0));
+    if (this.suggestAboveBottomBar()) {
+      // 地址栏在下：卡片贴着条带上沿往上长，天花板是条带上沿。
+      const barTop: number = this.suggestBarTopVp();
+      const ceiling: number = barTop > 0 ? Math.min(barTop, usable) : usable;
+      return Math.max(96, ceiling - 8);
+    }
+    // 地址栏在上：卡片从条带下沿往下长。
+    const top: number = this.topSafeVp + TOP_BAR_EXTENT_VP + 6;
+    return Math.max(96, usable - top - 8);
+  }
+
   @Builder
   private AddressSuggestLayer() {
     Stack({ alignContent: Alignment.TopStart }) {
@@ -3037,16 +3063,25 @@ export struct MobileBrowserOverlay {
   // 联想卡本体（顶置贴下沿 / 底置贴上沿两处共用同一张卡）。
   @Builder
   private SuggestCard() {
-    Column() {
-      // 键里**不能带 index**：首行「搜索 “输入”」每敲一个字就变，带 index 会让
-      // 整张卡（8 行 + 图标）全部销毁重建 —— 打字时列表一顿一顿就是这个。
-      // 用 type|url|title 作键，只有真正变了的那一行重建。
-      ForEach(this.suggestRows(), (item: AutocompleteItem, index: number) => {
-        this.AddressSuggestRow(item, index)
-      }, (item: AutocompleteItem, index: number): string =>
-        `${item.type}|${item.url}|${item.title}`)
+    // 外壳从 Column 换成 Scroll：横屏 + 键盘占位时可用高度不足（见
+    // suggestCardMaxHeightVp），卡片按上限收缩、超出的行进卡内滚动，
+    // 而不是被裁掉。圆角/底色/阴影/裁剪跟着挪到 Scroll 上，外观不变。
+    Scroll() {
+      Column() {
+        // 键里**不能带 index**：首行「搜索 “输入”」每敲一个字就变，带 index 会让
+        // 整张卡（8 行 + 图标）全部销毁重建 —— 打字时列表一顿一顿就是这个。
+        // 用 type|url|title 作键，只有真正变了的那一行重建。
+        ForEach(this.suggestRows(), (item: AutocompleteItem, index: number) => {
+          this.AddressSuggestRow(item, index)
+        }, (item: AutocompleteItem, index: number): string =>
+          `${item.type}|${item.url}|${item.title}`)
+      }
+      .width('100%')
     }
     .width('100%')
+    .constraintSize({ maxHeight: this.suggestCardMaxHeightVp() })
+    .scrollBar(BarState.Off)
+    .edgeEffect(EdgeEffect.Spring)
     .borderRadius(16)
     .backgroundColor($r('app.color.menu_glass'))
     // 阴影半径 24 → 12：每次重排都要重新模糊一遍，浮层上这块最费。
