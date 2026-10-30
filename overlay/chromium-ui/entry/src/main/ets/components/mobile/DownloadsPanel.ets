@@ -10,11 +10,11 @@ import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { BrowserCommandPayload, DownloadAction, DownloadItem, openDownloadedFile } from 'engine';
+import { BrowserCommandPayload, DownloadAction, DownloadItem, DownloadState, openDownloadedFile } from 'engine';
 import { formatVisitTime } from './PanelBridge';
 import { AuraSectionLabel, AuraSearchBar } from './AuraKit';
 import { GlassPage, glassHeaderInsetVp } from './GlassPage';
-import { curves, router } from '@kit.ArkUI';
+import { curves } from '@kit.ArkUI';
 
 interface PanelEventPayload {
   kind?: string;
@@ -52,6 +52,9 @@ export struct DownloadsPanel {
   onClose: () => void = (): void => {};
 
   @State private items: DownloadItem[] = [];
+  // 乐观状态重放表：引擎回包滞后时用它压住陈旧状态（onDownloadsPayload 重放，
+  // 引擎确认到该状态即解除），避免「点了没反应、要返回重进才变」。
+  private pendingStates: Map<string, DownloadState> = new Map<string, DownloadState>();
   @State private loading: boolean = true;
   // 渐变模糊滚动效果按官方要求 bindToScrollable。
   private listScroller: Scroller = new Scroller();
@@ -111,7 +114,20 @@ export struct DownloadsPanel {
       return;
     }
     try {
-      this.items = JSON.parse(this.downloadsJson) as DownloadItem[];
+      const raw = JSON.parse(this.downloadsJson) as DownloadItem[];
+      // 重放乐观更新压住滞后回包；引擎确认到该状态即解除。
+      for (const it of raw) {
+        const pid: string = String(it.id);
+        const p: DownloadState | undefined = this.pendingStates.get(pid);
+        if (p !== undefined) {
+          if (it.state === p) {
+            this.pendingStates.delete(pid);
+          } else {
+            it.state = p;
+          }
+        }
+      }
+      this.items = raw;
       this.recomputeFiltered();
       this.loading = false;
     } catch (error) {
@@ -150,47 +166,79 @@ export struct DownloadsPanel {
   }
 
   private act(item: DownloadItem, action: DownloadAction): void {
-    // 诊断：用户报「暂停/取消/删除点不动」。这条日志能区分两种失败：
-    // ① 没有这行 → 点击根本没到芯片（外壳命中问题）
-    // ② 有这行但引擎没反应 → 命令发出去了、引擎侧 Find/FindAction 失败
-    //    （对应 hilog tag Chromium 的 "OHOS shell downloads" 警告）。
+    // 诊断日志：无此行=点击没到芯片；有此行但引擎无反应=引擎侧处理失败。
     hilog.info(0x0000, 'Downloads', 'action=%{public}s id=%{public}s',
       action, String(item.id));
     this.onCommand({ command: 'downloadAction', id: String(item.id), action: action });
-    // 乐观更新：引擎 listDownloads 回包非即时反映状态（同一次动作只推一次
-    // downloadUpdated，且回包可能仍是旧状态），用户点暂停/继续/取消后页面
-    // 要立刻给出反馈，而不是等返回重进。reload 仍保留作最终校正。
+    // 记录乐观状态，防 400ms 后的 reload 打回陈旧回包。
+    const expected: DownloadState | undefined = this.expectedStateFor(action);
+    if (expected !== undefined) {
+      this.pendingStates.set(String(item.id), expected);
+    }
+    // 乐观更新：立即反馈，不等引擎回包。
     this.applyOptimisticState(item, action);
     setTimeout((): void => {
       this.reload();
     }, 400);
   }
 
-  // 点击动作后立刻把对应项的状态翻到预期值，让 UI 即时刷新。
+  // 动作对应的预期状态；undefined=无确定终态（remove），无需重放。
+  private expectedStateFor(action: DownloadAction): DownloadState | undefined {
+    if (action === 'pause') {
+      return 'paused';
+    }
+    if (action === 'resume' || action === 'retry') {
+      return 'inProgress';
+    }
+    if (action === 'cancel') {
+      return 'cancelled';
+    }
+    return undefined;
+  }
+
+  // 逐字段拷贝返回新对象（ArkTS 禁 ... 展开 / Object.assign）。ForEach 行内
+  // @Builder 挂载后定死，必须换对象引用才会触发该行重渲染。
+  private withState(it: DownloadItem, state: DownloadState): DownloadItem {
+    return {
+      id: it.id,
+      url: it.url,
+      fileName: it.fileName,
+      filePath: it.filePath,
+      mimeType: it.mimeType,
+      receivedBytes: it.receivedBytes,
+      totalBytes: it.totalBytes,
+      state: state,
+      failReason: it.failReason,
+      canResume: it.canResume,
+      fileMissing: it.fileMissing,
+      dangerous: it.dangerous,
+      dangerType: it.dangerType,
+      startTime: it.startTime,
+      endTime: it.endTime,
+      removed: it.removed
+    };
+  }
+
+  // 点击后立刻把该项状态翻到预期值（map 产出新引用，见 withState）。
   private applyOptimisticState(item: DownloadItem, action: DownloadAction): void {
     const targetId: string = String(item.id);
-    const idx: number = this.items.findIndex((it) => String(it.id) === targetId);
-    if (idx < 0) {
+    let next: DownloadState | undefined = undefined;
+    if (action === 'pause') {
+      next = 'paused';
+    } else if (action === 'resume' || action === 'retry') {
+      next = 'inProgress';
+    } else if (action === 'cancel') {
+      next = 'cancelled';
+    } else {
       return;
     }
-    const next: DownloadItem[] = this.items.slice();
-    const cur: DownloadItem = { ...next[idx] };
-    switch (action) {
-      case 'pause':
-        cur.state = 'paused';
-        break;
-      case 'resume':
-      case 'retry':
-        cur.state = 'inProgress';
-        break;
-      case 'cancel':
-        cur.state = 'cancelled';
-        break;
-      default:
-        break;
-    }
-    next[idx] = cur;
-    this.items = next;
+    const updated: DownloadItem[] = this.items.map((it: DownloadItem): DownloadItem => {
+      if (String(it.id) === targetId) {
+        return this.withState(it, next as DownloadState);
+      }
+      return it;
+    });
+    this.items = updated;
     this.recomputeFiltered();
   }
 
@@ -286,26 +334,14 @@ export struct DownloadsPanel {
       fs.copyFileSync(source.fd, destPath);
       fs.closeSync(source);
       this.onCommand({ command: 'installExtensionFromFile', path: destPath });
-      // 安装是异步的（外壳无成功回包），发出后给出明确反馈并引导到扩展管理页，
-      // 否则用户只看到按钮消失、没有任何后续，体感像「没反应／没跳转」。
-      AlertDialog.show({
-        title: '已提交安装',
-        message: '扩展安装请求已发送，请在扩展管理中查看并启用。',
-        autoCancel: true,
-        primaryButton: {
-          value: '稍后',
-          action: (): void => {
-          }
-        },
-        secondaryButton: {
-          value: '去扩展管理',
-          action: (): void => {
-            router.pushUrl({ url: 'pages/panels/ExtensionPanelPage' }).catch((error: Error): void => {
-              hilog.error(0x0000, 'Downloads', 'openExtensionPanel failed: %{public}s', error.message);
-            });
-          }
-        }
+      // 安装确认框由引擎画在活动标签页 web 层、位于外壳浮层之下，须关面板
+      // 露出网页（见 ExtensionPanel.installFromFile）。.zip 解压安装无确认框。
+      const isZip: boolean = !isCrxFile(item);
+      this.getUIContext().getPromptAction().showToast({
+        message: isZip ? '正在安装扩展…' : '请在弹出的窗口中确认安装',
+        duration: 3000
       });
+      this.onClose();
     } catch (error) {
       AlertDialog.show({
         title: '无法读取',
@@ -480,7 +516,8 @@ export struct DownloadsPanel {
       .width('100%')
       .padding({ left: 16, right: 12, top: 12, bottom: 12 })
 
-      if (index < this.items.length - 1) {
+      // 分隔线按「过滤后列表」判断：搜索过滤时最后一条不应再画 Divider。
+      if (index < this.filteredDownloads.length - 1) {
         Divider()
           .color($r('app.color.divider'))
           .margin({ left: 50 })
@@ -549,7 +586,11 @@ export struct DownloadsPanel {
             Column() {
               ForEach(this.filteredDownloads, (item: DownloadItem, index: number) => {
                 this.DownloadRow(item, index)
-              }, (item: DownloadItem): string => item.id)
+              }, (item: DownloadItem): string => {
+                // key 须含影响行 UI 的全部字段：key 不变则 ForEach 复用已挂载
+                // 节点不重建（@Builder 按值参数挂载时定死），状态变化到不了 UI。
+                return `${item.id}|${item.state}|${item.receivedBytes}|${item.dangerous ? 1 : 0}|${item.fileMissing ? 1 : 0}`;
+              })
             }
             .width('100%')
             .borderRadius(16)
