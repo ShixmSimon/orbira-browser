@@ -386,33 +386,6 @@ export struct AdBlockPanel {
     .padding({ left: 4, top: 6, bottom: 6 })
   }
 
-  // 开源致谢：引擎用的是 Brave 系组件，许可证按 MPL-2.0 展示。
-  @Builder
-  private CreditRow(name: string, license: string, desc: string) {
-    Row() {
-      Column() {
-        Text(name)
-          .fontSize(14)
-          .fontColor($r('app.color.text_primary'))
-          .width('100%')
-        Text(desc)
-          .fontSize(11)
-          .fontColor($r('app.color.text_secondary'))
-          .width('100%')
-          .margin({ top: 2 })
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-
-      Text(license)
-        .fontSize(11)
-        .fontColor($r('app.color.accent_primary'))
-    }
-    .width('100%')
-    .padding({ top: 10, bottom: 10 })
-    .alignItems(VerticalAlign.Center)
-  }
-
   build() {
     List({ space: 10, scroller: this.scroller }) {
       // 顶部/底部占位。两条都不能用：
@@ -699,46 +672,6 @@ export struct AdBlockPanel {
         .padding({ left: 16, right: 16, top: 8, bottom: 14 })
         .borderRadius(16)
         .backgroundColor($r('app.color.card_background'))
-      }
-
-      // ---------- 开源致谢 ----------
-      ListItem() {
-        Column() {
-          this.SectionTitle('开源致谢',
-            '感谢 Brave、uBlock Origin、EasyList 及社区贡献者，为广告过滤提供引擎、脚本资源和规则。')
-          this.CreditRow('adblock-rust', 'MPL-2.0',
-            'brave/adblock-rust · 广告过滤引擎（adblock 0.13.3）')
-          Divider().color($r('app.color.divider'))
-          this.CreditRow('brave-core', 'MPL-2.0',
-            'brave/brave-core · 浏览器侧广告过滤集成代码')
-          Divider().color($r('app.color.divider'))
-          this.CreditRow('adblock-resources', 'MPL-2.0',
-            'brave/adblock-resources · 脚本与替代资源包')
-          Divider().color($r('app.color.divider'))
-          this.CreditRow('adblock-lists', 'MPL-2.0',
-            'brave/adblock-lists · 补充规则与网站兼容修正')
-          Divider().color($r('app.color.divider'))
-          this.CreditRow('uBlock Origin', 'GPL-3.0-or-later',
-            'gorhill/uBlock · scriptlets 与替代资源（Raymond Hill 及贡献者）')
-          Divider().color($r('app.color.divider'))
-          this.CreditRow('EasyList', 'CC-BY-SA 3.0', 'easylist/easylist · 基础广告过滤规则')
-          Divider().color($r('app.color.divider'))
-          this.CreditRow('EasyList China', 'CC-BY-SA 3.0', 'easylist/easylistchina · 中文网站补充规则')
-          Divider().color($r('app.color.divider'))
-          this.CreditRow('EasyPrivacy', 'CC-BY-SA 3.0', 'easylist/easylist · 跟踪器过滤规则')
-          Text('各项目及第三方资源保留原作者版权，分别遵循其许可证（许可证原文随源码提供：' +
-            'BRAVE-MPL-2.0.txt / UBLOCK-GPL-3.0.txt / CC-BY-SA-3.0.txt）。' +
-            '规则是否启用，以「规则源」中的勾选为准。')
-            .fontSize(11)
-            .fontColor($r('app.color.text_secondary'))
-            .width('100%')
-            .padding({ top: 10 })
-        }
-        .width('100%')
-        .padding({ left: 16, right: 16, top: 8, bottom: 12 })
-        .borderRadius(16)
-        .backgroundColor($r('app.color.card_background'))
-        .clip(true)
       }
 
       ListItem() {
