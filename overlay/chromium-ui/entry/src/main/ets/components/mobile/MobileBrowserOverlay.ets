@@ -112,29 +112,20 @@ export const BOTTOM_DOCK_EXTENT_VP: number = 60;
 // 167px ≈ 48vp，我们的 62 画出来 218px，并排就是"太粗"。
 const DOCK_BAR_HEIGHT_VP: number = 48;
 const DOCK_BAR_RADIUS_VP: number = 24;
+// 简约 dock 胶囊的左右留白（2026-10-10 用户反馈"dock 太长"，16→36）。
+const DOCK_SIDE_MARGIN_VP: number = 36;
+// HdsTabs 的 barWidth 按「tabs 自身宽度」断点选档（SDK：<440 small / 440~600
+// medium / >840 large，600~840 还要看宽高比）。手机竖屏 ≈386、横屏 ≈849，
+// 正好分居 small 与 large 两端 —— 断点切换时若系统沿用旧档宽度，bar 就停在
+// 另一方向的宽度上：竖屏下比屏幕还宽，两侧圆角与留边被 clip 到屏外，看起来
+// 就是「dock 卡成一条贴边长条」。因此横竖屏各用一个独立分支承载材质板，
+// 跨断点时销毁重建，让 HdsTabs 重新测量、重新选档。
+const DOCK_PLATE_WIDE_BREAKPOINT_VP: number = 600;
 // 每个 dock 页签项的固有宽度：HDS 浮动页签在没收到显式 barWidth 时会按
 // 内容测量条形宽度，而内容里再套 100% 宽就成了循环依赖——v9 那版真机上
 // 整个条塌成一个点就是这个原因。给每项一个具体宽度，两条路都能立起来：
 // 显式 barWidth 生效时 Fixed 均分（约 65.4），不生效时 5 × 65 = 325 兜底。
 const DOCK_SLOT_WIDTH_VP: number = 65;
-
-// 浮动条宽度 = 屏幕宽 - 左右各 16 的边距。用 display 同步算（而不是等
-// 布局量完），首帧就有正确宽度，材质不会闪一下。
-function resolveDockBarWidthVp(): number {
-  try {
-    const info: display.Display = display.getDefaultDisplaySync();
-    if (info.densityPixels > 0 && info.width > 0) {
-      const vpWidth: number = info.width / info.densityPixels;
-      if (Number.isFinite(vpWidth) && vpWidth > 64) {
-        // 2026-10-10 用户反馈 dock 太长：侧边距 16→36（胶囊 = 屏宽-72）。
-        return vpWidth - 72;
-      }
-    }
-  } catch (error) {
-    // Fall through to the design-width fallback below.
-  }
-  return 328;
-}
 
 // dock 的底距。v11 曾用钳制算法
 // （min(安全区, PHONE_TOOLBAR_SAFE_MAX=16) + GAP=4，本机
@@ -446,6 +437,10 @@ export struct MobileBrowserOverlay {
   @State private viewportHeightVp: number = 0;
   // 视口宽度（vp）：页面切换帘幕（见 navVeilShift）的位移基准。
   @State private viewportWidthVp: number = 0;
+  // 材质板是否处于「宽屏」（横屏）档。仅用作承载材质板的分支开关：跨过
+  // 断点时销毁重建 HdsTabs，逼它按当前 tabs 宽度重新选 barWidth 档位
+  // （见 DOCK_PLATE_WIDE_BREAKPOINT_VP 的说明）。
+  @State private dockPlateWide: boolean = false;
   // 页面切换柔和过渡帘幕（2026-10-10）：URL 变化（地址栏提交搜索 / 点链接 /
   // 切标签 / 前进后退）时"横向扫过"—— 从右侧扫入盖上、继续向左扫出（新页
   // 从右侧揭开，方向感对齐二级页滑入）；主页（新标签页）不扫（见 watcher）。
@@ -1809,12 +1804,14 @@ export struct MobileBrowserOverlay {
       // 材质板：系统沉浸光感（HdsTabs 底置浮动条是系统唯一真渲染材质的容器路
       // 径）。它自己按 barBottomMargin 摆位，几何与下面的内容层逐值一致。
       if (this.dockMaterialActive) {
-        ChromeBarMaterialPlate({
-          barWidthVp: this.chromeBarWidthVp(),
-          barHeightVp: CHROME_DOCK_EXTENT_VP,
-          sideMarginVp: CHROME_DOCK_FLOAT_MARGIN_VP,
-          bottomMarginVp: resolveDockBottomMarginVp(this.bottomSafeVp)
-        })
+        // 横屏/竖屏各走一个独立分支：跨断点时 HdsTabs 整棵销毁重建，逼它按
+        // 当前 tabs 宽度重新选 barWidth 档位，避免沿用另一方向的宽度
+        // （见 DOCK_PLATE_WIDE_BREAKPOINT_VP）。
+        if (this.dockPlateWide) {
+          this.ChromeDockPlate()
+        } else {
+          this.ChromeDockPlate()
+        }
       }
 
       Column() {
@@ -1889,24 +1886,46 @@ export struct MobileBrowserOverlay {
     .translate({ y: (1 - this.chromeDockRatio()) * (CHROME_DOCK_EXTENT_VP + this.bottomSafeVp + CHROME_DOCK_FLOAT_MARGIN_VP) })
   }
 
-  // 底栏浮动板的宽度 = 视口宽 - 左右留白。布局还没量到时用 display 同步算，
-  // 首帧就有正确宽度，材质不会先塌一下。
-  private chromeBarWidthVp(): number {
-    if (this.viewportWidthVp > 16) {
-      return Math.max(1, this.viewportWidthVp - CHROME_DOCK_FLOAT_MARGIN_VP * 2);
+  // Chrome 底置材质板。无参 @Builder：内部的宽度/边距每次挂载与刷新都现读
+  // state（按值传参的 @Builder 会定死初值，不随状态变化）。
+  @Builder
+  private ChromeDockPlate() {
+    ChromeBarMaterialPlate({
+      barWidthVp: this.chromeBarWidthVp(),
+      barHeightVp: CHROME_DOCK_EXTENT_VP,
+      sideMarginVp: CHROME_DOCK_FLOAT_MARGIN_VP,
+      bottomMarginVp: resolveDockBottomMarginVp(this.bottomSafeVp)
+    })
+  }
+
+  // 材质板宽度（vp）= 视口宽 - 左右留白。
+  //
+  // ⚠️ 必须以 viewportWidthVp（根节点 onAreaChange 量到的布局宽）为准，
+  // display.getDefaultDisplaySync() 只做「布局还没报到」时的首帧兜底：
+  // 转屏瞬间 display 与窗口布局存在时序差（可能还报旧方向），若以它为准，
+  // bar 会停在另一方向的宽度上 —— 配合 HdsTabs 按 tabs 宽选 barWidth 档位，
+  // 竖屏下就会画出一条比屏幕还宽、两侧圆角被裁掉的「贴边长条」。
+  private dockBarWidthVp(sideMarginVp: number): number {
+    const margins: number = sideMarginVp * 2;
+    if (this.viewportWidthVp > margins + 32) {
+      return Math.max(1, this.viewportWidthVp - margins);
     }
     try {
       const info: display.Display = display.getDefaultDisplaySync();
       if (info.densityPixels > 0 && info.width > 0) {
         const vpWidth: number = info.width / info.densityPixels;
-        if (Number.isFinite(vpWidth) && vpWidth > 16) {
-          return Math.max(1, vpWidth - CHROME_DOCK_FLOAT_MARGIN_VP * 2);
+        if (Number.isFinite(vpWidth) && vpWidth > margins + 32) {
+          return Math.max(1, vpWidth - margins);
         }
       }
     } catch (error) {
       // 取不到就交给下面的设计宽度兜底。
     }
     return 328;
+  }
+
+  private chromeBarWidthVp(): number {
+    return this.dockBarWidthVp(CHROME_DOCK_FLOAT_MARGIN_VP);
   }
 
   // 底栏通用圆钮：真 Button（Default 命中 = 不穿透）+ 手写弹簧按压（同顶栏圆钮）。
@@ -2504,6 +2523,12 @@ export struct MobileBrowserOverlay {
           Math.abs(measuredWidth - this.viewportWidthVp) > 0.5) {
         this.viewportWidthVp = measuredWidth;
       }
+      // 横竖屏档位：跨断点会让承载材质板的 if 分支翻转一次，HdsTabs 随之
+      // 销毁重建并重新量宽度/选 barWidth 档（见 DOCK_PLATE_WIDE_BREAKPOINT_VP）。
+      // 赋同值不触发刷新，稳态下没有额外重建。
+      if (Number.isFinite(measuredWidth) && measuredWidth > 0) {
+        this.dockPlateWide = measuredWidth >= DOCK_PLATE_WIDE_BREAKPOINT_VP;
+      }
     })
     // 命中契约（2026-10-09，修复「点 dock / 顶栏按钮穿透到网页」）：
     // 引擎按"命中子节点自身的 hitTestMode"决定是否继续测试下层兄弟
@@ -3079,6 +3104,24 @@ export struct MobileBrowserOverlay {
     .width('100%')
   }
 
+  // 简约 dock 材质板。无参 @Builder：宽度/底距每次现读 state，
+  // 不随挂载时的初值定死。
+  @Builder
+  private DockPlate() {
+    DockMaterialPlate({
+      canGoBack: this.browserState.canGoBack,
+      canGoForward: this.browserState.canGoForward,
+      tabCount: this.browserState.tabCount,
+      barWidthVp: this.dockBarWidthVp(DOCK_SIDE_MARGIN_VP),
+      barHeightVp: DOCK_BAR_HEIGHT_VP,
+      sideMarginVp: DOCK_SIDE_MARGIN_VP,
+      bottomMarginVp: resolveDockBottomMarginVp(this.bottomSafeVp),
+      onDockSlot: (slot: string): void => {
+        this.handleDockSlot(slot);
+      }
+    })
+  }
+
   // 底部 dock：一块悬浮玻璃横条——左右各留 16vp、完整圆角，网页从它后面
   // 穿过，跟手收起。玻璃走 HDS（HDS 没有 uiMaterial 的 Navigation/TabBar
   // 作用域限制，同一条路，详见 DockMaterialPlate）；
@@ -3093,18 +3136,13 @@ export struct MobileBrowserOverlay {
   private BottomDock() {
     Stack() {
       if (this.dockMaterialActive) {
-        DockMaterialPlate({
-          canGoBack: this.browserState.canGoBack,
-          canGoForward: this.browserState.canGoForward,
-          tabCount: this.browserState.tabCount,
-          barWidthVp: resolveDockBarWidthVp(),
-          barHeightVp: DOCK_BAR_HEIGHT_VP,
-          sideMarginVp: 36,
-          bottomMarginVp: resolveDockBottomMarginVp(this.bottomSafeVp),
-          onDockSlot: (slot: string): void => {
-            this.handleDockSlot(slot);
-          }
-        })
+        // 同 Chrome 底置：横竖屏各一个分支，跨断点重建 HdsTabs
+        // （见 DOCK_PLATE_WIDE_BREAKPOINT_VP）。
+        if (this.dockPlateWide) {
+          this.DockPlate()
+        } else {
+          this.DockPlate()
+        }
       } else {
         // 保底路径（无材质设备）：同一胶囊几何，半透明纯色玻璃 + 按钮行。
         Column() {
