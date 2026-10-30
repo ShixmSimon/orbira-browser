@@ -371,6 +371,9 @@ export struct MobileBrowserOverlay {
   @State private downloadSnackVisible: boolean = false;
   @State private downloadSnack: DownloadSnackState = EMPTY_DOWNLOAD_SNACK;
   private downloadSnackTimer: number = -1;
+  // 已经提示过「开始下载」的下载 id。同一 id 的进度事件不再重弹通知条
+  // （进度事件每秒多次，靠可见性判断会无限重弹）。
+  private downloadSnackAnnouncedId: string = '';
   @StorageLink('auraDownloadEvent') @Watch('onDownloadEventChanged')
   private downloadEventJson: string = '';
   @State private findQuery: string = '';
@@ -1288,11 +1291,14 @@ export struct MobileBrowserOverlay {
       return;
     }
     if (ev.state === 'inProgress') {
-      // 同 id 已是「开始下载」态：进度事件每秒多次，不重复弹、不重置计时。
-      if (this.downloadSnackVisible && this.downloadSnack.id === ev.id &&
-        this.downloadSnack.kind === DownloadSnackKind.START) {
+      // 同一次下载只提示一次「开始下载」。
+      // 按 id 记忆、而不是「当前是否还可见」：进度事件每秒多次，4s 自动隐藏后
+      // 下一条进度事件又会把它弹回来 —— 只要下载没结束，通知条就永远挂着
+      // （用户报「下载状态弹窗一直显示」）。点 ✕ 主动关掉后也不再重弹。
+      if (this.downloadSnackAnnouncedId === ev.id) {
         return;
       }
+      this.downloadSnackAnnouncedId = ev.id;
       this.showDownloadSnack(ev.id, name, DownloadSnackKind.START, ev.filePath, ev.mimeType);
       return;
     }

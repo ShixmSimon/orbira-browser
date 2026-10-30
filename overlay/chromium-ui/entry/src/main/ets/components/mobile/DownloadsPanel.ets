@@ -9,6 +9,7 @@
 import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BrowserCommandPayload, DownloadAction, DownloadItem, openDownloadedFile } from 'engine';
 import { formatVisitTime } from './PanelBridge';
 import { AuraSectionLabel, AuraSearchBar } from './AuraKit';
@@ -149,7 +150,13 @@ export struct DownloadsPanel {
   }
 
   private act(item: DownloadItem, action: DownloadAction): void {
-    this.onCommand({ command: 'downloadAction', id: item.id, action: action });
+    // 诊断：用户报「暂停/取消/删除点不动」。这条日志能区分两种失败：
+    // ① 没有这行 → 点击根本没到芯片（外壳命中问题）
+    // ② 有这行但引擎没反应 → 命令发出去了、引擎侧 Find/FindAction 失败
+    //    （对应 hilog tag Chromium 的 "OHOS shell downloads" 警告）。
+    hilog.info(0x0000, 'Downloads', 'action=%{public}s id=%{public}s',
+      action, String(item.id));
+    this.onCommand({ command: 'downloadAction', id: String(item.id), action: action });
     setTimeout((): void => {
       this.reload();
     }, 400);

@@ -752,8 +752,15 @@ struct AuraShell {
       }
     } else {
       // 简约「智能抬高」：底栏常驻（「滚动隐藏底部栏」关着）→ 抬到 dock 上边；
-      // 随滚动收起 → 0（收起后铺满物理底边，1.0.97 用户拍板）。再叠顶部缺口补偿。
-      bottom = (this.hideDockOnScroll ? 0 : dockCoveredHeightVp(bottomSafe)) + this.topBarPushVp();
+      // 随滚动收起 → 0（收起后铺满物理底边）。
+      // **页面停在顶部（ratio≈1）时也要抬**：加载失败的错误页这类不可滚动页面
+      // ratio 恒为 1、dock 永远浮在底部，不留位就会盖住页内按钮（「重新加载」
+      // 点不到）。滚动中（ratio<1）仍按原样归零，不改变滚动时的铺满观感。
+      const dockAlways: number = dockCoveredHeightVp(bottomSafe);
+      const dockCover: number = this.hideDockOnScroll
+        ? (this.scrolledRatio >= 0.99 ? dockAlways : 0)
+        : dockAlways;
+      bottom = dockCover + this.topBarPushVp();
     }
     this.lastTopPushSent = this.topBarPushVp();
     this.executeBrowserCommand({
