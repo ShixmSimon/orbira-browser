@@ -1978,9 +1978,8 @@ struct AuraShell {
       return;
     }
     // 网页全屏（video / requestFullscreen）：契约要求外壳收起自己的条带并把
-    // 窗口切沉浸（见 ShellServiceTypes.PageFullscreenChangedEvent）。此前外壳
-    // 完全没接这条事件 —— 视频全屏时状态栏还占着一条、页面视口少一截，
-    // 画面只能缩在黑边里（用户实拍对比 Lumie）。
+    // 窗口切沉浸（见 ShellServiceTypes.PageFullscreenChangedEvent），否则
+    // 状态栏还占着一条、页面视口少一截，画面只能缩在黑边里。
     if (event.event === 'pageFullscreenChanged') {
       this.setPageFullscreen(shellEvent<PageFullscreenChangedEvent>(event).fullscreen === true);
       return;
