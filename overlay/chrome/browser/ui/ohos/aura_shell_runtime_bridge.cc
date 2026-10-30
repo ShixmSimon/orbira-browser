@@ -2095,6 +2095,12 @@ void InstallExtensionFromFile(gfx::AcceleratedWidget widget,
 
 namespace {
 
+// Set while RunExtensionAction tears down the previous popup before opening a
+// new one. That teardown is a replacement, not the user closing the popup, and
+// must not reach the shell: the shell would clear the home-surface hold that
+// the popup about to open depends on.
+bool g_replacing_extension_popup = false;
+
 // Watches an extension popup's widget. The popup is drawn by Chromium on the
 // Web layer, below the shell's home surface; opening it makes the shell drop
 // the home-surface hold (auraPopupHomeHold) so the popup is not covered. There
@@ -2118,16 +2124,17 @@ class ExtensionPopupCloseWatcher : public views::WidgetObserver {
       delete;
 
   void OnWidgetDestroyed(views::Widget* widget) override {
-    // A newer popup replaced this one: the user clicked the action again while
-    // the previous popup was still open, and RunExtensionAction built a new
-    // bubble before this widget went away. Reporting this teardown as "popup
-    // closed" would drop the home-surface hold the new popup just took, and
-    // the new popup would end up hidden behind the home surface (the shell
-    // cannot tell the two popups apart: the event only carries the extension
-    // id). Only report a close when this was the most recently created popup.
-    ExtensionPopup* latest = ExtensionPopup::last_popup_for_testing();
-    if (!latest || !latest->GetWidget() || latest->GetWidget() == widget) {
-      NotifyAuraShellExtensionPopupClosed(profile_, extension_id_);
+    // Two teardowns are not "the user closed the popup": the previous popup
+    // being replaced before a new one opens (g_replacing_extension_popup), and
+    // a widget that is no longer the most recent popup. Neither may reach the
+    // shell -- it would clear the home-surface hold the new popup needs, and
+    // the shell cannot tell the popups apart (the event only carries the
+    // extension id). Only a real close is reported.
+    if (!g_replacing_extension_popup) {
+      ExtensionPopup* latest = ExtensionPopup::last_popup_for_testing();
+      if (!latest || !latest->GetWidget() || latest->GetWidget() == widget) {
+        NotifyAuraShellExtensionPopupClosed(profile_, extension_id_);
+      }
     }
     // The scrim we parked behind the popup rides along in backdrop_. Rather than
     // hard-removing it (which flashes the layer underneath for a frame while the
@@ -2254,6 +2261,23 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   // help -- the popup only behaves once no second window is around. Leave it
   // alone. ExtensionPopupCloseWatcher still accepts a scrim (null here); its
   // fade path simply does nothing without one.
+
+  // Only one popup window may exist at a time. Reopening the action without
+  // closing the old popup (tap the menu, then the extension again) leaves two
+  // bubbles stacked; taps on the new one land on the old window and are read as
+  // an outside tap, so the new popup closes on the first touch and none of its
+  // controls respond. Measured on the phone: the second popup closed on a tap
+  // in its centre, while the first one worked. Close the previous popup first;
+  // the flag keeps that teardown from clearing the home-surface hold the new
+  // popup is about to take.
+  if (ExtensionPopup* previous = ExtensionPopup::last_popup_for_testing()) {
+    if (views::Widget* previous_widget = previous->GetWidget()) {
+      LOG(WARNING) << "OHOS extension popup: closing the previous popup first";
+      g_replacing_extension_popup = true;
+      previous_widget->CloseNow();
+      g_replacing_extension_popup = false;
+    }
+  }
 
   ExtensionPopup::ShowPopupAtShellRect(browser, std::move(host), parent,
                                        anchor.rect, anchor.arrow,
