@@ -1161,6 +1161,10 @@ struct AuraShell {
   // Downloads go to Download/<bundle>, where the Files app shows them. The
   // directory can only be had once this page is up, after Chromium started.
   private downloadNotifier: DownloadNotifier | undefined = undefined;
+  // 下载列表接口（downloadList）回包的 item 常不带 filePath，而实时
+  // downloadUpdated 事件才带。这里累积 id→filePath，写下载页数据时回填，
+  // 使「下载页 → 安装 .crx」能拿到正确路径（下载条用实时事件无需补）。
+  private downloadFilePaths: Record<string, string> = {};
 
   private useSystemDownloadDirectory(): void {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
@@ -1763,6 +1767,9 @@ struct AuraShell {
         failReason: updated.failReason ?? '',
         revision: Date.now()
       }));
+      if (updated.id && updated.id.length > 0) {
+        this.downloadFilePaths[updated.id] = updated.filePath ?? '';
+      }
       // The downloads page watches this tick and re-lists (throttled) so
       // progress on it moves while a download is running.
       AppStorage.setOrCreate('auraPanelDownloadsTick', Date.now());
@@ -1770,8 +1777,17 @@ struct AuraShell {
     }
 
     if (event.event === 'downloadList') {
-      AppStorage.setOrCreate('auraPanelDownloads',
-        JSON.stringify(shellEvent<DownloadListEvent>(event).items ?? []));
+      const list = shellEvent<DownloadListEvent>(event).items ?? [];
+      // 列表项的 filePath 常缺失（见 downloadFilePaths 注释）：用累积的
+      // id→filePath 回填，确保下载页「安装 .crx」能取到真实路径。
+      for (const it of list) {
+        const id: string = it.id ?? '';
+        const fp: string = it.filePath ?? '';
+        if (fp.length === 0 && id.length > 0 && this.downloadFilePaths[id]) {
+          it.filePath = this.downloadFilePaths[id];
+        }
+      }
+      AppStorage.setOrCreate('auraPanelDownloads', JSON.stringify(list));
       return;
     }
 

@@ -177,7 +177,7 @@ export struct DownloadsPanel {
         value: '删除',
         fontColor: '#E24B4A',
         action: (): void => {
-          this.onCommand({ command: 'downloadAction', id: item.id, action: 'removeAndDeleteFile' });
+          this.onCommand({ command: 'downloadAction', id: String(item.id), action: 'removeAndDeleteFile' });
           setTimeout((): void => {
             this.reload();
           }, 400);
