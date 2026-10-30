@@ -3000,7 +3000,11 @@ export struct MobileBrowserOverlay {
       // 地址栏在下：卡片贴着条带上沿往上长，天花板是条带上沿。
       const barTop: number = this.suggestBarTopVp();
       const ceiling: number = barTop > 0 ? Math.min(barTop, usable) : usable;
-      return Math.max(96, ceiling - 8);
+      // 卡片是从容器**底边往上长**的，顶部必须再留出状态栏 + 呼吸位，
+      // 否则横屏视口矮时会一直长到状态栏上面去（用户实测：Chrome 风格地址栏
+      // 在下时联想卡「顶出屏幕上边」）。14 = 容器底 padding 6 + 顶部呼吸 8。
+      const topReserve: number = Math.max(this.topSafeVp, 0) + 14;
+      return Math.max(96, ceiling - topReserve);
     }
     // 地址栏在上：卡片从条带下沿往下长。
     const top: number = this.topSafeVp + TOP_BAR_EXTENT_VP + 6;
