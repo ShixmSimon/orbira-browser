@@ -474,6 +474,15 @@ export struct MobileBrowserOverlay {
   @State private suggestItems: AutocompleteItem[] = [];
   // 在线联想词（默认搜索引擎的下拉建议接口，按输入实时拉取）。
   @State private onlineSuggestWords: string[] = [];
+  // 引擎 SearchProvider 是否已经证明能给出搜索建议（本次编辑会话内记一次）。
+  //
+  // 背景：引擎侧 kProviderTypes 本来就含 TYPE_SEARCH（走浏览器网络栈、连接是
+  // 热的），外壳那条在线 HTTP 只是兜底。但它每次按键都要新建 HttpRequest、
+  // 重做 DNS+TLS 握手，约 400~600ms —— 「联想出得慢」主要就是等它。
+  // 一旦引擎这一包里有 type==='search' 的行，就置位；之后本次编辑不再发那条
+  // HTTP。收起列表时复位，下次编辑仍先双发兜底 —— 引擎万一给不出结果，
+  // 标记永远不置位，行为自动回落成现在的双发，不会比现在更差。
+  private engineSuggestProven: boolean = false;
   @State private suggestVisible: boolean = false;
   private autocompleteSeq: number = 0;
   private autocompletePending: number = -1;
@@ -5148,6 +5157,8 @@ export struct MobileBrowserOverlay {
     this.suggestItems = [];
     this.onlineSuggestWords = [];
     this.suggestVisible = false;
+    // 收起 = 本轮编辑结束：清掉「引擎可用」的标记，下次进入编辑仍先双发兜底。
+    this.engineSuggestProven = false;
   }
 
   // 引擎回包：只认最新 requestId（旧包丢弃）；同 id 的多包照单全收（流式）。
@@ -5184,6 +5195,17 @@ export struct MobileBrowserOverlay {
       // （顶行永远是当前输入，不会认错）。
       if (normalized.length === 0) {
         return;
+      }
+      // 这一包里有 type==='search' 的行 → 引擎确实能出搜索建议，置位后
+      // 本次编辑不再发外壳那条在线 HTTP（省 400~600ms 握手）。
+      // 只在真拿到 search 行时置位，空包/纯历史书签项都不算，避免误判。
+      if (!this.engineSuggestProven) {
+        for (const item of normalized) {
+          if (item.type === 'search') {
+            this.engineSuggestProven = true;
+            break;
+          }
+        }
       }
       if (payload.done === true) {
         this.cancelSuggestFlush();
@@ -5338,6 +5360,11 @@ export struct MobileBrowserOverlay {
 
   private fetchOnlineSuggest(query: string): void {
     if (this.looksLikeUrl(query)) {
+      return;
+    }
+    // 引擎本次会话已证明能出搜索建议 → 不再发这条兜底 HTTP。
+    // 这是「联想慢」的主要来源：每次按键都要重新握手（见字段注释）。
+    if (this.engineSuggestProven) {
       return;
     }
     const endpoint = this.onlineSuggestEndpoint(query);
