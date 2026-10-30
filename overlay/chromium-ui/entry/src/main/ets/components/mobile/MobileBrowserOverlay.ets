@@ -2989,15 +2989,26 @@ export struct MobileBrowserOverlay {
   // 视口要停在**底部**，让紧贴地址栏的那条一进来就可见。
   private suggestScroller: Scroller = new Scroller();
 
+  // 贴底滚动**不能在 onAreaChange（布局回调）里同步做**：那是「布局中改布局」，
+  // ArkUI 会再跑一轮测量，打字时候选刷新会出现轻微顿挫。这里改成排到下一帧，
+  // 且同一轮多次触发只排一次（suggestPinTimer 去重）。
+  private suggestPinTimer: number = -1;
+
   // 底置形态把滚动视口钉到底部；顶置/竖屏直接返回，行为一点不变。
   private pinSuggestScrollToBottom(): void {
     if (!this.suggestAboveBottomBar()) {
       return;
     }
-    try {
-      this.suggestScroller.scrollEdge(Edge.Bottom);
-    } catch (error) {
+    if (this.suggestPinTimer >= 0) {
+      return;
     }
+    this.suggestPinTimer = setTimeout((): void => {
+      this.suggestPinTimer = -1;
+      try {
+        this.suggestScroller.scrollEdge(Edge.Bottom);
+      } catch (error) {
+      }
+    }, 0);
   }
 
   // 联想行的渲染顺序。
