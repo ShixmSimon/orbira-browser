@@ -1950,16 +1950,10 @@ export struct HomeSurface {
     return Math.max(TOP_CHROME_EXTENT_VP + 8, anchored);
   }
 
-  // 滚动内容末尾的呼吸位。
-  //
-  // 简约风格的 dock 是**悬浮**在主页最下层的，会盖住滚动内容的下沿；末尾只
-  // 留 24vp 时，滚到底最后一行磁贴正好停在 dock 底下（用户横屏实拍「dock 栏
-  // 会挡住磁贴」）。所以末尾至少要让出 dock 的实际占高（60 + 底部安全区）。
-  // chrome 风格主页的 dock 钉在顶部，底部没有遮挡，只留原呼吸量。
-  //
-  // 顺带解决「滑了弹回来」：横屏可视高只有 300~380vp，磁贴少时内容比视口还
-  // 短，Scroll 的 alwaysEnabled 弹簧就只会回弹、停不住；补上这段让位后内容
-  // 能真正超出视口，最后一行才滚得上来。
+  // 滚动内容末尾的呼吸位 = 24 + 悬浮 dock 的实占高度。简约 dock 浮在主页最下层，
+  // 不让位的话滚到底时最后一行磁贴正好停在 dock 底下；chrome 风格 dock 钉在顶部，
+  // 不需要让位。顺带让内容能真正超出视口 —— 横屏磁贴少时内容比视口还短，
+  // Scroll 的 alwaysEnabled 弹簧只会回弹、停不住。
   private homeBottomBreathVp(): number {
     const dock: number = this.homeStyle === 'chrome' ? 0 : dockCoveredHeightVp(this.bottomSafeVp);
     return 24 + dock;

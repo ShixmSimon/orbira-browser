@@ -114,12 +114,9 @@ const DOCK_BAR_HEIGHT_VP: number = 48;
 const DOCK_BAR_RADIUS_VP: number = 24;
 // 简约 dock 胶囊的左右留白（2026-10-10 用户反馈"dock 太长"，16→36）。
 const DOCK_SIDE_MARGIN_VP: number = 36;
-// HdsTabs 的 barWidth 按「tabs 自身宽度」断点选档（SDK：<440 small / 440~600
-// medium / >840 large，600~840 还要看宽高比）。手机竖屏 ≈386、横屏 ≈849，
-// 正好分居 small 与 large 两端 —— 断点切换时若系统沿用旧档宽度，bar 就停在
-// 另一方向的宽度上：竖屏下比屏幕还宽，两侧圆角与留边被 clip 到屏外，看起来
-// 就是「dock 卡成一条贴边长条」。因此横竖屏各用一个独立分支承载材质板，
-// 跨断点时销毁重建，让 HdsTabs 重新测量、重新选档。
+// HdsTabs 的 barWidth 按 tabs 宽度断点选档（<440 / 440~600 / >840）。手机竖屏
+// ≈386、横屏 ≈849 分居两端，断点切换若沿用旧档，bar 会停在另一方向的宽度上
+// （竖屏下比屏幕宽、圆角被裁 = dock 卡成长条）。故横竖屏各一个分支重建。
 const DOCK_PLATE_WIDE_BREAKPOINT_VP: number = 600;
 // 每个 dock 页签项的固有宽度：HDS 浮动页签在没收到显式 barWidth 时会按
 // 内容测量条形宽度，而内容里再套 100% 宽就成了循环依赖——v9 那版真机上
@@ -1907,13 +1904,9 @@ export struct MobileBrowserOverlay {
     })
   }
 
-  // 材质板宽度（vp）= 视口宽 - 左右留白。
-  //
-  // ⚠️ 必须以 viewportWidthVp（根节点 onAreaChange 量到的布局宽）为准，
-  // display.getDefaultDisplaySync() 只做「布局还没报到」时的首帧兜底：
-  // 转屏瞬间 display 与窗口布局存在时序差（可能还报旧方向），若以它为准，
-  // bar 会停在另一方向的宽度上 —— 配合 HdsTabs 按 tabs 宽选 barWidth 档位，
-  // 竖屏下就会画出一条比屏幕还宽、两侧圆角被裁掉的「贴边长条」。
+  // 材质板宽度（vp）= 视口宽 - 左右留白。⚠️ 必须用 viewportWidthVp（onAreaChange
+  // 量到的布局宽），display 只作首帧兜底 —— 转屏瞬间 display 与布局有时序差，
+  // 以它为准会让 bar 停在旧方向的宽度上。
   private dockBarWidthVp(sideMarginVp: number): number {
     const margins: number = sideMarginVp * 2;
     if (this.viewportWidthVp > margins + 32) {
@@ -2990,13 +2983,11 @@ export struct MobileBrowserOverlay {
     return this.viewportHeightVp > total ? this.viewportHeightVp - total : 0;
   }
 
-  // 联想卡的滚动控制器。地址栏在底时卡内倒序（见 suggestRowsForLayout），
-  // 视口要停在**底部**，让紧贴地址栏的那条一进来就可见。
+  // 联想卡滚动控制器：底置时视口要停在底部（见 pinSuggestScrollToBottom）。
   private suggestScroller: Scroller = new Scroller();
 
-  // 贴底滚动**不能在 onAreaChange（布局回调）里同步做**：那是「布局中改布局」，
-  // ArkUI 会再跑一轮测量，打字时候选刷新会出现轻微顿挫。这里改成排到下一帧，
-  // 且同一轮多次触发只排一次（suggestPinTimer 去重）。
+  // 贴底滚动不能放在 onAreaChange 里同步做（布局中改布局会二次测量、打字顿挫），
+  // 排到下一帧并去重。
   private suggestPinTimer: number = -1;
 
   // 底置形态把滚动视口钉到底部；顶置/竖屏直接返回，行为一点不变。
@@ -3016,12 +3007,8 @@ export struct MobileBrowserOverlay {
     }, 0);
   }
 
-  // 联想行的渲染顺序。
-  //
-  // 地址栏在**底**时倒序：卡片贴着地址栏往上长，视线从地址栏往上扫，离它
-  // 最近的那条最可能被点 —— 所以「搜索 “输入”」（suggestRows 的第一条）要
-  // 排在最下面、紧挨地址栏，其余候选依次往上。
-  // 地址栏在顶（含竖屏）保持原序，逐值不变。
+  // 联想行渲染顺序：地址栏在底时倒序 —— 卡片贴地址栏往上长，视线从地址栏往上
+  // 扫，suggestRows() 的第一条（搜索"输入"）应排在最下面。顶置/竖屏保持原序。
   private suggestRowsForLayout(): AutocompleteItem[] {
     const rows: AutocompleteItem[] = this.suggestRows();
     if (!this.suggestAboveBottomBar()) {
@@ -3030,12 +3017,8 @@ export struct MobileBrowserOverlay {
     return rows.slice().reverse();
   }
 
-  // 联想卡的高度上限（vp）。
-  //
-  // 联想卡最多 8 行（每行 46/54vp，合计约 370vp）。竖屏整屏高时放得下，
-  // **横屏 + 键盘弹起就放不下了**：可用高度只剩两三百 vp，卡片多出来的行
-  // 直接落到键盘下面被裁掉 —— 用户报的「横屏联想框被截断」。
-  // 上限之外还让卡片可滚动（见 SuggestCard），行数多时仍能全部翻到。
+  // 联想卡高度上限（vp）。卡片最多 8 行 ≈370vp，横屏 + 键盘弹起时可用高度只剩
+  // 两三百 vp，不设上限会溢出屏幕或被键盘盖住；超出的行由卡内滚动承接。
   private suggestCardMaxHeightVp(): number {
     const viewport: number = this.viewportHeightVp > 0 ? this.viewportHeightVp : 780;
     // 键盘若仍是浮层（窗口没被压缩）就从可用高里再刨掉它；RESIZE 模式下
@@ -3191,10 +3174,8 @@ export struct MobileBrowserOverlay {
       }
     }
     .width('100%')
-    // 新行淡入、旧行不播退场：候选是分两三批到达的（本地首包 → 在线词），
-    // 之前每批到达都是「高度瞬间撑高」，观感上就是一层一层地跳、很生硬。
-    // 进场 130ms 淡入让追加的行"长出来"；退场 0ms 保持列表替换的干净（否则
-    // 整份替换时 8 行同时淡出会闪）。
+    // 新行淡入、旧行不播退场：候选分两三批到达，之前每批都是瞬间撑高，观感上
+    // 一层一层地跳。退场设 0 是因为整份替换时多行同时淡出会闪。
     .transition(TransitionEffect.asymmetric(
       TransitionEffect.OPACITY.animation({ duration: 130, curve: Curve.EaseOut }),
       TransitionEffect.OPACITY.animation({ duration: 0 })
@@ -5350,13 +5331,9 @@ export struct MobileBrowserOverlay {
     return '';
   }
 
-  // 引擎最后一批结果到齐后调用：**只有引擎给的建议不够用时才补发**在线请求。
-  //
-  // 引擎侧 kProviderTypes 本来就含 TYPE_SEARCH（走浏览器网络栈、连接是热的），
-  // 常态下能给出足够多的搜索建议 —— 那就完全不发外壳那条 HTTP：它每次都要
-  // 新建 HttpRequest、重做 DNS+TLS 握手，约 400~600ms，正是「联想出得慢」的
-  // 主因。只有引擎这次给得少（生僻词 / 网络抖动 / 该引擎模板没有 suggest_url）
-  // 才补一发，保证列表不会明显变少。
+  // 引擎最后一批到齐后调用：引擎建议不够用时才补发在线请求。引擎的 TYPE_SEARCH
+  // 走浏览器网络栈（连接热），常态就够用；外壳那条 HTTP 每次都要重做 DNS+TLS
+  // 握手（约 400~600ms），只在引擎给得少时才发。
   private maybeFetchOnlineSuggest(engineItems: AutocompleteItem[]): void {
     // 已有在线词（上一发还没被 query 变化清掉）就不重复请求。
     if (this.onlineSuggestWords.length > 0) {
