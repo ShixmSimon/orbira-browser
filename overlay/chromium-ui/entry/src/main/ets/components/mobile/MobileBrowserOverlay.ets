@@ -226,6 +226,11 @@ export const TAB_THUMB_HEIGHT_VP: number = TAB_CARD_HEIGHT_VP - TAB_CARD_TITLE_V
 const TAB_LIST_THUMB_WIDTH_VP: number = 64;
 const TAB_LIST_THUMB_HEIGHT_VP: number = 46;
 // ⋮ 菜单卡片：258 上下、贴着屏幕右侧，左边留出底下网页的宽度。
+// 引擎（SearchProvider）给出的搜索建议达到这个条数，就不再补发外壳那条在线
+// HTTP —— 常态下省掉每次输入 400~600ms 的 DNS+TLS 握手。
+// 取 3：低于 3 条时候选明显偏少，补一发把列表补齐。
+const ONLINE_SUGGEST_MIN_ENGINE_ROWS: number = 3;
+
 const MENU_CARD_WIDTH_VP: number = 258;
 // 长按菜单卡片（v13）：与 ⋮ 卡片同宽同款，锚在按压点旁边。
 const CONTEXT_MENU_CARD_WIDTH_VP: number = 258;
@@ -474,15 +479,6 @@ export struct MobileBrowserOverlay {
   @State private suggestItems: AutocompleteItem[] = [];
   // 在线联想词（默认搜索引擎的下拉建议接口，按输入实时拉取）。
   @State private onlineSuggestWords: string[] = [];
-  // 引擎 SearchProvider 是否已经证明能给出搜索建议（本次编辑会话内记一次）。
-  //
-  // 背景：引擎侧 kProviderTypes 本来就含 TYPE_SEARCH（走浏览器网络栈、连接是
-  // 热的），外壳那条在线 HTTP 只是兜底。但它每次按键都要新建 HttpRequest、
-  // 重做 DNS+TLS 握手，约 400~600ms —— 「联想出得慢」主要就是等它。
-  // 一旦引擎这一包里有 type==='search' 的行，就置位；之后本次编辑不再发那条
-  // HTTP。收起列表时复位，下次编辑仍先双发兜底 —— 引擎万一给不出结果，
-  // 标记永远不置位，行为自动回落成现在的双发，不会比现在更差。
-  private engineSuggestProven: boolean = false;
   @State private suggestVisible: boolean = false;
   private autocompleteSeq: number = 0;
   private autocompletePending: number = -1;
@@ -5115,6 +5111,10 @@ export struct MobileBrowserOverlay {
       return;
     }
     this.addressSuggestText = query;
+    // 在线词属于**上一次查询**，query 一变就必须清掉：suggestRows() 直接把
+    // 这个数组拼进结果、不校验 query，不清会看到上一轮的搜索词混在这次的
+    // 列表里。suggestItems 反而要保留（见下），两者语义不同。
+    this.onlineSuggestWords = [];
     // 1.0.4：**不清空**上一份列表。清空后卡里只剩我们自己造的那条兜底行
     // （搜索“xxx”），在真结果回来之前看起来就是「没展开」—— 录屏实测
     // 「石家庄1」那次塌着一行停了 0.6s 才长出来。Chrome 的做法是保留旧列表，
@@ -5136,8 +5136,9 @@ export struct MobileBrowserOverlay {
         requestId: this.autocompleteSeq,
         text: query
       });
-      // 在线联想词（仅搜索型输入；URL 型输入不该发给搜索引擎）。
-      this.fetchOnlineSuggest(query);
+      // 在线联想词不再在这里发：改为「引擎结果不足时才补发」
+      // （见 maybeFetchOnlineSuggest）。这样引擎能出建议时，连第一次输入都
+      // 不用等那条 HTTP（约 600ms）。
       // 90 → 60ms：防抖只是把连打合并，引擎侧本来就有 Stop 旧请求的机制，
       // 60ms 足够合并一次连打，但首包能早 30ms 出来。
     }, 60);
@@ -5157,8 +5158,7 @@ export struct MobileBrowserOverlay {
     this.suggestItems = [];
     this.onlineSuggestWords = [];
     this.suggestVisible = false;
-    // 收起 = 本轮编辑结束：清掉「引擎可用」的标记，下次进入编辑仍先双发兜底。
-    this.engineSuggestProven = false;
+    // 收起 = 本轮编辑结束（在线词已在 query 变化时清过，这里不再重复处理）。
   }
 
   // 引擎回包：只认最新 requestId（旧包丢弃）；同 id 的多包照单全收（流式）。
@@ -5196,21 +5196,13 @@ export struct MobileBrowserOverlay {
       if (normalized.length === 0) {
         return;
       }
-      // 这一包里有 type==='search' 的行 → 引擎确实能出搜索建议，置位后
-      // 本次编辑不再发外壳那条在线 HTTP（省 400~600ms 握手）。
-      // 只在真拿到 search 行时置位，空包/纯历史书签项都不算，避免误判。
-      if (!this.engineSuggestProven) {
-        for (const item of normalized) {
-          if (item.type === 'search') {
-            this.engineSuggestProven = true;
-            break;
-          }
-        }
-      }
       if (payload.done === true) {
         this.cancelSuggestFlush();
         this.suggestItems = normalized;
         this.suggestShownFor = payload.requestId;
+        // 最后一批到齐：引擎建议不够用时才补发在线请求（常态下省掉一次
+        // DNS+TLS 握手，约 400~600ms）。见 maybeFetchOnlineSuggest。
+        this.maybeFetchOnlineSuggest(normalized);
         return;
       }
       if (this.suggestShownFor !== payload.requestId) {
@@ -5358,13 +5350,32 @@ export struct MobileBrowserOverlay {
     return '';
   }
 
-  private fetchOnlineSuggest(query: string): void {
-    if (this.looksLikeUrl(query)) {
+  // 引擎最后一批结果到齐后调用：**只有引擎给的建议不够用时才补发**在线请求。
+  //
+  // 引擎侧 kProviderTypes 本来就含 TYPE_SEARCH（走浏览器网络栈、连接是热的），
+  // 常态下能给出足够多的搜索建议 —— 那就完全不发外壳那条 HTTP：它每次都要
+  // 新建 HttpRequest、重做 DNS+TLS 握手，约 400~600ms，正是「联想出得慢」的
+  // 主因。只有引擎这次给得少（生僻词 / 网络抖动 / 该引擎模板没有 suggest_url）
+  // 才补一发，保证列表不会明显变少。
+  private maybeFetchOnlineSuggest(engineItems: AutocompleteItem[]): void {
+    // 已有在线词（上一发还没被 query 变化清掉）就不重复请求。
+    if (this.onlineSuggestWords.length > 0) {
       return;
     }
-    // 引擎本次会话已证明能出搜索建议 → 不再发这条兜底 HTTP。
-    // 这是「联想慢」的主要来源：每次按键都要重新握手（见字段注释）。
-    if (this.engineSuggestProven) {
+    let searchRows: number = 0;
+    for (const item of engineItems) {
+      if (item.type === 'search') {
+        searchRows += 1;
+      }
+    }
+    if (searchRows >= ONLINE_SUGGEST_MIN_ENGINE_ROWS) {
+      return;
+    }
+    this.fetchOnlineSuggest(this.addressSuggestText);
+  }
+
+  private fetchOnlineSuggest(query: string): void {
+    if (this.looksLikeUrl(query)) {
       return;
     }
     const endpoint = this.onlineSuggestEndpoint(query);
