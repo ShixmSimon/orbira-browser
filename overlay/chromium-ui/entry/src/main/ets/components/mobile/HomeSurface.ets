@@ -558,6 +558,7 @@ export struct HomeSurface {
         if (this.fastTilePath && this.step === 'tiles') {
           this.fastTilePath = false;
           this.chainRetries = 0;
+          this.emptyTilesRetries = 0;
           this.homeFolderId = '';
           this.requestRoot();
           return;
@@ -585,6 +586,9 @@ export struct HomeSurface {
     this.chainRetries = 0;
     this.tilesError = false;
     this.createdInChain = false;
+    // 新一轮发现链，空回包的重试预算也要归零；否则上一轮残留到上限后，
+    // 这一轮的空回包会被直接接受，不再等引擎把书签模型读完。
+    this.emptyTilesRetries = 0;
     // 只要已知「首页」文件夹 id 就直取（一次往返）——不再要求 step === 'done'：
     // 书签在别处被改动后的刷新、以及冷启动，走的都是这条最短路径。
     if (this.homeFolderId.length > 0) {
@@ -616,6 +620,15 @@ export struct HomeSurface {
     }
     const inFlight = this.step === 'root' || this.step === 'mobile' || this.step === 'tiles';
     if (!inFlight) {
+      return;
+    }
+    // 便宜的先做：主页与书签面板共用 'auraPanelBookmarkList'，面板的每次操作
+    // （翻页/搜索/编辑）也会把整份书签树推过来。先按 requestId 段粗筛，不是主页
+    // 的回包直接丢——别为它解析整棵树（书签多时 JSON.parse 是毫秒级开销）。
+    // 主页序号段 700000-899999，引擎序列化无空格，两种写法都兼容；命中的仍会
+    // 在解析后按 reqId 再校验一次，这里只做便宜的门。
+    if (this.bookmarkListJson.indexOf('"requestId":7') < 0 &&
+        this.bookmarkListJson.indexOf('"requestId": 7') < 0) {
       return;
     }
     let payload: BookmarkListPayload;
