@@ -324,11 +324,9 @@ export class DeviceRoutingPolicy {
       const enableWebGpu: AuraCommandLineSwitch = { key: 'enable-unsafe-webgpu' };
       extraSwitches.push(enableWebGpu);
     }
-    // EXPERIMENTAL（息屏解锁首滑卡顿 A/B）：窗口恢复可见后延迟显示的毫秒数。
-    // 0 = 关闭，保持上游时序。测的时候改成 300 并重建 HAP；引擎侧读
-    // --ohos-delayed-resume-ms（aura_shell_runtime_bridge.cc 的
-    // DelayedResumeDelay）。真机 trace 实测：解锁动画占 GPU 期间首滑被系统
-    // 合成层跳帧 100~400ms，而 Chromium 自身稳定 120Hz。
+    // EXPERIMENTAL：窗口恢复可见后延迟显示（毫秒）。0 = 关闭、走上游时序；
+    // 实测 300ms 反而更差（与用户开始滑动重合），保持 0。引擎侧读
+    // --ohos-delayed-resume-ms（见 DelayedResumeDelay）。
     const RESUME_DELAY_MS: number = 0;
     if (RESUME_DELAY_MS > 0) {
       const resumeDelay: AuraCommandLineSwitch = {

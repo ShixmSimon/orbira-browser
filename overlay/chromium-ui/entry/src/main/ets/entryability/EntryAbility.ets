@@ -342,10 +342,8 @@ export default class EntryAbility extends UIAbility {
       hilog.info(DOMAIN, 'AuraShell', 'Rotation observer is unavailable: %{public}s', JSON.stringify(error));
     }
 
-    // 键盘避让区 → AppStorage('auraKeyboardVp')：横屏时键盘能吃掉半屏以上，
-    // 地址栏联想卡、任何贴底的浮层都要按"键盘上方"的可用高来收缩
-    // （见 MobileBrowserOverlay.suggestCardMaxHeightVp）。窗口若被压缩
-    // （RESIZE 模式）这里收到 0，不会与视口高重复扣减。
+    // 键盘避让区 → AppStorage('auraKeyboardVp')：贴底浮层要按「键盘上方」的
+    // 可用高度收缩。窗口若被压缩（RESIZE）这里收到 0，不会与视口高重复扣减。
     try {
       win.on('avoidAreaChange', (options: window.AvoidAreaOptions): void => {
         if (options.type !== window.AvoidAreaType.TYPE_KEYBOARD) {
