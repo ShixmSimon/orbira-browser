@@ -18,6 +18,8 @@ import { promptAction, display, curves } from '@kit.ArkUI';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { fileIo as fs, fileUri } from '@kit.CoreFileKit';
 import { normalizeAddress } from './ShellUtils';
+// 底部 dock 的占位高度（单一真源在 MobileBrowserOverlay，避免两处各写一份常量）。
+import { dockCoveredHeightVp } from './MobileBrowserOverlay';
 import { ScanService } from './ScanService';
 import { HomeShortcut, HomeShortcuts } from '../../utils/appearance/HomeShortcuts';
 import { HomeCustom, HomePrefs, defaultHomeCustom } from '../../utils/appearance/HomePrefs';
@@ -272,6 +274,12 @@ export struct HomeSurface {
   @Prop incognito: boolean = false;
   // 状态栏避让由本组件内部承担：surface_primary 背景能铺满状态栏条带。
   @StorageProp('auraTopSafeVp') topSafeVp: number = 0;
+  // 底部安全区与风格：简约风格的 dock 悬浮在主页底部、会盖住滚动内容的下沿
+  // （chrome 风格主页的 dock 钉在顶部，底部没有遮挡）。滚动内容末尾要按它让位，
+  // 否则滚到底时最后一行磁贴正好压在 dock 下面（用户报「横屏滑下去看不到磁贴、
+  // dock 挡住」）。
+  @StorageProp('auraBottomSafeVp') bottomSafeVp: number = 0;
+  @StorageProp('auraHomeStyle') homeStyle: string = 'minimal';
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
 
   // -- 磁贴数据（书签「首页」文件夹） ------------------------------------------
@@ -1942,6 +1950,21 @@ export struct HomeSurface {
     return Math.max(TOP_CHROME_EXTENT_VP + 8, anchored);
   }
 
+  // 滚动内容末尾的呼吸位。
+  //
+  // 简约风格的 dock 是**悬浮**在主页最下层的，会盖住滚动内容的下沿；末尾只
+  // 留 24vp 时，滚到底最后一行磁贴正好停在 dock 底下（用户横屏实拍「dock 栏
+  // 会挡住磁贴」）。所以末尾至少要让出 dock 的实际占高（60 + 底部安全区）。
+  // chrome 风格主页的 dock 钉在顶部，底部没有遮挡，只留原呼吸量。
+  //
+  // 顺带解决「滑了弹回来」：横屏可视高只有 300~380vp，磁贴少时内容比视口还
+  // 短，Scroll 的 alwaysEnabled 弹簧就只会回弹、停不住；补上这段让位后内容
+  // 能真正超出视口，最后一行才滚得上来。
+  private homeBottomBreathVp(): number {
+    const dock: number = this.homeStyle === 'chrome' ? 0 : dockCoveredHeightVp(this.bottomSafeVp);
+    return 24 + dock;
+  }
+
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       // 背景图（设置了才铺；无痕不铺）。hitTestBehavior None：纯装饰层。
@@ -2097,9 +2120,10 @@ export struct HomeSurface {
             }
 
             // 底部呼吸（替代原弹性占位）：底色由外层 Column 负责，
-            // 内容比视口短时不必撑满，只留一点余量免得最后一行贴边。
+            // 内容比视口短时不必撑满。高度含悬浮 dock 的让位（见
+            // homeBottomBreathVp）——不然滚到底时最后一行磁贴被 dock 盖住。
             Blank()
-              .height(24)
+              .height(this.homeBottomBreathVp())
           }
           .width('100%')
         }
