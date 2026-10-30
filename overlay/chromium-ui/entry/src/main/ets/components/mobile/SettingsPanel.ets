@@ -116,12 +116,13 @@ const THIRD_PARTY_LICENSE_NOTE: string = `除应用自身采用上述 BSD 3-Clau
 · Blink / WebKit 相关文件：BSD、LGPL-2、LGPL-2.1
 · Hunspell：MPL-1.1
 · Symphonia（Rust 音频库）：MPL-2.0
+· 广告过滤引擎与规则：adblock-rust / adblock-resources（MPL-2.0）；uBlock Origin 的 scriptlets 与替代资源（GPL-3.0）；EasyList / EasyList China / EasyPrivacy 过滤规则（CC-BY-SA 3.0）
 · 可选的威胁情报列表：HaGeZi DNS Blocklists（GPL-3.0）、PhishDestroy Destroylist（MIT，© 2019 PhishDestroy）
 
 上述组件的许可文本与署名已随安装包分发，位于应用资源 resources/rawfile/licenses/
 （BSD-3-Clause-Chromium.txt、OPEN_SOURCE_NOTICES.md、Apache-2.0.txt、MPL-2.0.txt、
 MPL-1.1.txt、LGPL-2.1.txt、BLINK-WEBKIT-LICENSES.txt、adblock-rust-*.txt、
-adblock-resources-LICENSE.txt）。Chromium 完整的第三方许可清单约 20MB，未随包分发。`;
+adblock-resources-LICENSE.txt、GPL-3.0.txt、CC-BY-SA-3.0.txt）。Chromium 完整的第三方许可清单约 20MB，未随包分发。`;
 
 interface PrefToggleItem {
   key: ShellPrefKey;
