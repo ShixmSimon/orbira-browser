@@ -22,6 +22,7 @@ import { ScanService } from './ScanService';
 import { HomeShortcut, HomeShortcuts } from '../../utils/appearance/HomeShortcuts';
 import { HomeCustom, HomePrefs, defaultHomeCustom } from '../../utils/appearance/HomePrefs';
 import { HomeCache, HomeCacheData } from '../../utils/appearance/HomeCache';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 
 // 书签「首页」文件夹的标题（同时作为目录名使用）。
 const HOME_FOLDER_TITLE: string = '首页';
@@ -40,7 +41,11 @@ let homeSeqBump: number = HOME_SEQ_BASE;
 // 发现链 / 磁贴刷新的兜底时间。
 const CHAIN_TIMEOUT_MS: number = 1600;
 const REFRESH_DEBOUNCE_MS: number = 260;
-const MAX_CHAIN_RETRIES: number = 3;
+const MAX_CHAIN_RETRIES: number = 6;
+// 「首页」文件夹回包为空的额外重试次数。引擎刚起步（书签模型还没加载完）会先
+// 回空列表；原来只重试一次，引擎稍慢就会把假空当真，还会把缓存写空——下次冷
+// 启动没有「上次不空」的判据，更容易再空。多给几次，等引擎把书签模型读完。
+const EMPTY_TILES_MAX_RETRIES: number = 3;
 // 长按菜单卡宽度（与 ⋮ 卡/网页长按卡同一家族）。
 const MENU_CARD_VP: number = 190;
 const MENU_CARD_H: number = 204;
@@ -356,10 +361,10 @@ export struct HomeSurface {
   private fastTilePath: boolean = false;
   // 本轮发现链里是否已建过「首页」文件夹（防列表暂未反映时重复创建）。
   private createdInChain: boolean = false;
-  // 「首页」文件夹回包为空时是否已重试过一次。引擎刚起步（书签模型还没加载完）
-  // 会先回一个空列表，若此时把空结果当真，缓存会被写空、磁贴就空了；只可疑
-  // 一次，重试仍空就认（用户确实把书签删光了）。
-  private emptyTilesRetried: boolean = false;
+  // 「首页」文件夹回包为空时已重试的次数。引擎刚起步（书签模型还没加载完）会先
+  // 回一个空列表，若此时把空结果当真，缓存会被写空、磁贴就空了；最多重试
+  // EMPTY_TILES_MAX_RETRIES 次，仍空就认（用户确实把书签删光了）。
+  private emptyTilesRetries: number = 0;
 
   aboutToAppear(): void {
     const dsp = display.getDefaultDisplaySync();
@@ -686,20 +691,33 @@ export struct HomeSurface {
     if (this.step === 'tiles') {
       // 可疑的空回包：上次的「首页」文件夹不是空的（缓存里还有内容），引擎多半
       // 只是书签模型还没加载完就先回了空列表。别当真——不落缓存、不收尾，等
-      // 超时重发一次（只重试一次，仍空就认，用户可能真把书签删光了）。
-      if (nodes.length === 0 && this.cacheTilesJson.length > 0 && !this.emptyTilesRetried) {
-        this.emptyTilesRetried = true;
+      // 超时重发（最多 EMPTY_TILES_MAX_RETRIES 次，仍空才认）。
+      if (nodes.length === 0 && this.cacheTilesJson.length > 0 &&
+          this.emptyTilesRetries < EMPTY_TILES_MAX_RETRIES) {
+        this.emptyTilesRetries += 1;
+        hilog.info(0x0000, 'HomeSurface',
+          'empty tiles reply, retry %{public}d/%{public}d (cache %{public}d chars)',
+          this.emptyTilesRetries, EMPTY_TILES_MAX_RETRIES, this.cacheTilesJson.length);
         this.armChainTimer();
         return;
       }
-      this.emptyTilesRetried = false;
+      if (nodes.length === 0 && this.cacheTilesJson.length > 0) {
+        hilog.warn(0x0000, 'HomeSurface',
+          'empty tiles accepted after %{public}d retries; cache kept',
+          this.emptyTilesRetries);
+      }
+      this.emptyTilesRetries = 0;
       this.fullNodes = nodes;
       this.rebuildTiles();
       this.step = 'done';
       this.fastTilePath = false;
       // 落缓存：写的是**全量子节点**（与 fullNodes 一致），下次冷启动第一帧
       // 就能画出磁贴，且排序换算照样可用。
-      this.cacheTilesJson = JSON.stringify(nodes);
+      // 空回包且缓存非空时不覆盖：那可能是引擎未就绪的假空，写成 [] 会把下次
+      // 冷启动的第一帧也变空，形成「越空越空」的循环。
+      if (nodes.length > 0 || this.cacheTilesJson.length === 0) {
+        this.cacheTilesJson = JSON.stringify(nodes);
+      }
       this.persistCache();
       this.requestFavicons();
       this.maybeMigrate();
