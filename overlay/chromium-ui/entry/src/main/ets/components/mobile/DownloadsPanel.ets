@@ -14,7 +14,7 @@ import { BrowserCommandPayload, DownloadAction, DownloadItem, openDownloadedFile
 import { formatVisitTime } from './PanelBridge';
 import { AuraSectionLabel, AuraSearchBar } from './AuraKit';
 import { GlassPage, glassHeaderInsetVp } from './GlassPage';
-import { curves } from '@kit.ArkUI';
+import { curves, router } from '@kit.ArkUI';
 
 interface PanelEventPayload {
   kind?: string;
@@ -157,24 +157,62 @@ export struct DownloadsPanel {
     hilog.info(0x0000, 'Downloads', 'action=%{public}s id=%{public}s',
       action, String(item.id));
     this.onCommand({ command: 'downloadAction', id: String(item.id), action: action });
+    // 乐观更新：引擎 listDownloads 回包非即时反映状态（同一次动作只推一次
+    // downloadUpdated，且回包可能仍是旧状态），用户点暂停/继续/取消后页面
+    // 要立刻给出反馈，而不是等返回重进。reload 仍保留作最终校正。
+    this.applyOptimisticState(item, action);
     setTimeout((): void => {
       this.reload();
     }, 400);
   }
 
+  // 点击动作后立刻把对应项的状态翻到预期值，让 UI 即时刷新。
+  private applyOptimisticState(item: DownloadItem, action: DownloadAction): void {
+    const targetId: string = String(item.id);
+    const idx: number = this.items.findIndex((it) => String(it.id) === targetId);
+    if (idx < 0) {
+      return;
+    }
+    const next: DownloadItem[] = this.items.slice();
+    const cur: DownloadItem = { ...next[idx] };
+    switch (action) {
+      case 'pause':
+        cur.state = 'paused';
+        break;
+      case 'resume':
+      case 'retry':
+        cur.state = 'inProgress';
+        break;
+      case 'cancel':
+        cur.state = 'cancelled';
+        break;
+      default:
+        break;
+    }
+    next[idx] = cur;
+    this.items = next;
+    this.recomputeFiltered();
+  }
+
   private confirmRemove(item: DownloadItem): void {
     const name = item.fileName.length > 0 ? item.fileName : item.url;
+    // 删除拆成两个语义：仅删记录（保留本机文件）与删记录并文件。
+    // 引擎侧两个 action 均已实现（RemoveDownload / RemoveDownloadAndFile）。
     AlertDialog.show({
       title: '删除下载',
-      message: `「${name}」的记录和文件都会被删除。`,
+      message: `「${name}」\n· 仅删除记录：保留本机文件\n· 删除记录并文件：同时删除本机文件`,
       autoCancel: true,
       primaryButton: {
-        value: '取消',
+        value: '仅删除记录',
         action: (): void => {
+          this.onCommand({ command: 'downloadAction', id: String(item.id), action: 'remove' });
+          setTimeout((): void => {
+            this.reload();
+          }, 400);
         }
       },
       secondaryButton: {
-        value: '删除',
+        value: '删除记录并文件',
         fontColor: '#E24B4A',
         action: (): void => {
           this.onCommand({ command: 'downloadAction', id: String(item.id), action: 'removeAndDeleteFile' });
@@ -248,6 +286,26 @@ export struct DownloadsPanel {
       fs.copyFileSync(source.fd, destPath);
       fs.closeSync(source);
       this.onCommand({ command: 'installExtensionFromFile', path: destPath });
+      // 安装是异步的（外壳无成功回包），发出后给出明确反馈并引导到扩展管理页，
+      // 否则用户只看到按钮消失、没有任何后续，体感像「没反应／没跳转」。
+      AlertDialog.show({
+        title: '已提交安装',
+        message: '扩展安装请求已发送，请在扩展管理中查看并启用。',
+        autoCancel: true,
+        primaryButton: {
+          value: '稍后',
+          action: (): void => {
+          }
+        },
+        secondaryButton: {
+          value: '去扩展管理',
+          action: (): void => {
+            router.pushUrl({ url: 'pages/panels/ExtensionPanelPage' }).catch((error: Error): void => {
+              hilog.error(0x0000, 'Downloads', 'openExtensionPanel failed: %{public}s', error.message);
+            });
+          }
+        }
+      });
     } catch (error) {
       AlertDialog.show({
         title: '无法读取',
