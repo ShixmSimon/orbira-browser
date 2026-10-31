@@ -1909,9 +1909,10 @@ void SendExtensionActions(gfx::AcceleratedWidget widget,
 // button otherwise.
 //
 // A phone has neither -- there is no toolbar to pin anything to -- and the
-// popup opens upward from the bottom, centred and clear of the shell's
-// bottom bar, which is where a sheet would come from and is within reach of
-// a thumb.
+// popup is anchored at the bottom of the window, clear of the shell's bottom
+// bar (dock). It opens upward (BOTTOM_CENTER) and, sized against the room
+// above the anchor, grows tall enough to cover the native tile page behind it;
+// content scrolls inside when it would run past the screen.
 struct ExtensionPopupAnchor {
   gfx::Rect rect;
   views::BubbleBorder::Arrow arrow;
@@ -1935,15 +1936,14 @@ ExtensionPopupAnchor ExtensionPopupAnchorFor(BrowserWindowInterface* browser,
     return {rect, views::BubbleBorder::TOP_RIGHT};
   }
 
-  // Nothing reported -- a phone, with no toolbar to point at. Keep the same
-  // placement as before (BOTTOM_CENTER: the popup opens upward from the anchor)
-  // and only raise the anchor, so the popup sits in the middle of the screen
-  // instead of against the bottom bar. Moving the anchor is the whole change;
-  // the size stays as it was -- note ExtensionPopup::GetMaxBounds measures the
-  // room from the anchor, so raising it would silently shrink the height cap;
-  // that is pinned to the whole work area there instead (local block 9).
+  // Nothing reported -- a phone, with no toolbar to point at. Anchor at the
+  // bottom of the window, just clear of the shell's bottom bar (dock), so the
+  // popup rises from there and covers the tile page. Its height is capped by
+  // ExtensionPopup::GetMaxBounds to the room above the anchor (at most 80% of
+  // the work area); anything past that scrolls inside the popup.
+  constexpr int kBottomInset = 12;
   return {gfx::Rect(window.CenterPoint().x(),
-                   window.y() + window.height() * 7 / 10, 0, 0),
+                   window.y() + window.height() - kBottomInset, 0, 0),
           views::BubbleBorder::BOTTOM_CENTER};
 }
 
