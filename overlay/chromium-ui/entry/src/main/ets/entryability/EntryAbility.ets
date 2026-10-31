@@ -349,7 +349,7 @@ export default class EntryAbility extends UIAbility {
         if (options.type !== window.AvoidAreaType.TYPE_KEYBOARD) {
           return;
         }
-        this.publishKeyboardInset(options.area.bottomRect.height);
+        this.publishKeyboardInset(options.area.bottomRect);
       });
     } catch (error) {
       hilog.info(DOMAIN, 'AuraShell', 'Keyboard avoid-area observer is unavailable: %{public}s',
@@ -633,13 +633,20 @@ export default class EntryAbility extends UIAbility {
   // windows get the system's own insets, so the values reset to zero.
   // 键盘占用高度（px → vp）写入 AppStorage，供外壳挑浮层高度用。
   // 取 bottomRect：OHOS 把软键盘报在底部避让区里。
-  private publishKeyboardInset(bottomPx: number): void {
+  private publishKeyboardInset(rect: window.Rect): void {
     try {
-      const density = display.getDefaultDisplaySync().densityPixels;
+      const disp = display.getDefaultDisplaySync();
+      const density = disp.densityPixels;
       if (density <= 0) {
         return;
       }
-      AppStorage.setOrCreate('auraKeyboardVp', Math.max(0, Math.round(bottomPx / density)));
+      AppStorage.setOrCreate('auraKeyboardVp', Math.max(0, Math.round(rect.height / density)));
+      // 诊断：bottomRect 是否含输入法工具栏（及候选/表情区）无法从 SDK 文档判断，
+      // 页面侧只能靠 KEYBOARD_INSET_EXTRA_VP 补差。这里留下系统原始数值，便于换
+      // 设备/换输入法后按日志重新标定，不必再靠截图猜。
+      hilog.info(DOMAIN, 'AuraShell',
+        'keyboard rect top=%{public}d height=%{public}d screenPx=%{public}d density=%{public}f',
+        rect.top, rect.height, disp.height, density);
     } catch (error) {
       AppStorage.setOrCreate('auraKeyboardVp', 0);
     }
