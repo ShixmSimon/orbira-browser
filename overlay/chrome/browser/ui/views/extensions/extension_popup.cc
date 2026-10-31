@@ -315,7 +315,7 @@ gfx::Size ExtensionPopup::GetMaxBounds() {
     int top_reserved = 0;
     if (GetWidget()) {
       if (auto* nw = GetWidget()->GetNativeWindow()) {
-        top_reserved = GetAuraShellModalDialogInsetsForWindow(nw).top();
+        top_reserved = chrome::ohos::GetAuraShellModalDialogInsetsForWindow(nw).top();
       }
     }
 
