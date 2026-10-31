@@ -149,10 +149,21 @@ ExtensionPopup::~ExtensionPopup() {
 
 gfx::Size ExtensionPopup::CalculatePreferredSize(
     const views::SizeBounds& available_size) const {
-  // Constrain the size to popup min/max.
+  // Constrain the size to popup min/max. kMaxSize is a desktop figure (800 x
+  // 600); a phone screen is shorter than that, so clamping to it let the popup
+  // grow past the window: anchored at 70% of the window and opening upward
+  // (BOTTOM_CENTER), a long popup -- more scripts, a taller list -- pushed its
+  // own header off the top of the screen, and the reader could not scroll back
+  // to it. GetMaxBounds() is the same clamp measured against the work area (at
+  // most 80% of its height), which is what the screen can actually show; the
+  // content past it scrolls inside the popup instead of being drawn offscreen.
+  //
+  // const_cast: GetMinBounds()/GetMaxBounds() are BubbleDialogDelegate's
+  // non-const virtuals, and both only read the anchor rect and the display.
+  auto* self = const_cast<ExtensionPopup*>(this);
   gfx::Size sz = views::View::CalculatePreferredSize(available_size);
-  sz.SetToMax(kMinSize);
-  sz.SetToMin(kMaxSize);
+  sz.SetToMax(self->GetMinBounds());
+  sz.SetToMin(self->GetMaxBounds());
   return sz;
 }
 
@@ -213,7 +224,31 @@ void ExtensionPopup::OnWidgetTreeActivated(views::Widget* root_widget,
 }
 
 gfx::Size ExtensionPopup::GetMinBounds() {
-  return kMinSize;
+  gfx::Size min_size = kMinSize;
+#if BUILDFLAG(IS_OHOS)
+  // On a phone the popup is the whole surface an extension gets. A popup that
+  // sizes itself to its content -- no explicit width in its own page -- comes
+  // out as a narrow column: one of them collapsed to about a fifth of the
+  // screen and wrapped its labels one character to a line. Give it some of the
+  // screen's width, so that there is room to render, and never more than
+  // GetMaxBounds() will allow.
+  if (!GetAnchor().GetIfView() && !GetAnchor().GetIfElement()) {
+    const gfx::Rect work =
+        display::Screen::Get()
+            ->GetDisplayNearestPoint(GetAnchorRect().CenterPoint())
+            .work_area();
+    constexpr int kSideMargin = 8;
+    int min_width = work.width() * 3 / 5;
+    const int max_width = work.width() - 2 * kSideMargin;
+    if (min_width > max_width) {
+      min_width = max_width;
+    }
+    if (min_width > min_size.width()) {
+      min_size.set_width(min_width);
+    }
+  }
+#endif
+  return min_size;
 }
 
 gfx::Size ExtensionPopup::GetMaxBounds() {
@@ -242,32 +277,47 @@ gfx::Size ExtensionPopup::GetMaxBounds() {
             ->GetDisplayNearestPoint(anchor_rect.CenterPoint())
             .work_area();
     gfx::Size room;
-    for (const views::BubbleBorder::Arrow placement :
-         {views::BubbleBorder::TOP_LEFT, views::BubbleBorder::TOP_RIGHT,
-          views::BubbleBorder::BOTTOM_RIGHT,
-          views::BubbleBorder::BOTTOM_LEFT}) {
-      room.SetToMax(BubbleDialogDelegate::GetAvailableSpaceToPlaceBubble(
-          placement, anchor_rect, screen_rect));
-    }
-    // A centred popup (BOTTOM_CENTER, a phone) gets the whole work area: it is
-    // moved to stay on screen, so the room on either side of the anchor point
-    // -- half the screen each way, which is all the four corner placements
-    // above can see -- is not its limit. Measured that way it came out half as
-    // wide as its content, and cut off. The same goes for the height, which
-    // matters now that a popup can be floated in the middle of the window
-    // (BubbleBorder::FLOAT): anchoring at the centre leaves those four corner
-    // placements only about half the screen each way, and the cap silently
-    // fell from 80% of the height to about half of it. Let the clamps below
-    // (side margin, 80% of the height) do the limiting instead.
     if (views::BubbleBorder::is_arrow_at_center(arrow())) {
+      // A centred popup (BOTTOM_CENTER, a phone) gets the whole work area: it
+      // is moved to stay on screen, so the room on either side of the anchor
+      // point -- half the screen each way, which is all the four corner
+      // placements below can see -- is not its limit. Measured that way it came
+      // out half as wide as its content, and cut off. Take the work area and
+      // skip the corner measurements, which would be overwritten anyway; this
+      // runs on every layout pass, and the popup is laid out while its content
+      // scrolls.
       room = screen_rect.size();
+    } else {
+      for (const views::BubbleBorder::Arrow placement :
+           {views::BubbleBorder::TOP_LEFT, views::BubbleBorder::TOP_RIGHT,
+            views::BubbleBorder::BOTTOM_RIGHT,
+            views::BubbleBorder::BOTTOM_LEFT}) {
+        room.SetToMax(BubbleDialogDelegate::GetAvailableSpaceToPlaceBubble(
+            placement, anchor_rect, screen_rect));
+      }
     }
     // And never more than the screen gives: a phone's work area is narrower
     // than kMaxSize, and a popup as tall as the window leaves nothing to tap
     // to close it. A margin at the sides, and at most 80% of the height.
     constexpr int kSideMargin = 8;
-    room.SetToMin(gfx::Size(screen_rect.width() - 2 * kSideMargin,
-                            screen_rect.height() * 4 / 5));
+    int max_height = screen_rect.height() * 4 / 5;
+    if (arrow() == views::BubbleBorder::BOTTOM_CENTER) {
+      // Opening upward from the anchor, so the room above it -- not the whole
+      // screen -- is the limit. A phone anchors at 70% of the window; allowing
+      // 80% let a long popup run 10% past the top of the screen, out of reach,
+      // which is the header going missing when a page carries many scripts.
+      // Plain comparisons rather than std::min/max: this file pulls in no
+      // <algorithm>, and an accidental dependency on a transitive include is
+      // not worth a rebuild to discover.
+      const int room_above = anchor_rect.y() - screen_rect.y() - kSideMargin;
+      if (room_above < 0) {
+        max_height = 0;
+      } else if (room_above < max_height) {
+        max_height = room_above;
+      }
+    }
+    room.SetToMin(
+        gfx::Size(screen_rect.width() - 2 * kSideMargin, max_height));
     max_size.SetToMin(room);
     max_size.SetToMax(kMinSize);
     return max_size;
