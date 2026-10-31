@@ -2101,6 +2101,73 @@ namespace {
 // the popup about to open depends on.
 bool g_replacing_extension_popup = false;
 
+// A sheet behind the popup: hides the native tiles/page underneath and closes
+// the popup when tapped outside the popup's own controls. It is a plain View
+// added to the browser window's root view -- NOT a second top-level Widget. A
+// second Widget was tried before (and reverted): any extra top-level window
+// makes Chromium treat taps on the popup's own buttons as outside taps, so none
+// of them could be used. A sub-view in the browser window has no such effect,
+// which is exactly the non-window scrim the earlier revert called for. It is
+// fully opaque so the tiles behind are actually hidden.
+class PopupScrimView : public views::View {
+ public:
+  explicit PopupScrimView(base::OnceClosure on_tap) : on_tap_(std::move(on_tap)) {
+    SetFocusBehavior(FocusBehavior::NEVER);
+    SetCanProcessEventsWithinSubtree(true);
+    SetBackground(views::CreateSolidBackground(SkColorSetARGB(0xFF, 0, 0, 0)));
+  }
+  PopupScrimView(const PopupScrimView&) = delete;
+  PopupScrimView& operator=(const PopupScrimView&) = delete;
+
+  bool OnMousePressed(const ui::MouseEvent& event) override {
+    if (on_tap_) {
+      std::move(on_tap_).Run();
+    }
+    return true;
+  }
+  void OnTouchEvent(ui::TouchEvent* event) override {
+    if (event->type() == ui::ET_TOUCH_PRESSED && on_tap_) {
+      event->SetHandled();
+      std::move(on_tap_).Run();  // deletion is deferred; safe to return after
+    }
+  }
+
+ private:
+  base::OnceClosure on_tap_;
+};
+
+// Builds the scrim for an extension popup and parks it on the browser window's
+// root view, covering everything below the address bar (the native-tile region)
+// but leaving the status bar and address bar bright. Returns the view so the
+// close watcher can remove it when the popup goes away.
+views::View* CreatePopupScrim(views::Widget* browser_widget,
+                              views::Widget* popup_widget) {
+  if (!browser_widget || !browser_widget->GetRootView()) {
+    return nullptr;
+  }
+  const int top_reserved =
+      GetAuraShellModalDialogInsetsForWindow(
+          browser_widget->GetNativeWindow()).top();
+  gfx::Rect scrim_rect = browser_widget->GetRootView()->GetLocalBounds();
+  scrim_rect.set_y(top_reserved);
+  if (scrim_rect.height() > top_reserved) {
+    scrim_rect.set_height(scrim_rect.height() - top_reserved);
+  } else {
+    scrim_rect.set_height(0);
+  }
+  auto* scrim = browser_widget->GetRootView()->AddChildView(
+      std::make_unique<PopupScrimView>(base::BindOnce(
+          [](views::Widget* pw) {
+            if (pw) {
+              pw->Close();
+            }
+          },
+          popup_widget)));
+  scrim->SetProperty(views::kViewIgnoredByLayoutKey, true);
+  scrim->SetBoundsRect(scrim_rect);
+  return scrim;
+}
+
 // Watches an extension popup's widget. The popup is drawn by Chromium on the
 // Web layer, below the shell's home surface; opening it makes the shell drop
 // the home-surface hold (auraPopupHomeHold) so the popup is not covered. There
@@ -2111,10 +2178,10 @@ bool g_replacing_extension_popup = false;
 class ExtensionPopupCloseWatcher : public views::WidgetObserver {
  public:
   ExtensionPopupCloseWatcher(views::Widget* widget,
-                             std::unique_ptr<views::Widget> backdrop,
+                             views::View* scrim,
                              Profile* profile,
                              const std::string& extension_id)
-      : backdrop_(std::move(backdrop)),
+      : scrim_view_(scrim),
         profile_(profile),
         extension_id_(extension_id) {
     observation_.Observe(widget);
@@ -2136,30 +2203,21 @@ class ExtensionPopupCloseWatcher : public views::WidgetObserver {
         NotifyAuraShellExtensionPopupClosed(profile_, extension_id_);
       }
     }
-    // The scrim we parked behind the popup rides along in backdrop_. Rather than
-    // hard-removing it (which flashes the layer underneath for a frame while the
-    // shell restores the home surface), fade it out and hand it to a task that
-    // keeps it alive for the fade and then destroys it.
-    // The scrim, not this watcher, must outlive the popup: this watcher has to
-    // be freed synchronously below, because observation_ still points at the
-    // widget being destroyed and can only detach safely while that widget is
-    // still alive.
-    if (backdrop_) {
-      views::View* contents = backdrop_->GetContentsView();
-      if (contents) {
-        contents->SetPaintToLayer();
-        contents->layer()->SetOpacity(1.0f);
-        ui::ScopedLayerAnimationSettings settings(
-            contents->layer()->GetAnimator());
-        settings.SetTransitionDuration(base::Milliseconds(120));
-        settings.SetTweenType(gfx::Tween::EASE_OUT);
-        contents->layer()->SetOpacity(0.0f);
-      }
-      base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
-          FROM_HERE,
-          base::BindOnce([](std::unique_ptr<views::Widget> scrim) {},
-                         std::move(backdrop_)),
-          base::Milliseconds(150));
+    // Remove the dim sheet we parked behind the popup. It is a sub-view of the
+    // browser window (not a second Widget), so detaching it from its parent
+    // deletes it. Defer the removal to a later task: a tap on the sheet calls
+    // Close() on the popup, and destroying this view inside that same call stack
+    // would be a use-after-free once the handler returns. The popup's own close
+    // path also reaches here, so the sheet never outlives the popup.
+    if (scrim_view_) {
+      views::View* scrim = scrim_view_;
+      scrim_view_ = nullptr;
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce([](views::View* v) {
+            if (views::View* parent = v->parent()) {
+              parent->RemoveChildViewT(v);
+            }
+          }, scrim));
     }
     // Safe: we were already notified (OnWidgetDestroyed is the last call in the
     // widget's observer sweep); ScopedObservation removes us before we free.
@@ -2169,9 +2227,11 @@ class ExtensionPopupCloseWatcher : public views::WidgetObserver {
  private:
   ~ExtensionPopupCloseWatcher() override = default;
 
-  // Full-window translucent scrim shown behind the popup; null when the popup
-  // was torn down before a watcher could attach (caller closes it directly).
-  std::unique_ptr<views::Widget> backdrop_;
+  // Opaque sheet drawn behind the popup to hide the page underneath and close
+  // the popup on an outside tap. A sub-view of the browser window, not a second
+  // Widget -- a second Widget made every popup control tap read as an outside
+  // tap and broke the buttons. Null when no sheet was attached.
+  raw_ptr<views::View> scrim_view_ = nullptr;
   raw_ptr<Profile> profile_;
   std::string extension_id_;
   base::ScopedObservation<views::Widget, views::WidgetObserver> observation_{
@@ -2252,15 +2312,13 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   LOG(WARNING) << "OHOS extension popup: anchor rect=" << anchor.rect.ToString()
                << " arrow=" << static_cast<int>(anchor.arrow);
 
-  // No full-window scrim behind the popup. One was tried here (to hide the
-  // native page that shows through above the popup, and to stop an outside tap
-  // from reaching the page), but any extra window alongside the popup breaks
-  // it: taps on the popup's own controls close the popup as though they had
-  // landed outside, so none of the popup's buttons can be used. Stacking the
-  // scrim below the popup, then shrinking it clear of the popup, both failed to
-  // help -- the popup only behaves once no second window is around. Leave it
-  // alone. ExtensionPopupCloseWatcher still accepts a scrim (null here); its
-  // fade path simply does nothing without one.
+  // A non-window scrim behind the popup. The earlier attempt used a second
+  // top-level Widget and was reverted: any extra window alongside the popup made
+  // taps on the popup's own controls read as outside taps, breaking every button.
+  // This scrim is instead a sub-view of the browser window (see CreatePopupScrim
+  // / PopupScrimView), so there is no second window and the popup's controls
+  // stay usable. It is fully opaque and covers everything below the address bar
+  // -- exactly the native-tile region -- closing the popup on an outside tap.
 
   // Only one popup window may exist at a time. Reopening the action without
   // closing the old popup (tap the menu, then the extension again) leaves two
@@ -2293,7 +2351,8 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   LOG(WARNING) << "OHOS extension popup: shown widget="
                << (popup_widget ? 1 : 0);
   if (popup_widget) {
-    new ExtensionPopupCloseWatcher(popup_widget, nullptr, profile, *id);
+    views::View* scrim = CreatePopupScrim(parent, popup_widget);
+    new ExtensionPopupCloseWatcher(popup_widget, scrim, profile, *id);
   }
 }
 
