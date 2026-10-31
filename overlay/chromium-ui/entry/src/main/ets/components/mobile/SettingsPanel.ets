@@ -77,8 +77,8 @@ const CLEAR_RANGES: RangeRow[] = [
   { key: 'all', label: '全部时间' }
 ];
 
-// 「清除浏览数据」页的数据类型清单（顺序对齐主流浏览器的对话框）：
-// 每类各占一行、各带勾选框，右侧显示该时间范围内的实际数量。
+// 「清除浏览数据」页的数据类型清单：每类各占一行、各带勾选框，
+// 右侧显示该时间范围内的实际数量。
 const CLEAR_TYPE_ROWS: ClearTypeRow[] = [
   { key: 'history', label: '浏览记录' },
   { key: 'cookies', label: 'Cookie 和网站数据' },
@@ -89,9 +89,9 @@ const CLEAR_TYPE_ROWS: ClearTypeRow[] = [
   { key: 'downloads', label: '下载记录' }
 ];
 
-// 默认勾选：前三种（与主流浏览器一致）+ 下载记录（历史上本页一直清它，
-// 取消默认勾选等于悄悄改变行为）。密码/自动填充/网站设置关掉 —— 它们
-// 是不可逆的账号与站点偏好，用户主动勾了才清。
+// 默认勾选：前三种 + 下载记录（历史上本页一直清它，取消默认勾选等于
+// 悄悄改变行为）。密码/自动填充/网站设置关掉 —— 它们是不可逆的账号与
+// 站点偏好，用户主动勾了才清。
 const CLEAR_TYPES_DEFAULT: BrowsingDataType[] = ['history', 'cookies', 'cache', 'downloads'];
 
 // 1.0.142：「法律许可」页内联文本。应用自身按 Chromium BSD 3-Clause 发布
@@ -988,8 +988,7 @@ export struct SettingsPanel {
     this.clearTypes = next;
   }
 
-  // 每行右侧的数量；引擎算不出来（-1）就不显示数字，只留类别名——这也正是
-  // 主流浏览器对话框的做法（算不出的类别右侧为空）。
+  // 每行右侧的数量；引擎算不出来（-1）就不显示数字，只留类别名。
   private clearCountLabel(key: BrowsingDataType): string {
     if (key === 'history') {
       return this.browsingHistoryCount >= 0 ? `${this.browsingHistoryCount} 条` : '';
@@ -1655,9 +1654,8 @@ export struct SettingsPanel {
   @Builder
   private ClearView() {
     Column() {
-      // 时间范围与数据类型各成一张卡（对齐主流浏览器「清除浏览数据」的形态）：
-      // 范围单选在右、类型勾选在左且各带数量。「清除数据」钮留在滚动容器外，
-      // 仍然钉在底部。
+      // 时间范围与数据类型各成一张卡：范围单选在右、类型勾选在左且各带
+      // 数量。「清除数据」钮留在滚动容器外，仍然钉在底部。
       Scroll(this.clearScroller) {
         Column() {
           Text('按所选时间范围清除勾选的数据类型。书签和已下载的文件本身不受影响。')
