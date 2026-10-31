@@ -106,6 +106,11 @@ interface ExtensionNoticePayload {
 const SWIPE_TRIGGER_VP: number = 28;
 // 判据：引擎是否在本次手势里自己动过顶栏比例（动过说明页面真的在滚 → 让位）。
 const CONTROLS_RATIO_EPS: number = 0.02;
+// 键盘避让区报的 bottomRect 比「页面该留出的高度」小一截。实测标定（同一键盘、
+// 同一页面尺寸）：补 44 → 页内固定底栏第一行表情完整、第二行被挡；补 70 → 两行
+// 完整但离键盘还差半个表情（搜狐、贴吧同一量级，约 15vp）。取 85。
+// ⚠️ 这是按实测标定的常数：各站页面自身底部留白不同，个别站点仍可能差几 vp。
+const KEYBOARD_INSET_EXTRA_VP: number = 85;
 
 // 引擎原生新标签页的几种 URL 形态。引擎自己 newTab 用的是 chrome://newtab/
 // （aura_shell_runtime_bridge.cc 里 NavigateOnUiThread(GURL("chrome://newtab/"))），
@@ -207,6 +212,10 @@ struct AuraShell {
   // 追加 topSafe 补偿——否则滚到页尾最后 ~topSafe 够不到（见 applyDockViewportInset
   // 与 computeTopBarHiddenForInset）。
   private topBarHiddenForInset: boolean = false;
+  // 键盘避让高度（EntryAbility 写；RESIZE 模式为 0，不重复扣减）。键盘弹起时底部
+  // 内距必须换成它——setViewportInsets 是替换式，留着 dock 的值会把键盘 inset
+  // 盖掉，页内固定底栏（评论输入条等）会跑到键盘后面被遮。
+  @StorageLink('auraKeyboardVp') @Watch('onKeyboardVpChanged') keyboardVpForInset: number = 0;
   @StorageLink('auraThemeFontId') themeFontId: string = '';
   @StorageLink('auraThemeFontRevision') themeFontRevision: number = 0;
   @StorageLink('auraOnboardingReady') onboardingReady: boolean = false;
@@ -665,6 +674,11 @@ struct AuraShell {
     this.applyDockViewportInset();
   }
 
+  // 键盘避让高度变化：弹起/收起都要重发底部内距（弹起换成键盘高，收起回到 dock）。
+  private onKeyboardVpChanged(): void {
+    this.applyDockViewportInset();
+  }
+
   // 底部视口内距。四条几何：
   //  · dock 常驻（不随滚动收起）→ 留 dockCoveredHeightVp（dock 高度 + 安全区），
   //    否则页面最后一行永远被 dock 盖住；
@@ -751,18 +765,22 @@ struct AuraShell {
         bottom = this.topBarPushVp();
       }
     } else {
-      // 简约「智能抬高」：底栏常驻（「滚动隐藏底部栏」关着）→ 抬到 dock 上边；
-      // 随滚动收起 → 0（收起后铺满物理底边）。
-      // **页面停在顶部（ratio≈1）时也要抬**：加载失败的错误页这类不可滚动页面
-      // ratio 恒为 1、dock 永远浮在底部，不留位就会盖住页内按钮（「重新加载」
-      // 点不到）。滚动中（ratio<1）仍按原样归零，不改变滚动时的铺满观感。
+      // 简约/经典：dock 可收起（「滚动时隐藏底部栏」开）→ 页面恒铺满，dock 浮在
+      // 内容之上：既没有「页面底端与 dock 之间的空档」，也没有 dock 滑走、inset
+      // 归零导致的视口跳变。dock 常驻（关）→ 让出 dock 高度，否则最后一行永久被盖。
+      // 备注：错误页不可滚动、dock 恒浮在页内按钮上，实测该档「重新加载」仍可点；
+      // 若某些不可滚动页面出现点不到，再按 URL（chrome-error）单独让位。
       const dockAlways: number = dockCoveredHeightVp(bottomSafe);
-      const dockCover: number = this.hideDockOnScroll
-        ? (this.scrolledRatio >= 0.99 ? dockAlways : 0)
-        : dockAlways;
-      bottom = dockCover + this.topBarPushVp();
+      bottom = (this.hideDockOnScroll ? 0 : dockAlways) + this.topBarPushVp();
     }
     this.lastTopPushSent = this.topBarPushVp();
+    // 键盘弹起：底部内距改用键盘高度（替换式下发，留 dock 的值会盖掉系统 inset）。
+    // 避让区报的高度比「页面该留出的高度」略小（实测页内固定底栏最下面一行表情
+    // 被键盘上沿切掉一半），补一条 KEYBOARD_INSET_EXTRA_VP 的余量。
+    const keyboardVp: number = Number(AppStorage.get('auraKeyboardVp') ?? 0);
+    if (keyboardVp > 0) {
+      bottom = keyboardVp + KEYBOARD_INSET_EXTRA_VP;
+    }
     this.executeBrowserCommand({
       command: 'setViewportInsets',
       bottom: bottom
