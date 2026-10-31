@@ -12,9 +12,6 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/extensions/security_dialog_tracker.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#if BUILDFLAG(IS_OHOS)
-#include "chrome/browser/ui/ohos/aura_shell_runtime_bridge.h"
-#endif
 #include "components/javascript_dialogs/app_modal_dialog_queue.h"
 #include "components/web_modal/web_modal_utils.h"
 #include "content/public/browser/browser_context.h"
@@ -303,41 +300,8 @@ gfx::Size ExtensionPopup::GetMaxBounds() {
     // than kMaxSize, and a popup as tall as the window leaves nothing to tap
     // to close it. A margin at the sides, and at most 80% of the height.
     constexpr int kSideMargin = 8;
-
-    // A phone keeps the shell's own address bar across the top of the window.
-    // The work area (screen_rect) already excludes the system status bar, but
-    // not the browser's address bar, which sits at the top of the window. A
-    // popup opening upward from an anchor at 70% of the window would otherwise
-    // grow into that bar (and, past it, the status bar). Reserve the address
-    // bar's height so the popup stops below it; if the widget is not ready yet,
-    // skip the reservation rather than crash -- the popup then behaves as
-    // before, only without this guard.
-    int top_reserved = 0;
-    if (GetWidget()) {
-      if (auto* nw = GetWidget()->GetNativeWindow()) {
-        top_reserved = chrome::ohos::GetAuraShellModalDialogInsetsForWindow(nw).top();
-      }
-    }
-
-    int max_height = screen_rect.height() * 4 / 5;
-    if (arrow() == views::BubbleBorder::BOTTOM_CENTER) {
-      // Opening upward from the anchor, so the room above it -- not the whole
-      // screen -- is the limit. A phone anchors at 70% of the window; the
-      // space above the anchor also holds the address bar, so subtract it too
-      // (otherwise a long popup pushes its header under the bar, or off the top
-      // of the screen). Plain comparisons rather than std::min/max: this file
-      // pulls in no <algorithm>, and an accidental dependency on a transitive
-      // include is not worth a rebuild to discover.
-      const int room_above =
-          anchor_rect.y() - screen_rect.y() - top_reserved - kSideMargin;
-      if (room_above < 0) {
-        max_height = 0;
-      } else if (room_above < max_height) {
-        max_height = room_above;
-      }
-    }
-    room.SetToMin(
-        gfx::Size(screen_rect.width() - 2 * kSideMargin, max_height));
+    room.SetToMin(gfx::Size(screen_rect.width() - 2 * kSideMargin,
+                            screen_rect.height() * 4 / 5));
     max_size.SetToMin(room);
     max_size.SetToMax(kMinSize);
     return max_size;
