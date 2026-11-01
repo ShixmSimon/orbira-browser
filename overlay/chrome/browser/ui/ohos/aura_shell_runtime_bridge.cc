@@ -1937,22 +1937,29 @@ ExtensionPopupAnchor ExtensionPopupAnchorFor(BrowserWindowInterface* browser,
   }
 
   // Nothing reported -- a phone, with no toolbar to point at. Anchor at the
-  // bottom of the window, clear of the shell's bottom bar (dock). The dock is
+  // bottom of the screen, clear of the shell's bottom bar (dock). The dock is
   // drawn by the shell ABOVE the popup, so the popup must clear its full
-  // height. But the user wants the popup's vertical position to stay constant
-  // whether the dock is hidden or pinned (as in the 1.1.3 release): reading
-  // the live inset and adding it on top makes the popup jump up by the whole
-  // dock height when the bar is pinned -- the "raised" feel they reported.
-  // So reserve the dock height unconditionally (floored at its known extent)
-  // plus a small clearance, instead of adding the live inset on top; the
-  // popup then sits a constant 12vp above the dock in both states.
-  const int dock = GetAuraShellModalDialogInsetsForWindow(
-                      parent->GetNativeWindow()).bottom();
+  // height. The user wants the popup's vertical position to stay constant
+  // whether the dock is hidden or pinned, as in the 1.1.3 release (which
+  // anchored at a fixed 7/10 of the window and so never moved); here it is a
+  // constant distance from the real screen bottom. Two things had moved it up
+  // when the bar was pinned: the bubble's own adjustment against a work area
+  // that shrinks by the dock (see the BOTTOM_CENTER branch in ExtensionPopup's
+  // constructor, which turns that off), and measuring from the browser window,
+  // whose bottom can follow the dock. Both are now out of the path.
+  const gfx::Rect screen_bounds =
+      display::Screen::Get()
+          ->GetDisplayNearestPoint(window.CenterPoint())
+          .bounds();
+  // The dock is a fixed 48vp capsule with a 12vp margin, so the reserve is a
+  // constant. Reading the modal-dialog inset here would be wrong: its bottom
+  // also folds in the page's viewport inset (dock cover plus a status-bar
+  // compensation), which is larger than the dock and would raise the popup.
   constexpr int kDockHeight = 48;  // CHROME_DOCK_EXTENT_VP
-  constexpr int kBottomGap = 12;   // clearance just above the dock
-  const int reserved = std::max(dock, kDockHeight) + kBottomGap;
+  constexpr int kBottomGap = 12;   // the capsule's own margin
+  const int reserved = kDockHeight + kBottomGap;
   return {gfx::Rect(window.CenterPoint().x(),
-                   window.y() + window.height() - reserved, 0, 0),
+                   screen_bounds.bottom() - reserved, 0, 0),
           views::BubbleBorder::BOTTOM_CENTER};
 }
 
