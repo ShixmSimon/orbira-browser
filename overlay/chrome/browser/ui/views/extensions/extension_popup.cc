@@ -308,7 +308,7 @@ gfx::Size ExtensionPopup::GetMaxBounds() {
       if (aura::Window* nw = popup_widget->GetNativeWindow()) {
         if (aura::Window* parent_win = nw->parent()) {
           const gfx::Insets insets =
-              GetAuraShellModalDialogInsetsForWindow(parent_win);
+              chrome::ohos::GetAuraShellModalDialogInsetsForWindow(parent_win);
           // The anchor already clears the dock by kBottomGap (36) at the bottom;
           // clear the same at the top so a tallest popup's top lands exactly at
           // the address bar instead of 36px above it (the user asked the top
