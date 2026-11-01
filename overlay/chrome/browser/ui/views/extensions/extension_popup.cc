@@ -315,17 +315,16 @@ gfx::Size ExtensionPopup::GetMaxBounds() {
         if (aura::Window* parent_win = nw->parent()) {
           const gfx::Insets insets =
               chrome::ohos::GetAuraShellModalDialogInsetsForWindow(parent_win);
-          // The dock is a fixed 48vp (CHROME_DOCK_EXTENT_VP), so reserve that
-          // constant rather than insets.bottom() -- the latter also folds in the
-          // page's viewport inset (dock cover plus a status-bar compensation),
-          // which is larger than the dock and over-reserved the height budget.
-          // kEdgeClearance is 24 larger than the anchor's bottom clearance (12),
-          // so a tallest popup's top sits 24vp below the address bar -- lower
-          // than before, and never above it.
-          constexpr int kDockHeight = 48;  // CHROME_DOCK_EXTENT_VP
-          constexpr int kEdgeClearance = 36;
-          const int avail = screen_rect.height() - insets.top() - kDockHeight -
-                            kEdgeClearance;
+          // kDockCover matches the anchor's reserve in ExtensionPopupAnchorFor
+          // (dock extent + float margin + bottom safe area) instead of
+          // insets.bottom(), which also folds in the page's viewport inset and
+          // over-reserved. With the same cover on both sides a tallest popup's
+          // top lands exactly kTopGap below the address bar, unchanged when the
+          // dock is pinned or hidden.
+          constexpr int kDockCover = 92;  // see ExtensionPopupAnchorFor
+          constexpr int kTopGap = 24;     // popup top below the address bar
+          const int avail = screen_rect.height() - insets.top() - kDockCover -
+                            kTopGap;
           if (avail > 0) {
             room.SetToMin(gfx::Size(room.width(), avail));
           }
