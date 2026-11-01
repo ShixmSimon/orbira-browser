@@ -1939,12 +1939,14 @@ ExtensionPopupAnchor ExtensionPopupAnchorFor(BrowserWindowInterface* browser,
   // Nothing reported -- a phone, with no toolbar to point at. Anchor at the
   // bottom of the window, clear of the shell's bottom bar (dock), so the popup
   // rises from there and covers the tile page. The dock is drawn by the shell
-  // ABOVE the popup, so reserve its full height (plus a small gap) at the
+  // ABOVE the popup, so reserve its full height plus a clearance at the
   // bottom -- otherwise the dock covers the popup's own controls. The modal
-  // dialog inset's bottom already folds in the dock height.
+  // dialog inset's bottom already folds in the dock height. The clearance is a
+  // full capsule plus a half (was 12vp; user asked for ~half a capsule more so
+  // the popup bottom clears the floating dock comfortably).
   const int dock = GetAuraShellModalDialogInsetsForWindow(
                       parent->GetNativeWindow()).bottom();
-  constexpr int kBottomGap = 12;
+  constexpr int kBottomGap = 36;
   const int reserved = std::max(dock, 0) + kBottomGap;
   return {gfx::Rect(window.CenterPoint().x(),
                    window.y() + window.height() - reserved, 0, 0),
@@ -2112,16 +2114,19 @@ bool g_replacing_extension_popup = false;
 // the native tiles (a sub-view of the browser window could not, the tile page is
 // drawn by the shell above that window). Activation stays off: a second
 // *activatable* Widget was tried before and reverted because it made every tap on
-// the popup's own controls read as an outside tap and broke the buttons. The sheet
-// is fully opaque so the tiles behind are actually hidden.
+// the popup's own controls read as an outside tap and broke the buttons. The
+// sheet is a theme-aware translucent dim (see CreatePopupScrim): it washes out
+// the tiles behind instead of painting a hard black wall, and its strength
+// follows the system colour scheme.
 class PopupScrimView : public views::View {
   METADATA_HEADER(PopupScrimView, views::View)
 
  public:
-  explicit PopupScrimView(base::OnceClosure on_tap) : on_tap_(std::move(on_tap)) {
+  explicit PopupScrimView(base::OnceClosure on_tap, SkColor color)
+      : on_tap_(std::move(on_tap)) {
     SetFocusBehavior(FocusBehavior::NEVER);
     SetCanProcessEventsWithinSubtree(true);
-    SetBackground(views::CreateSolidBackground(SkColorSetARGB(0xFF, 0, 0, 0)));
+    SetBackground(views::CreateSolidBackground(color));
   }
   PopupScrimView(const PopupScrimView&) = delete;
   PopupScrimView& operator=(const PopupScrimView&) = delete;
@@ -2167,18 +2172,29 @@ views::Widget* CreatePopupScrim(views::Widget* browser_widget,
   params.activatable = views::Widget::InitParams::Activatable::kNo;
   params.accept_events = true;
   params.z_order = ui::ZOrderLevel::kFloatingWindow;
+  params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
   params.parent = browser_widget->GetNativeWindow();
   params.name = "ExtensionPopupScrim";
   params.bounds = browser_widget->GetRootView()->GetLocalBounds();
   auto* scrim_widget = new views::Widget();
   scrim_widget->Init(std::move(params));
-  scrim_widget->SetContentsView(std::make_unique<PopupScrimView>(base::BindOnce(
-      [](views::Widget* pw) {
-        if (pw && !pw->IsClosed()) {
-          pw->Close();
-        }
-      },
-      popup_widget)));
+  // Theme-aware dim: a light scheme gets a softer translucent wash, a dark
+  // scheme a stronger one, so the sheet follows the system colour scheme
+  // instead of a fixed opaque black.
+  const bool dark =
+      ui::NativeTheme::GetInstanceForNativeUi()->preferred_color_scheme() ==
+      ui::NativeTheme::PreferredColorScheme::kDark;
+  const SkColor scrim_color =
+      dark ? SkColorSetARGB(0xCC, 0, 0, 0) : SkColorSetARGB(0x59, 0, 0, 0);
+  scrim_widget->SetContentsView(std::make_unique<PopupScrimView>(
+      base::BindOnce(
+          [](views::Widget* pw) {
+            if (pw && !pw->IsClosed()) {
+              pw->Close();
+            }
+          },
+          popup_widget),
+      scrim_color));
   // Keep the popup above the sheet so its controls stay on top and tappable; the
   // sheet only receives the taps that land outside the popup, which close it.
   popup_widget->StackAboveWidget(scrim_widget);
