@@ -1951,13 +1951,16 @@ ExtensionPopupAnchor ExtensionPopupAnchorFor(BrowserWindowInterface* browser,
       display::Screen::Get()
           ->GetDisplayNearestPoint(window.CenterPoint())
           .bounds();
-  // The dock is a fixed 48vp capsule with a 12vp margin, so the reserve is a
-  // constant. Reading the modal-dialog inset here would be wrong: its bottom
-  // also folds in the page's viewport inset (dock cover plus a status-bar
-  // compensation), which is larger than the dock and would raise the popup.
-  constexpr int kDockHeight = 48;  // CHROME_DOCK_EXTENT_VP
-  constexpr int kBottomGap = 12;   // the capsule's own margin
-  const int reserved = kDockHeight + kBottomGap;
+  // Reserve exactly what the shell's dock covers, as dockCoveredHeightVp()
+  // does: the dock extent (60vp classic / 48vp chrome) plus its float margin
+  // (16vp) plus the device's bottom safe area (28vp here) -- 92vp covers both
+  // dock styles on this device and leaves the popup just above the capsule.
+  // A constant, not the live inset: the modal-dialog inset's bottom folds in
+  // the page's viewport inset as well (including a status-bar compensation),
+  // which is larger than the dock and would lift the popup, and it also
+  // changes with the dock's visibility -- the position must not.
+  constexpr int kDockCover = 92;
+  const int reserved = kDockCover;
   return {gfx::Rect(window.CenterPoint().x(),
                    screen_bounds.bottom() - reserved, 0, 0),
           views::BubbleBorder::BOTTOM_CENTER};
