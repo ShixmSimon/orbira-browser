@@ -2111,6 +2111,8 @@ bool g_replacing_extension_popup = false;
 // fully opaque so the tiles behind are actually hidden.
 class PopupScrimView : public views::View {
  public:
+  METADATA_HEADER(PopupScrimView, views::View)
+
   explicit PopupScrimView(base::OnceClosure on_tap) : on_tap_(std::move(on_tap)) {
     SetFocusBehavior(FocusBehavior::NEVER);
     SetCanProcessEventsWithinSubtree(true);
@@ -2125,9 +2127,10 @@ class PopupScrimView : public views::View {
     }
     return true;
   }
-  void OnTouchEvent(ui::TouchEvent* event) override {
-    if (event->type() == ui::ET_TOUCH_PRESSED && on_tap_) {
-      event->SetHandled();
+  // OnTouchEvent is final on this View version, so touch taps arrive as gesture
+  // events instead. A tap is what closes the popup here.
+  void OnGestureEvent(ui::GestureEvent* event) override {
+    if (event->type() == ui::EventType::kGestureTap && on_tap_) {
       std::move(on_tap_).Run();  // deletion is deferred; safe to return after
     }
   }
@@ -2135,6 +2138,9 @@ class PopupScrimView : public views::View {
  private:
   base::OnceClosure on_tap_;
 };
+
+BEGIN_METADATA(PopupScrimView)
+END_METADATA
 
 // Builds the scrim for an extension popup and parks it on the browser window's
 // root view, covering everything below the address bar (the native-tile region)
