@@ -1937,17 +1937,20 @@ ExtensionPopupAnchor ExtensionPopupAnchorFor(BrowserWindowInterface* browser,
   }
 
   // Nothing reported -- a phone, with no toolbar to point at. Anchor at the
-  // bottom of the window, clear of the shell's bottom bar (dock), so the popup
-  // rises from there and covers the tile page. The dock is drawn by the shell
-  // ABOVE the popup, so reserve its full height plus a clearance at the
-  // bottom -- otherwise the dock covers the popup's own controls. The modal
-  // dialog inset's bottom already folds in the dock height. The clearance is a
-  // full capsule plus a half (was 12vp; user asked for ~half a capsule more so
-  // the popup bottom clears the floating dock comfortably).
+  // bottom of the window, clear of the shell's bottom bar (dock). The dock is
+  // drawn by the shell ABOVE the popup, so the popup must clear its full
+  // height. But the user wants the popup's vertical position to stay constant
+  // whether the dock is hidden or pinned (as in the 1.1.3 release): reading
+  // the live inset and adding it on top makes the popup jump up by the whole
+  // dock height when the bar is pinned -- the "raised" feel they reported.
+  // So reserve the dock height unconditionally (floored at its known extent)
+  // plus a small clearance, instead of adding the live inset on top; the
+  // popup then sits a constant 12vp above the dock in both states.
   const int dock = GetAuraShellModalDialogInsetsForWindow(
                       parent->GetNativeWindow()).bottom();
-  constexpr int kBottomGap = 36;
-  const int reserved = std::max(dock, 0) + kBottomGap;
+  constexpr int kDockHeight = 48;  // CHROME_DOCK_EXTENT_VP
+  constexpr int kBottomGap = 12;   // clearance just above the dock
+  const int reserved = std::max(dock, kDockHeight) + kBottomGap;
   return {gfx::Rect(window.CenterPoint().x(),
                    window.y() + window.height() - reserved, 0, 0),
           views::BubbleBorder::BOTTOM_CENTER};
