@@ -273,10 +273,16 @@ gfx::Size ExtensionPopup::GetMaxBounds() {
   // work area, the most of any of the four placements.
   if (!GetAnchor().GetIfView() && !GetAnchor().GetIfElement()) {
     const gfx::Rect anchor_rect = GetAnchorRect();
-    const gfx::Rect screen_rect =
-        display::Screen::Get()
-            ->GetDisplayNearestPoint(anchor_rect.CenterPoint())
-            .work_area();
+    const display::Display display =
+        display::Screen::Get()->GetDisplayNearestPoint(anchor_rect.CenterPoint());
+    // The bottom-centred phone popup is anchored above the dock, below the
+    // work area (the work area shrinks by the dock and would clamp it back up).
+    // Measure its height budget against the real screen so the top lands a
+    // fixed 24vp below the address bar; the toolbar-anchored cases keep the
+    // work area they have always used.
+    const gfx::Rect screen_rect = views::BubbleBorder::is_arrow_at_center(arrow())
+                                      ? display.bounds()
+                                      : display.work_area();
     gfx::Size room;
     if (views::BubbleBorder::is_arrow_at_center(arrow())) {
       // A centred popup (BOTTOM_CENTER, a phone) gets the whole work area: it
@@ -309,13 +315,17 @@ gfx::Size ExtensionPopup::GetMaxBounds() {
         if (aura::Window* parent_win = nw->parent()) {
           const gfx::Insets insets =
               chrome::ohos::GetAuraShellModalDialogInsetsForWindow(parent_win);
-          // The anchor already clears the dock by kBottomGap (36) at the bottom;
-          // clear the same at the top so a tallest popup's top lands exactly at
-          // the address bar instead of 36px above it (the user asked the top
-          // must never exceed the address bar when it is open).
+          // The dock is a fixed 48vp (CHROME_DOCK_EXTENT_VP), so reserve that
+          // constant rather than insets.bottom() -- the latter also folds in the
+          // page's viewport inset (dock cover plus a status-bar compensation),
+          // which is larger than the dock and over-reserved the height budget.
+          // kEdgeClearance is 24 larger than the anchor's bottom clearance (12),
+          // so a tallest popup's top sits 24vp below the address bar -- lower
+          // than before, and never above it.
+          constexpr int kDockHeight = 48;  // CHROME_DOCK_EXTENT_VP
           constexpr int kEdgeClearance = 36;
-          const int avail = screen_rect.height() - insets.top() -
-                            insets.bottom() - kEdgeClearance;
+          const int avail = screen_rect.height() - insets.top() - kDockHeight -
+                            kEdgeClearance;
           if (avail > 0) {
             room.SetToMin(gfx::Size(room.width(), avail));
           }
@@ -428,6 +438,20 @@ ExtensionPopup::ExtensionPopup(
   // Set the default value before initializing |extension_view_| to use
   // the correct value while calculating max bounds.
   set_adjust_if_offscreen(views::PlatformStyle::kAdjustBubbleIfOffscreen);
+#if BUILDFLAG(IS_OHOS)
+  // A phone popup is anchored at the shell's bottom bar and must sit exactly
+  // where the shell says (ExtensionPopupAnchorFor in
+  // aura_shell_runtime_bridge.cc). The default offscreen adjustment fits the
+  // bubble inside the display's WORK AREA, which shrinks by the dock, so
+  // pinning the dock pulled the whole popup up -- the 1.1.3 release kept the
+  // popup's bottom at the same screen y whether the bar was hidden or pinned.
+  // Skip the adjustment for the bottom-centred phone anchor; the height is
+  // still capped by GetMaxBounds() so content scrolls instead of running off
+  // the top.
+  if (arrow == views::BubbleBorder::BOTTOM_CENTER) {
+    set_adjust_if_offscreen(false);
+  }
+#endif
 
 #if BUILDFLAG(IS_OHOS)
   // Before the view below is initialised: Init() asks GetMaxBounds() how
