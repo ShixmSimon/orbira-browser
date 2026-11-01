@@ -1908,11 +1908,9 @@ void SendExtensionActions(gfx::AcceleratedWidget widget,
 // already uses: the extension's own button when it is pinned, the extensions
 // button otherwise.
 //
-// A phone has neither -- there is no toolbar to pin anything to -- and the
-// popup is anchored at the bottom of the window, clear of the shell's bottom
-// bar (dock). It opens upward (BOTTOM_CENTER) and, sized against the room
-// above the anchor, grows tall enough to cover the native tile page behind it;
-// content scrolls inside when it would run past the screen.
+// A phone has no toolbar to pin anything to: the popup is anchored at the
+// bottom of the screen, clear of the shell's dock, and opens upward
+// (BOTTOM_CENTER). Content scrolls inside when it would run past the screen.
 struct ExtensionPopupAnchor {
   gfx::Rect rect;
   views::BubbleBorder::Arrow arrow;
@@ -1936,29 +1934,21 @@ ExtensionPopupAnchor ExtensionPopupAnchorFor(BrowserWindowInterface* browser,
     return {rect, views::BubbleBorder::TOP_RIGHT};
   }
 
-  // Nothing reported -- a phone, with no toolbar to point at. Anchor at the
-  // bottom of the screen, clear of the shell's bottom bar (dock). The dock is
-  // drawn by the shell ABOVE the popup, so the popup must clear its full
-  // height. The user wants the popup's vertical position to stay constant
-  // whether the dock is hidden or pinned, as in the 1.1.3 release (which
-  // anchored at a fixed 7/10 of the window and so never moved); here it is a
-  // constant distance from the real screen bottom. Two things had moved it up
-  // when the bar was pinned: the bubble's own adjustment against a work area
-  // that shrinks by the dock (see the BOTTOM_CENTER branch in ExtensionPopup's
-  // constructor, which turns that off), and measuring from the browser window,
-  // whose bottom can follow the dock. Both are now out of the path.
+  // Nothing reported -- a phone, no toolbar to point at. Anchor a constant
+  // distance above the real screen bottom, so the popup's bottom does not move
+  // when the dock is hidden or pinned. The dock is drawn above the popup and
+  // must be cleared. The bubble's offscreen adjustment -- which fits it into a
+  // work area that shrinks by the dock -- is off for BOTTOM_CENTER (see
+  // ExtensionPopup's constructor). The browser window is not used here because
+  // its bottom can follow the dock.
   const gfx::Rect screen_bounds =
       display::Screen::Get()
           ->GetDisplayNearestPoint(window.CenterPoint())
           .bounds();
-  // Reserve exactly what the shell's dock covers, as dockCoveredHeightVp()
-  // does: the dock extent (60vp classic / 48vp chrome) plus its float margin
-  // (16vp) plus the device's bottom safe area (28vp here) -- 92vp covers both
-  // dock styles on this device and leaves the popup just above the capsule.
-  // A constant, not the live inset: the modal-dialog inset's bottom folds in
-  // the page's viewport inset as well (including a status-bar compensation),
-  // which is larger than the dock and would lift the popup, and it also
-  // changes with the dock's visibility -- the position must not.
+  // What the dock covers: dock extent (60vp classic, 48vp chrome) + float
+  // margin (16vp) + bottom safe area (28vp) = 92vp. A constant, not the live
+  // inset -- the inset also includes the page viewport's own bottom inset and
+  // changes with the dock's visibility.
   constexpr int kDockCover = 92;
   const int reserved = kDockCover;
   return {gfx::Rect(window.CenterPoint().x(),
@@ -2120,17 +2110,12 @@ namespace {
 // the popup about to open depends on.
 bool g_replacing_extension_popup = false;
 
-// A sheet behind the popup: hides the native tiles/page underneath and closes
-// the popup when tapped outside the popup's own controls. PopupScrimView is the
-// plain View placed as the contents of a top-level, non-activatable Widget in
-// CreatePopupScrim -- so it sits above the shell's tile page and actually hides
-// the native tiles (a sub-view of the browser window could not, the tile page is
-// drawn by the shell above that window). Activation stays off: a second
-// *activatable* Widget was tried before and reverted because it made every tap on
-// the popup's own controls read as an outside tap and broke the buttons. The
-// sheet is a theme-aware translucent dim (see CreatePopupScrim): it washes out
-// the tiles behind instead of painting a hard black wall, and its strength
-// follows the system colour scheme.
+// A sheet behind the popup: hides what is underneath and closes the popup on a
+// tap outside the popup's own controls. It is the contents view of a top-level,
+// non-activatable Widget (CreatePopupScrim), so it sits above the shell's tile
+// page; a sub-view of the browser window would stay below it. Activation stays
+// off: an activatable second window makes taps on the popup's controls read as
+// outside taps.
 class PopupScrimView : public views::View {
   METADATA_HEADER(PopupScrimView, views::View)
 
@@ -2165,21 +2150,14 @@ class PopupScrimView : public views::View {
 BEGIN_METADATA(PopupScrimView)
 END_METADATA
 
-// Builds the scrim for an extension popup as a full-screen, non-activatable
-// top-level window stacked just beneath the popup. It has to live on the popup's
-// own layer -- above the shell's tile page -- to actually hide the native tiles;
-// a sub-view of the browser window cannot, the tile page is drawn by the shell
-// above that window. It must not take activation: a second *activatable* window
-// alongside the popup made every tap on the popup's own controls read as an
-// outside tap and closed it. With activation off the popup keeps focus and its
-// buttons stay usable; a tap on the sheet itself still closes the popup through
-// the sheet's own handler.
+// Builds the popup's scrim as a full-screen, non-activatable top-level window
+// stacked just beneath the popup, on the popup's own layer so it sits above the
+// shell's tile page. Activation stays off so the popup keeps focus and its
+// controls stay tappable.
 //
-// `dim_home` decides the sheet's look. On the home/tile surface the sheet is a
-// theme-aware dim that hides the native tiles underneath; on a web page the sheet
-// is fully transparent -- the page stays visible and un-dimming, while still
-// catching an outside tap to dismiss the popup (the same Chrome desktop
-// behaviour). The user asked for the dim only on the home page, not on web pages.
+// dim_home: on the home/tile surface the sheet is an opaque, theme-coloured
+// cover that hides the native tiles; on a web page it is fully transparent --
+// the page stays visible, but an outside tap still dismisses the popup.
 views::Widget* CreatePopupScrim(views::Widget* browser_widget,
                                  views::Widget* popup_widget,
                                  bool dim_home) {
@@ -2198,11 +2176,8 @@ views::Widget* CreatePopupScrim(views::Widget* browser_widget,
   params.bounds = browser_widget->GetRootView()->GetLocalBounds();
   auto* scrim_widget = new views::Widget();
   scrim_widget->Init(std::move(params));
-  // Home page: an OPAQUE sheet so the native tiles underneath are fully hidden
-  // (the user asked for the home scrim to be opaque). The colour follows the
-  // system scheme -- a light surface on a light theme, a dark one on a dark
-  // theme -- instead of a fixed black wall. Web page: fully transparent so the
-  // page stays visible (still tap-to-dismiss, see the caller).
+  // Home: opaque, theme-coloured cover that hides the tiles. Web page:
+  // transparent, so the page stays visible (an outside tap still dismisses).
   SkColor scrim_color;
   if (dim_home) {
     const bool dark =
@@ -2213,14 +2188,16 @@ views::Widget* CreatePopupScrim(views::Widget* browser_widget,
   } else {
     scrim_color = SkColorSetARGB(0x00, 0, 0, 0);
   }
+  // Weak: the sheet can outlive the popup for a frame while its Close() is
+  // pending, and a tap in that gap must not reach a freed widget.
   scrim_widget->SetContentsView(std::make_unique<PopupScrimView>(
       base::BindOnce(
-          [](views::Widget* pw) {
+          [](base::WeakPtr<views::Widget> pw) {
             if (pw && !pw->IsClosed()) {
               pw->Close();
             }
           },
-          popup_widget),
+          popup_widget->GetWeakPtr()),
       scrim_color));
   // Keep the popup above the sheet so its controls stay on top and tappable; the
   // sheet only receives the taps that land outside the popup, which close it.
@@ -2264,12 +2241,8 @@ class ExtensionPopupCloseWatcher : public views::WidgetObserver {
         NotifyAuraShellExtensionPopupClosed(profile_, extension_id_);
       }
     }
-    // Remove the dim sheet we parked behind the popup. It is a top-level
-    // non-activatable Widget stacked beneath the popup (CreatePopupScrim), so
-    // closing it removes the sheet. The popup's own outside-tap handler already
-    // calls Close() on it, but if the popup closed another way (Escape, the
-    // extension's own window.close(), or being replaced) we still tear the sheet
-    // down here so it can never outlive the popup.
+    // Tear the sheet down with the popup. An outside tap already closes it;
+    // this covers Escape, window.close() and replacement.
     if (scrim_view_) {
       views::Widget* scrim = scrim_view_;
       scrim_view_ = nullptr;
@@ -2285,10 +2258,8 @@ class ExtensionPopupCloseWatcher : public views::WidgetObserver {
  private:
   ~ExtensionPopupCloseWatcher() override = default;
 
-  // Opaque sheet drawn behind the popup to hide the page underneath and close
-  // the popup on an outside tap. A top-level, non-activatable Widget stacked
-  // beneath the popup (a second *activatable* Widget broke every popup control
-  // tap, so activation stays off). Null when no sheet was attached.
+  // Top-level, non-activatable Widget stacked beneath the popup; closes on an
+  // outside tap and is torn down with the popup. Null when none was attached.
   raw_ptr<views::Widget> scrim_view_ = nullptr;
   raw_ptr<Profile> profile_;
   std::string extension_id_;
@@ -2370,18 +2341,9 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   LOG(WARNING) << "OHOS extension popup: anchor rect=" << anchor.rect.ToString()
                << " arrow=" << static_cast<int>(anchor.arrow);
 
-  // A scrim behind the popup. It is a top-level, non-activatable Widget stacked
-  // beneath the popup (CreatePopupScrim / PopupScrimView) so it sits above the
-  // shell's tile page and actually hides the native tiles -- a sub-view of the
-  // browser window could not, the tile page is drawn by the shell above that
-  // window. Activation stays off: a second *activatable* window alongside the
-  // popup made taps on the popup's own controls read as outside taps and broke
-  // every button.
-  //
-  // Only the home/tile surface gets a *dimming* sheet (to hide the tiles). On a
-  // web page the sheet is transparent -- the page stays visible -- but still
-  // closes the popup on an outside tap. Home is the new-tab page
-  // (chrome://newtab, what the shell's "home" command navigates to).
+  // A scrim behind the popup, on the popup's own layer so it covers the shell's
+  // tile page (CreatePopupScrim). Only the home surface gets a visible cover;
+  // on a web page it is transparent but still dismisses on an outside tap.
 
   // Only one popup window may exist at a time. Reopening the action without
   // closing the old popup (tap the menu, then the extension again) leaves two
@@ -2414,9 +2376,8 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   LOG(WARNING) << "OHOS extension popup: shown widget="
                << (popup_widget ? 1 : 0);
   if (popup_widget) {
-    // The home surface is the new-tab page (chrome://newtab/); the shell's
-    // "home" command navigates there. Dim there to hide the tiles; on a web page
-    // leave the page visible (transparent sheet, still tap-to-dismiss).
+    // Dim the home surface (chrome://newtab) so the tiles are hidden; on a web
+    // page keep the sheet transparent.
     const GURL& page_url =
         active ? active->GetLastCommittedURL() : GURL::EmptyGURL();
     const bool on_home =
