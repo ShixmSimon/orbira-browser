@@ -2185,15 +2185,18 @@ views::Widget* CreatePopupScrim(views::Widget* browser_widget,
   params.bounds = browser_widget->GetRootView()->GetLocalBounds();
   auto* scrim_widget = new views::Widget();
   scrim_widget->Init(std::move(params));
-  // Theme-aware dim on the home page; fully transparent on a web page so the
-  // page is not dimmed. Either way the sheet follows the system colour scheme.
+  // Home page: an OPAQUE sheet so the native tiles underneath are fully hidden
+  // (the user asked for the home scrim to be opaque). The colour follows the
+  // system scheme -- a light surface on a light theme, a dark one on a dark
+  // theme -- instead of a fixed black wall. Web page: fully transparent so the
+  // page stays visible (still tap-to-dismiss, see the caller).
   SkColor scrim_color;
   if (dim_home) {
     const bool dark =
         ui::NativeTheme::GetInstanceForNativeUi()->preferred_color_scheme() ==
         ui::NativeTheme::PreferredColorScheme::kDark;
-    scrim_color =
-        dark ? SkColorSetARGB(0xCC, 0, 0, 0) : SkColorSetARGB(0x59, 0, 0, 0);
+    scrim_color = dark ? SkColorSetARGB(0xFF, 0x14, 0x14, 0x16)
+                       : SkColorSetARGB(0xFF, 0xF2, 0xF2, 0xF4);
   } else {
     scrim_color = SkColorSetARGB(0x00, 0, 0, 0);
   }

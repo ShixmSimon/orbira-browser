@@ -10,6 +10,7 @@
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/extensions/extension_view_host.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/ohos/aura_shell_runtime_bridge.h"
 #include "chrome/browser/ui/views/extensions/security_dialog_tracker.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "components/javascript_dialogs/app_modal_dialog_queue.h"
@@ -296,6 +297,32 @@ gfx::Size ExtensionPopup::GetMaxBounds() {
             placement, anchor_rect, screen_rect));
       }
     }
+    // Keep the popup within the visible band between the address bar (top) and
+    // the dock (bottom): its top must never rise above the address bar, and its
+    // bottom already sits just above the dock (see ExtensionPopupAnchorFor in
+    // aura_shell_runtime_bridge.cc). The shell reports those insets for the
+    // browser window; without subtracting them a tall popup -- capped only at
+    // 80% of the work area -- pushes its header off the top, above the address
+    // bar. Clamp the available height to the band so content scrolls inside.
+    if (views::Widget* popup_widget = GetWidget()) {
+      if (aura::Window* nw = popup_widget->GetNativeWindow()) {
+        if (aura::Window* parent_win = nw->parent()) {
+          const gfx::Insets insets =
+              GetAuraShellModalDialogInsetsForWindow(parent_win);
+          // The anchor already clears the dock by kBottomGap (36) at the bottom;
+          // clear the same at the top so a tallest popup's top lands exactly at
+          // the address bar instead of 36px above it (the user asked the top
+          // must never exceed the address bar when it is open).
+          constexpr int kEdgeClearance = 36;
+          const int avail = screen_rect.height() - insets.top() -
+                            insets.bottom() - kEdgeClearance;
+          if (avail > 0) {
+            room.SetToMin(gfx::Size(room.width(), avail));
+          }
+        }
+      }
+    }
+
     // And never more than the screen gives: a phone's work area is narrower
     // than kMaxSize, and a popup as tall as the window leaves nothing to tap
     // to close it. A margin at the sides, and at most 80% of the height.
