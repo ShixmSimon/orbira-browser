@@ -2162,10 +2162,11 @@ views::Widget* CreatePopupScrim(views::Widget* browser_widget,
     return nullptr;
   }
   views::Widget::InitParams params(
+      views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET,
       views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params.activatable = views::Widget::InitParams::Activatable::kNo;
   params.accept_events = true;
-  params.z_order = ui::ZOrderLevel::kFloating;
+  params.z_order = ui::ZOrderLevel::kFloatingWindow;
   params.parent = browser_widget->GetNativeWindow();
   params.name = "ExtensionPopupScrim";
   params.bounds = browser_widget->GetRootView()->GetLocalBounds();
@@ -2178,9 +2179,9 @@ views::Widget* CreatePopupScrim(views::Widget* browser_widget,
         }
       },
       popup_widget)));
-  // Sit beneath the popup so the popup's controls stay on top and tappable; the
+  // Keep the popup above the sheet so its controls stay on top and tappable; the
   // sheet only receives the taps that land outside the popup, which close it.
-  scrim_widget->StackWidgetBeneath(popup_widget);
+  popup_widget->StackAboveWidget(scrim_widget);
   scrim_widget->Show();
   return scrim_widget;
 }
