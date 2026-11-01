@@ -151,16 +151,12 @@ ExtensionPopup::~ExtensionPopup() {
 gfx::Size ExtensionPopup::CalculatePreferredSize(
     const views::SizeBounds& available_size) const {
   // Constrain the size to popup min/max. kMaxSize is a desktop figure (800 x
-  // 600); a phone screen is shorter than that, so clamping to it let the popup
-  // grow past the window: anchored at 70% of the window and opening upward
-  // (BOTTOM_CENTER), a long popup -- more scripts, a taller list -- pushed its
-  // own header off the top of the screen, and the reader could not scroll back
-  // to it. GetMaxBounds() is the same clamp measured against the work area (at
-  // most 80% of its height), which is what the screen can actually show; the
-  // content past it scrolls inside the popup instead of being drawn offscreen.
+  // 600), taller than a phone screen; clamping to it let a long popup grow past
+  // the window and push its header off the top. GetMaxBounds() measures the
+  // usable band instead, so content past it scrolls inside the popup.
   //
   // const_cast: GetMinBounds()/GetMaxBounds() are BubbleDialogDelegate's
-  // non-const virtuals, and both only read the anchor rect and the display.
+  // non-const virtuals and only read the anchor rect and the display.
   auto* self = const_cast<ExtensionPopup*>(this);
   gfx::Size sz = views::View::CalculatePreferredSize(available_size);
   sz.SetToMax(self->GetMinBounds());
@@ -227,12 +223,9 @@ void ExtensionPopup::OnWidgetTreeActivated(views::Widget* root_widget,
 gfx::Size ExtensionPopup::GetMinBounds() {
   gfx::Size min_size = kMinSize;
 #if BUILDFLAG(IS_OHOS)
-  // On a phone the popup is the whole surface an extension gets. A popup that
-  // sizes itself to its content -- no explicit width in its own page -- comes
-  // out as a narrow column: one of them collapsed to about a fifth of the
-  // screen and wrapped its labels one character to a line. Give it some of the
-  // screen's width, so that there is room to render, and never more than
-  // GetMaxBounds() will allow.
+  // On a phone the popup is the extension's whole surface. A popup that sizes
+  // itself to its content (no explicit width in its page) collapses to a narrow
+  // column, so give it 3/5 of the screen width, capped below GetMaxBounds().
   if (!GetAnchor().GetIfView() && !GetAnchor().GetIfElement()) {
     const gfx::Rect work =
         display::Screen::Get()
@@ -274,25 +267,21 @@ gfx::Size ExtensionPopup::GetMaxBounds() {
   if (!GetAnchor().GetIfView() && !GetAnchor().GetIfElement()) {
     const gfx::Rect anchor_rect = GetAnchorRect();
     const display::Display display =
-        display::Screen::Get()->GetDisplayNearestPoint(anchor_rect.CenterPoint());
-    // The bottom-centred phone popup is anchored above the dock, below the
-    // work area (the work area shrinks by the dock and would clamp it back up).
-    // Measure its height budget against the real screen so the top lands a
-    // fixed 24vp below the address bar; the toolbar-anchored cases keep the
-    // work area they have always used.
+        display::Screen::Get()->GetDisplayNearestPoint(
+            anchor_rect.CenterPoint());
+    // The bottom-centred phone popup is anchored above the dock, below the work
+    // area, which shrinks by the dock. Measure its height against the real
+    // screen so the top lands a fixed distance below the address bar; the
+    // toolbar-anchored cases keep the work area.
     const gfx::Rect screen_rect = views::BubbleBorder::is_arrow_at_center(arrow())
                                       ? display.bounds()
                                       : display.work_area();
     gfx::Size room;
     if (views::BubbleBorder::is_arrow_at_center(arrow())) {
-      // A centred popup (BOTTOM_CENTER, a phone) gets the whole work area: it
-      // is moved to stay on screen, so the room on either side of the anchor
-      // point -- half the screen each way, which is all the four corner
-      // placements below can see -- is not its limit. Measured that way it came
-      // out half as wide as its content, and cut off. Take the work area and
-      // skip the corner measurements, which would be overwritten anyway; this
-      // runs on every layout pass, and the popup is laid out while its content
-      // scrolls.
+      // A centred popup (BOTTOM_CENTER, a phone) is moved to stay on screen, so
+      // the room on either side of the anchor point -- all the four corner
+      // placements below can see -- is not its limit; taking it would come out
+      // half as wide as the content. Take the whole area instead.
       room = screen_rect.size();
     } else {
       for (const views::BubbleBorder::Arrow placement :
@@ -303,26 +292,18 @@ gfx::Size ExtensionPopup::GetMaxBounds() {
             placement, anchor_rect, screen_rect));
       }
     }
-    // Keep the popup within the visible band between the address bar (top) and
-    // the dock (bottom): its top must never rise above the address bar, and its
-    // bottom already sits just above the dock (see ExtensionPopupAnchorFor in
-    // aura_shell_runtime_bridge.cc). The shell reports those insets for the
-    // browser window; without subtracting them a tall popup -- capped only at
-    // 80% of the work area -- pushes its header off the top, above the address
-    // bar. Clamp the available height to the band so content scrolls inside.
+    // Keep the popup inside the band between the address bar and the dock.
+    // Without the insets a tall popup -- capped only at 80% of the work area --
+    // pushes its header above the address bar.
     if (views::Widget* popup_widget = GetWidget()) {
       if (aura::Window* nw = popup_widget->GetNativeWindow()) {
         if (aura::Window* parent_win = nw->parent()) {
           const gfx::Insets insets =
               chrome::ohos::GetAuraShellModalDialogInsetsForWindow(parent_win);
-          // kDockCover matches the anchor's reserve in ExtensionPopupAnchorFor
-          // (dock extent + float margin + bottom safe area) instead of
-          // insets.bottom(), which also folds in the page's viewport inset and
-          // over-reserved. With the same cover on both sides a tallest popup's
-          // top lands exactly kTopGap below the address bar, unchanged when the
-          // dock is pinned or hidden.
-          constexpr int kDockCover = 92;  // see ExtensionPopupAnchorFor
-          constexpr int kTopGap = 24;     // popup top below the address bar
+          // Same cover as ExtensionPopupAnchorFor, so the top lands kTopGap
+          // below the address bar in both dock states.
+          constexpr int kDockCover = 92;
+          constexpr int kTopGap = 24;
           const int avail = screen_rect.height() - insets.top() - kDockCover -
                             kTopGap;
           if (avail > 0) {
@@ -438,25 +419,17 @@ ExtensionPopup::ExtensionPopup(
   // the correct value while calculating max bounds.
   set_adjust_if_offscreen(views::PlatformStyle::kAdjustBubbleIfOffscreen);
 #if BUILDFLAG(IS_OHOS)
-  // A phone popup is anchored at the shell's bottom bar and must sit exactly
-  // where the shell says (ExtensionPopupAnchorFor in
-  // aura_shell_runtime_bridge.cc). The default offscreen adjustment fits the
-  // bubble inside the display's WORK AREA, which shrinks by the dock, so
-  // pinning the dock pulled the whole popup up -- the 1.1.3 release kept the
-  // popup's bottom at the same screen y whether the bar was hidden or pinned.
-  // Skip the adjustment for the bottom-centred phone anchor; the height is
-  // still capped by GetMaxBounds() so content scrolls instead of running off
-  // the top.
+  // The bottom-centred phone popup sits where ExtensionPopupAnchorFor puts it.
+  // The default offscreen adjustment fits the bubble into the display's work
+  // area, which shrinks by the dock, so pinning the dock would pull the popup
+  // up. Skip it for this anchor; GetMaxBounds() still caps the height.
   if (arrow == views::BubbleBorder::BOTTOM_CENTER) {
     set_adjust_if_offscreen(false);
   }
-#endif
 
-#if BUILDFLAG(IS_OHOS)
-  // Before the view below is initialised: Init() asks GetMaxBounds() how
-  // much room there is, and with no anchor view that is measured from this
-  // rect. Set after the constructor, as it first was, the rect was still
-  // empty then and the measurement CHECK-failed looking for an anchor.
+  // Before the view below is initialised: Init() asks GetMaxBounds() how much
+  // room there is, and with no anchor view that is measured from this rect.
+  // Setting it after the constructor leaves the rect empty during that check.
   if (shell_parent) {
     SetAnchorRect(shell_anchor_rect);
   }
