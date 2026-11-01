@@ -2161,8 +2161,15 @@ END_METADATA
 // outside tap and closed it. With activation off the popup keeps focus and its
 // buttons stay usable; a tap on the sheet itself still closes the popup through
 // the sheet's own handler.
+//
+// `dim_home` decides the sheet's look. On the home/tile surface the sheet is a
+// theme-aware dim that hides the native tiles underneath; on a web page the sheet
+// is fully transparent -- the page stays visible and un-dimming, while still
+// catching an outside tap to dismiss the popup (the same Chrome desktop
+// behaviour). The user asked for the dim only on the home page, not on web pages.
 views::Widget* CreatePopupScrim(views::Widget* browser_widget,
-                                 views::Widget* popup_widget) {
+                                 views::Widget* popup_widget,
+                                 bool dim_home) {
   if (!browser_widget || !popup_widget) {
     return nullptr;
   }
@@ -2178,14 +2185,18 @@ views::Widget* CreatePopupScrim(views::Widget* browser_widget,
   params.bounds = browser_widget->GetRootView()->GetLocalBounds();
   auto* scrim_widget = new views::Widget();
   scrim_widget->Init(std::move(params));
-  // Theme-aware dim: a light scheme gets a softer translucent wash, a dark
-  // scheme a stronger one, so the sheet follows the system colour scheme
-  // instead of a fixed opaque black.
-  const bool dark =
-      ui::NativeTheme::GetInstanceForNativeUi()->preferred_color_scheme() ==
-      ui::NativeTheme::PreferredColorScheme::kDark;
-  const SkColor scrim_color =
-      dark ? SkColorSetARGB(0xCC, 0, 0, 0) : SkColorSetARGB(0x59, 0, 0, 0);
+  // Theme-aware dim on the home page; fully transparent on a web page so the
+  // page is not dimmed. Either way the sheet follows the system colour scheme.
+  SkColor scrim_color;
+  if (dim_home) {
+    const bool dark =
+        ui::NativeTheme::GetInstanceForNativeUi()->preferred_color_scheme() ==
+        ui::NativeTheme::PreferredColorScheme::kDark;
+    scrim_color =
+        dark ? SkColorSetARGB(0xCC, 0, 0, 0) : SkColorSetARGB(0x59, 0, 0, 0);
+  } else {
+    scrim_color = SkColorSetARGB(0x00, 0, 0, 0);
+  }
   scrim_widget->SetContentsView(std::make_unique<PopupScrimView>(
       base::BindOnce(
           [](views::Widget* pw) {
@@ -2349,8 +2360,12 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   // browser window could not, the tile page is drawn by the shell above that
   // window. Activation stays off: a second *activatable* window alongside the
   // popup made taps on the popup's own controls read as outside taps and broke
-  // every button. The sheet is fully opaque and closes the popup on an outside
-  // tap.
+  // every button.
+  //
+  // Only the home/tile surface gets a *dimming* sheet (to hide the tiles). On a
+  // web page the sheet is transparent -- the page stays visible -- but still
+  // closes the popup on an outside tap. Home is the new-tab page
+  // (chrome://newtab, what the shell's "home" command navigates to).
 
   // Only one popup window may exist at a time. Reopening the action without
   // closing the old popup (tap the menu, then the extension again) leaves two
@@ -2383,7 +2398,14 @@ void RunExtensionAction(BrowserWindowInterface* browser,
   LOG(WARNING) << "OHOS extension popup: shown widget="
                << (popup_widget ? 1 : 0);
   if (popup_widget) {
-    views::Widget* scrim = CreatePopupScrim(parent, popup_widget);
+    // The home surface is the new-tab page (chrome://newtab/); the shell's
+    // "home" command navigates there. Dim there to hide the tiles; on a web page
+    // leave the page visible (transparent sheet, still tap-to-dismiss).
+    const GURL& page_url =
+        active ? active->GetLastCommittedURL() : GURL::EmptyGURL();
+    const bool on_home =
+        page_url.SchemeIs("chrome") && page_url.host() == "newtab";
+    views::Widget* scrim = CreatePopupScrim(parent, popup_widget, on_home);
     new ExtensionPopupCloseWatcher(popup_widget, scrim, profile, *id);
   }
 }
