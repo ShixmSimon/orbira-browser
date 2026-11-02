@@ -5940,6 +5940,12 @@ void ApplyTopControlsOffset(content::WebContents* contents, float ratio) {
     window->SetTransform(transform);
     VLOG(1) << "OHOS browser controls: page offset " << offset;
   }
+  // The translate above also shifts the coordinates the event pipeline hands
+  // out, and the renderer takes its own controls offset off as well -- the
+  // page moved once but taps were moved twice, which put every tap a bar's
+  // height below the finger. Hand the shell's share back to the input side.
+  ui::OhosEventSource::SetTouchYCompensationPx(height *
+                                              std::clamp(ratio, 0.0f, 1.0f));
 }
 
 }  // namespace
