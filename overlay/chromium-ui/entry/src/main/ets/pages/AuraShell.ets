@@ -106,6 +106,10 @@ interface ExtensionNoticePayload {
 const SWIPE_TRIGGER_VP: number = 28;
 // 判据：引擎是否在本次手势里自己动过顶栏比例（动过说明页面真的在滚 → 让位）。
 const CONTROLS_RATIO_EPS: number = 0.02;
+// 顶栏显隐态翻转后，等比例稳定这么久再重发底部视口内距。翻转发生在控件动画
+// 途中，立刻重发会让整屏布局的页面在动画中段重排一次；等到稳定后再发，重排
+// 落在动画结束之后（补偿本身仍是常量，不跟 ratio —— 连续补实测会跳且卡）。
+const DOCK_INSET_SETTLE_MS: number = 150;
 // 键盘避让区报的 bottomRect 比「页面该留出的高度」小一截。实测标定（同一键盘、
 // 同一页面尺寸）：补 44 → 页内固定底栏第一行表情完整、第二行被挡；补 70 → 两行
 // 完整但离键盘还差半个表情（搜狐、贴吧同一量级，约 15vp）。取 85。
@@ -698,6 +702,10 @@ struct AuraShell {
   //    1.0.112 撤销补 topSafe 的原因已失效：当时引擎 shrinkRendererSize=true，控件高度
   //    由引擎自己从 renderer 尺寸里扣，外壳再补＝重复扣（贴底元素上移、下方露底板）。
   private lastTopPushSent: number = -1;
+  // 底部视口内距的延迟重发：显隐态翻转后等 ratio 稳定再发一次（见
+  // syncDockInsetForControlsMove）。
+  private dockInsetPending: boolean = false;
+  private dockInsetSettleTimer: number = -1;
 
   // 底部缺口补偿（vp）= **常量**。1.0.130 曾按「顶栏高 × ratio」连续补，实测失败：
   // 收起时 ratio→0 → 补偿归零（收起态反而退化回裁切），且每帧 resize renderer →
@@ -787,12 +795,29 @@ struct AuraShell {
   }
 
   // 滚动比例变化时同步「顶栏完全收起」标志：翻转才重发内距（低频、稳态）。
+  // 重发等 ratio 稳定 DOCK_INSET_SETTLE_MS 后做：翻转点落在控件动画途中，立刻
+  // 重发会让整屏布局的页面在动画中段重排一次；延后到动画结束后重排只落在尾部。
+  // 标志本身仍即时更新 —— computeTopBarHiddenForInset 的滞回判据要用。
   private syncDockInsetForControlsMove(): void {
     const next: boolean = this.computeTopBarHiddenForInset();
     if (next !== this.topBarHiddenForInset) {
       this.topBarHiddenForInset = next;
-      this.applyDockViewportInset();
+      this.dockInsetPending = true;
     }
+    if (!this.dockInsetPending) {
+      return;
+    }
+    if (this.dockInsetSettleTimer >= 0) {
+      clearTimeout(this.dockInsetSettleTimer);
+    }
+    this.dockInsetSettleTimer = setTimeout((): void => {
+      this.dockInsetSettleTimer = -1;
+      if (!this.dockInsetPending) {
+        return;
+      }
+      this.dockInsetPending = false;
+      this.applyDockViewportInset();
+    }, DOCK_INSET_SETTLE_MS);
   }
 
   // 「顶栏完全收起（贴状态栏底静息）」判定，带滞回防抖。阈值与引擎对齐：
