@@ -5333,19 +5333,6 @@ void ExecuteBrowserCommandOnUiThread(gfx::AcceleratedWidget widget,
         command.FindBool("animate").value_or(true), std::nullopt);
     return;
   }
-  if (*name == "setTouchYCompensation") {
-    // In DIP: added straight to the touch location the renderer hit-tests
-    // with. Read as an int too -- the shell sends whole numbers most of the
-    // time and FindDouble only matches JSON doubles.
-    double dip = 0.0;
-    if (const auto value = command.FindDouble("y")) {
-      dip = *value;
-    } else if (const auto whole = command.FindInt("y")) {
-      dip = static_cast<double>(*whole);
-    }
-    ui::OhosEventSource::SetTouchYCompensationDip(static_cast<float>(dip));
-    return;
-  }
   if (*name == "setViewportInsets") {
     const int bottom = std::max(0, command.FindInt("bottom").value_or(0));
     {
@@ -5952,6 +5939,25 @@ void ApplyTopControlsOffset(content::WebContents* contents, float ratio) {
   if (window->transform() != transform) {
     window->SetTransform(transform);
     VLOG(1) << "OHOS browser controls: page offset " << offset;
+  }
+  // The page is translated down by the bar's whole height, but only its
+  // address-bar part is let go when the page is laid out: the status-bar part
+  // stays in the controls offset the renderer takes off as well, so every tap
+  // lands that much lower than what is drawn under it. Hand the status-bar
+  // part back to the input side. With no address bar on top (a bottom bar, a
+  // fullscreen page) nothing is handed back.
+  constexpr int kAddressBarDip = 48;
+  const float compensation = std::max(0, top_dip - kAddressBarDip) *
+                             std::clamp(ratio, 0.0f, 1.0f);
+  ui::OhosEventSource::SetTouchYCompensationDip(compensation);
+  // Temporary: says what the input side is given, so a build can be checked
+  // from the log without tapping through every page.
+  static float logged_compensation = -1.0f;
+  if (compensation < logged_compensation - 0.5f ||
+      compensation > logged_compensation + 0.5f) {
+    logged_compensation = compensation;
+    LOG(WARNING) << "OHOS touch comp: " << compensation
+                 << " top=" << top_dip << " ratio=" << ratio;
   }
 
 }
