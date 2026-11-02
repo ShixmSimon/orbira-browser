@@ -115,7 +115,7 @@ const KEYBOARD_INSET_EXTRA_VP: number = 85;
 // 输入管线又扣了一遍同样的量，命中因此比画面低一条顶栏。外壳按顶栏显隐比例
 // 下发补偿量，顶栏收起时自动归零。
 // ⚠️ 实测标定的常量：改这里只需重打 HAP，不必重编引擎。
-const TOUCH_Y_COMP_VP: number = -48;
+const TOUCH_Y_COMP_VP: number = -200;
 
 // 引擎原生新标签页的几种 URL 形态。引擎自己 newTab 用的是 chrome://newtab/
 // （aura_shell_runtime_bridge.cc 里 NavigateOnUiThread(GURL("chrome://newtab/"))），
@@ -754,6 +754,11 @@ struct AuraShell {
   // resize renderer → 页面跳动 + 滚动发卡。补偿改回常量后无需再挂 ratio 事件。）
   // 触摸 Y 补偿：见 TOUCH_Y_COMP_VP。只有「地址栏在上」的风格需要（底置地址栏
   // 的 top 只有状态栏高，补偿几乎为 0），全屏网页一律归零。
+  // 首个浏览器状态回来前，引擎侧还没有 browser/tabs，命令会被丢弃 —— 见
+  // aura_shell_runtime_bridge.cc 的 "has no active browser"。所以补一次「状态
+  // 到达后再发」，成功发过一次就不再重发（后续由比例/切档路径维护）。
+  private touchCompSent: boolean = false;
+
   private sendTouchYCompensation(): void {
     if (!this.isMobilePhoneUi() || this.pageFullscreen) {
       this.executeBrowserCommand({ command: 'setTouchYCompensation', y: 0 });
@@ -763,9 +768,12 @@ struct AuraShell {
       this.homeStyle !== 'chrome' || this.dockPosition === 'top';
     const ratio: number = Math.min(Math.max(Number(this.scrolledRatio), 0), 1);
     const vp: number = hasTopBar ? TOUCH_Y_COMP_VP * ratio : 0;
+    const px: number = this.getUIContext().vp2px(vp);
+    hilog.info(0x0000, 'AuraShell', 'touch comp: %{public}s vp -> %{public}s px',
+      vp.toFixed(1), px.toFixed(1));
     this.executeBrowserCommand({
       command: 'setTouchYCompensation',
-      y: this.getUIContext().vp2px(vp)
+      y: px
     });
   }
 
@@ -1437,6 +1445,10 @@ struct AuraShell {
           const wasNewTab: boolean = this.isNewTabPage();
           const prevUrl: string = this.browserState.url;
           this.browserState = state;
+          if (!this.touchCompSent) {
+            this.touchCompSent = true;
+            this.sendTouchYCompensation();
+          }
           // 换页/换标签：触摸收起的 dock 复位（否则新页面会停在收起位）。
           if (this.swipeDockTaken && (state.url ?? '') !== prevUrl) {
             this.releaseSwipeDock();
