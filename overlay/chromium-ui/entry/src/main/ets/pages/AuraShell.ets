@@ -100,16 +100,12 @@ interface ExtensionNoticePayload {
   command?: string;
 }
 
-// 上滑兜底触发位移（vp）：手指在页面区划过这么多、且引擎全程没动过顶栏比例
-// 时，由外壳把**已经收起**的顶栏展开（页面不滚动时唯一的恢复路径，见
-// onSwipeControlsTouch）。取得比顶栏高度小，避免"要划很久才有反应"。
+// 上手兜底触发位移（vp）：手指在页面区划过这么多、且引擎全程没动过顶栏比例，
+// 才由外壳接手——收 dock，或把已被收起的顶栏放回来（见 onSwipeControlsTouch）。
+// 取得比顶栏高度小，避免"要划很久才有反应"。
 const SWIPE_TRIGGER_VP: number = 28;
 // 判据：引擎是否在本次手势里自己动过顶栏比例（动过说明页面真的在滚 → 让位）。
 const CONTROLS_RATIO_EPS: number = 0.02;
-// 顶栏显隐态翻转后，等比例稳定这么久再重发底部视口内距。翻转发生在控件动画
-// 途中，立刻重发会让整屏布局的页面在动画中段重排一次；等到稳定后再发，重排
-// 落在动画结束之后（补偿本身仍是常量，不跟 ratio —— 连续补实测会跳且卡）。
-const DOCK_INSET_SETTLE_MS: number = 150;
 // 键盘避让区报的 bottomRect 比「页面该留出的高度」小一截。实测标定（同一键盘、
 // 同一页面尺寸）：补 44 → 页内固定底栏第一行表情完整、第二行被挡；补 70 → 两行
 // 完整但离键盘还差半个表情（搜狐、贴吧同一量级，约 15vp）。取 85。
@@ -509,6 +505,10 @@ struct AuraShell {
   // 并立即把顶栏动画展开/交还给滚动。
   private onHideTopBarPrefChanged(): void {
     this.sendBrowserControls();
+    // 切档前先把 dock 交还引擎，避免触摸值压着比例（见 releaseSwipeDock）。
+    if (this.swipeDockTaken) {
+      this.releaseSwipeDock();
+    }
     if (!this.hideTopBarOnScroll) {
       // 刚切入「地址栏常驻」：dock 的触摸驱动从当前可见度续上，避免跳变。
       const seeded: number = Math.min(Math.max(this.scrolledRatio, 0), 1);
@@ -680,6 +680,10 @@ struct AuraShell {
   // “滚动时隐藏底部栏”开关变化：dock 常驻时把它永久盖住的高度报给引擎，
   // 页面末尾才能滚到它上方；随滚动收起时还原为 0。
   private onHideDockPrefChanged(): void {
+    // 关掉「滚动时隐藏底部栏」后 dock 常驻，触摸值不再有意义，先交还引擎。
+    if (!this.hideDockOnScroll && this.swipeDockTaken) {
+      this.releaseSwipeDock();
+    }
     this.applyDockViewportInset();
   }
 
@@ -707,10 +711,6 @@ struct AuraShell {
   //    1.0.112 撤销补 topSafe 的原因已失效：当时引擎 shrinkRendererSize=true，控件高度
   //    由引擎自己从 renderer 尺寸里扣，外壳再补＝重复扣（贴底元素上移、下方露底板）。
   private lastTopPushSent: number = -1;
-  // 底部视口内距的延迟重发：显隐态翻转后等 ratio 稳定再发一次（见
-  // syncDockInsetForControlsMove）。
-  private dockInsetPending: boolean = false;
-  private dockInsetSettleTimer: number = -1;
 
   // 底部缺口补偿（vp）= **常量**。1.0.130 曾按「顶栏高 × ratio」连续补，实测失败：
   // 收起时 ratio→0 → 补偿归零（收起态反而退化回裁切），且每帧 resize renderer →
@@ -799,30 +799,13 @@ struct AuraShell {
     });
   }
 
-  // 滚动比例变化时同步「顶栏完全收起」标志：翻转才重发内距（低频、稳态）。
-  // 重发等 ratio 稳定 DOCK_INSET_SETTLE_MS 后做：翻转点落在控件动画途中，立刻
-  // 重发会让整屏布局的页面在动画中段重排一次；延后到动画结束后重排只落在尾部。
-  // 标志本身仍即时更新 —— computeTopBarHiddenForInset 的滞回判据要用。
+  // 顶栏显隐态翻转时同步一次底部视口内距（幂等：只在翻转点重发）。
   private syncDockInsetForControlsMove(): void {
     const next: boolean = this.computeTopBarHiddenForInset();
     if (next !== this.topBarHiddenForInset) {
       this.topBarHiddenForInset = next;
-      this.dockInsetPending = true;
-    }
-    if (!this.dockInsetPending) {
-      return;
-    }
-    if (this.dockInsetSettleTimer >= 0) {
-      clearTimeout(this.dockInsetSettleTimer);
-    }
-    this.dockInsetSettleTimer = setTimeout((): void => {
-      this.dockInsetSettleTimer = -1;
-      if (!this.dockInsetPending) {
-        return;
-      }
-      this.dockInsetPending = false;
       this.applyDockViewportInset();
-    }, DOCK_INSET_SETTLE_MS);
+    }
   }
 
   // 「顶栏完全收起（贴状态栏底静息）」判定，带滞回防抖。阈值与引擎对齐：
@@ -1002,12 +985,13 @@ struct AuraShell {
     AppStorage.setOrCreate('auraChromeBottomRatio', ratio);
   }
 
-  // ---- 「页面不滚动时也能把收起的顶栏放出来」：上滑兜底 ----
-  // 顶栏的显隐平时由引擎做：页面滚动 → 引擎自己动 browser controls，并把
-  // browserControlsRatio 报给外壳。但有些页面（必应首页弹登录/建议浮层、
-  // 各种 modal 锁了 body 滚动、页面本身不足一屏）**根本不发生滚动**，引擎
-  // 拿不到滚动输入 → ratio 恒为 1。这类页面按固定工具栏处理（不做收起），
-  // 这里只补「放」：页面先被真实滚动收起、随后锁滚时，靠它把顶栏放回来。
+  // ---- 页面不滚动时的手势兜底：顶栏不放、只收 dock ----
+  // 顶栏显隐平时由引擎做：页面滚动 → 引擎动 browser controls，并把
+  // browserControlsRatio 报给外壳。有些页面（弹登录/建议浮层、modal 锁了 body
+  // 滚动、本身不足一屏）**根本不发生滚动**，引擎拿不到输入 → ratio 恒为 1。
+  // 这类页面顶栏保持不动（外壳也不再主动收起：引擎的控件动画会和整屏布局的
+  // 重排叠在一起），只把 dock 交给触摸驱动——dock 是浮层，位移不牵动布局。
+  // 若顶栏曾由真实滚动收起、之后页面才锁滚，这里负责把它放回来。
   // 与上面 dock 触摸驱动互斥：那边要求「地址栏常驻」，这边要求「允许收起顶栏」。
   private swipeTracking: boolean = false;
   private swipeStartY: number = 0;
@@ -1029,8 +1013,7 @@ struct AuraShell {
 
   private onSwipeControlsTouch(event: TouchEvent): void {
     // Chrome 底置的滚动隐藏走触摸驱动（onChromeBottomDockTouch），不适用本兜底；
-    // Chrome 顶置与简约同款——引擎 ratio 驱动通栏地址栏，非滚动页面（弹窗锁滚/
-    // 不足一屏）同样需要这个兜底把地址栏收/放（1.0.99 顶置回通栏后启用）。
+    // Chrome 顶置与简约同款：地址栏由引擎比例驱动，非滚动页面仍需要本兜底。
     if (this.homeStyle === 'chrome' && this.dockPosition !== 'top') {
       return;
     }
@@ -1092,13 +1075,13 @@ struct AuraShell {
       const hideProgress: number = span > 0
         ? Math.min(Math.max((1 - clamped) / span, 0), 1)
         : (1 - clamped);
-      // 页面不滚动时**地址栏钉住、只收 dock**：这类页面（内层滚动容器、弹窗锁滚、
-      // 不足一屏）引擎拿不到根滚动、不产比例，若由外壳去 setBrowserControlsState
-      // 收放地址栏，动画会和整屏布局的重排叠在一起，途中顿一下（真机逐帧实测）。
-      // dock 是浮层：底部内距恒 0 → 只改 translate，零重排，所以上滑收 dock、
-      // 下滑放回来都是平滑的，地址栏始终不动（对齐其他浏览器对这类页的处理）。
+      // 页面不滚动时**地址栏钉住、只收 dock**：这类页面引擎拿不到根滚动、不产
+      // 比例，若由外壳 setBrowserControlsState 收放地址栏，引擎动画会和整屏布局
+      // 的重排叠在一起、途中顿一下。dock 是浮层（底部内距恒 0），只改 translate，
+      // 零重排——上滑收、下滑放都是平滑的，地址栏始终不动。
       if (this.swipeDockOnlyOn()) {
-        if (up >= SWIPE_TRIGGER_VP) {
+        // 已开始驱动就继续跟手（手指回退时 dock 也要跟着回），未开始才看阈值。
+        if (this.swipeDockDriving || up >= SWIPE_TRIGGER_VP) {
           this.driveSwipeDock(up - SWIPE_TRIGGER_VP, hideProgress);
           return;
         }
