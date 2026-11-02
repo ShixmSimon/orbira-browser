@@ -1525,7 +1525,13 @@ export struct MobileBrowserOverlay {
     const r: number = Math.min(Math.max(raw, 0), 1);
     const floor: number = this.topBarRatioFloor();
     const span: number = 1 - floor;
-    return span > 0 ? Math.min(Math.max((1 - r) / span, 0), 1) : (1 - r);
+    const progress: number = span > 0 ? Math.min(Math.max((1 - r) / span, 0), 1) : (1 - r);
+    // 引擎的 ratio 静息不到 0（末端残留不到 1 DIP）：引擎侧已把这点偏移归零
+    // （见 aura_shell_runtime_bridge.cc 的 ApplyTopControlsOffset），外壳这边
+    // 也把最后 4% 当作完全收起——条带才能和归零后的网页一起收干净，不留
+    // 1~2 DIP 白边压在深色网页顶端（用户实测的小白线）。收尾处的几 DIP
+    // 差异被同色垫底层盖住，看不出跳动。
+    return progress > 0.96 ? 1 : progress;
   }
 
   // 引擎顶部预留区高度（vp）。网页 window 是满屏的，引擎把内容按这个高度整体
@@ -2332,7 +2338,11 @@ export struct MobileBrowserOverlay {
       // 垫在条带之下：同色（surface_primary），全显时被条带完全盖住，收起途中接管
       // 那一带，和下面那条固定 0~topSafe 的常驻垫底配合，预留区全程无露底。
       // 与条带同宽同色、纯装饰 hitTest None：不影响任何命中与手势。
-      if (!this.isHomeSurface() && !this.pageFullscreen && this.topBarReserveVp() > 0.5) {
+      // 收起基本完成（≥0.95）就不再画这层垫底：引擎的 ratio 收不到 0（末端约 0.04），
+      // 垫层高度会残留 (48+topSafe+3)×0.04 ≈ 3.5 DIP —— 浅色主题下这条纯白带压在
+      // 深色网页顶端，就是用户看到的那条白线（截图像素实测 y=0..11px 近白）。
+      if (!this.isHomeSurface() && !this.pageFullscreen &&
+        this.topBarReserveVp() > 0.5 && this.topBarHideProgress() < 0.95) {
         Column()
           .width('100%')
           .height(this.topBarReserveVp())
@@ -2802,7 +2812,10 @@ export struct MobileBrowserOverlay {
       // 为什么不学 1.0.71 用帘幕：帘幕是**覆盖层**，盖多久就空白多久（实测把
       // ≈0.45s 的绘制空档撑成 ≈1.05s）。这条 2vp 细条不覆盖任何内容，只指示，
       // 不改变白屏时长 —— 白屏只由引擎网络/渲染决定。
-      if (this.loadBarShown) {
+      // 顶栏收起过半就卸载进度条：它的容器随顶栏整体上移，收到底时这条 2vp
+      // 细条会被顶到屏幕 y≈1，在深色网页上就是页面顶端的一条亮线（用户实测）。
+      // 卸载走已有的淡出过渡；仍在加载时，顶栏展开后它会自己回来。
+      if (this.loadBarShown && this.topBarHideProgress() < 0.5) {
         Stack({ alignContent: Alignment.Start }) {
           Row()
             .width(`${Math.min(Math.max(this.loadBarWidth, this.loadBarMin), 1) * 100}%`)
@@ -2838,7 +2851,9 @@ export struct MobileBrowserOverlay {
     // 下限归一化（见 topBarHideProgress）——「上滑时隐藏状态栏」关着时引擎
     // 下限=topSafe，直接用 1-ratio 会卡在半隐。
     // 1.0.102：加 160ms 隐式动画——收起/展开是可见的滑出滑入，不是瞬间跳变。
-    .translate({ y: -(this.topBarHideProgress()) * (TOP_BAR_EXTENT_VP + this.topSafeVp) })
+    // 多推 2vp：收到底时条带下沿正好落在屏幕 y=0，圆整会留 1px 缝；浅色主题下
+    // 条带底色是纯白，压在深色网页上就是页面顶端的一条白线（用户实测）。
+    .translate({ y: -(this.topBarHideProgress()) * (TOP_BAR_EXTENT_VP + this.topSafeVp + 2) })
     .animation({ duration: 160, curve: Curve.FastOutSlowIn })
   }
 
