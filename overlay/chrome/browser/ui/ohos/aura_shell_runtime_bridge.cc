@@ -5947,17 +5947,21 @@ void ApplyTopControlsOffset(content::WebContents* contents, float ratio) {
   // part back to the input side. With no address bar on top (a bottom bar, a
   // fullscreen page) nothing is handed back.
   constexpr int kAddressBarDip = 48;
-  const float compensation = std::max(0, top_dip - kAddressBarDip) *
-                             std::clamp(ratio, 0.0f, 1.0f);
-  ui::OhosEventSource::SetTouchYCompensationDip(compensation);
+  const float compensation_dip = std::max(0, top_dip - kAddressBarDip) *
+                                 std::clamp(ratio, 0.0f, 1.0f);
+  // The event source carries locations in physical pixels and the pipeline
+  // divides by the scale on the way to the renderer, so the compensation has
+  // to go in as pixels too -- handing over DIP applied only a third of it.
+  const float compensation_px = compensation_dip * scale;
+  ui::OhosEventSource::SetTouchYCompensationPx(compensation_px);
   // Temporary: says what the input side is given, so a build can be checked
   // from the log without tapping through every page.
-  static float logged_compensation = -1.0f;
-  if (compensation < logged_compensation - 0.5f ||
-      compensation > logged_compensation + 0.5f) {
-    logged_compensation = compensation;
-    LOG(WARNING) << "OHOS touch comp: " << compensation
-                 << " top=" << top_dip << " ratio=" << ratio;
+  static float logged = -1.0f;
+  if (compensation_px < logged - 0.5f || compensation_px > logged + 0.5f) {
+    logged = compensation_px;
+    LOG(WARNING) << "OHOS touch comp: " << compensation_px << "px ("
+                 << compensation_dip << "dip) top=" << top_dip
+                 << " ratio=" << ratio << " scale=" << scale;
   }
 
 }
