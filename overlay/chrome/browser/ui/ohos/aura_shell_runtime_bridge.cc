@@ -5334,11 +5334,16 @@ void ExecuteBrowserCommandOnUiThread(gfx::AcceleratedWidget widget,
     return;
   }
   if (*name == "setTouchYCompensation") {
-    // The shell owns this value: the page offset it applies through the
-    // browser controls is not exactly the amount the input pipeline has to
-    // give back, and only the shell can be tuned without a rebuild.
-    ui::OhosEventSource::SetTouchYCompensationPx(static_cast<float>(
-        command.FindDouble("y").value_or(0.0)));
+    // In DIP: added straight to the touch location the renderer hit-tests
+    // with. Read as an int too -- the shell sends whole numbers most of the
+    // time and FindDouble only matches JSON doubles.
+    double dip = 0.0;
+    if (const auto value = command.FindDouble("y")) {
+      dip = *value;
+    } else if (const auto whole = command.FindInt("y")) {
+      dip = static_cast<double>(*whole);
+    }
+    ui::OhosEventSource::SetTouchYCompensationDip(static_cast<float>(dip));
     return;
   }
   if (*name == "setViewportInsets") {

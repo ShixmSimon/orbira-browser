@@ -111,11 +111,11 @@ const CONTROLS_RATIO_EPS: number = 0.02;
 // 完整但离键盘还差半个表情（搜狐、贴吧同一量级，约 15vp）。取 85。
 // ⚠️ 这是按实测标定的常数：各站页面自身底部留白不同，个别站点仍可能差几 vp。
 const KEYBOARD_INSET_EXTRA_VP: number = 85;
-// 触摸 Y 补偿（vp，负值 = 把触摸点往画面上方还原）：顶栏把网页整体下移的同时，
-// 输入管线又扣了一遍同样的量，命中因此比画面低一条顶栏。外壳按顶栏显隐比例
-// 下发补偿量，顶栏收起时自动归零。
-// ⚠️ 实测标定的常量：改这里只需重打 HAP，不必重编引擎。
-const TOUCH_Y_COMP_VP: number = -200;
+// 触摸 Y 补偿：真机实测「命中比绘制低一个状态栏高度」——地址栏在上的风格把
+// 「地址栏 + 状态栏」全算进了网页的页偏移，而实际绘制只让出了地址栏那一段，
+// 于是命中坐标多减了一个状态栏。补偿量取状态栏高（topSafe）× 顶栏显隐比例，
+// 顶栏收起时自动归零；地址栏在下的风格不补（实测无此偏移）。
+const TOUCH_Y_COMP_EPS: number = 0.01;
 
 // 引擎原生新标签页的几种 URL 形态。引擎自己 newTab 用的是 chrome://newtab/
 // （aura_shell_runtime_bridge.cc 里 NavigateOnUiThread(GURL("chrome://newtab/"))），
@@ -758,22 +758,29 @@ struct AuraShell {
   // aura_shell_runtime_bridge.cc 的 "has no active browser"。所以补一次「状态
   // 到达后再发」，成功发过一次就不再重发（后续由比例/切档路径维护）。
   private touchCompSent: boolean = false;
+  private lastTouchCompDip: number = -999;
 
   private sendTouchYCompensation(): void {
-    if (!this.isMobilePhoneUi() || this.pageFullscreen) {
-      this.executeBrowserCommand({ command: 'setTouchYCompensation', y: 0 });
+    let dip: number = 0;
+    if (this.isMobilePhoneUi() && !this.pageFullscreen) {
+      const hasTopBar: boolean =
+        this.homeStyle !== 'chrome' || this.dockPosition === 'top';
+      if (hasTopBar) {
+        const topSafe: number = Number(AppStorage.get('auraTopSafeVp') ?? 0);
+        const ratio: number = Math.min(Math.max(Number(this.scrolledRatio), 0), 1);
+        dip = Math.max(0, topSafe) * ratio;
+      }
+    }
+    // 引擎按 DIP 加到触摸坐标上，这里就发 DIP（不要再 vp2px）。
+    // 加 EPS 让 JSON 里是小数：引擎的 FindDouble 取不到整数值。
+    const value: number = dip + TOUCH_Y_COMP_EPS;
+    if (Math.abs(value - this.lastTouchCompDip) < 0.5) {
       return;
     }
-    const hasTopBar: boolean =
-      this.homeStyle !== 'chrome' || this.dockPosition === 'top';
-    const ratio: number = Math.min(Math.max(Number(this.scrolledRatio), 0), 1);
-    const vp: number = hasTopBar ? TOUCH_Y_COMP_VP * ratio : 0;
-    const px: number = this.getUIContext().vp2px(vp);
-    hilog.info(0x0000, 'AuraShell', 'touch comp: %{public}s vp -> %{public}s px',
-      vp.toFixed(1), px.toFixed(1));
+    this.lastTouchCompDip = value;
     this.executeBrowserCommand({
       command: 'setTouchYCompensation',
-      y: px
+      y: value
     });
   }
 

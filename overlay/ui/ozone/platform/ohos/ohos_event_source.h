@@ -31,12 +31,9 @@ class OhosEventSource : public PlatformEventSource {
       gfx::AcceleratedWidget target_hint = gfx::kNullAcceleratedWidget);
   static bool ResetPointerCaptures(
       gfx::AcceleratedWidget widget = gfx::kNullAcceleratedWidget);
-  // Touch y compensation, in physical pixels: the shell's page offset is
-  // applied to the page twice -- once by translating the page's window (which
-  // also shifts the coordinates the event pipeline hands out) and once by the
-  // renderer's own browser-controls offset. The window translate is undone
-  // here so that a tap lands where the finger is.
-  static void SetTouchYCompensationPx(float px);
+  // Touch y compensation, in DIP: added to the location the renderer
+  // hit-tests with, so a tap lands on what is actually under the finger.
+  static void SetTouchYCompensationDip(float dip);
   static gfx::AcceleratedWidget GetCurrentDispatchTarget();
   static TouchMoveQueueStats GetTouchMoveQueueStatsForTesting();
 

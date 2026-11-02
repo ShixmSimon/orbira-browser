@@ -44,7 +44,7 @@ struct EventSourceBridge {
   base::TimeDelta max_touch_move_age GUARDED_BY(lock);
 };
 
-float g_touch_y_compensation_px = 0.0f;
+float g_touch_y_compensation_dip = 0.0f;
 
 EventSourceBridge& GetEventSourceBridge() {
   static base::NoDestructor<EventSourceBridge> bridge;
@@ -409,8 +409,8 @@ void OhosEventSource::ResetPointerCapturesOnEventThread(
   });
 }
 
-void OhosEventSource::SetTouchYCompensationPx(float px) {
-  g_touch_y_compensation_px = px;
+void OhosEventSource::SetTouchYCompensationDip(float dip) {
+  g_touch_y_compensation_dip = dip;
 }
 
 void OhosEventSource::DispatchOwnedEvent(std::unique_ptr<Event> event,
@@ -434,12 +434,12 @@ void OhosEventSource::DispatchOwnedEvent(std::unique_ptr<Event> event,
                  << " root=" << incoming_root_location.ToString()
                  << " target=" << dispatch_target_ << " hint=" << target_hint;
   }
-  // Undo the shell's page translate for touch: that translate already moved
-  // the page down, and it also shifts the coordinates the pipeline hands out,
-  // so without this the renderer takes the same offset off twice.
-  if (event->IsTouchEvent() && g_touch_y_compensation_px != 0.0f) {
+  // Bring the touch back onto what is drawn under it. The page lets go only
+  // the address bar, but the controls offset it is given also includes the
+  // status bar, so the renderer hit-tests that much higher than it paints.
+  if (event->IsTouchEvent() && g_touch_y_compensation_dip != 0.0f) {
     ui::LocatedEvent* located = event->AsLocatedEvent();
-    const gfx::Vector2dF compensation(0.0f, g_touch_y_compensation_px);
+    const gfx::Vector2dF compensation(0.0f, g_touch_y_compensation_dip);
     located->set_location_f(located->location_f() + compensation);
     located->set_root_location_f(located->root_location_f() + compensation);
   }
