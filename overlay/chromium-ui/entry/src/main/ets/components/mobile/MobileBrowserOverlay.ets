@@ -1525,13 +1525,7 @@ export struct MobileBrowserOverlay {
     const r: number = Math.min(Math.max(raw, 0), 1);
     const floor: number = this.topBarRatioFloor();
     const span: number = 1 - floor;
-    const progress: number = span > 0 ? Math.min(Math.max((1 - r) / span, 0), 1) : (1 - r);
-    // 引擎的 ratio 静息不到 0（末端残留不到 1 DIP）：引擎侧已把这点偏移归零
-    // （见 aura_shell_runtime_bridge.cc 的 ApplyTopControlsOffset），外壳这边
-    // 也把最后 4% 当作完全收起——条带才能和归零后的网页一起收干净，不留
-    // 1~2 DIP 白边压在深色网页顶端（用户实测的小白线）。收尾处的几 DIP
-    // 差异被同色垫底层盖住，看不出跳动。
-    return progress > 0.96 ? 1 : progress;
+    return span > 0 ? Math.min(Math.max((1 - r) / span, 0), 1) : (1 - r);
   }
 
   // 引擎顶部预留区高度（vp）。网页 window 是满屏的，引擎把内容按这个高度整体
