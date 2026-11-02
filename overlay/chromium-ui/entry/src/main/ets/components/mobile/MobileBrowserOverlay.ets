@@ -2332,9 +2332,10 @@ export struct MobileBrowserOverlay {
       // 垫在条带之下：同色（surface_primary），全显时被条带完全盖住，收起途中接管
       // 那一带，和下面那条固定 0~topSafe 的常驻垫底配合，预留区全程无露底。
       // 与条带同宽同色、纯装饰 hitTest None：不影响任何命中与手势。
-      // 收起基本完成（≥0.95）就不再画这层垫底：引擎的 ratio 收不到 0（末端约 0.04），
-      // 垫层高度会残留 (48+topSafe+3)×0.04 ≈ 3.5 DIP —— 浅色主题下这条纯白带压在
-      // 深色网页顶端，就是用户看到的那条白线（截图像素实测 y=0..11px 近白）。
+      // 收起基本完成（≥0.95）就不再画这层垫底：它的高度是 (48+topSafe+3)×ratio，
+      // 收起到底时引擎的 ratio 还剩一点（实测 0.02~0.04，收不到 0），垫层于是残留
+      // 约 3.5 DIP 的纯白带压在深色网页顶端——真机截图实测就是那条 11px 白线
+      // （关掉这层后降到 3px，剩下一截在引擎侧的控件偏移，见《待办清单》第 7 条）。
       if (!this.isHomeSurface() && !this.pageFullscreen &&
         this.topBarReserveVp() > 0.5 && this.topBarHideProgress() < 0.95) {
         Column()
