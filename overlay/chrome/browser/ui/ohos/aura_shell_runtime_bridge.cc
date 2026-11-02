@@ -5931,9 +5931,27 @@ void ApplyTopControlsOffset(content::WebContents* contents, float ratio) {
   }
   const int height = DipToPixels(top_dip);
   const float scale = window->layer()->device_scale_factor();
-  const float offset = height > 0 && scale > 0.0f
-                           ? height / scale * std::clamp(ratio, 0.0f, 1.0f)
-                           : 0.0f;
+  float shown = std::clamp(ratio, 0.0f, 1.0f);
+  // The renderer's ratio settles a hair short of the minimum instead of on it,
+  // leaving the page a DIP or two below the top of the screen for good. Over a
+  // dark page in the light theme that is the shell's own background showing
+  // through: a thin white line above the page. Treat an offset that small as
+  // no offset at all, so a collapsed page does reach the physical top; a
+  // collapse in flight crosses the band within a frame or two, and the second
+  // threshold keeps it from flickering on the way.
+  const float leaves = shown * static_cast<float>(top_dip);
+  static bool snapped_to_zero = false;
+  const bool snap =
+      top_dip > 0 && (snapped_to_zero ? leaves <= 3.0f : leaves < 2.5f);
+  if (snap != snapped_to_zero) {
+    snapped_to_zero = snap;
+    LOG(WARNING) << "OHOS browser controls: snap " << (snap ? "on" : "off")
+                 << " (ratio " << ratio << ", top " << top_dip << " dip)";
+  }
+  if (snap) {
+    shown = 0.0f;
+  }
+  const float offset = height > 0 && scale > 0.0f ? height / scale * shown : 0.0f;
   gfx::Transform transform;
   transform.Translate(0, offset);
   if (window->transform() != transform) {
