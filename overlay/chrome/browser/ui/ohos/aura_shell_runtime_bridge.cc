@@ -5333,6 +5333,14 @@ void ExecuteBrowserCommandOnUiThread(gfx::AcceleratedWidget widget,
         command.FindBool("animate").value_or(true), std::nullopt);
     return;
   }
+  if (*name == "setTouchYCompensation") {
+    // The shell owns this value: the page offset it applies through the
+    // browser controls is not exactly the amount the input pipeline has to
+    // give back, and only the shell can be tuned without a rebuild.
+    ui::OhosEventSource::SetTouchYCompensationPx(static_cast<float>(
+        command.FindDouble("y").value_or(0.0)));
+    return;
+  }
   if (*name == "setViewportInsets") {
     const int bottom = std::max(0, command.FindInt("bottom").value_or(0));
     {
@@ -5940,12 +5948,7 @@ void ApplyTopControlsOffset(content::WebContents* contents, float ratio) {
     window->SetTransform(transform);
     VLOG(1) << "OHOS browser controls: page offset " << offset;
   }
-  // The translate above also shifts the coordinates the event pipeline hands
-  // out, and the renderer takes its own controls offset off as well -- the
-  // page moved once but taps were moved twice, which put every tap a bar's
-  // height below the finger. Hand the shell's share back to the input side.
-  ui::OhosEventSource::SetTouchYCompensationPx(height *
-                                              std::clamp(ratio, 0.0f, 1.0f));
+
 }
 
 }  // namespace
