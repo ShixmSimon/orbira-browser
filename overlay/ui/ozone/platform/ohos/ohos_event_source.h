@@ -31,10 +31,6 @@ class OhosEventSource : public PlatformEventSource {
       gfx::AcceleratedWidget target_hint = gfx::kNullAcceleratedWidget);
   static bool ResetPointerCaptures(
       gfx::AcceleratedWidget widget = gfx::kNullAcceleratedWidget);
-  // Touch y compensation, in physical pixels (what locations here carry):
-  // added to the point the renderer hit-tests with, so a tap lands on what is
-  // actually under the finger.
-  static void SetTouchYCompensationPx(float px);
   static gfx::AcceleratedWidget GetCurrentDispatchTarget();
   static TouchMoveQueueStats GetTouchMoveQueueStatsForTesting();
 

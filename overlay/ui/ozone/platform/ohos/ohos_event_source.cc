@@ -44,8 +44,6 @@ struct EventSourceBridge {
   base::TimeDelta max_touch_move_age GUARDED_BY(lock);
 };
 
-float g_touch_y_compensation_px = 0.0f;
-
 EventSourceBridge& GetEventSourceBridge() {
   static base::NoDestructor<EventSourceBridge> bridge;
   return *bridge;
@@ -409,10 +407,6 @@ void OhosEventSource::ResetPointerCapturesOnEventThread(
   });
 }
 
-void OhosEventSource::SetTouchYCompensationPx(float px) {
-  g_touch_y_compensation_px = px;
-}
-
 void OhosEventSource::DispatchOwnedEvent(std::unique_ptr<Event> event,
                                          gfx::AcceleratedWidget target_hint) {
   const bool trace_pointer = event->type() == EventType::kMousePressed ||
@@ -433,15 +427,6 @@ void OhosEventSource::DispatchOwnedEvent(std::unique_ptr<Event> event,
                  << " local=" << incoming_location.ToString()
                  << " root=" << incoming_root_location.ToString()
                  << " target=" << dispatch_target_ << " hint=" << target_hint;
-  }
-  // Bring the touch back onto what is drawn under it. The page lets go only
-  // the address bar, but the controls offset it is given also includes the
-  // status bar, so the renderer hit-tests that much higher than it paints.
-  if (event->IsTouchEvent() && g_touch_y_compensation_px != 0.0f) {
-    ui::LocatedEvent* located = event->AsLocatedEvent();
-    const gfx::Vector2dF compensation(0.0f, g_touch_y_compensation_px);
-    located->set_location_f(located->location_f() + compensation);
-    located->set_root_location_f(located->root_location_f() + compensation);
   }
   if (event->IsLocatedEvent() &&
       dispatch_target_ != gfx::kNullAcceleratedWidget) {
