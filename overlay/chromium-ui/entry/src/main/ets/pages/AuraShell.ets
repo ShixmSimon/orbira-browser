@@ -100,8 +100,8 @@ interface ExtensionNoticePayload {
   command?: string;
 }
 
-// 上滑兜底触发位移（vp）：手指在页面区向上划过这么多、且引擎全程没动过
-// 顶栏比例，才由外壳显式收起顶栏（页面不滚动时的唯一收起路径，见
+// 上滑兜底触发位移（vp）：手指在页面区划过这么多、且引擎全程没动过顶栏比例
+// 时，由外壳把**已经收起**的顶栏展开（页面不滚动时唯一的恢复路径，见
 // onSwipeControlsTouch）。取得比顶栏高度小，避免"要划很久才有反应"。
 const SWIPE_TRIGGER_VP: number = 28;
 // 判据：引擎是否在本次手势里自己动过顶栏比例（动过说明页面真的在滚 → 让位）。
@@ -997,13 +997,12 @@ struct AuraShell {
     AppStorage.setOrCreate('auraChromeBottomRatio', ratio);
   }
 
-  // ---- 「页面不滚动也要能收起顶栏」：上滑兜底 ----
-  // 顶栏的收起平时由引擎做：页面滚动 → 引擎自己动 browser controls，并把
+  // ---- 「页面不滚动时也能把收起的顶栏放出来」：上滑兜底 ----
+  // 顶栏的显隐平时由引擎做：页面滚动 → 引擎自己动 browser controls，并把
   // browserControlsRatio 报给外壳。但有些页面（必应首页弹登录/建议浮层、
   // 各种 modal 锁了 body 滚动、页面本身不足一屏）**根本不发生滚动**，引擎
-  // 拿不到滚动输入 → ratio 恒为 1 → 工具栏死活不收。这里补一条外壳侧路径：
-  // 同一个触摸观察层里看手指位移，只要确认"整个手势期间引擎都没动过
-  // ratio"（说明页面确实没滚），就用显式指令把顶栏收/放。
+  // 拿不到滚动输入 → ratio 恒为 1。这类页面按固定工具栏处理（不做收起），
+  // 这里只补「放」：页面先被真实滚动收起、随后锁滚时，靠它把顶栏放回来。
   // 与上面 dock 触摸驱动互斥：那边要求「地址栏常驻」，这边要求「允许收起顶栏」。
   private swipeTracking: boolean = false;
   private swipeStartY: number = 0;
@@ -1074,12 +1073,11 @@ struct AuraShell {
       const hideProgress: number = span > 0
         ? Math.min(Math.max((1 - clamped) / span, 0), 1)
         : (1 - clamped);
-      if (up >= SWIPE_TRIGGER_VP && hideProgress <= 0.1) {
-        this.swipeHandled = true;
-        this.executeBrowserCommand({
-          command: 'setBrowserControlsState', state: 'hidden', animate: true });
-        return;
-      }
+      // 页面不滚动时**不再由外壳收起**工具栏：这类页面（内层滚动容器、弹窗锁滚、
+      // 不足一屏）一旦收起就会和整屏布局的重排叠在一起，展开/收起过程中顿一下
+      // （真机逐帧实测）。其他浏览器对这类页面就是固定工具栏——引擎拿不到根滚动
+      // 就不收，这里对齐同一行为。只保留「下滑把已经收起的展开」：页面先被真实
+      // 滚动收起、随后锁滚（弹窗）时否则再也收不回来。
       if (up <= -SWIPE_TRIGGER_VP && hideProgress >= 0.9) {
         this.swipeHandled = true;
         this.executeBrowserCommand({
