@@ -111,6 +111,11 @@ const CONTROLS_RATIO_EPS: number = 0.02;
 // 完整但离键盘还差半个表情（搜狐、贴吧同一量级，约 15vp）。取 85。
 // ⚠️ 这是按实测标定的常数：各站页面自身底部留白不同，个别站点仍可能差几 vp。
 const KEYBOARD_INSET_EXTRA_VP: number = 85;
+// 触摸 Y 补偿（vp，负值 = 把触摸点往画面上方还原）：顶栏把网页整体下移的同时，
+// 输入管线又扣了一遍同样的量，命中因此比画面低一条顶栏。外壳按顶栏显隐比例
+// 下发补偿量，顶栏收起时自动归零。
+// ⚠️ 实测标定的常量：改这里只需重打 HAP，不必重编引擎。
+const TOUCH_Y_COMP_VP: number = -48;
 
 // 引擎原生新标签页的几种 URL 形态。引擎自己 newTab 用的是 chrome://newtab/
 // （aura_shell_runtime_bridge.cc 里 NavigateOnUiThread(GURL("chrome://newtab/"))），
@@ -468,6 +473,7 @@ struct AuraShell {
     if (this.swipeDockTaken && !this.swipeDockDriving) {
       this.releaseSwipeDock();
     }
+    this.sendTouchYCompensation();
   }
 
   // 主页风格变化：Chrome 风格无独立顶栏、dock 常驻，需重发浏览器控件 inset。
@@ -743,6 +749,23 @@ struct AuraShell {
 
   // （1.0.131 移除 syncTopPushInset：随 ratio 每帧重发 setViewportInsets 会频繁
   // resize renderer → 页面跳动 + 滚动发卡。补偿改回常量后无需再挂 ratio 事件。）
+  // 触摸 Y 补偿：见 TOUCH_Y_COMP_VP。只有「地址栏在上」的风格需要（底置地址栏
+  // 的 top 只有状态栏高，补偿几乎为 0），全屏网页一律归零。
+  private sendTouchYCompensation(): void {
+    if (!this.isMobilePhoneUi() || this.pageFullscreen) {
+      this.executeBrowserCommand({ command: 'setTouchYCompensation', y: 0 });
+      return;
+    }
+    const hasTopBar: boolean =
+      this.homeStyle !== 'chrome' || this.dockPosition === 'top';
+    const ratio: number = Math.min(Math.max(Number(this.scrolledRatio), 0), 1);
+    const vp: number = hasTopBar ? TOUCH_Y_COMP_VP * ratio : 0;
+    this.executeBrowserCommand({
+      command: 'setTouchYCompensation',
+      y: this.getUIContext().vp2px(vp)
+    });
+  }
+
   private applyDockViewportInset(): void {
     if (this.pageFullscreen) {
       // 网页全屏：底部也不留任何内距，视口就是整屏。
