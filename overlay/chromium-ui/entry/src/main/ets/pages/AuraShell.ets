@@ -111,11 +111,6 @@ const CONTROLS_RATIO_EPS: number = 0.02;
 // 完整但离键盘还差半个表情（搜狐、贴吧同一量级，约 15vp）。取 85。
 // ⚠️ 这是按实测标定的常数：各站页面自身底部留白不同，个别站点仍可能差几 vp。
 const KEYBOARD_INSET_EXTRA_VP: number = 85;
-// 触摸 Y 补偿：真机实测「命中比绘制低一个状态栏高度」——地址栏在上的风格把
-// 「地址栏 + 状态栏」全算进了网页的页偏移，而实际绘制只让出了地址栏那一段，
-// 于是命中坐标多减了一个状态栏。补偿量取状态栏高（topSafe）× 顶栏显隐比例，
-// 顶栏收起时自动归零；地址栏在下的风格不补（实测无此偏移）。
-const TOUCH_Y_COMP_EPS: number = 0.01;
 
 // 引擎原生新标签页的几种 URL 形态。引擎自己 newTab 用的是 chrome://newtab/
 // （aura_shell_runtime_bridge.cc 里 NavigateOnUiThread(GURL("chrome://newtab/"))），
@@ -473,7 +468,6 @@ struct AuraShell {
     if (this.swipeDockTaken && !this.swipeDockDriving) {
       this.releaseSwipeDock();
     }
-    this.sendTouchYCompensation();
   }
 
   // 主页风格变化：Chrome 风格无独立顶栏、dock 常驻，需重发浏览器控件 inset。
@@ -534,9 +528,6 @@ struct AuraShell {
   // 把顶栏的 browser controls（高度 + 收起许可）发给引擎：启动、设置开关
   // 切换、启动后的兜底重发共用这一份。
   private sendBrowserControls(): void {
-    // 每次下发控件几何都同步一次触摸补偿：启动、切风格、切 dock 位置都会走这里，
-    // 只挂在比例事件上的话，页面加载后比例没变就永远发不出去（2026-11-02 实测踩到）。
-    this.sendTouchYCompensation();
     if (this.pageFullscreen) {
       // 网页全屏：控件区整体让位 —— top/minTop/bottom 全 0 且直接切 hidden，
       // 页面铺满整屏（此前不发这条，状态栏那一条始终占着，视频只能缩着放）。
@@ -752,38 +743,6 @@ struct AuraShell {
 
   // （1.0.131 移除 syncTopPushInset：随 ratio 每帧重发 setViewportInsets 会频繁
   // resize renderer → 页面跳动 + 滚动发卡。补偿改回常量后无需再挂 ratio 事件。）
-  // 触摸 Y 补偿：见 TOUCH_Y_COMP_VP。只有「地址栏在上」的风格需要（底置地址栏
-  // 的 top 只有状态栏高，补偿几乎为 0），全屏网页一律归零。
-  // 首个浏览器状态回来前，引擎侧还没有 browser/tabs，命令会被丢弃 —— 见
-  // aura_shell_runtime_bridge.cc 的 "has no active browser"。所以补一次「状态
-  // 到达后再发」，成功发过一次就不再重发（后续由比例/切档路径维护）。
-  private touchCompSent: boolean = false;
-  private lastTouchCompDip: number = -999;
-
-  private sendTouchYCompensation(): void {
-    let dip: number = 0;
-    if (this.isMobilePhoneUi() && !this.pageFullscreen) {
-      const hasTopBar: boolean =
-        this.homeStyle !== 'chrome' || this.dockPosition === 'top';
-      if (hasTopBar) {
-        const topSafe: number = Number(AppStorage.get('auraTopSafeVp') ?? 0);
-        const ratio: number = Math.min(Math.max(Number(this.scrolledRatio), 0), 1);
-        dip = Math.max(0, topSafe) * ratio;
-      }
-    }
-    // 引擎按 DIP 加到触摸坐标上，这里就发 DIP（不要再 vp2px）。
-    // 加 EPS 让 JSON 里是小数：引擎的 FindDouble 取不到整数值。
-    const value: number = dip + TOUCH_Y_COMP_EPS;
-    if (Math.abs(value - this.lastTouchCompDip) < 0.5) {
-      return;
-    }
-    this.lastTouchCompDip = value;
-    this.executeBrowserCommand({
-      command: 'setTouchYCompensation',
-      y: value
-    });
-  }
-
   private applyDockViewportInset(): void {
     if (this.pageFullscreen) {
       // 网页全屏：底部也不留任何内距，视口就是整屏。
@@ -1452,10 +1411,6 @@ struct AuraShell {
           const wasNewTab: boolean = this.isNewTabPage();
           const prevUrl: string = this.browserState.url;
           this.browserState = state;
-          if (!this.touchCompSent) {
-            this.touchCompSent = true;
-            this.sendTouchYCompensation();
-          }
           // 换页/换标签：触摸收起的 dock 复位（否则新页面会停在收起位）。
           if (this.swipeDockTaken && (state.url ?? '') !== prevUrl) {
             this.releaseSwipeDock();
