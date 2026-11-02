@@ -467,6 +467,11 @@ struct AuraShell {
   private onControlsRatioMoved(): void {
     this.updateStatusBarForScroll(this.scrolledRatio);
     this.syncDockInsetForControlsMove();
+    // 引擎开始产比例 = 页面真的在滚 → 把 dock 交还引擎驱动，否则触摸收起的
+    // dock 会在页面恢复滚动后卡在收起位（见 onSwipeControlsTouch）。
+    if (this.swipeDockTaken && !this.swipeDockDriving) {
+      this.releaseSwipeDock();
+    }
   }
 
   // 主页风格变化：Chrome 风格无独立顶栏、dock 常驻，需重发浏览器控件 inset。
@@ -1009,6 +1014,13 @@ struct AuraShell {
   private swipeRatioAtStart: number = 1;
   private swipeEngineDrove: boolean = false;
   private swipeHandled: boolean = false;
+  // 「页面不滚动」时只收 dock（地址栏钉住）：dock 是浮层，「滚动时隐藏底部栏」
+  // 开着时底部内距恒 0 → 位移不改变任何布局，不会出现「收起 + 整页重排」的顿挫。
+  private swipeDockTaken: boolean = false;    // 已把 dock 交给触摸驱动
+  private swipeDockDriving: boolean = false;  // 本次手势正在驱动
+  private swipeDockStartRatio: number = 1;    // 手势起点时的 dock 比例
+  private swipeDockValue: number = 1;         // 当前比例（0=收起，1=全显）
+  private swipeDockTravel: number = 1;        // 收起行程（vp）
 
   private swipeControlsActive(): boolean {
     return this.isMobilePhoneUi() && this.hideTopBarOnScroll && !this.addressEditing &&
@@ -1036,6 +1048,7 @@ struct AuraShell {
       this.swipeRatioAtStart = this.scrolledRatio;
       this.swipeEngineDrove = false;
       this.swipeHandled = false;
+      this.swipeDockDriving = false;
       return;
     }
     if (!this.swipeTracking) {
@@ -1052,6 +1065,12 @@ struct AuraShell {
       // 引擎自己在动 → 页面确实在滚，交还控制权，本次手势不再插手。
       if (Math.abs(this.scrolledRatio - this.swipeRatioAtStart) > CONTROLS_RATIO_EPS) {
         this.swipeEngineDrove = true;
+        // 前半段可能已按「只收 dock」驱动过（引擎比例晚一两帧才到），马上交还，
+        // 否则触摸值会压着引擎比例、dock 卡在中间位置。
+        if (this.swipeDockTaken) {
+          this.swipeDockDriving = false;
+          this.releaseSwipeDock();
+        }
         return;
       }
       if (this.swipeHandled || this.swipeEngineDrove) {
@@ -1073,11 +1092,22 @@ struct AuraShell {
       const hideProgress: number = span > 0
         ? Math.min(Math.max((1 - clamped) / span, 0), 1)
         : (1 - clamped);
-      // 页面不滚动时**不再由外壳收起**工具栏：这类页面（内层滚动容器、弹窗锁滚、
-      // 不足一屏）一旦收起就会和整屏布局的重排叠在一起，展开/收起过程中顿一下
-      // （真机逐帧实测）。其他浏览器对这类页面就是固定工具栏——引擎拿不到根滚动
-      // 就不收，这里对齐同一行为。只保留「下滑把已经收起的展开」：页面先被真实
-      // 滚动收起、随后锁滚（弹窗）时否则再也收不回来。
+      // 页面不滚动时**地址栏钉住、只收 dock**：这类页面（内层滚动容器、弹窗锁滚、
+      // 不足一屏）引擎拿不到根滚动、不产比例，若由外壳去 setBrowserControlsState
+      // 收放地址栏，动画会和整屏布局的重排叠在一起，途中顿一下（真机逐帧实测）。
+      // dock 是浮层：底部内距恒 0 → 只改 translate，零重排，所以上滑收 dock、
+      // 下滑放回来都是平滑的，地址栏始终不动（对齐其他浏览器对这类页的处理）。
+      if (this.swipeDockOnlyOn()) {
+        if (up >= SWIPE_TRIGGER_VP) {
+          this.driveSwipeDock(up - SWIPE_TRIGGER_VP, hideProgress);
+          return;
+        }
+        if (up <= -SWIPE_TRIGGER_VP && this.swipeDockTaken) {
+          this.driveSwipeDock(up + SWIPE_TRIGGER_VP, hideProgress);
+          return;
+        }
+      }
+      // 顶栏已被真实滚动收起、之后页面又不再滚动：下滑把它放回来，否则收不回来。
       if (up <= -SWIPE_TRIGGER_VP && hideProgress >= 0.9) {
         this.swipeHandled = true;
         this.executeBrowserCommand({
@@ -1087,7 +1117,59 @@ struct AuraShell {
     }
     if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
       this.swipeTracking = false;
+      this.settleSwipeDock();
     }
+  }
+
+  // 「页面不滚动」时只收 dock 的模式：简约/经典底置（Chrome 底置另有触摸驱动
+  // onChromeBottomDockTouch，Chrome 顶置由引擎比例驱动，都不走这里）。
+  private swipeDockOnlyOn(): boolean {
+    return this.isMobilePhoneUi() && this.hideDockOnScroll &&
+      this.homeStyle !== 'chrome' && !this.isNewTabPage() &&
+      !this.addressEditing && !this.homeHold && !this.homeReturnCover;
+  }
+
+  // 只改 dock 的收起比例（0=收起，1=全显）。地址栏、视口内距、页面布局全不动。
+  private driveSwipeDock(travelled: number, hideProgress: number): void {
+    if (!this.swipeDockDriving) {
+      this.swipeDockDriving = true;
+      this.swipeDockTravel = Math.max(1,
+        dockCoveredHeightVp(Number(AppStorage.get('auraBottomSafeVp') ?? 0)));
+      // 起点取 dock 的实际位置：已由触摸收起时从当前值继续，否则由顶栏显隐进度
+      // 反推（顶栏全显 → 1，全隐 → 0）。
+      this.swipeDockStartRatio = this.swipeDockTaken ?
+        this.swipeDockValue : Math.min(Math.max(1 - hideProgress, 0), 1);
+      if (!this.swipeDockTaken) {
+        this.swipeDockTaken = true;
+        AppStorage.setOrCreate('auraSwipeDockRatioOn', true);
+      }
+    }
+    const ratio: number = Math.min(Math.max(
+      this.swipeDockStartRatio - travelled / this.swipeDockTravel, 0), 1);
+    this.swipeDockValue = ratio;
+    AppStorage.setOrCreate('auraTouchDockRatio', ratio);
+  }
+
+  // 松手：过半收到底（离屏），否则放回原位。dock 是浮层，这一步同样不动布局。
+  private settleSwipeDock(): void {
+    if (!this.swipeDockDriving) {
+      return;
+    }
+    this.swipeDockDriving = false;
+    const settle: number = this.swipeDockValue >= 0.5 ? 1 : 0;
+    this.swipeDockValue = settle;
+    animateTo({ duration: 220, curve: Curve.FastOutSlowIn }, (): void => {
+      AppStorage.setOrCreate('auraTouchDockRatio', settle);
+    });
+  }
+
+  // 把 dock 交还引擎驱动（页面开始滚动 / 换页时），避免触摸值长期压着比例。
+  private releaseSwipeDock(): void {
+    this.swipeDockTaken = false;
+    this.swipeDockDriving = false;
+    this.swipeDockValue = 1;
+    AppStorage.setOrCreate('auraSwipeDockRatioOn', false);
+    AppStorage.setOrCreate('auraTouchDockRatio', 1);
   }
 
   // Collapsed address bar -> hide the status bar too; scrolling back restores
@@ -1344,7 +1426,12 @@ struct AuraShell {
             }
           }
           const wasNewTab: boolean = this.isNewTabPage();
+          const prevUrl: string = this.browserState.url;
           this.browserState = state;
+          // 换页/换标签：触摸收起的 dock 复位（否则新页面会停在收起位）。
+          if (this.swipeDockTaken && (state.url ?? '') !== prevUrl) {
+            this.releaseSwipeDock();
+          }
           // 记下引擎原生新标签页的标题：失败导航后要靠它认出「画面还停在
           // 新标签页」（见 isNewTabPage）。
           if (isNewTabUrl(state.url ?? '')) {

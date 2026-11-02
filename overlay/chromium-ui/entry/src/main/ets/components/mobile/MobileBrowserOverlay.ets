@@ -417,6 +417,9 @@ export struct MobileBrowserOverlay {
   // 「地址栏常驻 + 收起 dock」组合：引擎比例被锁死，dock 改由 AuraShell 的
   // 触摸观察层驱动（1 = 全显）。见 AuraShell.onDockObserverTouch。
   @StorageLink('auraTouchDockRatio') touchDockRatio: number = 1;
+  // 「页面不滚动」时由外壳直接收放 dock（地址栏钉住），见
+  // AuraShell.onSwipeControlsTouch：引擎不产比例，这里改读触摸值。
+  @StorageLink('auraSwipeDockRatioOn') swipeDockRatioOn: boolean = false;
   // Chrome 底置 dock 的跟手收起系数（触摸驱动；引擎底置无 controlsRatio，见 AuraShell.onChromeBottomDockTouch）。
   @StorageLink('auraChromeBottomRatio') chromeBottomRatioRaw: number = 1;
   // A' 面板页化（Phase 3）：路由页（设置页「添加主页网址」）经此信号请求 overlay
@@ -2686,7 +2689,8 @@ export struct MobileBrowserOverlay {
     if (!this.hideDockOnScroll) {
       return 1;
     }
-    if (!this.hideTopBarOnScroll) {
+    // 引擎不产比例（页面不滚动）时，外壳用触摸直接收放 dock 并置这一位。
+    if (!this.hideTopBarOnScroll || this.swipeDockRatioOn) {
       const touch: number = Number.isFinite(this.touchDockRatio) ? this.touchDockRatio : 1;
       return Math.min(Math.max(touch, 0), 1);
     }
