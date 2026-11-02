@@ -534,6 +534,9 @@ struct AuraShell {
   // 把顶栏的 browser controls（高度 + 收起许可）发给引擎：启动、设置开关
   // 切换、启动后的兜底重发共用这一份。
   private sendBrowserControls(): void {
+    // 每次下发控件几何都同步一次触摸补偿：启动、切风格、切 dock 位置都会走这里，
+    // 只挂在比例事件上的话，页面加载后比例没变就永远发不出去（2026-11-02 实测踩到）。
+    this.sendTouchYCompensation();
     if (this.pageFullscreen) {
       // 网页全屏：控件区整体让位 —— top/minTop/bottom 全 0 且直接切 hidden，
       // 页面铺满整屏（此前不发这条，状态栏那一条始终占着，视频只能缩着放）。
