@@ -5940,7 +5940,6 @@ void ApplyTopControlsOffset(content::WebContents* contents, float ratio) {
     window->SetTransform(transform);
     VLOG(1) << "OHOS browser controls: page offset " << offset;
   }
-
 }
 
 }  // namespace
