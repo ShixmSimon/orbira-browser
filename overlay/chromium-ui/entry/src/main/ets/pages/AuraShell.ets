@@ -1034,13 +1034,28 @@ struct AuraShell {
         return;
       }
       const up: number = this.swipeStartY - touch.y; // 正数 = 手指上滑
-      if (up >= SWIPE_TRIGGER_VP && this.scrolledRatio >= 0.9) {
+      // 归一化进度（0=全显，1=全隐）判定，不用引擎原始 ratio：minTop=topSafe 时
+      // 收起终点的 ratio 是 topSafe/(48+topSafe)（≈0.38）而非 0，若按
+      // 「ratio<=0.1 才展开」判定，内层滚动/不足一屏的页面一旦收起就再也放不出来。
+      // 分母与 MobileBrowserOverlay 的顶栏 floor 保持一致。
+      const topSafe: number = Number(AppStorage.get('auraTopSafeVp') ?? 0);
+      const floor: number =
+        (!this.hideTopBarOnScroll || this.hideStatusBarOnScroll || topSafe <= 0)
+          ? 0 : topSafe / (TOP_BAR_EXTENT_VP + topSafe);
+      const rawRatio: number =
+        Number.isFinite(this.scrolledRatio) ? this.scrolledRatio : 1;
+      const clamped: number = Math.min(Math.max(rawRatio, 0), 1);
+      const span: number = 1 - floor;
+      const hideProgress: number = span > 0
+        ? Math.min(Math.max((1 - clamped) / span, 0), 1)
+        : (1 - clamped);
+      if (up >= SWIPE_TRIGGER_VP && hideProgress <= 0.1) {
         this.swipeHandled = true;
         this.executeBrowserCommand({
           command: 'setBrowserControlsState', state: 'hidden', animate: true });
         return;
       }
-      if (up <= -SWIPE_TRIGGER_VP && this.scrolledRatio <= 0.1) {
+      if (up <= -SWIPE_TRIGGER_VP && hideProgress >= 0.9) {
         this.swipeHandled = true;
         this.executeBrowserCommand({
           command: 'setBrowserControlsState', state: 'shown', animate: true });
