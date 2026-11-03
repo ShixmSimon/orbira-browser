@@ -73,6 +73,7 @@
 #include "net/base/schemeful_site.h"
 #include "net/cert/cert_status_flags.h"
 #include "net/cert/x509_certificate.h"
+#include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -586,19 +587,43 @@ void ClearPageSiteData(const ShellCommandContext& context,
   }
   const GURL origin =
       url::Origin::Create(contents->GetLastCommittedURL()).GetURL();
+  // ClearDataForOrigin's cookie filter only matches host-only cookies
+  // (CookieDeletionInfo::Matches gates on IsHostCookie), so a site whose
+  // login lives in Domain cookies -- e.g. ".baidu.com" -- survives it. Chain
+  // a second pass with a URL-matching filter, which catches the domain
+  // cookies the first pass skips, then report once both have landed.
   contents->GetPrimaryMainFrame()->GetStoragePartition()->ClearDataForOrigin(
       content::StoragePartition::REMOVE_DATA_MASK_ALL, origin,
       base::BindOnce(
-          [](base::WeakPtr<content::WebContents> contents,
+          [](base::WeakPtr<content::WebContents> contents, GURL url,
              ShellCommandContext context, base::DictValue reply) {
-            if (!contents) {
+            network::mojom::CookieManager* cookie_manager =
+                contents
+                    ? contents->GetPrimaryMainFrame()->GetStoragePartition()
+                          ->GetCookieManagerForBrowserProcess()
+                    : nullptr;
+            if (!cookie_manager) {
               return;
             }
-            reply.Set("ok", true);
-            reply.Remove("reason");
-            ReplyToShell(context, std::move(reply));
+            network::mojom::CookieDeletionFilterPtr filter =
+                network::mojom::CookieDeletionFilter::New();
+            filter->url = std::move(url);
+            cookie_manager->DeleteCookies(
+                std::move(filter),
+                base::BindOnce(
+                    [](base::WeakPtr<content::WebContents> contents,
+                       ShellCommandContext context, base::DictValue reply,
+                       uint32_t /*num_deleted*/) {
+                      if (!contents) {
+                        return;
+                      }
+                      reply.Set("ok", true);
+                      reply.Remove("reason");
+                      ReplyToShell(context, std::move(reply));
+                    },
+                    contents, context, std::move(reply)));
           },
-          contents->GetWeakPtr(), context, std::move(reply)));
+          contents->GetWeakPtr(), origin, context, std::move(reply)));
 }
 
 // Opens what the popup blocker held back on the window's current tab -- the
