@@ -603,17 +603,21 @@ void ClearPageSiteData(const ShellCommandContext& context,
                           ->GetCookieManagerForBrowserProcess()
                     : nullptr;
             if (!cookie_manager) {
+              LOG(WARNING) << "OHOS clear site data: no cookie manager for "
+                           << url;
               return;
             }
             network::mojom::CookieDeletionFilterPtr filter =
                 network::mojom::CookieDeletionFilter::New();
-            filter->url = std::move(url);
+            filter->url = url;
             cookie_manager->DeleteCookies(
                 std::move(filter),
                 base::BindOnce(
-                    [](base::WeakPtr<content::WebContents> contents,
+                    [](GURL url, base::WeakPtr<content::WebContents> contents,
                        ShellCommandContext context, base::DictValue reply,
-                       uint32_t /*num_deleted*/) {
+                       uint32_t num_deleted) {
+                      LOG(WARNING) << "OHOS clear site data: deleted "
+                                   << num_deleted << " cookies for " << url;
                       if (!contents) {
                         return;
                       }
@@ -621,7 +625,7 @@ void ClearPageSiteData(const ShellCommandContext& context,
                       reply.Remove("reason");
                       ReplyToShell(context, std::move(reply));
                     },
-                    contents, context, std::move(reply)));
+                    url, contents, context, std::move(reply)));
           },
           contents->GetWeakPtr(), origin, context, std::move(reply)));
 }
