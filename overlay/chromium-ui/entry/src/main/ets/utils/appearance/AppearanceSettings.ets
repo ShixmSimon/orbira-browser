@@ -24,6 +24,21 @@ export class AppearanceSettings {
     }
   }
 
+  // Synchronous twin of load(), for the startup path: the saved choice has to
+  // be applied before the window -- and with it the engine -- is created, or
+  // the first page loads with the wrong colour scheme and stays that way until
+  // it is reloaded. An async read cannot promise that ordering: onWindowStageCreate
+  // runs before its promise settles.
+  static loadSync(context: common.Context): ColorModeSetting {
+    try {
+      const store = preferences.getPreferencesSync(context, { name: STORE_NAME });
+      const mode = String(store.getSync(KEY_COLOR_MODE, 'system'));
+      return mode === 'light' || mode === 'dark' ? mode : 'system';
+    } catch (error) {
+      return 'system';
+    }
+  }
+
   static async save(context: common.Context, mode: ColorModeSetting): Promise<void> {
     try {
       const store = await preferences.getPreferences(context, STORE_NAME);

@@ -149,7 +149,8 @@ const EMPTY_BROWSER_STATE: BrowserStateSnapshot = {
 @Entry
 @Component
 struct AuraShell {
-  @StorageLink('auraRoutingRevision') routingRevision: number = 0;
+  @StorageLink('auraRoutingRevision') @Watch('onRoutingRevisionForThemeReload') routingRevision: number = 0;
+  @StorageLink('auraThemeReloadPending') themeReloadPending: boolean = false;
   @StorageLink('auraStartupConfig') startupConfigText: string = '';
   @StorageLink('auraStartUrl') startUrl: string = CHROMIUM_HOME_URL;
   @StorageLink('auraAppVisible') @Watch('onAppVisibleChanged') appVisible: boolean = true;
@@ -468,6 +469,19 @@ struct AuraShell {
     if (this.swipeDockTaken && !this.swipeDockDriving) {
       this.releaseSwipeDock();
     }
+  }
+
+  // 切主题后的一次性重载：多数站点只在新页面加载时才读配色（必应、百度实测
+  // 都要刷一次才跟），而引擎要在新配置到达后才知道换色 —— 所以不能切完就
+  // reload，要等"携带新配色的配置真正下发"这一刻（路由 revision 翻新）。
+  // 这条 revision 也会被折叠/旋转/窗口变化顶起来，靠 pending 标志只认切主题
+  // 那一次；标志挂空了就什么都不做。兜底在 SettingsPanel（配置没到则定时补发）。
+  private onRoutingRevisionForThemeReload(): void {
+    if (!this.themeReloadPending) {
+      return;
+    }
+    AppStorage.setOrCreate('auraThemeReloadPending', false);
+    this.executeBrowserCommand({ command: 'reload' });
   }
 
   // 主页风格变化：Chrome 风格无独立顶栏、dock 常驻，需重发浏览器控件 inset。

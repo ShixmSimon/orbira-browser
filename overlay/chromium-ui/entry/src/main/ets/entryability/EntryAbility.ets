@@ -93,7 +93,15 @@ export default class EntryAbility extends UIAbility {
     this.applyIncognitoWant(want);
     const initialThemeFontId = this.context.config.fontId ?? '';
     this.lastThemeFontId = initialThemeFontId;
-    this.lastColorScheme = this.resolveColorScheme(this.context.config.colorMode);
+    // 外观设置必须在窗口（以及引擎）创建之前生效：首屏用哪套配色，是引擎在
+    // WebView 起来那一刻决定的。此前这里是异步读 preferences，promise 落在
+    // onWindowStageCreate 之后 → 冷启动首个页面按旧配色加载，必须刷新一次才对
+    // （真机实测：百度、必应首开都是旧色，刷新后正常）。改同步读取后当场应用。
+    const savedColorMode: ColorModeSetting = AppearanceSettings.loadSync(this.context);
+    AppearanceSettings.apply(this.context, savedColorMode);
+    this.lastColorScheme = savedColorMode === 'system'
+      ? this.resolveColorScheme(this.context.config.colorMode)
+      : (savedColorMode === 'dark' ? 'dark' : 'light');
     AppStorage.setOrCreate(AURA_APP_VISIBLE_KEY, true);
     AppStorage.setOrCreate(AURA_THEME_FONT_ID_KEY, initialThemeFontId);
     AppStorage.setOrCreate(AURA_THEME_FONT_REVISION_KEY, 0);
@@ -112,11 +120,8 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate(AURA_BROWSER_COMMAND_TEXT_KEY, '');
     AppStorage.setOrCreate(AURA_BROWSER_COMMAND_REVISION_KEY, 0);
     hilog.info(DOMAIN, 'AuraShell', 'Initial theme font configuration: %{public}s', initialThemeFontId);
-    // Follow the user's saved appearance choice (system/light/dark). Applying
-    // it here re-themes every $r color in the shell together with the engine.
-    AppearanceSettings.load(this.context).then((mode: ColorModeSetting): void => {
-      AppearanceSettings.apply(this.context, mode);
-    });
+    // The saved appearance choice was already applied synchronously above,
+    // before the window was created; nothing is left to do here.
     this.restoreBrowserProfile();
   }
 

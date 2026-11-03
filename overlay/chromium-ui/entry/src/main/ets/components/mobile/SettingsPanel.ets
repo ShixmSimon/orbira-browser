@@ -894,15 +894,21 @@ export struct SettingsPanel {
     if (!context) {
       return;
     }
+    // The engine re-colours web content when the new startup config actually
+    // reaches it -- AuraShell watches the routing revision for that moment and
+    // reloads the page then. This flag is what turns that reload on; the timer
+    // below only covers the case where the configuration never arrives, so a
+    // colour switch can never leave the page stale until a manual reload.
+    AppStorage.setOrCreate('auraThemeReloadPending', true);
     AppearanceSettings.save(context, mode).then((): void => {
       AppearanceSettings.apply(context, mode);
-      // The shell UI re-resolves its resources immediately, but the engine
-      // re-colors web content on load -- give it a beat, then reload the
-      // page so the switch reads as live.
-      setTimeout((): void => {
-        this.onCommand({ command: 'reload' });
-      }, 400);
     });
+    setTimeout((): void => {
+      if (AppStorage.get<boolean>('auraThemeReloadPending') === true) {
+        AppStorage.setOrCreate('auraThemeReloadPending', false);
+        this.onCommand({ command: 'reload' });
+      }
+    }, 2500);
   }
 
   private clearData(): void {
