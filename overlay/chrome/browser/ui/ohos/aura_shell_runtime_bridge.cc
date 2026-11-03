@@ -4879,7 +4879,9 @@ void ApplyColorSchemeOnUiThread(std::string color_scheme) {
 
   if (GlobalBrowserCollection* browsers =
           GlobalBrowserCollection::GetInstance()) {
-    browsers->ForEach([&preferred_scheme](BrowserWindowInterface* browser) {
+    int window_count = 0;
+    browsers->ForEach([&preferred_scheme,
+                       &window_count](BrowserWindowInterface* browser) {
       TabStripModel* tabs = browser->GetTabStripModel();
       if (tabs) {
         for (int index = 0; index < tabs->count(); ++index) {
@@ -4902,15 +4904,18 @@ void ApplyColorSchemeOnUiThread(std::string color_scheme) {
                 : std::optional(ui::ColorProviderKey::ColorMode::kLight);
         if (views::Widget* widget = browser_view->GetWidget()) {
           widget->SetColorModeOverride(color_mode);
+          ++window_count;
         }
         browser_view->InvalidateLayout();
         browser_view->SchedulePaint();
       }
       return true;
     });
+    // LOG(INFO) is dropped by the hilog Chromium filter; this must be visible
+    // whenever a theme switch is being diagnosed on a device.
+    LOG(WARNING) << "OHOS color scheme apply " << color_scheme
+                 << " windows=" << window_count;
   }
-
-  LOG(INFO) << "OHOS Aura shell applied color scheme " << color_scheme;
 }
 
 void ExecuteBrowserCommandOnUiThread(gfx::AcceleratedWidget widget,
