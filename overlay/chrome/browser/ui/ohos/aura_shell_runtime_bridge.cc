@@ -4879,7 +4879,7 @@ void ApplyColorSchemeOnUiThread(std::string color_scheme) {
 
   if (GlobalBrowserCollection* browsers =
           GlobalBrowserCollection::GetInstance()) {
-    browsers->ForEach([](BrowserWindowInterface* browser) {
+    browsers->ForEach([&preferred_scheme](BrowserWindowInterface* browser) {
       TabStripModel* tabs = browser->GetTabStripModel();
       if (tabs) {
         for (int index = 0; index < tabs->count(); ++index) {
@@ -4890,6 +4890,19 @@ void ApplyColorSchemeOnUiThread(std::string color_scheme) {
       }
       if (BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(
               browser)) {
+        // A page's preferred color scheme is computed from the browser
+        // window's ColorProvider color mode (GetPreferredColorScheme reads
+        // web_contents->GetColorMode(), not web prefs), so a NativeTheme push
+        // alone never reaches web content. Pin the window's color mode to the
+        // scheme; the provider key carries it and every live page re-themes
+        // without a reload.
+        std::optional<ui::ColorProviderKey::ColorMode> color_mode =
+            preferred_scheme == ui::NativeTheme::PreferredColorScheme::kDark
+                ? std::optional(ui::ColorProviderKey::ColorMode::kDark)
+                : std::optional(ui::ColorProviderKey::ColorMode::kLight);
+        if (views::Widget* widget = browser_view->GetWidget()) {
+          widget->SetColorModeOverride(color_mode);
+        }
         browser_view->InvalidateLayout();
         browser_view->SchedulePaint();
       }
