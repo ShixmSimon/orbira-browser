@@ -63,6 +63,12 @@ bool ValidSharedPacket(const SharedPacket& p, size_t count) {
   if (p.operation != SharedOp::kHdrDisplayState && p.display_id)
     return false;
   switch (p.operation) {
+    case SharedOp::kOverlayPresented:
+    case SharedOp::kOpenOverlayChannel:
+    case SharedOp::kOverlayChannel:
+      return count == (p.operation == SharedOp::kOverlayChannel ? 1u : 0u) &&
+             !p.has_fence && !p.lease && !p.tail_bytes && !p.width &&
+             !p.height && p.color == OhosOutputColor{} && !p.color_generation;
     case SharedOp::kAllocateImage:
       if (count || p.lease || p.tail_bytes || !p.width || !p.height ||
           p.width > 8192 || p.height > 8192 ||
@@ -122,6 +128,7 @@ bool ValidSharedPacket(const SharedPacket& p, size_t count) {
     case SharedOp::kDiscard:
     case SharedOp::kCancel:
       return p.lease && !count && !p.tail_bytes;
+    case SharedOp::kGlColorState:
     case SharedOp::kGraphiteState:
       return !count && !p.lease && !p.tail_bytes && !p.width && !p.height &&
              !p.has_fence && !p.color_generation && !p.display_id &&

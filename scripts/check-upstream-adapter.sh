@@ -5,6 +5,9 @@ set -euo pipefail
 readonly project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly version="${1:?usage: $0 VERSION REVISION}"
 readonly revision="${2:?usage: $0 VERSION REVISION}"
+if [[ "$version" == 155.* && -f "${project_root}/scripts/check-155-adapter.py" ]]; then
+  exec python3 "${project_root}/scripts/check-155-adapter.py" "$version" "$revision"
+fi
 readonly work_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/chromium-adapter-check.XXXXXX")"
 readonly checkout="${work_root}/src"
 readonly report="${project_root}/upstream-compatibility.md"
@@ -18,14 +21,29 @@ git init -q "${checkout}"
 git -C "${checkout}" remote add origin https://github.com/chromium/chromium.git
 git -C "${checkout}" sparse-checkout init --no-cone
 grep '^diff --git ' "${project_root}/patches/chromium-154-harmonyos.patch" \
+  "${project_root}/patches/ohos-mobile-ua-viewport.patch" \
   "${project_root}/patches/ohos-url-protection.patch" \
   "${project_root}/patches/ohos-url-protection-updates.patch" \
   "${project_root}/patches/ohos-rule-sources.patch" \
+  "${project_root}/patches/ohos-extension-updates.patch" \
+  "${project_root}/patches/ohos-adblock-rust.patch" \
+  "${project_root}/patches/ohos-adblock-execution.patch" \
+  "${project_root}/patches/ohos-viewport-translation.patch" \
   "${project_root}/patches/ohos-phone-fork.patch" \
   "${project_root}/patches/ohos-phone-gpu-shared-output.patch" \
+  "${project_root}/patches/ohos-adaptive-vsync.patch" \
   "${project_root}/patches/ohos-phone-skia-vulkan.patch" \
   "${project_root}/patches/ohos-skia-output-format-diagnostics.patch" \
   "${project_root}/patches/ohos-vulkan-sdr-output.patch" \
+  "${project_root}/patches/ohos-vulkan-hdr-output.patch" \
+  "${project_root}/patches/ohos-phone-vulkan-shared-images.patch" \
+  "${project_root}/patches/ohos-vulkan-cached-upload.patch" \
+  "${project_root}/patches/ohos-phone-browser-media.patch" \
+  "${project_root}/patches/ohos-video-zero-copy.patch" \
+  "${project_root}/patches/ohos-phone-vulkan-video.patch" \
+  "${project_root}/patches/ohos-webnn-nnrt.patch" \
+  "${project_root}/patches/ohos-startup-probes.patch" \
+  "${project_root}/patches/ohos-https-first-warning.patch" \
   "${project_root}/patches/ohos-ime-explicit-keyboard-request.patch" -h |
   awk '{sub(/^b\//, "/", $4); print $4}' |
   LC_ALL=C sort -u >"${checkout}/.git/info/sparse-checkout"
@@ -42,6 +60,10 @@ fi
 if [[ "${compatible}" == true ]]; then
   git -C "${checkout}" apply --binary \
     "${project_root}/patches/chromium-154-harmonyos.patch"
+  if ! git -C "${checkout}" apply \
+      "${project_root}/patches/ohos-mobile-ua-viewport.patch" 2>"${failure_log}"; then
+    compatible=false
+  fi
   if ! git -C "${checkout}" apply \
       "${project_root}/patches/ohos-url-protection.patch" 2>"${failure_log}"; then
     compatible=false
@@ -67,6 +89,10 @@ if [[ "${compatible}" == true ]]; then
     compatible=false
   fi
   if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \
+      "${project_root}/patches/ohos-adaptive-vsync.patch" 2>"${failure_log}"; then
+    compatible=false
+  fi
+  if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \
       "${project_root}/patches/ohos-phone-skia-vulkan.patch" 2>"${failure_log}"; then
     compatible=false
   fi
@@ -76,6 +102,52 @@ if [[ "${compatible}" == true ]]; then
   fi
   if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \
       "${project_root}/patches/ohos-vulkan-sdr-output.patch" 2>"${failure_log}"; then
+    compatible=false
+  fi
+  if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \
+      "${project_root}/patches/ohos-vulkan-hdr-output.patch" 2>"${failure_log}"; then
+    compatible=false
+  fi
+  if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \
+      "${project_root}/patches/ohos-phone-vulkan-shared-images.patch" 2>"${failure_log}"; then
+    compatible=false
+  fi
+  if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \
+      "${project_root}/patches/ohos-vulkan-cached-upload.patch" 2>"${failure_log}"; then
+    compatible=false
+  fi
+  if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \
+      "${project_root}/patches/ohos-phone-browser-media.patch" 2>"${failure_log}"; then
+    compatible=false
+  fi
+  if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \
+      "${project_root}/patches/ohos-video-zero-copy.patch" 2>"${failure_log}"; then
+    compatible=false
+  fi
+  if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \
+      "${project_root}/patches/ohos-phone-vulkan-video.patch" 2>"${failure_log}"; then
+    compatible=false
+  fi
+  if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \
+      "${project_root}/patches/ohos-extension-updates.patch" 2>"${failure_log}"; then
+    compatible=false
+  fi
+  if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \
+      "${project_root}/patches/ohos-adblock-rust.patch" \
+      "${project_root}/patches/ohos-adblock-execution.patch" \
+      "${project_root}/patches/ohos-viewport-translation.patch" 2>"${failure_log}"; then
+    compatible=false
+  fi
+  if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \
+      "${project_root}/patches/ohos-webnn-nnrt.patch" 2>"${failure_log}"; then
+    compatible=false
+  fi
+  if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \
+      "${project_root}/patches/ohos-startup-probes.patch" 2>"${failure_log}"; then
+    compatible=false
+  fi
+  if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \
+      "${project_root}/patches/ohos-https-first-warning.patch" 2>"${failure_log}"; then
     compatible=false
   fi
   rsync -a "${project_root}/overlay/" "${checkout}/"

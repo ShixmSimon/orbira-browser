@@ -36,17 +36,19 @@ constexpr base::TimeDelta kCrossSourceDuplicateEventWindow =
     base::Milliseconds(250);
 constexpr double kCrossSourcePointerSlop = 4.0;
 
-// OHOS input never reports a touch size, so every touch reached Aura with
-// radius_x == radius_y == 0 and therefore touch_major == 0. Chromium's gesture
-// detector reads that as a low-quality panel and multiplies the squared slop
-// distance by kExpandSlopFactorForZeroTouchMajor (4, i.e. 2x the distance),
-// turning the standard 8dp slop into a ~56 physical px dead zone on a 3.5dpr
-// phone: a scroll would not begin until
-// the finger had already travelled that far, and short fast swipes were
-// classified as taps instead. Reporting a plausible fingertip radius keeps
-// has_native_touch_major true, so the detector uses its normal 8dp slop.
-// Only the "is it zero" distinction matters here -- the exact value does not
-// scale the slop, it just has to be non-zero and physically sane.
+// OHOS input never reports a touch size, so every touch reaches Aura with
+// radius_x == radius_y == 0 and therefore touch_major == 0. Chromium treats a
+// zero touch major as a low-quality panel and expands the tap slop region:
+// gesture_detector.cc scales the squared slop by
+// kExpandSlopFactorForZeroTouchMajor (4, i.e. twice the distance) unless
+// HasNativeTouchMajor() is true, so the effective slop ends up roughly double
+// the configured value. A scroll therefore does not begin until the finger has
+// travelled that far -- the page sits still and then snaps to follow -- and
+// swipes shorter than that are classified as taps. Reporting a plausible
+// fingertip radius keeps has_native_touch_major true, so the detector uses the
+// configured slop. Only the "is it zero" distinction matters here -- the exact
+// value does not scale the slop, it just has to be non-zero and physically
+// sane.
 constexpr float kDefaultTouchRadiusDip = 10.0f;
 constexpr float kDefaultTouchForce = 1.0f;
 

@@ -11,18 +11,19 @@
 #include "ui/events/ozone/layout/keyboard_layout_engine_manager.h"
 #include "ui/events/ozone/layout/stub/stub_keyboard_layout_engine.h"
 #include "ui/ozone/common/bitmap_cursor_factory.h"
-#include "ui/ozone/common/stub_overlay_manager.h"
 #include "ui/ozone/platform/ohos/ohos_clipboard.h"
 #include "ui/ozone/platform/ohos/ohos_event_source.h"
 #include "ui/ozone/platform/ohos/ohos_gpu_child_channel.h"
 #include "ui/ozone/platform/ohos/ohos_input_method.h"
 #include "ui/ozone/platform/ohos/ohos_native_pixmap.h"
+#include "ui/ozone/platform/ohos/ohos_overlay_presenter.h"
 #include "ui/ozone/platform/ohos/ohos_phone_gpu_channel.h"
 #include "ui/ozone/platform/ohos/ohos_platform_window.h"
 #include "ui/ozone/platform/ohos/ohos_screen.h"
 #include "ui/ozone/platform/ohos/ohos_surface_factory.h"
 #include "ui/ozone/public/gpu_platform_support_host.h"
 #include "ui/ozone/public/input_controller.h"
+#include "ui/ozone/public/overlay_manager_ozone.h"
 #include "ui/ozone/public/ozone_platform.h"
 #include "ui/ozone/public/stub_input_controller.h"
 #include "ui/ozone/public/system_input_injector.h"
@@ -76,6 +77,9 @@ class OzonePlatformOhos : public OzonePlatform {
 
   const PlatformRuntimeProperties& GetPlatformRuntimeProperties() override {
     static PlatformRuntimeProperties properties;
+    properties.supports_overlays =
+        IsOhosPhoneGpuChild() &&
+        base::CommandLine::ForCurrentProcess()->HasSwitch("ohos-video-overlays");
     properties.supports_native_pixmaps =
         !IsOhosPhoneGpuChild() &&
         !(base::CommandLine::ForCurrentProcess()->HasSwitch(
@@ -131,7 +135,7 @@ class OzonePlatformOhos : public OzonePlatform {
     KeyboardLayoutEngineManager::SetKeyboardLayoutEngine(
         keyboard_layout_engine_.get());
 
-    overlay_manager_ = std::make_unique<StubOverlayManager>();
+    overlay_manager_ = CreateOhosOverlayManager();
     input_controller_ = std::make_unique<StubInputController>();
     cursor_factory_ = std::make_unique<BitmapCursorFactory>();
     gpu_platform_support_host_.reset(CreateStubGpuPlatformSupportHost());
@@ -146,6 +150,8 @@ class OzonePlatformOhos : public OzonePlatform {
     if (IsOhosGpuChildProcess()) {
       AttachOhosGpuChildLogging();
     }
+    if (!overlay_manager_)
+      overlay_manager_ = CreateOhosOverlayManager();
     if (!surface_factory_) {
       surface_factory_ = std::make_unique<OhosSurfaceFactory>(base::FilePath());
     }

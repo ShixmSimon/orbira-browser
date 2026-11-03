@@ -46,6 +46,8 @@ clear_directory() {
   find "$1" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 }
 
+require_file "${out_dir}/libohos_video_overlay.so" 'missing video overlay runtime'
+require_file "${out_dir}/liblumie_adblock.so" 'missing adblock-rust runtime'
 require_file "${out_dir}/libweb_engine.so" 'missing libweb_engine.so'
 require_file "${out_dir}/libnweb_render.so" 'missing libnweb_render.so'
 require_file "${out_dir}/icudtl.dat" 'missing icudtl.dat'
@@ -58,7 +60,7 @@ done
 clear_directory "$libs_dir"
 clear_directory "$raw_dir"
 
-cp -a "${out_dir}/libweb_engine.so" "${out_dir}/libnweb_render.so" "$libs_dir/"
+cp -a "${out_dir}/libweb_engine.so" "${out_dir}/libnweb_render.so" "${out_dir}/liblumie_adblock.so" "${out_dir}/libohos_video_overlay.so" "$libs_dir/"
 
 # ANGLE is a shared library in some configurations and linked statically into
 # libweb_engine.so in others. Copy the .so files when the build produced them;
@@ -88,9 +90,11 @@ find "${out_dir}/locales" -maxdepth 1 -type f -name '*.pak' \
   ! -name '*_FEMININE.pak' ! -name '*_MASCULINE.pak' ! -name '*_NEUTER.pak' \
   -exec cp -a {} "${raw_dir}/locales/" \;
 
-for optional in v8_context_snapshot.bin; do
-  [[ -f "${out_dir}/${optional}" ]] && cp -a "${out_dir}/${optional}" "$raw_dir/"
-done
+# When enabled this is a required runtime asset, not an optional optimisation.
+if grep -Eq '^[[:space:]]*use_v8_context_snapshot[[:space:]]*=[[:space:]]*true([[:space:]]|$)' "${out_dir}/args.gn"; then
+  [[ -s "${out_dir}/v8_context_snapshot.bin" ]] || die 'missing V8 context snapshot'
+  cp -a "${out_dir}/v8_context_snapshot.bin" "$raw_dir/"
+fi
 
 # Optional reviewed snapshot, covered by the final application's signing and
 # runtime.version. An absent asset is reported as missing, never as protection.
@@ -106,6 +110,14 @@ if [[ -n "${PHISHING_UPDATE_CONFIG_FILE:-}" ]]; then
     --validate-config "$PHISHING_UPDATE_CONFIG_FILE" || die 'invalid phishing update configuration'
   cp -- "$PHISHING_UPDATE_CONFIG_FILE" "${raw_dir}/ohos_phishing_updates.json"
 fi
+
+# Preserve notices and the exact unmodified CC BY-SA rule snapshots in the HAR.
+adblock_source="$(cd "$(dirname "${BASH_SOURCE[0]}")/../overlay/third_party/adblock_rust" && pwd)"
+adblock_notices="${project}/engine/src/main/resources/rawfile/adblock-licenses"
+mkdir -p "$adblock_notices"
+cp "$adblock_source/LICENSE" "$adblock_source/THIRD_PARTY_NOTICES.txt" "$adblock_source/Cargo.lock" "$adblock_notices/"
+cp -R "$adblock_source/lists" "$adblock_source/resources" "$adblock_notices/"
+cp -R "$(dirname "$adblock_source")/../chrome/renderer/ohos/adblock_resources" "$adblock_notices/renderer"
 
 # Written last, and after the hash is computed, so it never covers itself.
 runtime_version=$(

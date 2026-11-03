@@ -2790,7 +2790,7 @@ index 29f655d33e0447e556f75e6e9fc546e6e586f66f..254d46dd15d88acadf5f1d5879f9eec9
            Turned off
          </message>
 diff --git a/chrome/browser/BUILD.gn b/chrome/browser/BUILD.gn
-index b58905ddb371f96377320c2948fe64bb17257663..c9c6fdb9e19a1c0f6993399069703aafd2241a4a 100644
+index b58905ddb371f96377320c2948fe64bb17257663..c59becec6522ef557a28a1890162139984ff688b 100644
 --- a/chrome/browser/BUILD.gn
 +++ b/chrome/browser/BUILD.gn
 @@ -102,9 +102,9 @@ buildflag_header("buildflags") {
@@ -2905,12 +2905,13 @@ index b58905ddb371f96377320c2948fe64bb17257663..c9c6fdb9e19a1c0f6993399069703aaf
    if (!is_android || is_desktop_android) {
      deps += [ "//chrome/browser/ui/webui/discards" ]
    }
-@@ -1635,6 +1713,86 @@ source_set("core") {
+@@ -1635,6 +1713,87 @@ source_set("core") {
      }
    }
  
 +  if (is_ohos) {
 +    deps += [
++      "//components/google/core/common",
 +      "//components/ohos_system_service",
 +      "//components/security_interstitials/content:security_interstitial_page",
 +      "//crypto",
@@ -2992,7 +2993,7 @@ index b58905ddb371f96377320c2948fe64bb17257663..c9c6fdb9e19a1c0f6993399069703aaf
    if (is_android) {
      sources += [
        "after_startup_task_utils_android.cc",
-@@ -1827,9 +1985,14 @@ source_set("core") {
+@@ -1827,9 +1986,14 @@ source_set("core") {
  
    if (enable_screen_ai_service) {
      deps += [
@@ -3007,7 +3008,7 @@ index b58905ddb371f96377320c2948fe64bb17257663..c9c6fdb9e19a1c0f6993399069703aaf
      ]
    }
  
-@@ -2574,7 +2737,6 @@ source_set("browser") {
+@@ -2574,7 +2738,6 @@ source_set("browser") {
        "//chrome/browser/profile_resetter:impl",
        "//chrome/browser/record_replay",
        "//chrome/browser/record_replay:impl",
@@ -3015,7 +3016,7 @@ index b58905ddb371f96377320c2948fe64bb17257663..c9c6fdb9e19a1c0f6993399069703aaf
        "//chrome/browser/sharing_hub",
        "//chrome/browser/sharing_hub:impl",
        "//chrome/browser/smart_card",
-@@ -3121,7 +3283,7 @@ source_set("browser") {
+@@ -3121,7 +3284,7 @@ source_set("browser") {
      ]
    }
  
@@ -3024,7 +3025,7 @@ index b58905ddb371f96377320c2948fe64bb17257663..c9c6fdb9e19a1c0f6993399069703aaf
      deps += [ "//chrome/browser/ui/webui/ai_overlay_dialog:impl" ]
    }
  
-@@ -3187,6 +3349,12 @@ source_set("browser") {
+@@ -3187,6 +3350,12 @@ source_set("browser") {
      }
    }
  
@@ -3037,7 +3038,7 @@ index b58905ddb371f96377320c2948fe64bb17257663..c9c6fdb9e19a1c0f6993399069703aaf
    if (is_mac) {
      deps += [ "//chrome/browser/ui/webui/unexportable_keys_internals" ]
  
-@@ -3337,10 +3505,10 @@ source_set("browser") {
+@@ -3337,10 +3506,10 @@ source_set("browser") {
    }
  
    if (!is_android) {
@@ -3052,7 +3053,7 @@ index b58905ddb371f96377320c2948fe64bb17257663..c9c6fdb9e19a1c0f6993399069703aaf
    }
  
    # This target intentionally has no sources of its own and no
-@@ -3481,7 +3649,6 @@ group("browser_public_dependencies") {
+@@ -3481,7 +3650,6 @@ group("browser_public_dependencies") {
        "//components/enterprise/buildflags",
        "//components/lens:buildflags",
        "//components/webapps/common:mojo_bindings",
@@ -3060,7 +3061,7 @@ index b58905ddb371f96377320c2948fe64bb17257663..c9c6fdb9e19a1c0f6993399069703aaf
        "//third_party/lens_server_proto:lens_overlay_proto",
        "//third_party/nearby:encrypted_metadata_proto",
        "//third_party/nearby:rpc_resources_proto",
-@@ -3671,6 +3838,15 @@ group("browser_generated_files") {
+@@ -3671,6 +3839,15 @@ group("browser_generated_files") {
      public_deps +=
          [ "//chrome/browser/ui/webui/ai_overlay_dialog:mojo_bindings" ]
    }
@@ -3076,7 +3077,7 @@ index b58905ddb371f96377320c2948fe64bb17257663..c9c6fdb9e19a1c0f6993399069703aaf
    if (safe_browsing_mode == 1) {
      public_deps += [ "//chrome/browser/ui/webui/reset_password:mojo_bindings" ]
    }
-@@ -4520,3 +4696,11 @@ if (is_android) {
+@@ -4520,3 +4697,11 @@ if (is_android) {
      ]
    }
  }
@@ -20116,7 +20117,7 @@ index d397f233014259257d4aa23d721676ee9f6a1dd8..1a1a449314a7a80a9401feacf4d8226f
    // PostSubBuffer() is called.
    virtual void ScheduleOverlays(SkiaOutputSurface::OverlayList overlays);
 diff --git a/components/viz/service/display_embedder/skia_output_device_gl.cc b/components/viz/service/display_embedder/skia_output_device_gl.cc
-index 09abdc9d3fae763158d141d2eca89438151a0a53..d2ef03ac67ada1d7183220b39fb60316dfef593c 100644
+index 09abdc9d3fae763158d141d2eca89438151a0a53..14ab01049f6a6a115924a1e130f572d03492ff56 100644
 --- a/components/viz/service/display_embedder/skia_output_device_gl.cc
 +++ b/components/viz/service/display_embedder/skia_output_device_gl.cc
 @@ -30,6 +30,9 @@
@@ -20129,7 +20130,7 @@ index 09abdc9d3fae763158d141d2eca89438151a0a53..d2ef03ac67ada1d7183220b39fb60316
  
  namespace viz {
  
-@@ -151,6 +154,20 @@ SkiaOutputDeviceGL::SkiaOutputDeviceGL(
+@@ -151,6 +154,20 @@
        color_type = kRGBA_8888_SkColorType;
      }
    }
@@ -20150,7 +20151,7 @@ index 09abdc9d3fae763158d141d2eca89438151a0a53..d2ef03ac67ada1d7183220b39fb60316
    // SRGB
    capabilities_.sk_color_type_map[SinglePlaneFormat::kRGBA_8888] = color_type;
    capabilities_.sk_color_type_map[SinglePlaneFormat::kRGBX_8888] = color_type;
-@@ -188,7 +205,7 @@ bool SkiaOutputDeviceGL::Reshape(const ReshapeParams& params) {
+@@ -188,9 +205,13 @@
  #endif  // !BUILDFLAG(IS_CHROMEOS)
  
    const gfx::Size size = params.GfxSize();
@@ -20158,24 +20159,25 @@ index 09abdc9d3fae763158d141d2eca89438151a0a53..d2ef03ac67ada1d7183220b39fb60316
 +  SkColorType color_type = params.image_info.colorType();
    const bool has_alpha = !params.image_info.isOpaque();
  
++#if BUILDFLAG(IS_OHOS)
++  if (params.ohos_output_color)
++    ui::SetOhosGlReshapeOutputColor(gl_surface_.get(), *params.ohos_output_color);
++#endif
    if (!gl_surface_->Resize(size, params.device_scale_factor, params.color_space,
-@@ -198,10 +215,29 @@ bool SkiaOutputDeviceGL::Reshape(const ReshapeParams& params) {
+                            has_alpha)) {
+     CheckForLoopFailures();
+@@ -198,10 +219,24 @@
      base::debug::Alias(nullptr);
      return false;
    }
 +#if BUILDFLAG(IS_OHOS)
-+  // A queued SDR8 reshape must not describe a ten-bit default framebuffer
-+  // as RGBA8 while the browser handles the new display capability event.
-+  if (!gl_surface_->GetBackingFramebufferObject()) {
-+    // Copy-output may leave an offscreen FBO bound. Its GL_RED_BITS does not
-+    // describe framebuffer zero; use the live native EGL window contract.
-+    const auto native_spaces =
-+        ui::GetOhosEglOutputColorSpaces(gl_surface_.get());
-+    if (native_spaces &&
-+        native_spaces->GetOutputFormat(gfx::ContentColorUsage::kSRGB, false) ==
-+            SinglePlaneFormat::kRGBA_1010102) {
-+      color_type = kRGBA_1010102_SkColorType;
-+    }
++  // Both native EGL windows and shared phone FBOs publish their actual
++  // allocation. A queued bootstrap reshape may still carry an SDR8 format.
++  const auto native_spaces = ui::GetOhosEglOutputColorSpaces(gl_surface_.get());
++  if (native_spaces &&
++      native_spaces->GetOutputFormat(gfx::ContentColorUsage::kSRGB, false) ==
++          SinglePlaneFormat::kRGBA_1010102) {
++    color_type = kRGBA_1010102_SkColorType;
 +  }
 +#endif
    SkSurfaceProps surface_props;
@@ -20189,7 +20191,7 @@ index 09abdc9d3fae763158d141d2eca89438151a0a53..d2ef03ac67ada1d7183220b39fb60316
  
    auto* gr_context = context_state_->gr_context();
  
-@@ -307,6 +343,14 @@ void SkiaOutputDeviceGL::DoFinishSwapBuffers(const gfx::Size& size,
+@@ -307,6 +342,14 @@
  SkSurface* SkiaOutputDeviceGL::BeginPaint(
      std::vector<GrBackendSemaphore>* end_semaphores) {
    DCHECK(sk_surface_);
@@ -20584,7 +20586,7 @@ index 379320beeb756cbdcebfbf9f38e83ad5339f99d7..da5042ffd8cd349934ee4f3756538c38
    bool RecreateSwapChain(const SkImageInfo& image_info,
                           int sample_count,
 diff --git a/components/viz/service/display_embedder/skia_output_surface_impl.cc b/components/viz/service/display_embedder/skia_output_surface_impl.cc
-index 3f5a7816c9881298b1f78b772915a9e159b68599..76ddc7772716c2b6e28a1f000331b47a00118a80 100644
+index 3f5a7816c9881298b1f78b772915a9e159b68599..608ba099998c492f36e65bf102f4369a5184f1a3 100644
 --- a/components/viz/service/display_embedder/skia_output_surface_impl.cc
 +++ b/components/viz/service/display_embedder/skia_output_surface_impl.cc
 @@ -16,6 +16,7 @@
@@ -20683,6 +20685,25 @@ index 3f5a7816c9881298b1f78b772915a9e159b68599..76ddc7772716c2b6e28a1f000331b47a
  void SkiaOutputSurfaceImpl::SetCapabilitiesForTesting(
      gfx::SurfaceOrigin output_surface_origin) {
    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+@@ -1547,6 +1585,18 @@ GrBackendFormat SkiaOutputSurfaceImpl::GetGrBackendFormatForTexture(
+         impl_on_gpu_->GetFeatureInfo(), gl_storage_internal_format,
+         gr_context_thread_safe_);
+ 
++#if BUILDFLAG(IS_OHOS)
++    // OHOS leaves the client texture target at zero for native video without
++    // GLES2 usage, so WebGL copies it through Raster instead of consuming it
++    // directly. That client-access restriction is not the Ganesh GL texture
++    // type: Ozone imports external-sampler video as GL_TEXTURE_EXTERNAL_OES.
++    // Passing zero here produces kNone and aborts Skia when an underlay is
++    // demoted and the video quad needs ordinary GL composition.
++    if (si_format.PrefersExternalSampler()) {
++      return GrBackendFormats::MakeGL(texture_storage_format,
++                                      GL_TEXTURE_EXTERNAL_OES);
++    }
++#endif
+     return GrBackendFormats::MakeGL(texture_storage_format,
+                                     image_context->texture_target());
+   }
 diff --git a/components/viz/service/display_embedder/skia_output_surface_impl.h b/components/viz/service/display_embedder/skia_output_surface_impl.h
 index c7763b1f3440c45aa1efec006f544a2bc2b98fdb..e23bbb477d70fe73a7bce081eca354fa172e88f0 100644
 --- a/components/viz/service/display_embedder/skia_output_surface_impl.h
@@ -20698,20 +20719,21 @@ index c7763b1f3440c45aa1efec006f544a2bc2b98fdb..e23bbb477d70fe73a7bce081eca354fa
    void SetNeedsMeasureNextDrawLatency() override;
  
 diff --git a/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc b/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
-index 8b2dfa6736b7136da297ed27662c044736dd324d..9119f60cf2c86c21f1d8881149ea1f67bae9ff7d 100644
+index 8b2dfa6736b7136da297ed27662c044736dd324d..3fb27d05c654a53a0e34d456ea04329054f926f8 100644
 --- a/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
 +++ b/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
-@@ -97,6 +97,9 @@
+@@ -97,6 +97,10 @@
  #include "ui/gl/gl_features.h"
  #include "ui/gl/gl_fence.h"
  #include "ui/gl/gl_surface.h"
 +#if BUILDFLAG(IS_OHOS)
 +#include "ui/gfx/vsync_provider.h"
++#include "ui/ozone/platform/ohos/ohos_output_color_config.h"
 +#endif
  #include "ui/gl/presenter.h"
  #include "ui/gl/progress_reporter.h"
  #include "url/gurl.h"
-@@ -108,6 +111,13 @@
+@@ -108,6 +112,13 @@
  
  #if BUILDFLAG(ENABLE_VULKAN)
  #include "components/viz/service/display_embedder/skia_output_device_vulkan.h"
@@ -20725,7 +20747,7 @@ index 8b2dfa6736b7136da297ed27662c044736dd324d..9119f60cf2c86c21f1d8881149ea1f67
  #include "gpu/vulkan/vulkan_device_queue.h"
  #include "gpu/vulkan/vulkan_fence_helper.h"
  #include "gpu/vulkan/vulkan_function_pointers.h"
-@@ -1903,6 +1913,21 @@ void SkiaOutputSurfaceImplOnGpu::SetFrameRate(
+@@ -1903,6 +1914,21 @@ void SkiaOutputSurfaceImplOnGpu::SetFrameRate(
  }
  #endif
  
@@ -20747,12 +20769,35 @@ index 8b2dfa6736b7136da297ed27662c044736dd324d..9119f60cf2c86c21f1d8881149ea1f67
  void SkiaOutputSurfaceImplOnGpu::SetCapabilitiesForTesting(
      const OutputSurface::Capabilities& capabilities) {
    // Check that we're using an offscreen surface.
-@@ -2061,6 +2086,17 @@ bool SkiaOutputSurfaceImplOnGpu::InitializeForVulkan() {
+@@ -2022,6 +2048,13 @@ bool SkiaOutputSurfaceImplOnGpu::InitializeForGL() {
+               GetDidSwapBuffersCompleteCallback());
+         } else {
+           // Used by Android, Linux, and Windows (when DComp has been disabled).
++#if BUILDFLAG(IS_OHOS)
++          // Probe/import the phone's real FBO before the output device copies
++          // its color capabilities. The context is current at this point.
++          ui::InitializeOhosGlOutputColor(
++              gl_surface_.get(), renderer_settings_.requires_alpha_channel);
++          context_state_->gr_context()->resetContext();
++#endif
+           output_device_ = std::make_unique<SkiaOutputDeviceGL>(
+               context_state_.get(), gl_surface_, feature_info_,
+               shared_gpu_deps_->memory_tracker(),
+@@ -2061,6 +2094,26 @@ bool SkiaOutputSurfaceImplOnGpu::InitializeForVulkan() {
      return true;
    }
  
 +#if BUILDFLAG(IS_OHOS)
 +  if (ui::IsOhosPhoneGpuChild()) {
++    if (auto presenter = dependency_->CreatePresenter()) {
++      presenter_ = presenter.get();
++      output_device_ = std::make_unique<SkiaOutputDeviceBufferQueue>(
++          std::make_unique<OutputPresenterGL>(std::move(presenter), dependency_),
++          dependency_, shared_image_representation_factory_.get(),
++          shared_gpu_deps_->memory_tracker(), GetDidSwapBuffersCompleteCallback(),
++          GetReleaseOverlaysCallback());
++      return true;
++    }
 +    output_device_ = std::make_unique<SkiaOutputDeviceOhosPhoneVulkan>(
 +        vulkan_context_provider_, dependency_->GetSurfaceHandle(),
 +        renderer_settings_.requires_alpha_channel,
@@ -20765,7 +20810,7 @@ index 8b2dfa6736b7136da297ed27662c044736dd324d..9119f60cf2c86c21f1d8881149ea1f67
  #if BUILDFLAG(IS_ANDROID)
    if (vulkan_context_provider_->GetGrSecondaryCBDrawContext()) {
      output_device_ = std::make_unique<SkiaOutputDeviceVulkanSecondaryCB>(
-@@ -2097,8 +2133,8 @@ bool SkiaOutputSurfaceImplOnGpu::InitializeForVulkan() {
+@@ -2097,8 +2150,8 @@ bool SkiaOutputSurfaceImplOnGpu::InitializeForVulkan() {
    if (!gpu_preferences_.disable_vulkan_surface) {
      output_device = SkiaOutputDeviceVulkan::Create(
          vulkan_context_provider_, dependency_->GetSurfaceHandle(),
@@ -20776,12 +20821,21 @@ index 8b2dfa6736b7136da297ed27662c044736dd324d..9119f60cf2c86c21f1d8881149ea1f67
    }
    if (MayFallBackToSkiaOutputDeviceX11()) {
  #if BUILDFLAG(SUPPORTS_OZONE_X11)
-@@ -2136,6 +2172,15 @@ bool SkiaOutputSurfaceImplOnGpu::InitializeForVulkan() {
+@@ -2136,6 +2189,24 @@ bool SkiaOutputSurfaceImplOnGpu::InitializeForVulkan() {
  
  bool SkiaOutputSurfaceImplOnGpu::InitializeForDawn() {
  #if BUILDFLAG(SKIA_USE_DAWN)
 +#if BUILDFLAG(IS_OHOS)
 +  if (!dependency_->IsOffscreen()) {
++    if (auto presenter = dependency_->CreatePresenter()) {
++      presenter_ = presenter.get();
++      output_device_ = std::make_unique<SkiaOutputDeviceBufferQueue>(
++          std::make_unique<OutputPresenterGL>(std::move(presenter), dependency_),
++          dependency_, shared_image_representation_factory_.get(),
++          shared_gpu_deps_->memory_tracker(), GetDidSwapBuffersCompleteCallback(),
++          GetReleaseOverlaysCallback());
++      return true;
++    }
 +    output_device_ = std::make_unique<SkiaOutputDeviceOhosGraphite>(
 +        context_state_, dependency_->GetSurfaceHandle(),
 +        renderer_settings_.requires_alpha_channel,
@@ -21627,7 +21681,7 @@ index 6bd3ed3b25e60041094a6cb74a6726e85bb2b3bf..4c83e502e1616a3cc50de1028b280cb1
                           &GpuDataManagerObserver::OnGpuProcessCrashed);
  }
 diff --git a/content/browser/gpu/gpu_process_host.cc b/content/browser/gpu/gpu_process_host.cc
-index 456ef0928171fbee2609d0323ac0db7adb0e2319..2425b51b8440eed6fc9271ab3513e5f347f9d28a 100644
+index 456ef0928171fbee2609d0323ac0db7adb0e2319..39af78088a74db834f2c18db60bbf884b6ad4231 100644
 --- a/content/browser/gpu/gpu_process_host.cc
 +++ b/content/browser/gpu/gpu_process_host.cc
 @@ -1420,6 +1420,29 @@ bool GpuProcessHost::LaunchGpuProcess() {
@@ -21640,7 +21694,7 @@ index 456ef0928171fbee2609d0323ac0db7adb0e2319..2425b51b8440eed6fc9271ab3513e5f3
 +        "user-data-dir",
 +        browser_command_line.GetSwitchValuePath("user-data-dir"));
 +  for (const char* name :
-+       {"ohos-vulkan-output", "ohos-hdr-white-millinits",
++       {"ohos-video-overlays", "ohos-vulkan-output", "ohos-hdr-white-millinits",
 +        "ohos-hdr-peak-millinits", "ohos-hdr-fixed-luminance"}) {
 +    if (browser_command_line.HasSwitch(name))
 +      cmd_line->AppendSwitchASCII(
@@ -26846,14 +26900,15 @@ index 8e34aaf7f5e7dfd5122cb75e3fb87535b438e910..c76c449e5525b612be010898625baee8
    bool supports_ycbcr_nv12_sampling = false;
    bool supports_ycbcr_p010_sampling = false;
 diff --git a/gpu/command_buffer/service/BUILD.gn b/gpu/command_buffer/service/BUILD.gn
-index 58537a332eddd97d207e04fe4c21ded1fbf6bb53..1050eb12ea1846099593cc5475275716e5242b1b 100644
+index 58537a332eddd97d207e04fe4c21ded1fbf6bb53..21bdaa4dc05cc65b100a5828411ca9de9a35fd28 100644
 --- a/gpu/command_buffer/service/BUILD.gn
 +++ b/gpu/command_buffer/service/BUILD.gn
-@@ -438,6 +438,16 @@ target(link_target_type, "gles2_sources") {
+@@ -438,6 +438,17 @@ target(link_target_type, "gles2_sources") {
      }
    }
  
 +  if (is_ohos) {
++    sources += [ "shared_image/ohos_native_video_retirement.h" ]
 +    deps += [ "//ui/ozone/platform/ohos:native_window_registry" ]
 +    if (use_dawn) {
 +      sources += [
@@ -26866,7 +26921,7 @@ index 58537a332eddd97d207e04fe4c21ded1fbf6bb53..1050eb12ea1846099593cc5475275716
    if (enable_vulkan) {
      deps += [ "//gpu/vulkan" ]
  
-@@ -453,7 +463,7 @@ target(link_target_type, "gles2_sources") {
+@@ -453,7 +464,7 @@ target(link_target_type, "gles2_sources") {
        "vulkan_in_process_context_provider.h",
      ]
  
@@ -27608,7 +27663,7 @@ index b1cf8912af9e09c8ead578bbf81652fa390d1121..92799abb9f95d8de7019eefdb25aa9d5
        is_readonly_, OzoneImageBacking::AccessStream::kWebGPU, std::move(fence));
  
 diff --git a/gpu/command_buffer/service/shared_image/external_vk_image_backing.cc b/gpu/command_buffer/service/shared_image/external_vk_image_backing.cc
-index 08f1a9913d731fe9f941056243b9ace935c2b6c4..58aafdcf3bf568c5a6956abc2e62e0a6f1894d87 100644
+index 08f1a9913d731fe9f941056243b9ace935c2b6c4..353c0278f8355b4e004a1537e49d573d04cab68f 100644
 --- a/gpu/command_buffer/service/shared_image/external_vk_image_backing.cc
 +++ b/gpu/command_buffer/service/shared_image/external_vk_image_backing.cc
 @@ -12,6 +12,9 @@
@@ -27965,7 +28020,7 @@ index 08f1a9913d731fe9f941056243b9ace935c2b6c4..58aafdcf3bf568c5a6956abc2e62e0a6
 +      !si_info.usage.HasAll(SHARED_IMAGE_USAGE_DISPLAY_READ |
 +                            SHARED_IMAGE_USAGE_RASTER_READ) ||
 +      !(SHARED_IMAGE_USAGE_DISPLAY_READ | SHARED_IMAGE_USAGE_RASTER_READ |
-+        SHARED_IMAGE_USAGE_WEBGPU_READ).HasAll(si_info.usage) ||
++        SHARED_IMAGE_USAGE_WEBGPU_READ | SHARED_IMAGE_USAGE_SCANOUT).HasAll(si_info.usage) ||
 +      si_info.size != pixmap->GetBufferSize() ||
 +      si_info.format != pixmap->GetSharedImageFormat()) {
 +    return nullptr;
@@ -28064,11 +28119,20 @@ index 08f1a9913d731fe9f941056243b9ace935c2b6c4..58aafdcf3bf568c5a6956abc2e62e0a6
  
    if (!gl_textures_.empty()) {
      // Ensure that a context is current before glDeleteTexture().
-@@ -619,6 +978,34 @@ void ExternalVkImageBacking::EndAccess(bool readonly,
+@@ -619,6 +978,43 @@ void ExternalVkImageBacking::EndAccess(bool readonly,
    }
  }
  
 +#if BUILDFLAG(IS_OHOS)
++void ExternalVkImageBacking::AbortOhosOverlayAccess(
++    std::vector<ExternalSemaphore> semaphores) {
++  EndAccess(/*readonly=*/true, ExternalSemaphore(), /*is_gl=*/false);
++  // No external read was submitted. Preserve every dependency for the next
++  // reader (or destruction), including after a failed sync-file merge.
++  std::move(semaphores.begin(), semaphores.end(),
++            std::back_inserter(read_semaphores_));
++}
++
 +void ExternalVkImageBacking::QuarantineOhosVideoAccess() {
 +  static base::NoDestructor<OhosVideoQuarantinedLeases> quarantine;
 +  {
@@ -28099,7 +28163,7 @@ index 08f1a9913d731fe9f941056243b9ace935c2b6c4..58aafdcf3bf568c5a6956abc2e62e0a6
  bool ExternalVkImageBacking::CheckSupportForAccessStream(
      SharedImageAccessStream stream,
      viz::SharedImageFormat format,
-@@ -651,6 +1038,18 @@ SharedImageBackingType ExternalVkImageBacking::GetType() const {
+@@ -651,6 +1047,18 @@ SharedImageBackingType ExternalVkImageBacking::GetType() const {
  }
  
  void ExternalVkImageBacking::Update(gfx::GpuFenceHandle in_fence) {
@@ -28118,7 +28182,7 @@ index 08f1a9913d731fe9f941056243b9ace935c2b6c4..58aafdcf3bf568c5a6956abc2e62e0a6
    DCHECK(in_fence.is_null());
  }
  
-@@ -730,6 +1129,15 @@ void ExternalVkImageBacking::ReturnPendingSemaphoresWithFenceHelper(
+@@ -730,6 +1138,15 @@ void ExternalVkImageBacking::ReturnPendingSemaphoresWithFenceHelper(
      std::vector<ExternalSemaphore> semaphores) {
    std::move(semaphores.begin(), semaphores.end(),
              std::back_inserter(pending_semaphores_));
@@ -28134,7 +28198,7 @@ index 08f1a9913d731fe9f941056243b9ace935c2b6c4..58aafdcf3bf568c5a6956abc2e62e0a6
    external_semaphore_pool()->ReturnSemaphoresWithFenceHelper(
        std::move(pending_semaphores_));
    pending_semaphores_.clear();
-@@ -742,7 +1150,14 @@ std::unique_ptr<DawnImageRepresentation> ExternalVkImageBacking::ProduceDawn(
+@@ -742,7 +1159,14 @@ std::unique_ptr<DawnImageRepresentation> ExternalVkImageBacking::ProduceDawn(
      wgpu::BackendType backend_type,
      std::vector<wgpu::TextureFormat> view_formats,
      scoped_refptr<SharedContextState> context_state) {
@@ -28151,7 +28215,7 @@ index 08f1a9913d731fe9f941056243b9ace935c2b6c4..58aafdcf3bf568c5a6956abc2e62e0a6
  
    if (wgpu_format == wgpu::TextureFormat::Undefined) {
 diff --git a/gpu/command_buffer/service/shared_image/external_vk_image_backing.h b/gpu/command_buffer/service/shared_image/external_vk_image_backing.h
-index 033df00ac3cc4b0e5e660f77029aa7da1624ae01..c9262b3088bae41809df91e4077000847cc2b1b7 100644
+index 033df00ac3cc4b0e5e660f77029aa7da1624ae01..ac717c78e30a89bfb65f734811f7f8db127a50f5 100644
 --- a/gpu/command_buffer/service/shared_image/external_vk_image_backing.h
 +++ b/gpu/command_buffer/service/shared_image/external_vk_image_backing.h
 @@ -34,6 +34,15 @@ class VulkanImage;
@@ -28170,12 +28234,14 @@ index 033df00ac3cc4b0e5e660f77029aa7da1624ae01..c9262b3088bae41809df91e407700084
    static std::unique_ptr<ExternalVkImageBacking> Create(
        scoped_refptr<SharedContextState> context_state,
        bool enable_webgpu_on_vk_via_gl_interop,
-@@ -149,6 +158,13 @@ class ExternalVkImageBacking final : public ClearTrackingSharedImageBacking {
+@@ -149,6 +158,15 @@ class ExternalVkImageBacking final : public ClearTrackingSharedImageBacking {
                   ExternalSemaphore external_semaphore,
                   bool is_gl);
  
 +#if BUILDFLAG(IS_OHOS)
 +  void QuarantineOhosVideoAccess();
++  // Cancel a read whose dependencies were not consumed by an overlay.
++  void AbortOhosOverlayAccess(std::vector<ExternalSemaphore> semaphores);
 +#endif
 +#if BUILDFLAG(IS_OHOS) && BUILDFLAG(USE_DAWN)
 +  void EndOhosDawnAccess(std::vector<ExternalSemaphore> semaphores);
@@ -28185,7 +28251,7 @@ index 033df00ac3cc4b0e5e660f77029aa7da1624ae01..c9262b3088bae41809df91e407700084
    SharedImageBackingType GetType() const override;
    bool SupportsAccess(SharedImageAccessStream stream,
 diff --git a/gpu/command_buffer/service/shared_image/external_vk_image_backing_factory.cc b/gpu/command_buffer/service/shared_image/external_vk_image_backing_factory.cc
-index 66aa946ebc4aab55337b2109756b2b9a017ecd60..e9e33be7298ed83f5e8aad309284e87d84647717 100644
+index 66aa946ebc4aab55337b2109756b2b9a017ecd60..dc50b9c5af1f8dec518d3d92739977e08f08bff2 100644
 --- a/gpu/command_buffer/service/shared_image/external_vk_image_backing_factory.cc
 +++ b/gpu/command_buffer/service/shared_image/external_vk_image_backing_factory.cc
 @@ -122,7 +122,11 @@ bool IsFormatSupported(viz::SharedImageFormat format,
@@ -28213,12 +28279,21 @@ index 66aa946ebc4aab55337b2109756b2b9a017ecd60..e9e33be7298ed83f5e8aad309284e87d
  #if BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_DAWN)
        SHARED_IMAGE_USAGE_WEBGPU_READ | SHARED_IMAGE_USAGE_WEBGPU_WRITE |
        SHARED_IMAGE_USAGE_WEBGPU_SWAP_CHAIN_TEXTURE |
+@@ -171,7 +180,7 @@ SharedImageUsageSet SupportedUsage() {
+       SHARED_IMAGE_USAGE_CPU_WRITE_ONLY |
+       SHARED_IMAGE_USAGE_RASTER_COPY_SOURCE | SHARED_IMAGE_USAGE_CPU_READ;
+ 
+-#if BUILDFLAG(IS_FUCHSIA)
++#if BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_OHOS)
+   supported_usage |= SHARED_IMAGE_USAGE_SCANOUT;
+ #endif
+ 
 @@ -275,6 +284,24 @@ bool ExternalVkImageBackingFactory::IsSupported(
      gfx::GpuMemoryBufferType gmb_type,
      GrContextType gr_context_type,
      base::span<const uint8_t> pixel_data) {
 +#if BUILDFLAG(IS_OHOS)
-+  if (usage.Has(SHARED_IMAGE_USAGE_WEBGPU_READ)) {
++  if (usage.HasAny(SHARED_IMAGE_USAGE_WEBGPU_READ | SHARED_IMAGE_USAGE_SCANOUT)) {
 +    if (gmb_type != gfx::NATIVE_PIXMAP || !format.is_multi_plane() ||
 +        !format.PrefersExternalSampler()) {
 +      return false;
@@ -28230,7 +28305,7 @@ index 66aa946ebc4aab55337b2109756b2b9a017ecd60..e9e33be7298ed83f5e8aad309284e87d
 +        !usage.HasAll(SHARED_IMAGE_USAGE_RASTER_READ |
 +                      SHARED_IMAGE_USAGE_DISPLAY_READ) ||
 +        !(SHARED_IMAGE_USAGE_RASTER_READ | SHARED_IMAGE_USAGE_DISPLAY_READ |
-+          SHARED_IMAGE_USAGE_WEBGPU_READ).HasAll(usage)) {
++          SHARED_IMAGE_USAGE_WEBGPU_READ | SHARED_IMAGE_USAGE_SCANOUT).HasAll(usage)) {
 +      return false;
 +    }
 +  }
@@ -28456,18 +28531,22 @@ index 02de61447fdeafb7979e28ff86a1a6f369642dfc..0160b0f6783a874231e8c11a4ab2a302
          gl_type != static_cast<GLenum>(preferred_type)) {
        if (format_ == viz::SinglePlaneFormat::kBGRA_8888 ||
 diff --git a/gpu/command_buffer/service/shared_image/ozone_image_backing.cc b/gpu/command_buffer/service/shared_image/ozone_image_backing.cc
-index 6855b869a598589406e026f5f444578294547c32..fb04137b302efe4bf843c8d36bc80461c5b3c702 100644
+index 6855b869a598589406e026f5f444578294547c32..5a837c12d171f67d73f708b79ade884e8665b9dd 100644
 --- a/gpu/command_buffer/service/shared_image/ozone_image_backing.cc
 +++ b/gpu/command_buffer/service/shared_image/ozone_image_backing.cc
-@@ -15,6 +15,7 @@
+@@ -15,7 +15,11 @@
  #include "base/memory/scoped_refptr.h"
  #include "base/notimplemented.h"
  #include "base/numerics/checked_math.h"
 +#include "base/trace_event/trace_event.h"
  #include "build/build_config.h"
++#if BUILDFLAG(IS_OHOS)
++#include "gpu/command_buffer/service/shared_image/ohos_native_video_retirement.h"
++#endif
  #include "components/viz/common/resources/shared_image_format_utils.h"
  #include "gpu/command_buffer/common/mailbox.h"
-@@ -50,12 +51,19 @@
+ #include "gpu/command_buffer/common/shared_image_info.h"
+@@ -50,12 +54,19 @@
  #include "gpu/command_buffer/service/shared_image/vulkan_ozone_image_representation.h"
  #include "gpu/vulkan/vulkan_image.h"
  #include "gpu/vulkan/vulkan_implementation.h"
@@ -28487,7 +28566,7 @@ index 6855b869a598589406e026f5f444578294547c32..fb04137b302efe4bf843c8d36bc80461
  #include "gpu/command_buffer/service/shared_image/skia_graphite_dawn_image_representation.h"
  #include "third_party/skia/include/gpu/graphite/Context.h"
  #include "third_party/skia/include/gpu/graphite/Image.h"
-@@ -150,6 +158,29 @@ OzoneImageBacking::GetSinglePlaneGpuMemoryBufferHandle(uint32_t index) {
+@@ -150,6 +161,29 @@ OzoneImageBacking::GetSinglePlaneGpuMemoryBufferHandle(uint32_t index) {
  #endif  // BUILDFLAG(IS_FUCHSIA)
  }
  
@@ -28517,7 +28596,7 @@ index 6855b869a598589406e026f5f444578294547c32..fb04137b302efe4bf843c8d36bc80461
  std::unique_ptr<DawnImageRepresentation> OzoneImageBacking::ProduceDawn(
      SharedImageManager* manager,
      MemoryTypeTracker* tracker,
-@@ -161,7 +192,33 @@ std::unique_ptr<DawnImageRepresentation> OzoneImageBacking::ProduceDawn(
+@@ -161,7 +195,33 @@ std::unique_ptr<DawnImageRepresentation> OzoneImageBacking::ProduceDawn(
    CHECK(!(usage().Has(SHARED_IMAGE_USAGE_CPU_ONLY_READ_WRITE)));
  
  #if BUILDFLAG(USE_DAWN)
@@ -28551,7 +28630,7 @@ index 6855b869a598589406e026f5f444578294547c32..fb04137b302efe4bf843c8d36bc80461
    if (webgpu_format == wgpu::TextureFormat::Undefined) {
      return nullptr;
    }
-@@ -345,9 +402,20 @@ OzoneImageBacking::ProduceSkiaGanesh(
+@@ -345,9 +405,20 @@ OzoneImageBacking::ProduceSkiaGanesh(
        auto vk_format = format().is_single_plane()
                             ? ToVkFormat(format(), /*plane_index=*/0)
                             : ToVkFormatExternalSampler(format());
@@ -28575,7 +28654,26 @@ index 6855b869a598589406e026f5f444578294547c32..fb04137b302efe4bf843c8d36bc80461
        if (!vulkan_image) {
          return nullptr;
        }
-@@ -518,13 +586,21 @@ std::unique_ptr<VulkanImageRepresentation> OzoneImageBacking::ProduceVulkan(
+@@ -445,6 +516,18 @@ OzoneImageBacking::OzoneImageBacking(
+ }
+ 
+ OzoneImageBacking::~OzoneImageBacking() {
++#if BUILDFLAG(IS_OHOS)
++  if (format().PrefersExternalSampler() && pixmap_ && context_state_) {
++    // A decoder may recycle this allocation as soon as its imported pixmap is
++    // destroyed. Preserve both dropped-frame producer dependencies and each
++    // stream's last GPU read until their actual sync-file fences signal.
++    ohos_native_video::Retire(pixmap_, context_state_,
++                              external_write_fence_.Clone());
++    ohos_native_video::Retire(pixmap_, context_state_, write_fence_.Clone());
++    for (auto& [stream, fence] : read_fences_)
++      ohos_native_video::Retire(pixmap_, context_state_, fence.Clone());
++  }
++#endif
+   for (auto& [context, holder] : per_context_cached_textures_holders_) {
+     context->RemoveObserver(this);
+     // We only need to remove textures here. If the context was lost or
+@@ -518,13 +601,21 @@ std::unique_ptr<VulkanImageRepresentation> OzoneImageBacking::ProduceVulkan(
      }
  #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
    }
@@ -28604,11 +28702,16 @@ index 6855b869a598589406e026f5f444578294547c32..fb04137b302efe4bf843c8d36bc80461
  
    if (!vulkan_image) {
      return nullptr;
-@@ -872,6 +948,16 @@ bool OzoneImageBacking::BeginAccess(bool readonly,
+@@ -872,12 +963,34 @@ bool OzoneImageBacking::BeginAccess(bool readonly,
      need_end_fence = true;
    }
  
 +#if BUILDFLAG(IS_OHOS)
++  if (readonly && access_stream == AccessStream::kGL && pixmap_ &&
++      format().PrefersExternalSampler()) {
++    // Even a read-only imported buffer has an external decoder producer.
++    need_end_fence = true;
++  }
 +  if (readonly && access_stream == AccessStream::kVulkan && pixmap_ &&
 +      format().is_single_plane() &&
 +      usage().HasAny(SHARED_IMAGE_USAGE_WEBGPU_WRITE |
@@ -28621,6 +28724,19 @@ index 6855b869a598589406e026f5f444578294547c32..fb04137b302efe4bf843c8d36bc80461
    return true;
  }
  
+ void OzoneImageBacking::EndAccess(bool readonly,
+                                   AccessStream access_stream,
+                                   gfx::GpuFenceHandle fence) {
++#if BUILDFLAG(IS_OHOS)
++  if (readonly && access_stream == AccessStream::kGL && pixmap_ &&
++      format().PrefersExternalSampler() && fence.is_null()) {
++    // Export failure must never turn an unfinished read into early reuse.
++    ohos_native_video::Quarantine(pixmap_, context_state_);
++  }
++#endif
+   // Track reads and writes if not being used for concurrent read/writes.
+   if (!usage().Has(SHARED_IMAGE_USAGE_CONCURRENT_READ_WRITE)) {
+     if (readonly) {
 diff --git a/gpu/command_buffer/service/shared_image/ozone_image_backing.h b/gpu/command_buffer/service/shared_image/ozone_image_backing.h
 index c0d773a6f85c9fdbf1a5ed18168e1d3432ed98b4..3414e2ece79e6ab3fff6247f4db0b7b410144386 100644
 --- a/gpu/command_buffer/service/shared_image/ozone_image_backing.h
@@ -28667,10 +28783,14 @@ index c0d773a6f85c9fdbf1a5ed18168e1d3432ed98b4..3414e2ece79e6ab3fff6247f4db0b7b4
    // allocations/deallocations of textures and their EGLImages. That's
    // especially handy for raster tasks as there can be tens of tasks resulting
 diff --git a/gpu/command_buffer/service/shared_image/ozone_image_backing_factory.cc b/gpu/command_buffer/service/shared_image/ozone_image_backing_factory.cc
-index 99dd3cba74f508c8a24dd35e81865d6828e1a1da..1ee6103a9ce6a9825c808d0b92d75643d9c29995 100644
+index 99dd3cba74f508c8a24dd35e81865d6828e1a1da..ee3c2bdcf122ea98dfb156596a00d550020bb567 100644
 --- a/gpu/command_buffer/service/shared_image/ozone_image_backing_factory.cc
 +++ b/gpu/command_buffer/service/shared_image/ozone_image_backing_factory.cc
-@@ -10,12 +10,18 @@
+@@ -7,15 +7,22 @@
+ #include <dawn/dawn_proc_table.h>
+ #include <dawn/native/DawnNative.h>
+ 
++#include "base/command_line.h"
  #include "base/logging.h"
  #include "base/memory/scoped_refptr.h"
  #include "build/build_config.h"
@@ -28689,7 +28809,7 @@ index 99dd3cba74f508c8a24dd35e81865d6828e1a1da..1ee6103a9ce6a9825c808d0b92d75643
  #include "gpu/command_buffer/service/shared_image/shared_image_format_service_utils.h"
  #include "gpu/command_buffer/service/shared_memory_region_wrapper.h"
  #include "gpu/config/gpu_finch_features.h"
-@@ -221,6 +227,18 @@ std::unique_ptr<SharedImageBacking> OzoneImageBackingFactory::CreateSharedImage(
+@@ -221,6 +228,18 @@ std::unique_ptr<SharedImageBacking> OzoneImageBackingFactory::CreateSharedImage(
  
    auto backing = std::make_unique<OzoneImageBacking>(
        mailbox, si_info, shared_context_state_, std::move(pixmap), workarounds_);
@@ -28708,14 +28828,18 @@ index 99dd3cba74f508c8a24dd35e81865d6828e1a1da..1ee6103a9ce6a9825c808d0b92d75643
    backing->SetCleared();
  
    return backing;
-@@ -255,13 +273,36 @@ bool OzoneImageBackingFactory::IsSupported(
+@@ -255,13 +274,40 @@ bool OzoneImageBackingFactory::IsSupported(
      return false;
    }
  
 +#if BUILDFLAG(IS_OHOS)
-+  // OH_NativeBuffers back video frames (NV12, P010) and WebGPU's textures;
-+  // every other single-plane image stays where it was, a GL texture.
-+  if (format.is_single_plane() &&
++  // Native buffers also back the SDR primary plane of the RS presenter.
++  // Keep unrelated single-plane GL allocations on their existing path.
++  const bool overlay_primary = usage.HasAll(
++      SHARED_IMAGE_USAGE_SCANOUT | SHARED_IMAGE_USAGE_DISPLAY_WRITE) &&
++      (format == viz::SinglePlaneFormat::kRGBA_8888 ||
++       format == viz::SinglePlaneFormat::kBGRA_8888);
++  if (format.is_single_plane() && !overlay_primary &&
 +      gr_context_type != GrContextType::kGraphiteDawn &&
 +      !usage.HasAny(SHARED_IMAGE_USAGE_WEBGPU_READ | SHARED_IMAGE_USAGE_WEBGPU_WRITE |
 +                      SHARED_IMAGE_USAGE_WEBGPU_SWAP_CHAIN_TEXTURE |
@@ -28747,34 +28871,40 @@ index 99dd3cba74f508c8a24dd35e81865d6828e1a1da..1ee6103a9ce6a9825c808d0b92d75643
    bool used_by_gl = (HasGLES2ReadOrWriteUsage(usage)) ||
                      (used_by_skia && gr_context_type == GrContextType::kGL);
    if (used_by_vulkan && !CanImportNativePixmapToVulkan()) {
-@@ -271,7 +312,25 @@ bool OzoneImageBackingFactory::IsSupported(
+@@ -271,7 +317,31 @@ bool OzoneImageBackingFactory::IsSupported(
      return false;
    }
    auto* factory = ui::OzonePlatform::GetInstance()->GetSurfaceFactoryOzone();
 -  if (!factory->CanCreateNativePixmapForFormat(format)) {
 +  bool can_create_pixmap = factory->CanCreateNativePixmapForFormat(format);
-+#if BUILDFLAG(IS_OHOS) && BUILDFLAG(SKIA_USE_DAWN)
++#if BUILDFLAG(IS_OHOS)
 +  // A forked GPU may import the browser decoder's existing parcel without
 +  // gaining permission to allocate YUV buffers or access system services.
 +  // Keep renderer/CPU allocation requests on their existing rejected path.
 +  auto native_format = format;
 +  if (native_format.is_multi_plane())
 +    native_format.ClearPrefersExternalSampler();
++  bool native_video_reader =
++      gr_context_type == GrContextType::kGL &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch("ohos-video-overlays");
++#if BUILDFLAG(SKIA_USE_DAWN)
++  native_video_reader |= SupportsOhosGraphiteVideo(shared_context_state_.get());
++#endif
 +  const bool native_decoder_import =
 +      gmb_type == gfx::NATIVE_PIXMAP && format.PrefersExternalSampler() &&
 +      (native_format == viz::MultiPlaneFormat::kNV12 ||
 +       native_format == viz::MultiPlaneFormat::kP010) &&
-+      SupportsOhosGraphiteVideo(shared_context_state_.get()) &&
++      native_video_reader &&
 +      usage.HasAll(SHARED_IMAGE_USAGE_DISPLAY_READ | SHARED_IMAGE_USAGE_RASTER_READ) &&
 +      (SHARED_IMAGE_USAGE_DISPLAY_READ | SHARED_IMAGE_USAGE_RASTER_READ |
-+       SHARED_IMAGE_USAGE_WEBGPU_READ).HasAll(usage);
++       SHARED_IMAGE_USAGE_WEBGPU_READ | SHARED_IMAGE_USAGE_SCANOUT).HasAll(usage);
 +  can_create_pixmap |= native_decoder_import;
 +#endif
 +  if (!can_create_pixmap) {
      return false;
    }
  
-@@ -372,7 +431,9 @@ bool OzoneImageBackingFactory::CanVulkanSynchronizeGpuFence() {
+@@ -372,7 +442,9 @@ bool OzoneImageBackingFactory::CanVulkanSynchronizeGpuFence() {
  }
  
  bool OzoneImageBackingFactory::CanImportNativePixmapToWebGPU() {
@@ -28785,7 +28915,7 @@ index 99dd3cba74f508c8a24dd35e81865d6828e1a1da..1ee6103a9ce6a9825c808d0b92d75643
    // Safe to always return true here, as it's not possible to create a WebGPU
    // adapter that doesn't support importing native pixmaps:
    // https://source.chromium.org/chromium/chromium/src/+/main:gpu/command_buffer/service/webgpu_decoder_impl.cc;drc=daed597d580d450d36578c0cc53b4f72d3b507da;l=1291
-@@ -396,7 +457,9 @@ bool OzoneImageBackingFactory::CanImportNativePixmapToWebGPU() {
+@@ -396,7 +468,9 @@ bool OzoneImageBackingFactory::CanImportNativePixmapToWebGPU() {
  }
  
  bool OzoneImageBackingFactory::CanWebGPUSynchronizeGpuFence() {
@@ -28823,18 +28953,20 @@ index c1a90b229aa25d517af6af6eb2ba0a3891b8aa53..0d4c8a5ecbe19630328a2d04514568cf
    virtual std::optional<VulkanYCbCrInfo> GetVkCbCrInfo(
        SharedContextState* context_state);
 diff --git a/gpu/command_buffer/service/shared_image/shared_image_factory.cc b/gpu/command_buffer/service/shared_image/shared_image_factory.cc
-index 42b433dccffbde6d3c85b300108b2f37c9a653e0..fae189102f80188e6bc15b048b8b76d41402a670 100644
+index 42b433dccffbde6d3c85b300108b2f37c9a653e0..d99b90f29b4a828485aab98daa896ab577166f48 100644
 --- a/gpu/command_buffer/service/shared_image/shared_image_factory.cc
 +++ b/gpu/command_buffer/service/shared_image/shared_image_factory.cc
-@@ -7,6 +7,7 @@
+@@ -7,7 +7,9 @@
  #include <inttypes.h>
  
  #include <memory>
 +#include <string_view>
  
++#include "base/command_line.h"
  #include "base/debug/crash_logging.h"
  #include "base/debug/dump_without_crashing.h"
-@@ -46,6 +47,10 @@
+ #include "base/metrics/histogram_functions.h"
+@@ -46,6 +48,10 @@
  #include "ui/gfx/gpu_memory_buffer_handle.h"
  #include "ui/gl/gl_display.h"
  #include "ui/gl/gl_implementation.h"
@@ -28845,7 +28977,7 @@ index 42b433dccffbde6d3c85b300108b2f37c9a653e0..fae189102f80188e6bc15b048b8b76d4
  #include "ui/gl/gl_switches.h"
  #include "ui/gl/gl_utils.h"
  #include "ui/gl/gl_version_info.h"
-@@ -56,8 +61,16 @@
+@@ -56,8 +62,16 @@
  #include "gpu/command_buffer/service/vulkan_context_provider.h"
  #include "gpu/vulkan/vulkan_device_queue.h"
  
@@ -28863,7 +28995,7 @@ index 42b433dccffbde6d3c85b300108b2f37c9a653e0..fae189102f80188e6bc15b048b8b76d4
  #endif
  
  #if BUILDFLAG(IS_ANDROID)
-@@ -87,6 +100,7 @@
+@@ -87,6 +101,7 @@
  
  #if BUILDFLAG(IS_FUCHSIA)
  #include <lib/zx/channel.h>
@@ -28871,7 +29003,7 @@ index 42b433dccffbde6d3c85b300108b2f37c9a653e0..fae189102f80188e6bc15b048b8b76d4
  #include "gpu/vulkan/vulkan_device_queue.h"
  #include "gpu/vulkan/vulkan_implementation.h"
  #endif  // BUILDFLAG(IS_FUCHSIA)
-@@ -96,6 +110,7 @@
+@@ -96,6 +111,7 @@
  #endif  // BUILDFLAG(IS_ANDROID)
  
  #if BUILDFLAG(USE_DAWN)
@@ -28879,7 +29011,7 @@ index 42b433dccffbde6d3c85b300108b2f37c9a653e0..fae189102f80188e6bc15b048b8b76d4
  #include "gpu/command_buffer/service/shared_image/dawn_image_backing_factory.h"
  #endif  // BUILDFLAG(USE_DAWN)
  
-@@ -124,7 +139,8 @@ const char* GmbTypeToString(gfx::GpuMemoryBufferType type) {
+@@ -124,7 +140,8 @@ const char* GmbTypeToString(gfx::GpuMemoryBufferType type) {
      case gfx::IO_SURFACE_BUFFER:
        return "platform";
  #endif
@@ -28889,7 +29021,7 @@ index 42b433dccffbde6d3c85b300108b2f37c9a653e0..fae189102f80188e6bc15b048b8b76d4
      case gfx::NATIVE_PIXMAP:
        return "platform";
  #endif
-@@ -145,7 +161,8 @@ gfx::GpuMemoryBufferType GetNativeBufferType() {
+@@ -145,7 +162,8 @@ gfx::GpuMemoryBufferType GetNativeBufferType() {
    return gfx::GpuMemoryBufferType::IO_SURFACE_BUFFER;
  #elif BUILDFLAG(IS_ANDROID)
    return gfx::GpuMemoryBufferType::ANDROID_HARDWARE_BUFFER;
@@ -28899,10 +29031,17 @@ index 42b433dccffbde6d3c85b300108b2f37c9a653e0..fae189102f80188e6bc15b048b8b76d4
    return gfx::GpuMemoryBufferType::NATIVE_PIXMAP;
  #elif BUILDFLAG(IS_WIN)
    return gfx::GpuMemoryBufferType::DXGI_SHARED_HANDLE;
-@@ -344,6 +361,28 @@ SharedImageFactory::SharedImageFactory(
+@@ -344,6 +362,35 @@ SharedImageFactory::SharedImageFactory(
    }
  #endif  // BUILDFLAG(ENABLE_VULKAN) && (BUILDFLAG(IS_LINUX) ||
          // BUILDFLAG(IS_FUCHSIA))
++#if BUILDFLAG(IS_OHOS)
++  if (ui::IsOhosPhoneGpuChild() && gr_context_type_ == GrContextType::kGL &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch("ohos-video-overlays")) {
++    factories_.push_back(std::make_unique<OzoneImageBackingFactory>(
++        context_state_, workarounds_));
++  }
++#endif
 +#if BUILDFLAG(ENABLE_VULKAN) && BUILDFLAG(IS_OHOS)
 +  if (gr_context_type_ == GrContextType::kVulkan ||
 +      gr_context_type_ == GrContextType::kGraphiteDawn) {
@@ -28928,7 +29067,7 @@ index 42b433dccffbde6d3c85b300108b2f37c9a653e0..fae189102f80188e6bc15b048b8b76d4
  #endif  // BUILDFLAG(IS_OZONE)
  
  #if BUILDFLAG(IS_APPLE)
-@@ -837,6 +876,34 @@ gpu::SharedImageCapabilities SharedImageFactory::MakeCapabilities() {
+@@ -837,6 +884,40 @@ gpu::SharedImageCapabilities SharedImageFactory::MakeCapabilities() {
    gpu::SharedImageCapabilities shared_image_caps;
    shared_image_caps.supports_scanout_shared_images =
        shared_image_manager_->SupportsScanoutImages();
@@ -28942,6 +29081,12 @@ index 42b433dccffbde6d3c85b300108b2f37c9a653e0..fae189102f80188e6bc15b048b8b76d4
 +  const bool native_import = native_extensions &&
 +      std::string_view(native_extensions).find("EGL_OHOS_image_native_buffer") !=
 +          std::string_view::npos;
++  if (ui::IsOhosPhoneGpuChild() && context_state_ &&
++      gr_context_type_ == GrContextType::kGL && native_import &&
++      gl::GLFence::IsGpuFenceSupported() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch("ohos-video-overlays")) {
++    shared_image_caps.supports_ohos_video_native_buffers = true;
++  }
 +  shared_image_caps.supports_ohos_native_rgba_f16 =
 +      context_state_ && gr_context_type_ == GrContextType::kGL &&
 +      gl::GetANGLEImplementation() == gl::ANGLEImplementation::kVulkan &&
@@ -28963,7 +29108,7 @@ index 42b433dccffbde6d3c85b300108b2f37c9a653e0..fae189102f80188e6bc15b048b8b76d4
  
  #if BUILDFLAG(IS_WIN)
    // Scanout for software video frames is supported on Windows except on D3D9.
-@@ -851,13 +918,37 @@ gpu::SharedImageCapabilities SharedImageFactory::MakeCapabilities() {
+@@ -851,13 +932,37 @@ gpu::SharedImageCapabilities SharedImageFactory::MakeCapabilities() {
        gr_context_type_ == GrContextType::kGraphiteDawn;
    shared_image_caps.supports_r16_shared_images =
        is_angle_metal || is_skia_graphite;
@@ -29001,7 +29146,7 @@ index 42b433dccffbde6d3c85b300108b2f37c9a653e0..fae189102f80188e6bc15b048b8b76d4
    }
    if (!context_state_) {
      shared_image_caps.is_r16f_supported = false;
-@@ -873,6 +964,24 @@ gpu::SharedImageCapabilities SharedImageFactory::MakeCapabilities() {
+@@ -873,6 +978,24 @@ gpu::SharedImageCapabilities SharedImageFactory::MakeCapabilities() {
              kA16_float_SkColorType);
    }
  
@@ -29026,7 +29171,7 @@ index 42b433dccffbde6d3c85b300108b2f37c9a653e0..fae189102f80188e6bc15b048b8b76d4
    const bool display_compositor_on_another_thread =
        shared_image_manager_->display_context_on_another_thread();
    if (!context_state_) {
-@@ -963,8 +1072,9 @@ SharedImageBackingFactory* SharedImageFactory::GetFactoryByUsage(
+@@ -963,8 +1086,9 @@ SharedImageBackingFactory* SharedImageFactory::GetFactoryByUsage(
      gfx::GpuMemoryBufferType gmb_type,
      std::optional<SharedImageAccessStream> stream,
      const AccessParams* params) {
@@ -29038,7 +29183,7 @@ index 42b433dccffbde6d3c85b300108b2f37c9a653e0..fae189102f80188e6bc15b048b8b76d4
    bool share_between_threads = IsSharedBetweenThreads(usage);
    for (auto& factory : factories_) {
 diff --git a/gpu/command_buffer/service/shared_image/shared_image_manager.cc b/gpu/command_buffer/service/shared_image/shared_image_manager.cc
-index 597958d75c9ae87172159290c0028636585f65f2..0fb9c0cea738528c8ad7f3c974d6e55185ded988 100644
+index 597958d75c9ae87172159290c0028636585f65f2..5ee55cd8f5d3ae8da2e04c591a3a5a78022320a9 100644
 --- a/gpu/command_buffer/service/shared_image/shared_image_manager.cc
 +++ b/gpu/command_buffer/service/shared_image/shared_image_manager.cc
 @@ -294,7 +294,8 @@ std::unique_ptr<DawnImageRepresentation> SharedImageManager::ProduceDawn(
@@ -29051,7 +29196,17 @@ index 597958d75c9ae87172159290c0028636585f65f2..0fb9c0cea738528c8ad7f3c974d6e551
      return nullptr;
    }
  
-@@ -665,7 +666,7 @@ bool SharedImageManager::SupportsScanoutImages() {
+@@ -655,7 +656,8 @@ bool SharedImageManager::SupportsScanoutImages() {
+   return true;
+ #elif BUILDFLAG(IS_ANDROID)
+   return true;
+-#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_FUCHSIA)
++#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_FUCHSIA) || \
++    BUILDFLAG(IS_OHOS)
+   return supports_overlays_on_ozone_;
+ #elif BUILDFLAG(IS_WIN)
+   return gl::DirectCompositionTextureSupported();
+@@ -665,7 +667,7 @@ bool SharedImageManager::SupportsScanoutImages() {
  }
  
  void SharedImageManager::QueryMultiplanarTextureSamplingSupport() {
@@ -29060,7 +29215,7 @@ index 597958d75c9ae87172159290c0028636585f65f2..0fb9c0cea738528c8ad7f3c974d6e551
    auto* ozone_platform = ui::OzonePlatform::GetInstance();
    auto* surface_factory = ozone_platform->GetSurfaceFactoryOzone();
    supports_ycbcr_nv12_sampling_ =
-@@ -678,11 +679,12 @@ void SharedImageManager::QueryMultiplanarTextureSamplingSupport() {
+@@ -678,11 +680,12 @@ void SharedImageManager::QueryMultiplanarTextureSamplingSupport() {
        surface_factory->IsFormatSupportedForTexturing(
            viz::MultiPlaneFormat::kP010);
    is_texture_sampling_queried_ = true;
@@ -29075,7 +29230,7 @@ index 597958d75c9ae87172159290c0028636585f65f2..0fb9c0cea738528c8ad7f3c974d6e551
    AutoLock autolock(this);
    if (!is_texture_sampling_queried_) {
      QueryMultiplanarTextureSamplingSupport();
-@@ -696,7 +698,7 @@ bool SharedImageManager::SupportsNV12TextureSampling() {
+@@ -696,7 +699,7 @@ bool SharedImageManager::SupportsNV12TextureSampling() {
  }
  
  bool SharedImageManager::SupportsP010TextureSampling() {
@@ -38665,10 +38820,10 @@ index d4bdac3034b62d26a25ad1d45ce4970a0c3db0e2..d93a8b21c21ff1f16c71034d0606317c
    FenceStatus status = GetStatusChangeTime(fence_handle_.Peek(), &timestamp);
    DCHECK_EQ(status, FenceStatus::kSignaled);
 diff --git a/ui/gfx/mojom/native_handle_types.mojom b/ui/gfx/mojom/native_handle_types.mojom
-index 28117e1ae6fbfb84220f708e50a0e4d652c6706f..d9a1191cf77255d792b6b4a6738c00774719aa83 100644
+index 28117e1ae6fbfb84220f708e50a0e4d652c6706f..8d983e8db379e6baf31a2fa1f2150da9cd2b834b 100644
 --- a/ui/gfx/mojom/native_handle_types.mojom
 +++ b/ui/gfx/mojom/native_handle_types.mojom
-@@ -22,6 +22,14 @@ struct NativePixmapPlane {
+@@ -22,6 +22,16 @@ struct NativePixmapPlane {
  [EnableIf=supports_native_pixmap]
  struct NativePixmapHandle {
    array<NativePixmapPlane> planes;
@@ -38680,11 +38835,13 @@ index 28117e1ae6fbfb84220f708e50a0e4d652c6706f..d9a1191cf77255d792b6b4a6738c0077
 +  array<handle<platform>> ohos_buffer_fds;
 +  [EnableIf=is_ohos]
 +  handle<platform>? ohos_video_release_fd;
++  [EnableIf=is_ohos]
++  uint64 ohos_overlay_token;
  
    [EnableIf=is_chromeos|is_linux]
    uint64 modifier;
 diff --git a/ui/gfx/mojom/native_handle_types_mojom_traits.cc b/ui/gfx/mojom/native_handle_types_mojom_traits.cc
-index 22313e64a5229c387192475ba6ba8629b1e0f5ed..f1c3ec570004aaa81d50e58e84b4456e748653a0 100644
+index 22313e64a5229c387192475ba6ba8629b1e0f5ed..524c3d9326edf2c992138718eca23330be21a400 100644
 --- a/ui/gfx/mojom/native_handle_types_mojom_traits.cc
 +++ b/ui/gfx/mojom/native_handle_types_mojom_traits.cc
 @@ -84,7 +84,7 @@ bool StructTraits<gfx::mojom::AHardwareBufferHandleDataView,
@@ -38705,7 +38862,7 @@ index 22313e64a5229c387192475ba6ba8629b1e0f5ed..f1c3ec570004aaa81d50e58e84b4456e
    if (!handle.is_fd())
      return false;
    out->fd = handle.TakeFD();
-@@ -141,6 +141,33 @@ bool StructTraits<
+@@ -141,6 +141,34 @@ bool StructTraits<
    out->ram_coherency = data.ram_coherency();
  #endif
  
@@ -38729,6 +38886,7 @@ index 22313e64a5229c387192475ba6ba8629b1e0f5ed..f1c3ec570004aaa81d50e58e84b4456e
 +      return false;
 +    out->ohos_buffer_fds.push_back(h.TakeFD());
 +  }
++  out->ohos_overlay_token = data.ohos_overlay_token();
 +  auto release = data.TakeOhosVideoReleaseFd();
 +  if (release.is_valid()) {
 +    if (!release.is_fd())
@@ -38740,10 +38898,10 @@ index 22313e64a5229c387192475ba6ba8629b1e0f5ed..f1c3ec570004aaa81d50e58e84b4456e
  }
  #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_OZONE)
 diff --git a/ui/gfx/mojom/native_handle_types_mojom_traits.h b/ui/gfx/mojom/native_handle_types_mojom_traits.h
-index 6101c5b0e02c7faab24e58bb6d4ef6a1cf656b18..016a17ea8a39e373998589c63b6131f41e2fc2bd 100644
+index 6101c5b0e02c7faab24e58bb6d4ef6a1cf656b18..2f08081ffd70d18da674bb916b7330bfc1e5d72d 100644
 --- a/ui/gfx/mojom/native_handle_types_mojom_traits.h
 +++ b/ui/gfx/mojom/native_handle_types_mojom_traits.h
-@@ -103,6 +103,26 @@ struct COMPONENT_EXPORT(GFX_NATIVE_HANDLE_TYPES_SHARED_MOJOM_TRAITS)
+@@ -103,6 +103,29 @@ struct COMPONENT_EXPORT(GFX_NATIVE_HANDLE_TYPES_SHARED_MOJOM_TRAITS)
    }
  #endif  // BUILDFLAG(IS_FUCHSIA)
  
@@ -38763,6 +38921,9 @@ index 6101c5b0e02c7faab24e58bb6d4ef6a1cf656b18..016a17ea8a39e373998589c63b6131f4
 +      fds.emplace_back(std::move(fd));
 +    return fds;
 +  }
++  static uint64_t ohos_overlay_token(const gfx::NativePixmapHandle& h) {
++    return h.ohos_overlay_token;
++  }
 +  static PlatformHandle ohos_video_release_fd(gfx::NativePixmapHandle& h) {
 +    return PlatformHandle(std::move(h.ohos_video_release_fd));
 +  }
@@ -38771,7 +38932,7 @@ index 6101c5b0e02c7faab24e58bb6d4ef6a1cf656b18..016a17ea8a39e373998589c63b6131f4
                     gfx::NativePixmapHandle* out);
  };
 diff --git a/ui/gfx/native_pixmap_handle.cc b/ui/gfx/native_pixmap_handle.cc
-index 283d48686aa7bcc79b8d3503a3ab64804b7de997..059ea96479b677264739cfc6285c713cd13e3725 100644
+index 283d48686aa7bcc79b8d3503a3ab64804b7de997..56054990097dfff4f0d0096459850ea37eb6e30a 100644
 --- a/ui/gfx/native_pixmap_handle.cc
 +++ b/ui/gfx/native_pixmap_handle.cc
 @@ -13,6 +13,9 @@
@@ -38820,11 +38981,12 @@ index 283d48686aa7bcc79b8d3503a3ab64804b7de997..059ea96479b677264739cfc6285c713c
    clone.modifier = handle.modifier;
    clone.supports_zero_copy_webgpu_import =
        handle.supports_zero_copy_webgpu_import;
-@@ -132,6 +135,22 @@ NativePixmapHandle CloneHandleForIPC(const NativePixmapHandle& handle) {
+@@ -132,6 +135,23 @@ NativePixmapHandle CloneHandleForIPC(const NativePixmapHandle& handle) {
    clone.ram_coherency = handle.ram_coherency;
  #endif
  
 +#if BUILDFLAG(IS_OHOS)
++  clone.ohos_overlay_token = handle.ohos_overlay_token;
 +  clone.ohos_buffer_prefix = handle.ohos_buffer_prefix;
 +  clone.ohos_buffer_tail = handle.ohos_buffer_tail;
 +  for (const auto& fd : handle.ohos_buffer_fds) {
@@ -38844,7 +39006,7 @@ index 283d48686aa7bcc79b8d3503a3ab64804b7de997..059ea96479b677264739cfc6285c713c
  }
  
 diff --git a/ui/gfx/native_pixmap_handle.h b/ui/gfx/native_pixmap_handle.h
-index a0f06338cdd9c87b7c0cfc7794c97814d5e98735..04e0cc5cfff9b96d5f0d0414fed500c0c0568835 100644
+index a0f06338cdd9c87b7c0cfc7794c97814d5e98735..6ec9f38a743eb4f8dee49f28fbaae55e2ceba90e 100644
 --- a/ui/gfx/native_pixmap_handle.h
 +++ b/ui/gfx/native_pixmap_handle.h
 @@ -14,7 +14,7 @@
@@ -38874,7 +39036,7 @@ index a0f06338cdd9c87b7c0cfc7794c97814d5e98735..04e0cc5cfff9b96d5f0d0414fed500c0
    // File descriptor for the underlying memory object (usually dmabuf).
    base::ScopedFD fd;
  #elif BUILDFLAG(IS_FUCHSIA)
-@@ -77,8 +77,18 @@ struct COMPONENT_EXPORT(GFX) NativePixmapHandle {
+@@ -77,8 +77,19 @@ struct COMPONENT_EXPORT(GFX) NativePixmapHandle {
    NativePixmapHandle& operator=(NativePixmapHandle&& other);
  
    std::vector<NativePixmapPlane> planes;
@@ -38887,6 +39049,7 @@ index a0f06338cdd9c87b7c0cfc7794c97814d5e98735..04e0cc5cfff9b96d5f0d0414fed500c0
 +  // Last GPU reference closes this endpoint after Vulkan work completes.
 +  // The browser retains the decoder queue lease until its peer sees EOF.
 +  base::ScopedFD ohos_video_release_fd;
++  uint64_t ohos_overlay_token = 0;
 +#endif
  
 -#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
@@ -39615,3 +39778,270 @@ index 711d4bb308ef17e75f7e32299ad2c94092ebc2f3..0735b1d26328f184a1c10740515bec2b
    }
  
    declare_args() {
+diff --git a/services/network/cors/cors_url_loader.cc b/services/network/cors/cors_url_loader.cc
+index 2a6c236a9b447db912d1f27150c4ad859cebbd90..4a23415e655d6131716537ecc387e1a94c847866 100644
+--- a/services/network/cors/cors_url_loader.cc
++++ b/services/network/cors/cors_url_loader.cc
+@@ -1244,6 +1244,25 @@ void CorsURLLoader::MaybeSetOriginHeader(
+     return;
+   }
+ 
++  // OHOS: extension-initiated requests must not advertise
++  // "chrome-extension://..." as their Origin. Sites that validate Origin for
++  // CSRF reject that value outright, and extension requests bypass CORS
++  // anyway. Blink's ResourceRequestHead::SetHTTPOrigin() already drops the
++  // header for this reason; this code used to synthesize it straight back.
++  if (request_.request_initiator &&
++      request_.request_initiator->scheme() == "chrome-extension") {
++    request_.headers.RemoveHeader(net::HttpRequestHeaders::kOrigin);
++    if (headers_update_params) {
++      std::erase(headers_update_params->removed_headers,
++                 net::HttpRequestHeaders::kOrigin);
++      headers_update_params->removed_headers.emplace_back(
++          net::HttpRequestHeaders::kOrigin);
++      headers_update_params->modified_headers.RemoveHeader(
++          net::HttpRequestHeaders::kOrigin);
++    }
++    return;
++  }
++
+   std::string origin_value = tainted_
+                                  ? url::Origin().Serialize()
+                                  : request_.request_initiator->Serialize();
+diff --git a/third_party/blink/renderer/platform/loader/fetch/resource_request.cc b/third_party/blink/renderer/platform/loader/fetch/resource_request.cc
+index 1397eeebf997ba65b7e53d99e8a05a4042014092..fc54f9ee927ccf23e45dbccb0b7f14545876ee32 100644
+--- a/third_party/blink/renderer/platform/loader/fetch/resource_request.cc
++++ b/third_party/blink/renderer/platform/loader/fetch/resource_request.cc
+@@ -329,6 +329,15 @@ void ResourceRequestHead::SetHttpHeaderField(const AtomicString& name,
+ }
+ 
+ void ResourceRequestHead::SetHTTPOrigin(const SecurityOrigin* origin) {
++  // OHOS: requests made by an extension (its pages, service worker and
++  // offscreen document) do not advertise "chrome-extension://..." as their
++  // Origin. Sites that validate Origin for CSRF reject that value outright,
++  // and extension requests bypass CORS anyway, so leaving the header out is
++  // both safe and what the sites expect.
++  if (origin->Protocol() == "chrome-extension") {
++    http_header_fields_.Remove(http_names::kOrigin);
++    return;
++  }
+   SetHttpHeaderField(http_names::kOrigin, origin->ToAtomicString());
+ }
+ 
+diff --git a/third_party/blink/renderer/core/paint/paint_property_tree_builder.cc b/third_party/blink/renderer/core/paint/paint_property_tree_builder.cc
+index 6dbd642348fc59008ddaa103edc5a712697756d1..94cb78cca43fe051068bf03d0e59981475e9d760 100644
+--- a/third_party/blink/renderer/core/paint/paint_property_tree_builder.cc
++++ b/third_party/blink/renderer/core/paint/paint_property_tree_builder.cc
+@@ -9,6 +9,7 @@
+ #include "base/check_op.h"
+ #include "base/feature_list.h"
+ #include "base/memory/ptr_util.h"
++#include "build/build_config.h"
+ #include "cc/base/features.h"
+ #include "cc/input/main_thread_scrolling_reason.h"
+ #include "cc/input/overscroll_behavior.h"
+@@ -3640,6 +3641,29 @@ void FragmentPaintPropertyTreeBuilder::UpdateScrollNode() {
+   state.user_scrollable_vertical =
+       scrollable_area->UserInputScrollable(kVerticalScrollbar);
+ 
++#if BUILDFLAG(IS_OHOS)
++  // Pixel-snapping the contents and clip at different origins can create a
++  // compositor-only scroll range. Latching to that range traps a gesture that
++  // Blink cannot scroll. Use Blink's range to reject only these phantom axes;
++  // retain the contents bounds for painting and genuine one-pixel scrolls.
++  // Viewport and root-scroller ranges have separate browser-controls semantics.
++  if (!box.IsLayoutView() &&
++      !full_context_.direct_compositing_reasons.Has(
++          CompositingReason::kRootScroller)) {
++    const gfx::Vector2d scroll_range =
++        scrollable_area->MaximumScrollOffsetInt() -
++        scrollable_area->MinimumScrollOffsetInt();
++    if (scroll_range.x() == 0 &&
++        state.contents_rect.width() > state.container_rect.width()) {
++      state.user_scrollable_horizontal = false;
++    }
++    if (scroll_range.y() == 0 &&
++        state.contents_rect.height() > state.container_rect.height()) {
++      state.user_scrollable_vertical = false;
++    }
++  }
++#endif
++
+   state.composited_scrolling_preference =
+       static_cast<CompositedScrollingPreference>(
+           full_context_.composited_scrolling_preference);
+
+diff --git a/chrome/browser/devtools/devtools_window.cc b/chrome/browser/devtools/devtools_window.cc
+--- a/chrome/browser/devtools/devtools_window.cc
++++ b/chrome/browser/devtools/devtools_window.cc
+@@ -3,6 +3,10 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/devtools/devtools_window.h"
++
++#if BUILDFLAG(IS_OHOS)
++#include "chrome/browser/ui/ohos/aura_shell_runtime_bridge.h"
++#endif
+ 
+ #include <algorithm>
+ #include <memory>
+@@ -1386,6 +1390,14 @@
+     return nullptr;
+   }
+ 
++#if BUILDFLAG(IS_OHOS)
++  // The phone shell hosts DevTools in an independent surface. Docking into
++  // the inspected page would shrink it even while the tools are collapsed.
++  if (chrome::ohos::IsAuraShellMobilePhoneUi()) {
++    can_dock = false;
++  }
++#endif
++
+   SessionID inspected_browser_session_id = SessionID::InvalidValue();
+ #if BUILDFLAG(IS_ANDROID)
+   // Docking is not supported yet.
+diff --git a/components/viz/service/display/overlay_processor_interface.cc b/components/viz/service/display/overlay_processor_interface.cc
+index 9d256f66458446c78dab1185e4a2801482bed79b..d287ef34acb38423a0b2071851fa1647c0fe2696 100644
+--- a/components/viz/service/display/overlay_processor_interface.cc
++++ b/components/viz/service/display/overlay_processor_interface.cc
+@@ -154,9 +154,13 @@ OverlayProcessorInterface::CreateOverlayProcessor(
+     }
+   }
+ 
++  auto available_strategies = renderer_settings.overlay_strategies;
++#if BUILDFLAG(IS_OHOS)
++  // The OHOS presenter implements one video underlay and an alpha webpage.
++  available_strategies = {OverlayStrategy::kUnderlay};
++#endif
+   return std::make_unique<OverlayProcessorOzone>(
+-      std::move(overlay_candidates),
+-      std::move(renderer_settings.overlay_strategies),
++      std::move(overlay_candidates), std::move(available_strategies),
+       std::move(pixmap_provider));
+ 
+ #elif BUILDFLAG(IS_ANDROID)
+diff --git a/components/viz/service/display_embedder/output_presenter_gl.cc b/components/viz/service/display_embedder/output_presenter_gl.cc
+index 95887eaa6e8d65f9c995029af3aae39cb95a946b..b320f5622f8d6acf3146624c6740b09f06aa2913 100644
+--- a/components/viz/service/display_embedder/output_presenter_gl.cc
++++ b/components/viz/service/display_embedder/output_presenter_gl.cc
+@@ -68,6 +68,25 @@ void OutputPresenterGL::InitializeCapabilities(
+   capabilities->present_requires_make_current =
+       !presenter_->SupportsPlaneGpuFences();
+ 
++#if BUILDFLAG(IS_OHOS)
++  // Video underlays retain decoder HDR metadata; webpage text and controls
++  // remain SDR, including when Chromium must composite an ineligible video.
++  capabilities->ohos_output_color_spaces =
++      gfx::DisplayColorSpaces(gfx::ColorSpace::CreateSRGB());
++  for (auto usage : {gfx::ContentColorUsage::kSRGB,
++                     gfx::ContentColorUsage::kWideColorGamut,
++                     gfx::ContentColorUsage::kHDR}) {
++    for (bool alpha : {false, true}) {
++      capabilities->ohos_output_color_spaces->SetOutputColorSpaceAndFormat(
++          usage, alpha, gfx::ColorSpace::CreateSRGB(),
++          SinglePlaneFormat::kRGBA_8888);
++    }
++  }
++  capabilities->sk_color_type_map[SinglePlaneFormat::kRGBA_8888] =
++      kRGBA_8888_SkColorType;
++  capabilities->sk_color_type_map[SinglePlaneFormat::kBGRA_8888] =
++      kBGRA_8888_SkColorType;
++#else
+   // TODO(crbug.com/40141277): only add supported formats base on
+   // platform, driver, etc.
+   capabilities->sk_color_type_map[SinglePlaneFormat::kBGR_565] =
+@@ -88,6 +107,7 @@ void OutputPresenterGL::InitializeCapabilities(
+       kRGBA_1010102_SkColorType;
+   capabilities->sk_color_type_map[SinglePlaneFormat::kRGBA_F16] =
+       kRGBA_F16_SkColorType;
++#endif
+ }
+ 
+ bool OutputPresenterGL::Reshape(const ReshapeParams& params) {
+@@ -125,7 +145,11 @@ void OutputPresenterGL::ScheduleOverlayPlane(
+     // properly.
+     LOG_IF(WARNING, overlay_plane_candidate.is_root_render_pass)
+         << "root_render_pass is missing overlay_image.";
++#if !BUILDFLAG(IS_OHOS)
+     return;
++#endif
++    // OHOS must see this missing plane and reject the whole atomic frame.
++    // Skipping just the video would display a primary with an empty hole.
+   }
+ #elif BUILDFLAG(IS_ANDROID)
+   gl::OverlayImage overlay_image =
+diff --git a/gpu/command_buffer/service/shared_image/external_vk_image_overlay_representation.cc b/gpu/command_buffer/service/shared_image/external_vk_image_overlay_representation.cc
+index e6974ebf47ee5e7aace1e1d5604986501ec0a43a..5988e7f30caa3392bc3fe70bcc88638eef6613ba 100644
+--- a/gpu/command_buffer/service/shared_image/external_vk_image_overlay_representation.cc
++++ b/gpu/command_buffer/service/shared_image/external_vk_image_overlay_representation.cc
+@@ -6,6 +6,14 @@
+ 
+ #include "build/build_config.h"
+ 
++#if BUILDFLAG(IS_OHOS)
++#include <fcntl.h>
++#include <linux/sync_file.h>
++#include <sys/ioctl.h>
++
++#include "base/posix/eintr_wrapper.h"
++#endif
++
+ #if BUILDFLAG(IS_FUCHSIA)
+ #include "gpu/vulkan/fuchsia/vulkan_fuchsia_ext.h"
+ #endif
+@@ -34,6 +42,55 @@ bool ExternalVkImageOverlayImageRepresentation::BeginReadAccess(
+     return false;
+   }
+ 
++#if BUILDFLAG(IS_OHOS)
++  if (vk_image_backing_->format().PrefersExternalSampler()) {
++    // These are decoder/Dawn SYNC_FD dependencies. Duplicate their existing
++    // handles: exporting an imported VkSemaphore would consume its payload.
++    // RS accepts one sync_file, so merge all prior readers without a CPU wait.
++    base::ScopedFD merged;
++    bool valid = true;
++    for (auto& semaphore : read_begin_semaphores_) {
++      auto handle = semaphore.handle();
++      if (handle.vk_handle_type() !=
++          VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT) {
++        valid = false;
++        break;
++      }
++      auto fd = handle.TakeHandle();
++      if (!fd.is_valid()) {
++        valid = false;
++        break;
++      }
++      if (!merged.is_valid()) {
++        merged = std::move(fd);
++        continue;
++      }
++      struct sync_merge_data merge = {};
++      merge.name[0] = 'R';
++      merge.name[1] = 'S';
++      merge.fd2 = fd.get();
++      merge.fence = -1;
++      if (HANDLE_EINTR(ioctl(merged.get(), SYNC_IOC_MERGE, &merge)) < 0) {
++        valid = false;
++        break;
++      }
++      merged.reset(merge.fence);
++      if (!merged.is_valid() ||
++          HANDLE_EINTR(fcntl(merged.get(), F_SETFD, FD_CLOEXEC)) < 0) {
++        valid = false;
++        break;
++      }
++    }
++    if (!valid) {
++      vk_image_backing_->AbortOhosOverlayAccess(
++          std::move(read_begin_semaphores_));
++      read_begin_semaphores_.clear();
++      return false;
++    }
++    acquire_fence.Adopt(std::move(merged));
++    return true;
++  }
++#endif
+   GetAcquireFence(acquire_fence);
+   return true;
+ }
