@@ -108,8 +108,8 @@ struct OhosVideoDecoder::CallbackRelay {
 class OhosVideoDecoder::SurfaceVisibilityObserver final
     : public ui::OhosApplicationVisibilityObserver {
  public:
-  explicit SurfaceVisibilityObserver(base::RepeatingClosure resumed)
-      : resumed_(std::move(resumed)) {
+  explicit SurfaceVisibilityObserver(base::RepeatingCallback<void(bool)> changed)
+      : changed_(std::move(changed)) {
     ui::AddOhosApplicationVisibilityObserver(this);
   }
   ~SurfaceVisibilityObserver() override {
@@ -117,15 +117,13 @@ class OhosVideoDecoder::SurfaceVisibilityObserver final
   }
 
   void OnOhosApplicationVisibilityChanged(bool visible) override {
-    if (visible) {
-      // A codec error can unregister and destroy this observer during Run().
-      auto resumed = resumed_;
-      resumed.Run();
-    }
+    // A codec error can unregister and destroy this observer during Run().
+    auto changed = changed_;
+    changed.Run(visible);
   }
 
  private:
-  const base::RepeatingClosure resumed_;
+  const base::RepeatingCallback<void(bool)> changed_;
 };
 
 OhosVideoDecoder::PendingDecode::PendingDecode(
@@ -301,7 +299,7 @@ void OhosVideoDecoder::OnBrowserGpuInitialized(
   surface_enabled_ =
       browser_sii_ && !browser_sii_->IsLost() &&
       browser_sii_->GetCapabilities().supports_ohos_video_native_buffers;
-  LOG(WARNING) << "OHOS phone video: Vulkan native-buffer path="
+  LOG(WARNING) << "OHOS phone video: native-buffer path="
                << surface_enabled_;
   FinishInitialize(std::move(init_cb));
 }
@@ -599,6 +597,9 @@ DecoderStatus OhosVideoDecoder::CreateCodec() {
                 base::NumberToString(static_cast<int>(result))};
   }
   if (surface_enabled_) {
+    surface_overlay_sdr_pristine_ =
+        !config_.color_space_info().ToGfxColorSpace().IsHDR() &&
+        config_.hdr_metadata().IsEmpty();
     surface_ = OhosVideoSurface::Create(
         task_runner_, coded_size,
         base::BindPostTask(
@@ -633,7 +634,7 @@ DecoderStatus OhosVideoDecoder::CreateCodec() {
   if (surface_enabled_ && browser_sii_) {
     surface_visibility_observer_ =
         std::make_unique<SurfaceVisibilityObserver>(base::BindRepeating(
-            &OhosVideoDecoder::OnSurfacePresentationResumed,
+            &OhosVideoDecoder::OnSurfacePresentationVisibilityChanged,
             weak_factory_.GetWeakPtr(), generation_));
   }
   LOG(WARNING) << "OHOS video decoder: selected hardware " << *name
@@ -663,6 +664,8 @@ void OhosVideoDecoder::DestroyCodec() {
   // codec are ignored even if a new codec reuses their indices.
   AdvanceGeneration();
   surface_visibility_observer_.reset();
+  surface_resume_.Stop();
+  surface_resume_pending_ = false;
   surface_timeout_.Stop();
   surface_poll_.Stop();
   free_inputs_.clear();
@@ -1067,6 +1070,24 @@ void OhosVideoDecoder::RenderNextSurfaceOutput() {
                  << " max_acquired=" << surface_frame_limit_;
   }
   const bool background = browser_sii_ && !ui::IsOhosApplicationVisible();
+  if (background) {
+    surface_resume_pending_ = true;
+    surface_resume_.Stop();
+  } else if (surface_resume_pending_) {
+    // Application visibility precedes AVCodec service restoration. On the
+    // phone, a successful RenderOutputBuffer in that gap was lost while the
+    // service was still suspending/restoring its output buffers. Give that
+    // asynchronous transition one bounded grace period before submitting any
+    // queued output (including submissions triggered by buffer releases).
+    // This does not extend an outstanding frame's ten-second deadline.
+    if (!surface_resume_.IsRunning()) {
+      surface_resume_.Start(
+          FROM_HERE, base::Milliseconds(250),
+          base::BindOnce(&OhosVideoDecoder::OnSurfacePresentationResumed,
+                         weak_factory_.GetWeakPtr(), generation_));
+    }
+    return;
+  }
   // A hidden phone's native producer can return success without a consumer
   // buffer, even with only two acquired frames. Keep codec outputs queued
   // until presentation resumes. Foreground keeps the four-frame budget;
@@ -1121,11 +1142,25 @@ void OhosVideoDecoder::RenderNextSurfaceOutput() {
                          weak_factory_.GetWeakPtr(), generation_));
 }
 
+void OhosVideoDecoder::OnSurfacePresentationVisibilityChanged(
+    uint32_t generation, bool visible) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (generation != generation_)
+    return;
+  if (!visible) {
+    surface_resume_pending_ = true;
+    surface_resume_.Stop();
+    return;
+  }
+  RenderNextSurfaceOutput();
+}
+
 void OhosVideoDecoder::OnSurfacePresentationResumed(uint32_t generation) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (generation != generation_ || !ui::IsOhosApplicationVisible()) {
     return;
   }
+  surface_resume_pending_ = false;
   LOG(WARNING) << "OHOS video surface queue resume: acquired="
                << surface_frames_in_flight_
                << " queued_output=" << surface_outputs_.size()
@@ -1263,6 +1298,11 @@ void OhosVideoDecoder::ConvertBrowserFrame(
     OnSurfaceFrameConverted(generation, nullptr);
     return;
   }
+  surface_overlay_sdr_pristine_ &=
+      !output.color_space.IsHDR() && output.hdr_metadata.IsEmpty();
+  const uint64_t overlay_token =
+      ui::RegisterOhosVideoOverlay(pixmap, surface_overlay_sdr_pristine_);
+  handle.ohos_overlay_token = overlay_token;
   auto pixel_format = SharedImageFormatToVideoPixelFormat([&] {
     auto format = pixmap->GetSharedImageFormat();
     format.ClearPrefersExternalSampler();
@@ -1271,6 +1311,8 @@ void OhosVideoDecoder::ConvertBrowserFrame(
   CHECK(pixel_format);
   gpu::SharedImageUsageSet usage = gpu::SHARED_IMAGE_USAGE_DISPLAY_READ |
                                    gpu::SHARED_IMAGE_USAGE_RASTER_READ;
+  if (overlay_token)
+    usage |= gpu::SHARED_IMAGE_USAGE_SCANOUT;
   if (allow_webgpu_native_video_)
     usage |= gpu::SHARED_IMAGE_USAGE_WEBGPU_READ;
   const gpu::SharedImageInfo info(pixmap->GetSharedImageFormat(),
@@ -1285,7 +1327,7 @@ void OhosVideoDecoder::ConvertBrowserFrame(
   gpu::SyncToken ready;
   if (!image) {
     WaitBrowserFrameLease(generation, std::move(receiver), std::move(pixmap),
-                          nullptr);
+                          nullptr, overlay_token);
     return;
   }
   ready = image->creation_sync_token();
@@ -1318,6 +1360,8 @@ void OhosVideoDecoder::ConvertBrowserFrame(
     frame->set_color_space(output.color_space);
     frame->set_hdr_metadata(output.hdr_metadata);
     frame->metadata().power_efficient = true;
+    // TransferableResource derives overlay eligibility from the SharedImage's
+    // SCANOUT usage. VideoFrameMetadata no longer carries allow_overlay.
     // Graphite native reads retain the imported pixmap until the exported
     // Dawn completion fence signals (ohos_native_video::Retire).
     // WaitBrowserFrameLease consequently cannot return the decoder buffer
@@ -1332,14 +1376,15 @@ void OhosVideoDecoder::ConvertBrowserFrame(
     frame->metadata().is_webgpu_compatible = allow_webgpu_native_video_;
   }
   WaitBrowserFrameLease(generation, std::move(receiver), std::move(pixmap),
-                        std::move(frame));
+                        std::move(frame), overlay_token);
 }
 
 void OhosVideoDecoder::WaitBrowserFrameLease(
     uint32_t generation,
     base::ScopedFD receiver,
     scoped_refptr<gfx::NativePixmap> pixmap,
-    scoped_refptr<VideoFrame> frame) {
+    scoped_refptr<VideoFrame> frame,
+    uint64_t overlay_token) {
   const bool graphite = browser_sii_->GetCapabilities()
                             .supports_ohos_graphite_video_native_buffers;
   base::OnceCallback<void(scoped_refptr<VideoFrame>)> ready;
@@ -1361,7 +1406,8 @@ void OhosVideoDecoder::WaitBrowserFrameLease(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
       base::BindOnce(
           [](base::ScopedFD receiver, scoped_refptr<gfx::NativePixmap> lease,
-             bool graphite, scoped_refptr<VideoFrame> frame,
+             uint64_t overlay_token, bool graphite,
+             scoped_refptr<VideoFrame> frame,
              base::OnceCallback<void(scoped_refptr<VideoFrame>)> ready) {
             if (graphite) {
               ui::OhosVideoGraphiteMetadata metadata;
@@ -1403,9 +1449,10 @@ void OhosVideoDecoder::WaitBrowserFrameLease(
                 CHECK(false) << "OHOS video lease socket failed";
               }
             }
+            ui::UnregisterOhosVideoOverlay(overlay_token);
           },
-          std::move(receiver), std::move(pixmap), graphite, std::move(frame),
-          std::move(ready)));
+          std::move(receiver), std::move(pixmap), overlay_token, graphite,
+          std::move(frame), std::move(ready)));
 }
 
 void OhosVideoDecoder::OnBrowserFrameMetadataReady(

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ace/xcomponent/native_interface_xcomponent.h"
+#include "arkui/native_node_napi.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
@@ -32,6 +33,7 @@
 #include "services/device/usb/ohos/usb_bridge_ohos.h"
 #include "ui/ozone/platform/ohos/ohos_native_window_registry.h"
 #include "ui/ozone/platform/ohos/ohos_output_color_config.h"
+#include "ui/ozone/platform/ohos/ohos_overlay_api.h"
 
 namespace ohos_nweb {
 namespace {
@@ -527,7 +529,12 @@ void DispatchAuxiliaryWindowEvent(const ui::OhosLogicalWindowState& state) {
     event.Set("incognito", metadata->is_incognito);
     event.Set("browserPopup", metadata->is_web_popup);
   }
-  if (metadata && metadata->is_pwa) {
+  if (metadata && metadata->is_devtools) {
+    event.Set("devTools", true);
+    event.Set("devToolsOwner", static_cast<double>(metadata->devtools_owner));
+    event.Set("title", metadata->title);
+    event.Set("url", metadata->url);
+  } else if (metadata && metadata->is_pwa) {
     event.Set("windowRole", "pwa");
     event.Set("pwaAppId", metadata->app_id);
     event.Set("title", metadata->title);
@@ -684,6 +691,10 @@ void NativeSurfaceDestroyed(OH_NativeXComponent* component, void* window) {
   if (!component_id) {
     return;
   }
+  ui::SetOhosVerifiedOverlayOutput(
+      ui::GetOhosAcceleratedWidgetForNativeSurface(*component_id), false);
+  if (const auto* api = ui::GetOhosOverlayApi())
+    api->detach(component_id->c_str());
   ohos_accessibility::UnregisterProvider(*component_id, window);
   if (IsAuxiliaryComponentId(*component_id)) {
     ReleaseBrowserEventFunction(*component_id);
@@ -1178,6 +1189,9 @@ AuraStartupConfig ParseStartupConfig(const std::string& config_json) {
     config.additional_switches.push_back({"ohos-download-dir", *directory});
   }
 
+  if (dict.FindBool("enableVideoOverlays").value_or(false)) {
+    config.additional_switches.push_back({"ohos-video-overlays", ""});
+  }
   config.experimental_phone_fork =
       dict.FindBool("experimentalPhoneFork").value_or(false);
   config.gpu_rasterization = dict.FindBool("gpuRasterization");
@@ -1366,6 +1380,50 @@ napi_value OnVisibilityChanged(napi_env env, napi_callback_info info) {
 
   const std::string component_id = ReadString(env, args[0]);
   EnsureHost(component_id)->OnVisibilityChanged(ReadBool(env, args[1]));
+  return MakeUndefined(env);
+}
+
+napi_value AttachOverlayContent(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  const auto* api = ui::GetOhosOverlayApi();
+  ArkUI_NodeContentHandle content = nullptr;
+  uv_loop_s* loop = nullptr;
+  if (argc != 2 || !api ||
+      OH_ArkUI_GetNodeContentFromNapiValue(env, args[1], &content) != 0 ||
+      napi_get_uv_event_loop(env, &loop) != napi_ok)
+    return MakeUndefined(env);
+  struct Owner {
+    napi_env env;
+    napi_ref ref;
+    std::string component_id;
+  };
+  auto owner = std::make_unique<Owner>();
+  owner->env = env;
+  owner->component_id = ReadString(env, args[0]);
+  if (napi_create_reference(env, args[1], 1, &owner->ref) != napi_ok)
+    return MakeUndefined(env);
+  if (api->attach(OHOS_OVERLAY_BRIDGE_VERSION, ReadString(env, args[0]).c_str(),
+                  content, loop, owner.get(), [](void* data) {
+                    std::unique_ptr<Owner> owner(static_cast<Owner*>(data));
+                    ui::SetOhosVerifiedOverlayOutput(
+                        ui::GetOhosAcceleratedWidgetForNativeSurface(
+                            owner->component_id),
+                        false);
+                    napi_delete_reference(owner->env, owner->ref);
+                  }))
+    owner.release();
+  else
+    napi_delete_reference(env, owner->ref);
+  return MakeUndefined(env);
+}
+napi_value DetachOverlayContent(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (const auto* api = ui::GetOhosOverlayApi(); api && argc == 1)
+    api->detach(ReadString(env, args[0]).c_str());
   return MakeUndefined(env);
 }
 
@@ -1697,6 +1755,10 @@ napi_value Shutdown(napi_env env, napi_callback_info info) {
 napi_value InitAuraShellNapi(napi_env env, napi_value exports) {
   RegisterNativeXComponentCallbacks(env, exports);
   napi_property_descriptor desc[] = {
+      {"AttachOverlayContent", nullptr, AttachOverlayContent, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"DetachOverlayContent", nullptr, DetachOverlayContent, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
       {"UpdateDisplayBrightness", nullptr, UpdateDisplayBrightness, nullptr,
        nullptr, nullptr, napi_default, nullptr},
       {"Initialize", nullptr, Initialize, nullptr, nullptr, nullptr,

@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly expected_revision="f043649a0ef1fd96e48d56ddbfc8a4a99aa2ca37"  # 155.0.8059.91
+readonly expected_revision="b510e9d7cd3a2fbd78d0ddc42234103206c5f78d"  # 154.0.8037.97
 readonly project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly chromium_src="${1:-}"
 
@@ -36,49 +36,70 @@ done <"${deps_patch_root}/series"
 git -C "${chromium_src}" apply --binary \
   "${project_root}/patches/chromium-154-harmonyos.patch"
 git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-mobile-ua-viewport.patch"
+git -C "${chromium_src}" apply \
   "${project_root}/patches/ohos-url-protection.patch"
 git -C "${chromium_src}" apply \
   "${project_root}/patches/ohos-url-protection-updates.patch"
 git -C "${chromium_src}" apply \
   "${project_root}/patches/ohos-rule-sources.patch"
 git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-extension-updates.patch"
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-adblock-rust.patch" \
+  "${project_root}/patches/ohos-adblock-execution.patch" \
+  "${project_root}/patches/ohos-viewport-translation.patch"
+git -C "${chromium_src}" apply \
   "${project_root}/patches/ohos-phone-fork.patch"
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-egl-bottom-left-surface.patch"
 git -C "${chromium_src}" apply \
   "${project_root}/patches/ohos-phone-gpu-shared-output.patch"
 git -C "${chromium_src}" apply \
   "${project_root}/patches/ohos-ime-explicit-keyboard-request.patch"
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-adaptive-vsync.patch"
 git -C "${chromium_src}" apply \
   "${project_root}/patches/ohos-phone-skia-vulkan.patch"
 git -C "${chromium_src}" apply \
   "${project_root}/patches/ohos-skia-output-format-diagnostics.patch"
 git -C "${chromium_src}" apply \
   "${project_root}/patches/ohos-vulkan-sdr-output.patch"
-# Paint-holding fixes (A = transparent Init background / cold-start white
-# flash, B = finite navigation-gap deadline / black-gutter flash). Applied here
-# so a standalone apply-adapter also carries them; the incremental list skips
-# them idempotently when already present.
 git -C "${chromium_src}" apply \
-  "${project_root}/patches/ohos-paint-hold-a.patch"
+  "${project_root}/patches/ohos-vulkan-hdr-output.patch"
 git -C "${chromium_src}" apply \
-  "${project_root}/patches/ohos-paint-hold-b.patch"
+  "${project_root}/patches/ohos-phone-vulkan-shared-images.patch"
 git -C "${chromium_src}" apply \
-  "${project_root}/patches/ohos-bottom-crop.patch"
-# Extension Origin fix: extension requests must not carry
-# "Origin: chrome-extension://..." (sites validating Origin for CSRF answer
-# 403). Both files live outside overlay/, so the rsync below never clobbers
-# them. Previously carried only by D:/hmos-build/apply-engine-patches.py.
+  "${project_root}/patches/ohos-vulkan-cached-upload.patch"
 git -C "${chromium_src}" apply \
-  "${project_root}/patches/ohos-extension-origin.patch"
+  "${project_root}/patches/ohos-phone-browser-media.patch"
+git -C "${chromium_src}" apply \
+  "${project_root}/patches/ohos-video-zero-copy.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-phone-vulkan-video.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-webnn-nnrt.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-startup-probes.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-video-overlay-presenter.patch"
 while read -r deps_path deps_patch; do
   [[ -z "${deps_path}" || "${deps_path}" == \#* ]] && continue
   git -C "${chromium_src}/${deps_path}" apply --binary \
     "${deps_patch_root}/${deps_patch}"
 done <"${deps_patch_root}/series"
+git -C "${chromium_src}/third_party/skia" apply "${project_root}/patches/ohos-skia-native-ycbcr.patch"
+git -C "${chromium_src}/third_party/dawn" apply \
+  "${project_root}/patches/ohos-dawn-instance-diagnostics.patch"
 git -C "${chromium_src}/third_party/angle" apply \
   "${project_root}/patches/ohos-angle-vulkan-msrt.patch"
 git -C "${chromium_src}" apply "${project_root}/patches/ohos-secure-dns-ech.patch"
 git -C "${chromium_src}" apply "${project_root}/patches/ohos-https-first-warning.patch"
+# Local blocks: A = transparent Init background (cold-start/new-tab white
+# flash), B = finite navigation-gap deadline (black-gutter flash), bottom crop
+# = keep the page full height when the shell controls do not shrink it.
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-paint-hold-a.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-paint-hold-b.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-bottom-crop.patch"
 git -C "${chromium_src}" apply "${project_root}/patches/ohos-shell-preloading.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-extensions-mobile-ui.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-phone-gl-hdr.patch"
 rsync -a "${project_root}/overlay/" "${chromium_src}/"
 
 deps_root="$(dirname "${chromium_src}")/deps_code/webview"

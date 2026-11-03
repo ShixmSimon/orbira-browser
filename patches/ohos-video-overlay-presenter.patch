@@ -1,0 +1,413 @@
+diff --git a/components/viz/service/display_embedder/output_presenter_gl.cc b/components/viz/service/display_embedder/output_presenter_gl.cc
+index 95887eaa6e8d65f9c995029af3aae39cb95a946b..b320f5622f8d6acf3146624c6740b09f06aa2913 100644
+--- a/components/viz/service/display_embedder/output_presenter_gl.cc
++++ b/components/viz/service/display_embedder/output_presenter_gl.cc
+@@ -68,6 +68,25 @@ void OutputPresenterGL::InitializeCapabilities(
+   capabilities->present_requires_make_current =
+       !presenter_->SupportsPlaneGpuFences();
+ 
++#if BUILDFLAG(IS_OHOS)
++  // Video underlays retain decoder HDR metadata; webpage text and controls
++  // remain SDR, including when Chromium must composite an ineligible video.
++  capabilities->ohos_output_color_spaces =
++      gfx::DisplayColorSpaces(gfx::ColorSpace::CreateSRGB());
++  for (auto usage : {gfx::ContentColorUsage::kSRGB,
++                     gfx::ContentColorUsage::kWideColorGamut,
++                     gfx::ContentColorUsage::kHDR}) {
++    for (bool alpha : {false, true}) {
++      capabilities->ohos_output_color_spaces->SetOutputColorSpaceAndFormat(
++          usage, alpha, gfx::ColorSpace::CreateSRGB(),
++          SinglePlaneFormat::kRGBA_8888);
++    }
++  }
++  capabilities->sk_color_type_map[SinglePlaneFormat::kRGBA_8888] =
++      kRGBA_8888_SkColorType;
++  capabilities->sk_color_type_map[SinglePlaneFormat::kBGRA_8888] =
++      kBGRA_8888_SkColorType;
++#else
+   // TODO(crbug.com/40141277): only add supported formats base on
+   // platform, driver, etc.
+   capabilities->sk_color_type_map[SinglePlaneFormat::kBGR_565] =
+@@ -88,6 +107,7 @@ void OutputPresenterGL::InitializeCapabilities(
+       kRGBA_1010102_SkColorType;
+   capabilities->sk_color_type_map[SinglePlaneFormat::kRGBA_F16] =
+       kRGBA_F16_SkColorType;
++#endif
+ }
+ 
+ bool OutputPresenterGL::Reshape(const ReshapeParams& params) {
+@@ -125,7 +145,11 @@ void OutputPresenterGL::ScheduleOverlayPlane(
+     // properly.
+     LOG_IF(WARNING, overlay_plane_candidate.is_root_render_pass)
+         << "root_render_pass is missing overlay_image.";
++#if !BUILDFLAG(IS_OHOS)
+     return;
++#endif
++    // OHOS must see this missing plane and reject the whole atomic frame.
++    // Skipping just the video would display a primary with an empty hole.
+   }
+ #elif BUILDFLAG(IS_ANDROID)
+   gl::OverlayImage overlay_image =
+diff --git a/components/viz/service/display/overlay_processor_interface.cc b/components/viz/service/display/overlay_processor_interface.cc
+--- a/components/viz/service/display/overlay_processor_interface.cc
++++ b/components/viz/service/display/overlay_processor_interface.cc
+@@ -154,9 +154,13 @@
+     }
+   }
+ 
++  auto available_strategies = renderer_settings.overlay_strategies;
++#if BUILDFLAG(IS_OHOS)
++  // The OHOS presenter implements one video underlay and an alpha webpage.
++  available_strategies = {OverlayStrategy::kUnderlay};
++#endif
+   return std::make_unique<OverlayProcessorOzone>(
+-      std::move(overlay_candidates),
+-      std::move(renderer_settings.overlay_strategies),
++      std::move(overlay_candidates), std::move(available_strategies),
+       std::move(pixmap_provider));
+ 
+ #elif BUILDFLAG(IS_ANDROID)
+diff --git a/gpu/command_buffer/service/shared_image/shared_image_manager.cc b/gpu/command_buffer/service/shared_image/shared_image_manager.cc
+--- a/gpu/command_buffer/service/shared_image/shared_image_manager.cc
++++ b/gpu/command_buffer/service/shared_image/shared_image_manager.cc
+@@ -655,7 +655,8 @@
+   return true;
+ #elif BUILDFLAG(IS_ANDROID)
+   return true;
+-#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_FUCHSIA)
++#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_FUCHSIA) || \
++    BUILDFLAG(IS_OHOS)
+   return supports_overlays_on_ozone_;
+ #elif BUILDFLAG(IS_WIN)
+   return gl::DirectCompositionTextureSupported();
+diff --git a/gpu/command_buffer/service/shared_image/external_vk_image_backing.cc b/gpu/command_buffer/service/shared_image/external_vk_image_backing.cc
+--- a/gpu/command_buffer/service/shared_image/external_vk_image_backing.cc
++++ b/gpu/command_buffer/service/shared_image/external_vk_image_backing.cc
+@@ -560,7 +560,7 @@
+       !si_info.usage.HasAll(SHARED_IMAGE_USAGE_DISPLAY_READ |
+                             SHARED_IMAGE_USAGE_RASTER_READ) ||
+       !(SHARED_IMAGE_USAGE_DISPLAY_READ | SHARED_IMAGE_USAGE_RASTER_READ |
+-        SHARED_IMAGE_USAGE_WEBGPU_READ).HasAll(si_info.usage) ||
++        SHARED_IMAGE_USAGE_WEBGPU_READ | SHARED_IMAGE_USAGE_SCANOUT).HasAll(si_info.usage) ||
+       si_info.size != pixmap->GetBufferSize() ||
+       si_info.format != pixmap->GetSharedImageFormat()) {
+     return nullptr;
+@@ -979,6 +979,15 @@
+ }
+ 
+ #if BUILDFLAG(IS_OHOS)
++void ExternalVkImageBacking::AbortOhosOverlayAccess(
++    std::vector<ExternalSemaphore> semaphores) {
++  EndAccess(/*readonly=*/true, ExternalSemaphore(), /*is_gl=*/false);
++  // No external read was submitted. Preserve every dependency for the next
++  // reader (or destruction), including after a failed sync-file merge.
++  std::move(semaphores.begin(), semaphores.end(),
++            std::back_inserter(read_semaphores_));
++}
++
+ void ExternalVkImageBacking::QuarantineOhosVideoAccess() {
+   static base::NoDestructor<OhosVideoQuarantinedLeases> quarantine;
+   {
+diff --git a/gpu/command_buffer/service/shared_image/external_vk_image_backing.h b/gpu/command_buffer/service/shared_image/external_vk_image_backing.h
+--- a/gpu/command_buffer/service/shared_image/external_vk_image_backing.h
++++ b/gpu/command_buffer/service/shared_image/external_vk_image_backing.h
+@@ -160,6 +160,8 @@
+ 
+ #if BUILDFLAG(IS_OHOS)
+   void QuarantineOhosVideoAccess();
++  // Cancel a read whose dependencies were not consumed by an overlay.
++  void AbortOhosOverlayAccess(std::vector<ExternalSemaphore> semaphores);
+ #endif
+ #if BUILDFLAG(IS_OHOS) && BUILDFLAG(USE_DAWN)
+   void EndOhosDawnAccess(std::vector<ExternalSemaphore> semaphores);
+diff --git a/gpu/command_buffer/service/shared_image/external_vk_image_backing_factory.cc b/gpu/command_buffer/service/shared_image/external_vk_image_backing_factory.cc
+--- a/gpu/command_buffer/service/shared_image/external_vk_image_backing_factory.cc
++++ b/gpu/command_buffer/service/shared_image/external_vk_image_backing_factory.cc
+@@ -180,7 +180,7 @@
+       SHARED_IMAGE_USAGE_CPU_WRITE_ONLY |
+       SHARED_IMAGE_USAGE_RASTER_COPY_SOURCE | SHARED_IMAGE_USAGE_CPU_READ;
+ 
+-#if BUILDFLAG(IS_FUCHSIA)
++#if BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_OHOS)
+   supported_usage |= SHARED_IMAGE_USAGE_SCANOUT;
+ #endif
+ 
+@@ -285,7 +285,7 @@
+     GrContextType gr_context_type,
+     base::span<const uint8_t> pixel_data) {
+ #if BUILDFLAG(IS_OHOS)
+-  if (usage.Has(SHARED_IMAGE_USAGE_WEBGPU_READ)) {
++  if (usage.HasAny(SHARED_IMAGE_USAGE_WEBGPU_READ | SHARED_IMAGE_USAGE_SCANOUT)) {
+     if (gmb_type != gfx::NATIVE_PIXMAP || !format.is_multi_plane() ||
+         !format.PrefersExternalSampler()) {
+       return false;
+@@ -297,7 +297,7 @@
+         !usage.HasAll(SHARED_IMAGE_USAGE_RASTER_READ |
+                       SHARED_IMAGE_USAGE_DISPLAY_READ) ||
+         !(SHARED_IMAGE_USAGE_RASTER_READ | SHARED_IMAGE_USAGE_DISPLAY_READ |
+-          SHARED_IMAGE_USAGE_WEBGPU_READ).HasAll(usage)) {
++          SHARED_IMAGE_USAGE_WEBGPU_READ | SHARED_IMAGE_USAGE_SCANOUT).HasAll(usage)) {
+       return false;
+     }
+   }
+diff --git a/gpu/command_buffer/service/shared_image/ozone_image_backing_factory.cc b/gpu/command_buffer/service/shared_image/ozone_image_backing_factory.cc
+--- a/gpu/command_buffer/service/shared_image/ozone_image_backing_factory.cc
++++ b/gpu/command_buffer/service/shared_image/ozone_image_backing_factory.cc
+@@ -274,9 +274,13 @@
+   }
+ 
+ #if BUILDFLAG(IS_OHOS)
+-  // OH_NativeBuffers back video frames (NV12, P010) and WebGPU's textures;
+-  // every other single-plane image stays where it was, a GL texture.
+-  if (format.is_single_plane() &&
++  // Native buffers also back the SDR primary plane of the RS presenter.
++  // Keep unrelated single-plane GL allocations on their existing path.
++  const bool overlay_primary = usage.HasAll(
++      SHARED_IMAGE_USAGE_SCANOUT | SHARED_IMAGE_USAGE_DISPLAY_WRITE) &&
++      (format == viz::SinglePlaneFormat::kRGBA_8888 ||
++       format == viz::SinglePlaneFormat::kBGRA_8888);
++  if (format.is_single_plane() && !overlay_primary &&
+       gr_context_type != GrContextType::kGraphiteDawn &&
+       !usage.HasAny(SHARED_IMAGE_USAGE_WEBGPU_READ | SHARED_IMAGE_USAGE_WEBGPU_WRITE |
+                       SHARED_IMAGE_USAGE_WEBGPU_SWAP_CHAIN_TEXTURE |
+@@ -327,7 +331,7 @@
+       SupportsOhosGraphiteVideo(shared_context_state_.get()) &&
+       usage.HasAll(SHARED_IMAGE_USAGE_DISPLAY_READ | SHARED_IMAGE_USAGE_RASTER_READ) &&
+       (SHARED_IMAGE_USAGE_DISPLAY_READ | SHARED_IMAGE_USAGE_RASTER_READ |
+-       SHARED_IMAGE_USAGE_WEBGPU_READ).HasAll(usage);
++       SHARED_IMAGE_USAGE_WEBGPU_READ | SHARED_IMAGE_USAGE_SCANOUT).HasAll(usage);
+   can_create_pixmap |= native_decoder_import;
+ #endif
+   if (!can_create_pixmap) {
+diff --git a/gpu/command_buffer/service/shared_image/external_vk_image_overlay_representation.cc b/gpu/command_buffer/service/shared_image/external_vk_image_overlay_representation.cc
+--- a/gpu/command_buffer/service/shared_image/external_vk_image_overlay_representation.cc
++++ b/gpu/command_buffer/service/shared_image/external_vk_image_overlay_representation.cc
+@@ -5,6 +5,14 @@
+ #include "gpu/command_buffer/service/shared_image/external_vk_image_overlay_representation.h"
+ 
+ #include "build/build_config.h"
++
++#if BUILDFLAG(IS_OHOS)
++#include <fcntl.h>
++#include <linux/sync_file.h>
++#include <sys/ioctl.h>
++
++#include "base/posix/eintr_wrapper.h"
++#endif
+ 
+ #if BUILDFLAG(IS_FUCHSIA)
+ #include "gpu/vulkan/fuchsia/vulkan_fuchsia_ext.h"
+@@ -34,6 +42,55 @@
+     return false;
+   }
+ 
++#if BUILDFLAG(IS_OHOS)
++  if (vk_image_backing_->format().PrefersExternalSampler()) {
++    // These are decoder/Dawn SYNC_FD dependencies. Duplicate their existing
++    // handles: exporting an imported VkSemaphore would consume its payload.
++    // RS accepts one sync_file, so merge all prior readers without a CPU wait.
++    base::ScopedFD merged;
++    bool valid = true;
++    for (auto& semaphore : read_begin_semaphores_) {
++      auto handle = semaphore.handle();
++      if (handle.vk_handle_type() !=
++          VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT) {
++        valid = false;
++        break;
++      }
++      auto fd = handle.TakeHandle();
++      if (!fd.is_valid()) {
++        valid = false;
++        break;
++      }
++      if (!merged.is_valid()) {
++        merged = std::move(fd);
++        continue;
++      }
++      struct sync_merge_data merge = {};
++      merge.name[0] = 'R';
++      merge.name[1] = 'S';
++      merge.fd2 = fd.get();
++      merge.fence = -1;
++      if (HANDLE_EINTR(ioctl(merged.get(), SYNC_IOC_MERGE, &merge)) < 0) {
++        valid = false;
++        break;
++      }
++      merged.reset(merge.fence);
++      if (!merged.is_valid() ||
++          HANDLE_EINTR(fcntl(merged.get(), F_SETFD, FD_CLOEXEC)) < 0) {
++        valid = false;
++        break;
++      }
++    }
++    if (!valid) {
++      vk_image_backing_->AbortOhosOverlayAccess(
++          std::move(read_begin_semaphores_));
++      read_begin_semaphores_.clear();
++      return false;
++    }
++    acquire_fence.Adopt(std::move(merged));
++    return true;
++  }
++#endif
+   GetAcquireFence(acquire_fence);
+   return true;
+ }
+diff --git a/gpu/command_buffer/service/shared_image/shared_image_factory.cc b/gpu/command_buffer/service/shared_image/shared_image_factory.cc
+--- a/gpu/command_buffer/service/shared_image/shared_image_factory.cc
++++ b/gpu/command_buffer/service/shared_image/shared_image_factory.cc
+@@ -9,6 +9,7 @@
+ #include <memory>
+ #include <string_view>
+ 
++#include "base/command_line.h"
+ #include "base/debug/crash_logging.h"
+ #include "base/debug/dump_without_crashing.h"
+ #include "base/metrics/histogram_functions.h"
+@@ -361,6 +362,13 @@
+   }
+ #endif  // BUILDFLAG(ENABLE_VULKAN) && (BUILDFLAG(IS_LINUX) ||
+         // BUILDFLAG(IS_FUCHSIA))
++#if BUILDFLAG(IS_OHOS)
++  if (ui::IsOhosPhoneGpuChild() && gr_context_type_ == GrContextType::kGL &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch("ohos-video-overlays")) {
++    factories_.push_back(std::make_unique<OzoneImageBackingFactory>(
++        context_state_, workarounds_));
++  }
++#endif
+ #if BUILDFLAG(ENABLE_VULKAN) && BUILDFLAG(IS_OHOS)
+   if (gr_context_type_ == GrContextType::kVulkan ||
+       gr_context_type_ == GrContextType::kGraphiteDawn) {
+@@ -886,6 +894,12 @@
+   const bool native_import = native_extensions &&
+       std::string_view(native_extensions).find("EGL_OHOS_image_native_buffer") !=
+           std::string_view::npos;
++  if (ui::IsOhosPhoneGpuChild() && context_state_ &&
++      gr_context_type_ == GrContextType::kGL && native_import &&
++      gl::GLFence::IsGpuFenceSupported() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch("ohos-video-overlays")) {
++    shared_image_caps.supports_ohos_video_native_buffers = true;
++  }
+   shared_image_caps.supports_ohos_native_rgba_f16 =
+       context_state_ && gr_context_type_ == GrContextType::kGL &&
+       gl::GetANGLEImplementation() == gl::ANGLEImplementation::kVulkan &&
+diff --git a/content/browser/gpu/gpu_process_host.cc b/content/browser/gpu/gpu_process_host.cc
+--- a/content/browser/gpu/gpu_process_host.cc
++++ b/content/browser/gpu/gpu_process_host.cc
+@@ -1426,7 +1426,7 @@
+         "user-data-dir",
+         browser_command_line.GetSwitchValuePath("user-data-dir"));
+   for (const char* name :
+-       {"ohos-vulkan-output", "ohos-hdr-white-millinits",
++       {"ohos-video-overlays", "ohos-vulkan-output", "ohos-hdr-white-millinits",
+         "ohos-hdr-peak-millinits", "ohos-hdr-fixed-luminance"}) {
+     if (browser_command_line.HasSwitch(name))
+       cmd_line->AppendSwitchASCII(
+diff --git a/gpu/command_buffer/service/shared_image/ozone_image_backing_factory.cc b/gpu/command_buffer/service/shared_image/ozone_image_backing_factory.cc
+--- a/gpu/command_buffer/service/shared_image/ozone_image_backing_factory.cc
++++ b/gpu/command_buffer/service/shared_image/ozone_image_backing_factory.cc
+@@ -7,6 +7,7 @@
+ #include <dawn/dawn_proc_table.h>
+ #include <dawn/native/DawnNative.h>
+ 
++#include "base/command_line.h"
+ #include "base/logging.h"
+ #include "base/memory/scoped_refptr.h"
+ #include "build/build_config.h"
+@@ -317,18 +318,24 @@
+   }
+   auto* factory = ui::OzonePlatform::GetInstance()->GetSurfaceFactoryOzone();
+   bool can_create_pixmap = factory->CanCreateNativePixmapForFormat(format);
+-#if BUILDFLAG(IS_OHOS) && BUILDFLAG(SKIA_USE_DAWN)
++#if BUILDFLAG(IS_OHOS)
+   // A forked GPU may import the browser decoder's existing parcel without
+   // gaining permission to allocate YUV buffers or access system services.
+   // Keep renderer/CPU allocation requests on their existing rejected path.
+   auto native_format = format;
+   if (native_format.is_multi_plane())
+     native_format.ClearPrefersExternalSampler();
++  bool native_video_reader =
++      gr_context_type == GrContextType::kGL &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch("ohos-video-overlays");
++#if BUILDFLAG(SKIA_USE_DAWN)
++  native_video_reader |= SupportsOhosGraphiteVideo(shared_context_state_.get());
++#endif
+   const bool native_decoder_import =
+       gmb_type == gfx::NATIVE_PIXMAP && format.PrefersExternalSampler() &&
+       (native_format == viz::MultiPlaneFormat::kNV12 ||
+        native_format == viz::MultiPlaneFormat::kP010) &&
+-      SupportsOhosGraphiteVideo(shared_context_state_.get()) &&
++      native_video_reader &&
+       usage.HasAll(SHARED_IMAGE_USAGE_DISPLAY_READ | SHARED_IMAGE_USAGE_RASTER_READ) &&
+       (SHARED_IMAGE_USAGE_DISPLAY_READ | SHARED_IMAGE_USAGE_RASTER_READ |
+        SHARED_IMAGE_USAGE_WEBGPU_READ | SHARED_IMAGE_USAGE_SCANOUT).HasAll(usage);
+diff --git a/gpu/command_buffer/service/BUILD.gn b/gpu/command_buffer/service/BUILD.gn
+--- a/gpu/command_buffer/service/BUILD.gn
++++ b/gpu/command_buffer/service/BUILD.gn
+@@ -439,6 +439,7 @@
+   }
+ 
+   if (is_ohos) {
++    sources += [ "shared_image/ohos_native_video_retirement.h" ]
+     deps += [ "//ui/ozone/platform/ohos:native_window_registry" ]
+     if (use_dawn) {
+       sources += [
+diff --git a/gpu/command_buffer/service/shared_image/ozone_image_backing.cc b/gpu/command_buffer/service/shared_image/ozone_image_backing.cc
+--- a/gpu/command_buffer/service/shared_image/ozone_image_backing.cc
++++ b/gpu/command_buffer/service/shared_image/ozone_image_backing.cc
+@@ -17,7 +17,10 @@
+ #include "base/numerics/checked_math.h"
+ #include "base/trace_event/trace_event.h"
+ #include "build/build_config.h"
++#if BUILDFLAG(IS_OHOS)
++#include "gpu/command_buffer/service/shared_image/ohos_native_video_retirement.h"
++#endif
+ #include "components/viz/common/gpu/vulkan_context_provider.h"
+ #include "components/viz/common/resources/shared_image_format_utils.h"
+ #include "gpu/command_buffer/common/mailbox.h"
+ #include "gpu/command_buffer/common/shared_image_info.h"
+@@ -513,6 +516,18 @@
+ }
+ 
+ OzoneImageBacking::~OzoneImageBacking() {
++#if BUILDFLAG(IS_OHOS)
++  if (format().PrefersExternalSampler() && pixmap_ && context_state_) {
++    // A decoder may recycle this allocation as soon as its imported pixmap is
++    // destroyed. Preserve both dropped-frame producer dependencies and each
++    // stream's last GPU read until their actual sync-file fences signal.
++    ohos_native_video::Retire(pixmap_, context_state_,
++                              external_write_fence_.Clone());
++    ohos_native_video::Retire(pixmap_, context_state_, write_fence_.Clone());
++    for (auto& [stream, fence] : read_fences_)
++      ohos_native_video::Retire(pixmap_, context_state_, fence.Clone());
++  }
++#endif
+   for (auto& [context, holder] : per_context_cached_textures_holders_) {
+     context->RemoveObserver(this);
+     // We only need to remove textures here. If the context was lost or
+@@ -949,6 +964,11 @@
+   }
+ 
+ #if BUILDFLAG(IS_OHOS)
++  if (readonly && access_stream == AccessStream::kGL && pixmap_ &&
++      format().PrefersExternalSampler()) {
++    // Even a read-only imported buffer has an external decoder producer.
++    need_end_fence = true;
++  }
+   if (readonly && access_stream == AccessStream::kVulkan && pixmap_ &&
+       format().is_single_plane() &&
+       usage().HasAny(SHARED_IMAGE_USAGE_WEBGPU_WRITE |
+@@ -964,6 +984,13 @@
+ void OzoneImageBacking::EndAccess(bool readonly,
+                                   AccessStream access_stream,
+                                   gfx::GpuFenceHandle fence) {
++#if BUILDFLAG(IS_OHOS)
++  if (readonly && access_stream == AccessStream::kGL && pixmap_ &&
++      format().PrefersExternalSampler() && fence.is_null()) {
++    // Export failure must never turn an unfinished read into early reuse.
++    ohos_native_video::Quarantine(pixmap_, context_state_);
++  }
++#endif
+   // Track reads and writes if not being used for concurrent read/writes.
+   if (!usage().Has(SHARED_IMAGE_USAGE_CONCURRENT_READ_WRITE)) {
+     if (readonly) {

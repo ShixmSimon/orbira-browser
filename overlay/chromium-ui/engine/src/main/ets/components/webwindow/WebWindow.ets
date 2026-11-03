@@ -15,7 +15,7 @@
 
 import display from '@ohos.display';
 import { common } from '@kit.AbilityKit';
-import { dragController, promptAction, window } from '@kit.ArkUI';
+import { dragController, promptAction, window, NodeContent } from '@kit.ArkUI';
 import { unifiedDataChannel, uniformTypeDescriptor } from '@kit.ArkData';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { image } from '@kit.ImageKit';
@@ -236,8 +236,11 @@ export struct WebWindow {
     }
   }
 
+  private overlayContent: NodeContent = new NodeContent();
+  private overlayNative: INativeContext | null = null;
+
   build() {
-    Column() {
+    Stack({ alignContent: Alignment.TopStart }) {
       XComponent({
         id: this.xComponentId,
         // SURFACE gives Chromium its own layer in the system compositor, which
@@ -301,6 +304,16 @@ export struct WebWindow {
         .onKeyEventDispatch((event: KeyEvent): boolean => {
           return this.dispatchKeyEvent(event);
         })
+      Column() {
+        ContentSlot(this.overlayContent)
+      }
+      .width('100%')
+      .height('100%')
+      .clip(true)
+      // This subtree only presents pixels. None skips the Column itself but
+      // still lets the native ContentSlot child consume hits over XComponent.
+      // Exclude the whole subtree so Chromium keeps touch, mouse and axis input.
+      .hitTestBehavior(HitTestMode.BLOCK_DESCENDANTS)
     }
     .width('100%')
     .height('100%')
@@ -315,6 +328,10 @@ export struct WebWindow {
       }
 
       const startupConfig = this.readStartupConfig();
+      if (startupConfig.enableVideoOverlays === true) {
+        this.overlayNative = context as INativeContext;
+        this.overlayNative.AttachOverlayContent?.(this.xComponentId, this.overlayContent);
+      }
       this.updateXComponentMode(startupConfig);
       this.applyDisplayMetrics(startupConfig);
       this.attachUserDataDirectory(startupConfig);
@@ -358,6 +375,8 @@ export struct WebWindow {
   }
 
   private destroyNativeContext(): void {
+    this.overlayNative?.DetachOverlayContent?.(this.xComponentId);
+    this.overlayNative = null;
     if (this.nativeContext) {
       this.setSurfaceReady(false);
       this.surfaceReady = false;
@@ -459,9 +478,13 @@ export struct WebWindow {
       throw new Error('Failed to get Chromium runtime directory');
     }
 
-    const runtimeDir = `${hostContext.filesDir}/chromium-runtime`;
-    const localesDir = `${runtimeDir}/locales`;
     const runtimeVersion = this.readRuntimeAssetVersion(hostContext);
+    // Each manifest owns its extracted files. A -> B -> A must not reuse A's
+    // old completion marker while the shared directory still contains B.
+    // Isolation also keeps an interrupted extraction from changing another
+    // version's completed runtime, including versions using the legacy path.
+    const runtimeDir = `${hostContext.filesDir}/chromium-runtime/${runtimeVersion}`;
+    const localesDir = `${runtimeDir}/locales`;
     if (!fileIo.accessSync(runtimeDir)) {
       fileIo.mkdirSync(runtimeDir, true);
     }

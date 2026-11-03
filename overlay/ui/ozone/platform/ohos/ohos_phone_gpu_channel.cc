@@ -12,6 +12,7 @@
 #include <cmath>
 #include <map>
 #include <memory>
+#include <set>
 
 #include "base/command_line.h"
 #include "base/files/scoped_file.h"
@@ -24,6 +25,7 @@
 #include "base/task/thread_pool.h"
 #include "ui/ozone/platform/ohos/ohos_native_window_registry.h"
 #include "ui/ozone/platform/ohos/ohos_output_color_config.h"
+#include "ui/ozone/platform/ohos/ohos_overlay_api.h"
 #include "ui/ozone/platform/ohos/ohos_phone_gpu_presenter.h"
 #include "ui/ozone/platform/ohos/ohos_phone_gpu_shared_buffer.h"
 #include "ui/ozone/platform/ohos/ohos_vsync_provider.h"
@@ -38,6 +40,7 @@ struct Connection {
   std::atomic<bool> vulkan_requested{false};
   std::atomic<bool> graphite_requested{false};
   std::atomic<bool> color_retry{false};
+  std::atomic<bool> gl_color_requested{false};
   std::shared_ptr<Connection> predecessor;
   base::WaitableEvent retired{base::WaitableEvent::ResetPolicy::MANUAL,
                               base::WaitableEvent::InitialState::NOT_SIGNALED};
@@ -84,6 +87,7 @@ void ReceiveFrames(std::shared_ptr<Connection> connection) {
     std::unique_ptr<phone_gpu::SharedBufferLease> buffer;
   };
   std::map<uint64_t, Pending> leases;
+  std::set<uint64_t> overlay_widgets;
   phone_gpu::SharedBufferColorState buffer_colors;
   // Bound to this connection and widget. A probe sequence is a fresh color
   // generation; a second probe is rejected while any lease is outstanding.
@@ -125,7 +129,26 @@ void ReceiveFrames(std::shared_ptr<Connection> connection) {
         if (Browser().current != connection || !connection->active.load())
           break;
         using Op = phone_gpu::SharedOp;
-        if (p.operation == Op::kAllocateImage) {
+        if (p.operation == Op::kOpenOverlayChannel) {
+          const auto* api = GetOhosOverlayApi();
+          const auto id = GetOhosNativeSurfaceComponentIdForWidget(p.widget);
+          const int fd = api && id ? api->connect(id->c_str()) : -1;
+          reply.operation = fd >= 0 ? Op::kOverlayChannel : Op::kUnavailable;
+          if (fd >= 0) {
+            response.fds.push_back(fd);
+            reply.fd_count = 1;
+            overlay_widgets.insert(p.widget);
+          }
+        } else if (p.operation == Op::kOverlayPresented &&
+                   overlay_widgets.count(p.widget)) {
+          connection->presented = true;
+          // Host creation passed the RS firmware/layout gate, and its first
+          // primary batch completed. That delegate path supports original
+          // P010 PQ buffers independently of the GPU's SDR primary format.
+          SetOhosVerifiedOverlayOutput(p.widget,
+                                       OhosSingleDisplaySupportsHdr10());
+          reply.result = static_cast<uint32_t>(phone_gpu::Result::kPresented);
+        } else if (p.operation == Op::kAllocateImage) {
           if (!phone_gpu::AllocateSharedImage(p.width, p.height, p.prefix[8],
                                                &response)) {
             response.CloseFds();
@@ -162,6 +185,19 @@ void ReceiveFrames(std::shared_ptr<Connection> connection) {
           }
           if (surface && surface->window) {
             const bool probe = p.operation == Op::kColorProbe;
+            // Fullscreen controls and other anchored windows need full alpha
+            // precision. Viz can initialize them with requires_alpha=false
+            // before the first transparent reshape. The fork child cannot
+            // infer their role from its surface mirror; classify them in the
+            // browser before allocating or advertising a ten-bit framebuffer.
+            // Unavailable/Dropped keeps this output on SDR8 without poisoning
+            // HDR support or restarting the GPU used by the main video window.
+            const bool sdr_only_probe =
+                probe && p.color.mode != OhosOutputMode::kSdr8 &&
+                IsOhosAnchoredWindow(p.widget);
+            if (sdr_only_probe)
+              LOG(WARNING) << "OHOS phone output: anchored window keeps SDR8 widget="
+                           << p.widget;
             auto active_color = colors.find(p.widget);
             const bool no_pending = std::none_of(
                 leases.begin(), leases.end(), [&p](const auto& item) {
@@ -197,9 +233,10 @@ void ReceiveFrames(std::shared_ptr<Connection> connection) {
             const bool gamut_valid = !probe ||
                 p.color.mode != OhosOutputMode::kP3Sdr10 ||
                 OhosSingleDisplaySupportsP3();
-            if (!color_valid || !hdr_valid || !gamut_valid)
+            if (!sdr_only_probe && (!color_valid || !hdr_valid || !gamut_valid))
               reply.result = static_cast<uint32_t>(phone_gpu::Result::kFailed);
-            if (color_valid && hdr_valid && gamut_valid && leases.size() < 4 &&
+            if (!sdr_only_probe && color_valid && hdr_valid && gamut_valid &&
+                leases.size() < 4 &&
                 phone_gpu::SharedBufferAllocatorReady() &&
                 surface->bounds.width() > 0 && surface->bounds.height() > 0 &&
                 surface->bounds.width() <= 8192 &&
@@ -298,9 +335,11 @@ void ReceiveFrames(std::shared_ptr<Connection> connection) {
           leases.erase(it);
         } else if (p.operation == Op::kColorReady) {
           const auto found = colors.find(p.widget);
-          const bool ready = (connection->vulkan_requested.load() ||
-                              connection->graphite_requested.load()) &&
-                             !Browser().vulkan_failed &&
+          const bool ready =
+                             (connection->gl_color_requested.load() ||
+                              ((connection->vulkan_requested.load() ||
+                                connection->graphite_requested.load()) &&
+                               !Browser().vulkan_failed)) &&
                              !OhosOutputColorFailed() &&
                              found != colors.end() &&
                              found->second.generation == p.color_generation &&
@@ -322,6 +361,13 @@ void ReceiveFrames(std::shared_ptr<Connection> connection) {
           reply.result =
               static_cast<uint32_t>(supported ? phone_gpu::Result::kPresented
                                               : phone_gpu::Result::kDropped);
+        } else if (p.operation == Op::kGlColorState) {
+          const bool allowed = !OhosOutputColorFailed() &&
+                               phone_gpu::SharedBufferAllocatorReady();
+          if (allowed)
+            connection->gl_color_requested = true;
+          reply.result = static_cast<uint32_t>(allowed
+              ? phone_gpu::Result::kPresented : phone_gpu::Result::kDropped);
         } else if (p.operation == Op::kGraphiteState) {
           const bool allowed = !Browser().graphite_failed &&
                                !Browser().vulkan_failed &&
@@ -418,6 +464,8 @@ void ReceiveFrames(std::shared_ptr<Connection> connection) {
       Browser().graphite_failed = true;
     else if (connection->vulkan_requested.load() && !connection->color_retry.load())
       Browser().vulkan_failed = true;
+    if (connection->gl_color_requested.load() && !connection->color_retry.load())
+      NoteOhosOutputColorFailure("GL color GPU generation ended");
     leases.clear();
     buffer_colors.Reset();
     connection->retired.Signal();
@@ -456,11 +504,15 @@ base::ProcessId LaunchOhosPhoneGpuChild(
       else if (Browser().current->vulkan_requested.load() &&
           !Browser().current->color_retry.load())
         Browser().vulkan_failed = true;
+      if (Browser().current->gl_color_requested.load() &&
+          !Browser().current->color_retry.load())
+        NoteOhosOutputColorFailure("GL color GPU generation replaced");
       Browser().current->active = false;
       shutdown(Browser().current->socket.get(), SHUT_RDWR);
     }
     Browser().current = connection;
     SetOhosVerifiedPhoneHdrOutput(false);
+    ResetOhosVerifiedOverlayOutputs();
   }
   base::ThreadPool::PostTask(FROM_HERE,
                              {base::MayBlock(), base::WithBaseSyncPrimitives()},
@@ -536,6 +588,29 @@ bool ExchangeShared(phone_gpu::SharedMessage* request,
   return true;
 }
 }  // namespace
+base::ScopedFD OpenOhosPhoneOverlayChannel(uint64_t widget) {
+  phone_gpu::SharedMessage request, response;
+  request.packet.operation = phone_gpu::SharedOp::kOpenOverlayChannel;
+  request.packet.widget = widget;
+  if (!ExchangeShared(&request, &response) ||
+      response.packet.operation != phone_gpu::SharedOp::kOverlayChannel ||
+      response.fds.size() != 1)
+    return {};
+  base::ScopedFD fd(response.fds.front());
+  response.fds.clear();
+  return fd;
+}
+
+bool ReportOhosPhoneOverlayPresented(uint64_t widget) {
+  phone_gpu::SharedMessage request, response;
+  request.packet.operation = phone_gpu::SharedOp::kOverlayPresented;
+  request.packet.widget = widget;
+  return ExchangeShared(&request, &response) &&
+         response.packet.operation == phone_gpu::SharedOp::kReply &&
+         response.packet.result ==
+             static_cast<uint32_t>(phone_gpu::Result::kPresented);
+}
+
 bool AllocateOhosPhoneGpuImage(uint32_t width,
                                uint32_t height,
                                uint32_t native_format,
@@ -606,6 +681,15 @@ bool AllowOhosPhoneGraphite() {
     return false;
   phone_gpu::SharedMessage request, response;
   request.packet.operation = phone_gpu::SharedOp::kGraphiteState;
+  request.packet.widget = 1;
+  return ExchangeShared(&request, &response) &&
+         response.packet.operation == phone_gpu::SharedOp::kReply &&
+         response.packet.result ==
+             static_cast<uint32_t>(phone_gpu::Result::kPresented);
+}
+bool AllowOhosPhoneGlColor() {
+  phone_gpu::SharedMessage request, response;
+  request.packet.operation = phone_gpu::SharedOp::kGlColorState;
   request.packet.widget = 1;
   return ExchangeShared(&request, &response) &&
          response.packet.operation == phone_gpu::SharedOp::kReply &&

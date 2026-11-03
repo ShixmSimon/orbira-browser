@@ -2,7 +2,9 @@ name: Adapter CI
 
 on:
   push:
+    branches: [hmos-154-adapter, hmos-155-adapter]
   pull_request:
+    branches: [hmos-154-adapter, hmos-155-adapter]
   workflow_dispatch:
 
 permissions:
@@ -10,11 +12,18 @@ permissions:
 
 jobs:
   verify-publication:
+    if: github.ref == 'refs/heads/hmos-154-adapter' || github.ref == 'refs/heads/hmos-155-adapter' || github.base_ref == 'hmos-154-adapter' || github.base_ref == 'hmos-155-adapter'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Select engine revision
+        run: python3 scripts/select-ci-engine.py
+      - name: Verify branch isolation
+        run: python3 scripts/tests/test-ci-engine-selection.py
+      - name: Preserve completed 155 objects across snapshot retries
+        run: python3 scripts/tests/test-155-snapshot.py
       - name: Verify public tree
         run: scripts/verify-public-tree.sh
       - name: Check scripts
@@ -27,10 +36,22 @@ jobs:
         run: scripts/test-jit-startup.sh
       - name: Check incremental patches in Chromium and DEPS checkouts
         run: python3 scripts/tests/test-incremental-patches.py
+      - name: Check AppGallery UA compatibility and mobile viewport wiring
+        run: python3 scripts/tests/test-appgallery-user-agent.py
+      - name: Check browser and web-app viewport isolation
+        run: python3 scripts/tests/test-web-app-viewport.py
       - name: Check experimental OHOS fork server transport
         run: scripts/test-ohos-fork-server.sh
+      - name: Check inherited trace descriptors and GPU state recovery
+        run: python3 scripts/tests/test-ohos-gpu-state-recovery.py
       - name: Check experimental phone GPU frame transport
         run: scripts/test-ohos-phone-gpu.sh
+      - name: Check video overlay ownership and fractional clipping
+        run: bash scripts/test-ohos-video-overlay.sh
+      - name: Check startup handoff retry scheduling and cancellation
+        run: python3 scripts/tests/test-startup-handoff-retry.py
+      - name: Check native extension update result semantics
+        run: scripts/test-extension-updates.sh
       - name: Check memfd write-seal contract
         run: python3 scripts/check-memfd-seals.py
       - name: Check test-page media byte ranges
@@ -51,8 +72,8 @@ jobs:
           REQUIRE_COMPATIBLE: '1'
         run: >-
           scripts/check-upstream-adapter.sh
-          154.0.8037.97
-          b510e9d7cd3a2fbd78d0ddc42234103206c5f78d
+          "${{ env.CHROMIUM_VERSION }}"
+          "${{ env.CHROMIUM_REVISION }}"
       - name: Upload compatibility report
         if: always()
         uses: actions/upload-artifact@v4
