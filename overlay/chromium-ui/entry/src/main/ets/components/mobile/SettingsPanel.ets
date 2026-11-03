@@ -4,10 +4,11 @@
  * （AuraShell 转存到 'auraPanelPrefs' / 'auraPanelEngines' / 'auraPanelAbout'）。
  * setPref 成功后引擎推 prefsChanged（转存到 'auraPanelEvent'），本页据此重拉。
  */
-import { common } from '@kit.AbilityKit';
+import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import bundleManager from '@ohos.bundle.bundleManager';
 import deviceInfo from '@ohos.deviceInfo';
 import { AppearanceSettings, ColorModeSetting } from '../../utils/appearance/AppearanceSettings';
+import { ThemeSchemePush } from '../../bus/ThemeSchemePush';
 import { glassBottomInsetVp, glassHeaderInsetVp } from './GlassPage';
 import { curves } from '@kit.ArkUI';
 import {
@@ -902,6 +903,15 @@ export struct SettingsPanel {
     AppStorage.setOrCreate('auraThemeReloadPending', true);
     AppearanceSettings.save(context, mode).then((): void => {
       AppearanceSettings.apply(context, mode);
+      // 不等系统的 onConfigurationUpdate 回调（对 setColorMode 它不保证按时
+      // 到达，真机上壳已变色而引擎纹丝不动）——把新配色直接递给 ability，由它
+      // 重序列化启动配置并顶起 revision，走折叠/旋转同一条已验证的下发路径。
+      // 回调若随后也到，算出同一个值，签名不变，不会二次下发。
+      const scheme: 'light' | 'dark' = mode === 'dark' ? 'dark'
+        : mode === 'light' ? 'light'
+        : ((context as common.UIAbilityContext).config.colorMode
+          === ConfigurationConstant.ColorMode.COLOR_MODE_DARK ? 'dark' : 'light');
+      ThemeSchemePush.dispatch(scheme);
     });
     setTimeout((): void => {
       if (AppStorage.get<boolean>('auraThemeReloadPending') === true) {

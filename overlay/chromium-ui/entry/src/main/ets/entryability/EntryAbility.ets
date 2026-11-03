@@ -19,6 +19,7 @@ import {
 import { AppearanceSettings, ColorModeSetting } from '../utils/appearance/AppearanceSettings';
 import { IncognitoSwitch } from '../utils/IncognitoSwitch';
 import { ShellUiPrefs } from '../utils/appearance/ShellUiPrefs';
+import { ThemeSchemePush } from '../bus/ThemeSchemePush';
 
 const DOMAIN = 0x0000;
 const AURA_INCOGNITO_KEY = 'auraIncognito';
@@ -102,6 +103,12 @@ export default class EntryAbility extends UIAbility {
     this.lastColorScheme = savedColorMode === 'system'
       ? this.resolveColorScheme(this.context.config.colorMode)
       : (savedColorMode === 'dark' ? 'dark' : 'light');
+    // 设置面板切完外观经 ThemeSchemePush 把新配色直接递回来：不依赖
+    // onConfigurationUpdate 对 setColorMode 的回调（它不保证按时到达）。
+    // 面板只会在 UI 起来后出现，这里注册总是赶得上。
+    ThemeSchemePush.setHandler((scheme: 'light' | 'dark'): void => {
+      this.applyColorSchemePush(scheme);
+    });
     AppStorage.setOrCreate(AURA_APP_VISIBLE_KEY, true);
     AppStorage.setOrCreate(AURA_THEME_FONT_ID_KEY, initialThemeFontId);
     AppStorage.setOrCreate(AURA_THEME_FONT_REVISION_KEY, 0);
@@ -474,6 +481,18 @@ export default class EntryAbility extends UIAbility {
 
   private resolveColorScheme(colorMode?: ConfigurationConstant.ColorMode): 'light' | 'dark' {
     return colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK ? 'dark' : 'light';
+  }
+
+  // 设置面板切完外观后的直接下发：重序列化启动配置 + 顶起 revision。
+  // refreshRouting 的签名含 lastColorScheme，配色变了必 bump；WebWindow 的
+  // @Monitor('routingRevision') 由此把新配置喂给引擎（EnsureStarted →
+  // UpdateAuraShellColorScheme → 窗口 ColorMode 覆盖 + 页面重算）。若系统回调
+  // 随后也到，resolveColorScheme 算出同一个值 → 签名不变 → 不再 bump，天然幂等。
+  private applyColorSchemePush(scheme: 'light' | 'dark'): void {
+    this.lastColorScheme = scheme;
+    AppStorage.setOrCreate(AURA_COLOR_SCHEME_KEY, scheme);
+    this.refreshRouting('colorModeChange');
+    hilog.info(DOMAIN, 'AuraShell', 'Color scheme pushed from settings: %{public}s', scheme);
   }
 
   private restoreBrowserProfile(): void {
