@@ -169,11 +169,14 @@ action("overlay_bridge") {
     "ohos_overlay_session.h",
     "ohos_rs_overlay_backend.cc",
     "ohos_rs_overlay_backend.h",
+    "ohos_overlay_completion.h",
+    "ohos_rs_abi.h",
     "ohos_overlay_bridge.cc",
     "ohos_overlay_bridge.h",
     "ohos_overlay_transport.cc",
     "ohos_overlay_transport.h",
     "ohos_overlay_host.cc",
+    "ohos_overlay_host_channel.h",
   ]
   outputs = [ "$root_out_dir/libohos_video_overlay.so" ]
   args = [

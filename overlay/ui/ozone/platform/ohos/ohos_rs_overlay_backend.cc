@@ -3,20 +3,23 @@
 // as a system shared_ptr/sptr; only the verified legacy std::function ABI
 // crosses.
 #include "ohos_rs_overlay_backend.h"
+#include "ohos_rs_abi.h"
+#include "ohos_overlay_completion.h"
 
 #include <arkui/native_render.h>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <hilog/log.h>
 #include <link.h>
 #include <native_buffer/native_buffer.h>
 #include <poll.h>
 #include <pthread.h>
+#include <time.h>
 #include <unistd.h>
 #include <atomic>
 #include <chrono>
 #include <cstring>
 #include <queue>
-#include <hilog/log.h>
 #ifdef OHOS_OVERLAY_DIAGNOSTICS
 #include <hilog/log.h>
 #define TRACE(...) \
@@ -112,13 +115,13 @@ struct Fd {
   Fd& operator=(const Fd&) = delete;
 };
 struct Api {
+  const RsAbiProfile* profile = nullptr;
   void* rs = nullptr;
   void* surface = nullptr;
   void* create = nullptr;
   void* context_get = nullptr;
   void* node_get = nullptr;
   void* get_surface = nullptr;
-  void* marker_get = nullptr;
   void* manager = nullptr;
   void (*weak_release)(void*) = nullptr;
   void (*hardware)(void*, bool, int, bool) = nullptr;
@@ -136,10 +139,7 @@ struct Api {
   void (*set_buffer)(void*, void*, void*, const void*) = nullptr;
   void (*flush)(void*, uint64_t, const void*, bool, uint64_t) = nullptr;
   void (*vsync)(void*) = nullptr;
-  void (*marker_ctor)(void*, void*) = nullptr;
-  bool (*marker_register)(void*, const void*) = nullptr;
-  void (*marker_dtor)(void*) = nullptr;
-  void (*add_command)(void*, void**, bool, int, uint64_t) = nullptr;
+  bool (*transaction_callback)(void*, uint64_t, uint64_t, const void*) = nullptr;
   void* (*release_instance)() = nullptr;
   bool (*release_connect)(void*, void*) = nullptr;
   bool (*release_register)(void*, const void*) = nullptr;
@@ -147,16 +147,32 @@ struct Api {
   void (*surface_drop)(void*, const void*) = nullptr;
   int (*background)(void*) = nullptr;
   template <typename T>
-  bool Get(T& target, const char* symbol, size_t n = 0, uint32_t hash = 0) {
+  bool Get(T& target,
+           const char* symbol,
+           RsCheckedFunction function = RsCheckedFunction::kCount) {
     void* value = dlsym(rs, symbol);
-    if (!value || (n && Hash(value, n) != hash)) {
-      TRACE("abi_rejected symbol=%{public}s", symbol);
+    const RsFingerprint* fingerprint =
+        function == RsCheckedFunction::kCount
+            ? nullptr
+            : &RsFunctionFingerprint(*profile, function);
+    if (!value ||
+        (fingerprint && Hash(value, fingerprint->bytes) != fingerprint->hash)) {
+      BacklogLog("abi rejected profile=%{public}s symbol=%{public}s",
+                 profile ? profile->name : "unknown", symbol);
       return false;
     }
     target = reinterpret_cast<T>(value);
     return true;
   }
   bool Load() {
+    const uint32_t render_hash = Hash(
+        reinterpret_cast<void*>(&OH_ArkUI_RenderNodeUtils_CreateNode), 148);
+    profile = SelectRsAbiProfile(render_hash);
+    if (!profile) {
+      BacklogLog("unsupported RenderNode ABI fingerprint=%{public}u",
+                 render_hash);
+      return false;
+    }
     rs = dlopen("/system/lib64/librender_service_client.z.so",
                 RTLD_NOW | RTLD_NOLOAD);
     surface = dlopen("/system/lib64/chipset-pub-sdk/libsurface.z.so",
@@ -167,20 +183,21 @@ struct Api {
     if (!Get(check,
              "_ZN4OHOS5Rosen13RSSurfaceNodeC2ERKNS0_"
              "19RSSurfaceNodeConfigEbNSt3__h10shared_ptrINS0_11RSUIContextEEE",
-             436, 0xe95e87f1) ||
+             RsCheckedFunction::kSurfaceConstructor) ||
         !Get(check,
              "_ZN4OHOS5Rosen13RSSurfaceNode6CreateERKNS0_"
              "19RSSurfaceNodeConfigENS0_17RSSurfaceNodeTypeEbbNSt3__h10shared_"
              "ptrINS0_11RSUIContextEEE",
-             2168, 0xea6a36b8) ||
-        !Get(check, "_ZN4OHOS5Rosen13RSSurfaceNodeD2Ev", 1576, 0x7194ed42) ||
+             RsCheckedFunction::kSurfaceFactory) ||
+        !Get(check, "_ZN4OHOS5Rosen13RSSurfaceNodeD2Ev",
+             RsCheckedFunction::kSurfaceDestructor) ||
         !Get(check,
              "_ZN4OHOS5Rosen11RSUIContextC2EmRNS_4sptrINS_13IRemoteObjectEEE",
-             1708, 0x14d660fd) ||
+             RsCheckedFunction::kContextConstructor) ||
         !Get(check,
              "_ZN4OHOS5Rosen13RSSurfaceNode26SetBufferAvailableCallbackENSt3__"
              "h8functionIFvvEEE",
-             1588, 0x5290b89e))
+             RsCheckedFunction::kBufferCallback))
       return false;
     auto identity = dlsym(
         surface, "_ZN4OHOS17SurfaceBufferImpl27SurfaceBufferToNativeBufferEv");
@@ -195,7 +212,7 @@ struct Api {
     if (!Get(create,
              "_ZN4OHOS5Rosen13RSSurfaceNode6CreateERKNS0_"
              "19RSSurfaceNodeConfigEbNSt3__h10shared_ptrINS0_11RSUIContextEEE",
-             232, 0x801e5a23))
+             RsCheckedFunction::kContextSurfaceFactory))
       return false;
     RESOLVE(context_get,
             "_ZNK4OHOS5Rosen18RSUIContextManager14GetRSUIContextEm");
@@ -217,7 +234,7 @@ struct Api {
             "_ZN4OHOS5Rosen6RSNode8AddChildENSt3__h10shared_ptrIS1_EEi");
     if (!Get(remove_child,
              "_ZN4OHOS5Rosen6RSNode11RemoveChildENSt3__h10shared_ptrIS1_EE",
-             1176, 0xd791aac8))
+             RsCheckedFunction::kRemoveChild))
       return false;
     RESOLVE(bounds, "_ZN4OHOS5Rosen6RSNode9SetBoundsEffff");
     RESOLVE(frame, "_ZN4OHOS5Rosen6RSNode8SetFrameEffff");
@@ -227,8 +244,8 @@ struct Api {
     RESOLVE(gravity, "_ZN4OHOS5Rosen6RSNode15SetFrameGravityENS0_7GravityE");
     RESOLVE(z, "_ZN4OHOS5Rosen6RSNode12SetPositionZEf");
     RESOLVE(visible, "_ZN4OHOS5Rosen6RSNode10SetVisibleEb");
-    if (!Get(clean, "_ZN4OHOS5Rosen13RSSurfaceNode11CleanBufferEb", 20,
-             0x0cd5d9fd))
+    if (!Get(clean, "_ZN4OHOS5Rosen13RSSurfaceNode11CleanBufferEb",
+             RsCheckedFunction::kCleanBuffer))
       return false;
     RESOLVE(set_buffer,
             "_ZN4OHOS5Rosen13RSSurfaceNode9SetBufferENS_4sptrINS_"
@@ -239,23 +256,19 @@ struct Api {
         "_ZN4OHOS5Rosen20RSTransactionHandler24FlushImplicitTransactionEmRKNSt3"
         "__h12basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEEbm");
     RESOLVE(vsync, "_ZN4OHOS5Rosen11RSUIContext20RequestVsyncCallbackEv");
-    if (!Get(marker_ctor,
-             "_ZN4OHOS5Rosen26SurfaceTransactionListenerC2ENS_4sptrINS_"
-             "13IRemoteObjectEEE",
-             228, 0xeeb6d8a9) ||
-        !Get(marker_register,
-             "_ZN4OHOS5Rosen26SurfaceTransactionListener31RegisterCommandComple"
-             "teCallBackENSt3__h8functionIFvmmNS2_5queueImNS2_5dequeImNS2_"
-             "9allocatorImEEEEEEEEE",
-             1452, 0xd110289e))
+    if (!Get(transaction_callback,
+             "_ZN4OHOS5Rosen17RSRenderInterface31RegisterTransactionDataCallback"
+             "EmmNSt3__h8functionIFvvEEE",
+             RsCheckedFunction::kTransactionCallbackRegister))
       return false;
-    RESOLVE(marker_get,
-            "_ZN4OHOS5Rosen26SurfaceTransactionListener10GetCommandERm");
-    RESOLVE(marker_dtor, "_ZN4OHOS5Rosen26SurfaceTransactionListenerD2Ev");
-    RESOLVE(
-        add_command,
-        "_ZN4OHOS5Rosen20RSTransactionHandler10AddCommandERNSt3__h10unique_"
-        "ptrINS0_9RSCommandENS2_14default_deleteIS4_EEEEbNS0_10FollowTypeEm");
+    // The timestamp read below is allowed only for this inspected base-library
+    // implementation. Other base builds fail closed, even if the client ABI
+    // matches a known profile. Do not guess the handler layout from OS version.
+    if (Hash(reinterpret_cast<void*>(flush), kRsCompletionFlush.bytes) !=
+        kRsCompletionFlush.hash) {
+      BacklogLog("transaction completion ABI unavailable");
+      return false;
+    }
     RESOLVE(release_instance,
             "_ZN4OHOS5Rosen32SurfaceNodeBufferReleaseListener11GetInstanceEv");
     RESOLVE(release_connect,
@@ -268,15 +281,18 @@ struct Api {
     RESOLVE(release_buffer,
             "_ZN4OHOS5Rosen13RSSurfaceNode13ReleaseBufferEjNS_"
             "4sptrINS_9SyncFenceEEE");
-    if (!Get(get_surface, "_ZNK4OHOS5Rosen13RSSurfaceNode10GetSurfaceEv", 264,
-             0x108d9ce0))
+    if (!Get(get_surface, "_ZNK4OHOS5Rosen13RSSurfaceNode10GetSurfaceEv",
+             RsCheckedFunction::kGetSurface))
       return false;
     surface_drop = reinterpret_cast<decltype(surface_drop)>(
         dlsym(surface, "_ZN4OHOS7RefBase12DecStrongRefEPKv"));
     background = reinterpret_cast<decltype(background)>(
         dlsym(surface, "_ZN4OHOS15ProducerSurface12GoBackgroundEv"));
+    const auto& background_fingerprint =
+        RsFunctionFingerprint(*profile, RsCheckedFunction::kGoBackground);
     return surface_drop && background &&
-           Hash(reinterpret_cast<void*>(background), 92) == 0x2ef7d186;
+           Hash(reinterpret_cast<void*>(background),
+                background_fingerprint.bytes) == background_fingerprint.hash;
 #undef RESOLVE
   }
   void Drop(SystemShared& ref) {
@@ -346,8 +362,8 @@ bool RegisterDispatcher(Api& api, void* remote) {
       auto found = routes.find(record.sequence);
       const bool sample = release_samples.fetch_add(1) < 128;
       if (sample)
-        BacklogLog("release seq=%{public}u routed=%{public}d",
-                   record.sequence, found != routes.end());
+        BacklogLog("release seq=%{public}u routed=%{public}d", record.sequence,
+                   found != routes.end());
       if (found != routes.end()) {
         Slot& slot = *found->second;
         // client_pid is zero in verified delegate-composition notifications.
@@ -359,8 +375,10 @@ bool RegisterDispatcher(Api& api, void* remote) {
                     record.node_id, 0);
         const bool matches = recorded_node.object == slot.node;
         if (sample)
-          BacklogLog("match seq=%{public}u plane=%{public}u node=%{public}d returned=%{public}d",
-                     record.sequence, slot.plane, matches, slot.server_returned);
+          BacklogLog(
+              "match seq=%{public}u plane=%{public}u node=%{public}d "
+              "returned=%{public}d",
+              record.sequence, slot.plane, matches, slot.server_returned);
         slot.api->Drop(recorded_node);
         if (matches && !slot.server_returned) {
           void* fence = record.fence;
@@ -370,9 +388,11 @@ bool RegisterDispatcher(Api& api, void* remote) {
                 slot.fence.load());
           slot.server_returned = rc == 0;
           if (sample)
-            BacklogLog("forward seq=%{public}u rc=%{public}d fence=%{public}d ready=%{public}d",
-                       record.sequence, rc, slot.fence.load(),
-                       Ready(slot.fence.load()));
+            BacklogLog(
+                "forward seq=%{public}u rc=%{public}d fence=%{public}d "
+                "ready=%{public}d",
+                record.sequence, rc, slot.fence.load(),
+                Ready(slot.fence.load()));
         }
       }
       pthread_mutex_unlock(&route_mutex);
@@ -385,10 +405,6 @@ bool RegisterDispatcher(Api& api, void* remote) {
   return dispatcher_registered;
 }
 
-struct MarkerState {
-  std::atomic<uint64_t> expected{UINT64_MAX};
-  std::atomic<uint64_t> acknowledged{UINT64_MAX};
-};
 struct Batch : Backend::Prepared {
   uint64_t submission = 0;
   unsigned count = 0;
@@ -405,8 +421,6 @@ class RsBackend final : public Backend {
   ~RsBackend() override {
     if (!slots_.empty())
       std::abort();
-    if (listener_constructed_)
-      api_.marker_dtor(listener_);
     api_.Drop(nodes_[0]);
     api_.Drop(nodes_[1]);
     if (handler_)
@@ -429,34 +443,17 @@ class RsBackend final : public Backend {
       return false;
     std::memcpy(&handler_, static_cast<char*>(context_.object) + 120,
                 sizeof(handler_));
-    if (!handler_)
+    std::memcpy(&render_interface_, static_cast<char*>(context_.object) + 136,
+                sizeof(render_interface_));
+    if (!handler_ || !render_interface_)
       return false;
+    context_token_ = token;
+    completion_ = std::make_shared<TransactionCompletion>();
     OhosRsSret3(&parent_, api_.node_get,
                 reinterpret_cast<uintptr_t>(context_.object) + 40, parent_id,
                 0);
     if (!parent_.object ||
         !RegisterDispatcher(api_, static_cast<char*>(context_.object) + 480))
-      return false;
-    marker_ = std::make_shared<MarkerState>();
-    api_.marker_ctor(listener_, static_cast<char*>(context_.object) + 480);
-    listener_constructed_ = true;
-    auto state = marker_;
-    const std::function<void(uint64_t, uint64_t, std::queue<uint64_t>)>
-        callback = [state](uint64_t, uint64_t,
-                           const std::queue<uint64_t>& markers) {
-          auto copy = markers;
-          while (!copy.empty()) {
-            const auto value = copy.front();
-            copy.pop();
-            if (state->expected.load(std::memory_order_acquire) == value) {
-              auto old = state->acknowledged.load(std::memory_order_acquire);
-              while ((old == UINT64_MAX || old < value) &&
-                     !state->acknowledged.compare_exchange_weak(old, value)) {
-              }
-            }
-          }
-        };
-    if (!api_.marker_register(listener_, &callback))
       return false;
     for (unsigned i = 0; i < 2; ++i) {
       if (!CreateLayer(i))
@@ -465,16 +462,26 @@ class RsBackend final : public Backend {
     for (auto& node : nodes_)
       api_.add_child(parent_.object, &node, -1);
     attached_ = true;
-    Flush();
-    return true;
+    // Prove normal transaction completion before accepting any pixel buffers.
+    startup_pending_ = true;
+    ConfirmedFlush();
+    if (drain_failed_) {
+      for (auto& node : nodes_)
+        api_.remove_child(parent_.object, &node);
+      attached_ = false;
+      Flush();
+    }
+    return !drain_failed_;
   }
   bool Supports(const Frame& f) const override {
-    if (!OnOwner() || draining_ || destroyed_)
+    if (!OnOwner() || draining_ || destroyed_ || drain_failed_)
       return false;
     return f.primary.lease->BorrowAcquireFence() >= -1 &&
            (!f.video || f.video->lease->BorrowAcquireFence() >= -1);
   }
-  bool ReadyForFrame() const override { return video_cleanup_ == 0; }
+  bool ReadyForFrame() const override {
+    return !startup_pending_ && video_cleanup_ == 0;
+  }
   std::unique_ptr<Prepared> Prepare(uint64_t submission,
                                     const Frame& f) override {
     if (!Supports(f))
@@ -488,12 +495,11 @@ class RsBackend final : public Backend {
       item.buffer = static_cast<OH_NativeBuffer*>(plane.lease->native_buffer());
       OH_NativeBuffer_Config config = {};
       OH_NativeBuffer_GetConfig(item.buffer, &config);
-      const int format = i ? (plane.format == Format::kP010
-                                  ? NATIVEBUFFER_PIXEL_FMT_YCBCR_P010
-                                  : NATIVEBUFFER_PIXEL_FMT_YCBCR_420_SP)
-                           : (plane.format == Format::kBgra8
-                                  ? NATIVEBUFFER_PIXEL_FMT_BGRA_8888
-                                  : NATIVEBUFFER_PIXEL_FMT_RGBA_8888);
+      const int format = plane.format == Format::kP010
+          ? NATIVEBUFFER_PIXEL_FMT_YCBCR_P010
+          : plane.format == Format::kNv12 ? NATIVEBUFFER_PIXEL_FMT_YCBCR_420_SP
+          : plane.format == Format::kBgra8 ? NATIVEBUFFER_PIXEL_FMT_BGRA_8888
+                                          : NATIVEBUFFER_PIXEL_FMT_RGBA_8888;
       if (config.width != static_cast<int>(plane.width) ||
           config.height != static_cast<int>(plane.height) ||
           config.format != format)
@@ -552,6 +558,8 @@ class RsBackend final : public Backend {
       auto* node = nodes_[i].object;
       const auto& d = item.destination;
       const auto& s = item.source;
+      if (i == 0)
+        primary_destination_ = d;
       api_.bounds(node, d.x, d.y, d.width, d.height);
       api_.frame(node, d.x, d.y, d.width, d.height);
       api_.destination(node, d.x, d.y, d.width, d.height);
@@ -574,12 +582,13 @@ class RsBackend final : public Backend {
     }
     video_visible_ = batch->count == 2;
     last_submission_ = batch->submission;
-    Marker();
-    Flush();
+    ConfirmedFlush();
   }
   std::vector<Release> PollReleases() override {
     if (!OnOwner())
       std::abort();
+    if (startup_pending_ && Acknowledged())
+      startup_pending_ = false;
     std::vector<Release> result;
     pthread_mutex_lock(&route_mutex);
     for (auto it = slots_.begin(); it != slots_.end();) {
@@ -595,13 +604,16 @@ class RsBackend final : public Backend {
     }
     pthread_mutex_unlock(&route_mutex);
     const auto now = std::chrono::steady_clock::now();
-    if (slots_.size() >= 4 && now - last_backlog_log_ >= std::chrono::seconds(2)) {
+    if (slots_.size() >= 4 &&
+        now - last_backlog_log_ >= std::chrono::seconds(2)) {
       last_backlog_log_ = now;
       pthread_mutex_lock(&route_mutex);
       for (const auto& slot : slots_)
-        BacklogLog("held seq=%{public}u plane=%{public}u returned=%{public}d fence=%{public}d ready=%{public}d cleanup=%{public}u",
-                   slot->sequence, slot->plane, slot->server_returned,
-                   slot->fence.load(), Ready(slot->fence.load()), video_cleanup_);
+        BacklogLog(
+            "held seq=%{public}u plane=%{public}u returned=%{public}d "
+            "fence=%{public}d ready=%{public}d cleanup=%{public}u",
+            slot->sequence, slot->plane, slot->server_returned,
+            slot->fence.load(), Ready(slot->fence.load()), video_cleanup_);
       pthread_mutex_unlock(&route_mutex);
     }
     if (!draining_ && video_cleanup_ == 1 && Acknowledged()) {
@@ -610,8 +622,7 @@ class RsBackend final : public Backend {
       api_.clean(nodes_[1].object, true);
       Flush();
       Background(nodes_[1]);
-      Marker();
-      Flush();
+      ConfirmedFlush();
       video_cleanup_ = 2;
     }
     if (!draining_ && video_cleanup_ == 2 && !drain_failed_ && Acknowledged()) {
@@ -634,8 +645,7 @@ class RsBackend final : public Backend {
         api_.remove_child(parent_.object, &retired);
         api_.Drop(retired);
         api_.add_child(parent_.object, &nodes_[1], -1);
-        Marker();
-        Flush();
+        ConfirmedFlush();
         video_cleanup_ = 3;
       }
     }
@@ -659,8 +669,7 @@ class RsBackend final : public Backend {
     Flush();
     for (auto& node : nodes_)
       Background(node);
-    Marker();
-    Flush();
+    ConfirmedFlush();
   }
   bool DrainCommandsProcessed() const override {
     return draining_ && !drain_failed_ && Acknowledged();
@@ -683,8 +692,8 @@ class RsBackend final : public Backend {
     std::memcpy(config + 1, name, n);
     config[48] = 1;
     config[72] = 1;
-    OhosRsSret3(&nodes_[i], api_.create, reinterpret_cast<uintptr_t>(config),
-                0, reinterpret_cast<uintptr_t>(&context_));
+    OhosRsSret3(&nodes_[i], api_.create, reinterpret_cast<uintptr_t>(config), 0,
+                reinterpret_cast<uintptr_t>(&context_));
     if (!nodes_[i].object)
       return false;
     api_.hardware(nodes_[i].object, true, 0, true);
@@ -708,22 +717,48 @@ class RsBackend final : public Backend {
   }
   bool OnOwner() const { return pthread_equal(owner_, pthread_self()); }
   bool Acknowledged() const {
-    const auto expected = marker_->expected.load(std::memory_order_acquire);
-    return expected != UINT64_MAX &&
-           marker_->acknowledged.load(std::memory_order_acquire) == expected;
+    return !drain_failed_ && completion_ && completion_->Complete();
   }
-  void Marker() {
-    uint64_t sequence = UINT64_MAX;
-    void* command = nullptr;
-    OhosRsSret3(&command, api_.marker_get,
-                reinterpret_cast<uintptr_t>(listener_),
-                reinterpret_cast<uintptr_t>(&sequence), 0);
-    if (!command || sequence == UINT64_MAX)
-      std::abort();
-    marker_->expected.store(sequence, std::memory_order_release);
-    api_.add_command(handler_, &command, true, 0, 0);
-    if (command)
-      std::abort();
+  void ConfirmedFlush() {
+    // Reapplying the owned primary rectangle always emits a legal node command,
+    // even after GoBackground or for an otherwise empty drain transaction.
+    // No SurfaceTransactionListener is registered: ordinary ArkUI updates must
+    // never acquire the delegate-only sender identity.
+    const auto& d = primary_destination_;
+    api_.destination(nodes_[0].object, d.x, d.y, d.width, d.height);
+    uint64_t handler_timestamp = 0;
+    std::memcpy(&handler_timestamp,
+                static_cast<char*>(handler_) + kRsHandlerTimestampOffset,
+                sizeof(handler_timestamp));
+    timespec now{};
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+      drain_failed_ = true;
+      return;
+    }
+    const uint64_t timestamp = NextCompletionTimestamp(
+        static_cast<uint64_t>(now.tv_sec) * 1000000000u + now.tv_nsec,
+        handler_timestamp, completion_->expected.load());
+    if (!timestamp) {
+      drain_failed_ = true;
+      return;
+    }
+    auto state = completion_;
+    state->expected.store(timestamp, std::memory_order_release);
+    const std::function<void()> callback = [state, timestamp] {
+      state->Acknowledge(timestamp);
+    };
+    // Register before flushing, with a unique key in the existing context.
+    // A callback confirms command processing only; pixel leases still require
+    // their real buffer-release callback and a signaled release fence.
+    if (!api_.transaction_callback(render_interface_, context_token_, timestamp,
+                                   &callback)) {
+      drain_failed_ = true;
+      BacklogLog("transaction completion registration failed");
+      return;
+    }
+    uint64_t empty_string[3] = {};
+    api_.flush(handler_, timestamp, empty_string, false, 0);
+    api_.vsync(context_.object);
   }
   void Flush() {
     uint64_t empty_string[3] = {};
@@ -734,14 +769,16 @@ class RsBackend final : public Backend {
   pthread_t owner_{};
   SystemShared context_, parent_, nodes_[2];
   void* handler_ = nullptr;
-  alignas(16) uint8_t listener_[112] = {};
-  bool listener_constructed_ = false, attached_ = false;
+  void* render_interface_ = nullptr;
+  uint64_t context_token_ = 0;
+  Rect primary_destination_{};
+  bool attached_ = false, startup_pending_ = false;
   bool draining_ = false, destroyed_ = false, drain_failed_ = false;
   bool video_visible_ = false;
   unsigned video_cleanup_ = 0;
   std::chrono::steady_clock::time_point last_backlog_log_{};
   uint64_t last_submission_ = 0;
-  std::shared_ptr<MarkerState> marker_;
+  std::shared_ptr<TransactionCompletion> completion_;
   std::vector<std::unique_ptr<Slot>> slots_;
 };
 }  // namespace
@@ -749,14 +786,6 @@ class RsBackend final : public Backend {
 uint64_t ResolveOwnedRenderNode(uint64_t token, void* node) {
   if (!node || (token >> 32) != static_cast<uint64_t>(gettid()))
     return 0;
-  // This dependency is RTLD_LOCAL in an ArkTS native module; RTLD_DEFAULT
-  // does not necessarily see it. Fingerprint the linked public entry point.
-  auto create = reinterpret_cast<void*>(&OH_ArkUI_RenderNodeUtils_CreateNode);
-  if (!create || Hash(create, 148) != 0x2d4d8cab) {
-    TRACE("render_parent_create_fingerprint=%{public}u",
-          create ? Hash(create, 148) : 0);
-    return 0;
-  }
   Api api;
   if (!api.Load()) {
     if (api.surface)
