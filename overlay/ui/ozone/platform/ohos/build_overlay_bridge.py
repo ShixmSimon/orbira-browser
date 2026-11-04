@@ -14,6 +14,11 @@ output = pathlib.Path(args.out).resolve()
 output.parent.mkdir(parents=True, exist_ok=True)
 sources = ['ohos_overlay_session.cc', 'ohos_rs_overlay_backend.cc',
            'ohos_overlay_bridge.cc', 'ohos_overlay_transport.cc', 'ohos_overlay_host.cc']
+# SDK 若带编译器就用它（官方 CI 有完整 NDK）；本机 SDK 的 native/llvm/bin 为空，
+# 退回树内自带 clang —— 但树内没有本次编译所需的 libc++ 头/库，因此实际会走下面的
+# 空壳分支。判定需要 src_root 与 sdk_clang 两个值。
+src_root = pathlib.Path(__file__).resolve().parents[4]
+sdk_clang = sdk / 'llvm/bin/clang++'
 if sdk_clang.exists():
     subprocess.run([str(sdk_clang), '--target=aarch64-linux-ohos',
                     '--sysroot=' + str(sdk / 'sysroot'), '-std=c++17', '-O2',
