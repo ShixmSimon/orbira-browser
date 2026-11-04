@@ -67,7 +67,21 @@ std::optional<OhosOverlayRect> ClipRect(const std::optional<gfx::Rect>& clip) {
 bool VideoFormat(viz::SharedImageFormat f) {
   if (f.PrefersExternalSampler())
     f.ClearPrefersExternalSampler();
-  return f == viz::MultiPlaneFormat::kNV12 || f == viz::MultiPlaneFormat::kP010;
+  return f == viz::MultiPlaneFormat::kNV12 || f == viz::MultiPlaneFormat::kP010 ||
+         f == viz::SinglePlaneFormat::kRGBA_8888 ||
+         f == viz::SinglePlaneFormat::kBGRA_8888;
+}
+uint32_t SoftwareVideoColor(const gfx::ColorSpace& color) {
+  if (color == gfx::ColorSpace::CreateSRGB())
+    return 1;
+  if (color == gfx::ColorSpace::CreateREC709().GetAsFullRangeRGB())
+    return 2;
+  return 0;
+}
+bool EligibleVideo(const gfx::NativePixmap& image, const gfx::ColorSpace& color) {
+  return GetOhosVideoOverlayToken(image) ||
+         (IsOhosSoftwareVideoOverlay(image) && GetOhosSoftwareVideoFrame(image) &&
+          SoftwareVideoColor(color));
 }
 class Candidates final : public OverlayCandidatesOzone {
  public:
@@ -111,9 +125,15 @@ class Candidates final : public OverlayCandidatesOzone {
     else if (v.color_space.IsHDR() &&
              v.color_space.GetTransferID() != gfx::ColorSpace::TransferID::PQ)
       rejection = "video-hdr-transfer";
-    // Resolve the original decoder acquisition before punching the hole.
-    else if (!v.native_pixmap || !GetOhosVideoOverlayToken(*v.native_pixmap))
+    // Resolve a decoder lease or an explicitly marked SDR software upload
+    // before punching the hole.
+    else if (!v.native_pixmap || !EligibleVideo(*v.native_pixmap, v.color_space))
       rejection = "video-pixmap-or-token";
+    else if (IsOhosSoftwareVideoOverlay(*v.native_pixmap) &&
+             (v.crop_rect != gfx::RectF(1.f, 1.f) ||
+              !p.display_rect.Contains(v.display_rect) ||
+              (v.clip_rect && !gfx::RectF(*v.clip_rect).Contains(v.display_rect))))
+      rejection = "software-crop-fallback";
     if (rejection) {
       Report(rejection, &v);
       return;
@@ -143,7 +163,10 @@ class Candidates final : public OverlayCandidatesOzone {
     LOG(WARNING) << "OHOS overlay: candidate=" << result << " widget=" << widget_
                  << " video=" << (video ? video->display_rect.ToString() : "none")
                  << " crop=" << (video ? video->crop_rect.ToString() : "none")
-                 << " format=" << (video ? video->format.ToString() : "none");
+                 << " format=" << (video ? video->format.ToString() : "none")
+                 << " source=" << (video && video->native_pixmap &&
+                     IsOhosSoftwareVideoOverlay(*video->native_pixmap)
+                         ? "software-upload" : "native-decoder");
   }
   std::string_view last_result_;
   base::TimeTicks last_report_;
@@ -190,7 +213,21 @@ class Presenter final : public gl::Presenter {
         (!plane && data.clip_rect &&
          !gfx::RectF(*data.clip_rect).Contains(data.display_bounds)) ||
         (plane && (!VideoFormat(image->GetSharedImageFormat()) ||
-                   !GetOhosVideoOverlayToken(*image)))) {
+                   !EligibleVideo(*image, data.color_space)))) {
+      LOG(ERROR) << "OHOS overlay: schedule rejected plane=" << plane
+                 << " image=" << bool(image) << " duplicate=" << bool(scheduled_[plane])
+                 << " z=" << data.z_order << " identity=" << Identity(data.plane_transform)
+                 << " bounds=" << data.display_bounds.ToString()
+                 << " opacity=" << data.opacity
+                 << " rounded=" << !data.rounded_corners.IsEmpty()
+                 << " solid=" << data.is_solid_color << " color=" << bool(data.color)
+                 << " format=" << (image ? image->GetSharedImageFormat().ToString() : "none")
+                 << " eligible=" << (image && EligibleVideo(*image, data.color_space))
+                 << " software=" << (image && IsOhosSoftwareVideoOverlay(*image))
+                 << " content=" << (image ? GetOhosSoftwareVideoFrame(*image) : 0)
+                 << " acquire_fence=" << bool(fence)
+                 << " colorspace=" << data.color_space.ToString();
+      invalid_reason_ = "schedule-rejected";
       invalid_ = true;
       return false;
     }
@@ -206,8 +243,10 @@ class Presenter final : public gl::Presenter {
                gfx::FrameData data) override {
     auto keep_alive = base::WrapRefCounted(this);
     if (scheduled_[1] && scheduled_[1]->data.color_space.IsHDR() &&
-        !hdr_guard_.Validate())
+        !hdr_guard_.Validate()) {
+      invalid_reason_ = "hdr-guard";
       invalid_ = true;
+    }
     auto flight = std::make_unique<Flight>();
     flight->sequence = ++sequence_;
     flight->queued_at = base::TimeTicks::Now();
@@ -218,6 +257,8 @@ class Presenter final : public gl::Presenter {
     p.sequence = sequence_;
     p.has_video = scheduled_[1] ? 1 : 0;
     if (invalid_ || !scheduled_[0] || !socket_.is_valid() || size_.IsEmpty()) {
+      if (!invalid_)
+        invalid_reason_ = !scheduled_[0] ? "missing-primary" : "output-unavailable";
       flights_.emplace(sequence_, std::move(flight));
       invalid_ = true;
       return;
@@ -231,14 +272,24 @@ class Presenter final : public gl::Presenter {
       auto& plane = i ? p.video : p.primary;
       auto& previous = last_[i];
       const uint64_t token = i ? GetOhosVideoOverlayToken(*item.image) : 0;
-      plane.reuse = previous.image && !item.fence &&
-                    (i ? previous.content == token
-                       : previous.image.get() == item.image.get());
-      plane.content = i ? token : (plane.reuse ? previous.content : sequence_);
+      const uint64_t video_content = token ? token :
+          (i ? GetOhosSoftwareVideoFrame(*item.image) : 0);
+      // A software buffer's allocation can be recycled for different pixels.
+      // The backing advances its content ID after every write; a paused frame
+      // may reuse content even when its original acquire fence is re-exported.
+      plane.reuse = previous.image &&
+          (i ? previous.content == video_content
+             : !item.fence && previous.image.get() == item.image.get());
+      if (plane.reuse)
+        item.fence.reset();  // The retained read already waited on this producer.
+      plane.content = i ? video_content :
+          (plane.reuse ? previous.content : sequence_);
       flight->content[i] = plane.content;
       flight->images[i] = item.image;
-      if (i)
+      if (i) {
         p.video_token = token;
+        p.video_color = token ? 0 : SoftwareVideoColor(item.data.color_space);
+      }
       auto source = item.data.crop_rect;
       source.Scale(item.image->GetBufferSize().width(),
                    item.image->GetBufferSize().height());
@@ -252,25 +303,29 @@ class Presenter final : public gl::Presenter {
             Rect(scheduled_[0]->data.display_bounds), plane.destination,
             plane.source, ClipRect(item.data.clip_rect));
         if (!clipped) {
+          invalid_reason_ = "scheduled-crop";
           invalid_ = true;
           break;
         }
         plane.source = clipped->source;
         plane.destination = clipped->destination;
       }
-      if (!i && !plane.reuse) {
+      if ((!i || !token) && !plane.reuse) {
         auto handle = item.image->ExportHandle();
         if (handle.ohos_buffer_prefix.size() != 14 ||
             handle.ohos_buffer_tail.size() > p.tail.size()) {
+          invalid_reason_ = "parcel-export";
           invalid_ = true;
           break;
         }
+        auto& prefix = i ? p.video_prefix : p.prefix;
+        auto& tail = i ? p.video_tail : p.tail;
         std::copy(handle.ohos_buffer_prefix.begin(),
-                  handle.ohos_buffer_prefix.end(), p.prefix.begin());
+                  handle.ohos_buffer_prefix.end(), prefix.begin());
         std::copy(handle.ohos_buffer_tail.begin(),
-                  handle.ohos_buffer_tail.end(), p.tail.begin());
-        p.tail_bytes = handle.ohos_buffer_tail.size();
-        p.fd_count = handle.ohos_buffer_fds.size();
+                  handle.ohos_buffer_tail.end(), tail.begin());
+        (i ? p.video_tail_bytes : p.tail_bytes) = handle.ohos_buffer_tail.size();
+        (i ? p.video_fd_count : p.fd_count) = handle.ohos_buffer_fds.size();
         for (auto& fd : handle.ohos_buffer_fds)
           flight->message->fds.push_back(fd.release());
       }
@@ -287,13 +342,29 @@ class Presenter final : public gl::Presenter {
           flight->message->fds.push_back(fence.Release().release());
         }
       }
+    if (flight->images[1])
+      flight->software_video_read = RetainOhosSoftwareVideoRead(*flight->images[1]);
     scheduled_[0].reset();
     scheduled_[1].reset();
     const bool valid =
         !invalid_ && ValidWirePacket(p, flight->message->fds.size());
     flights_.emplace(sequence_, std::move(flight));
-    if (!valid || flights_.size() > 12)
+    if (!valid) {
+      LOG(ERROR) << "OHOS overlay: invalid packet sequence=" << sequence_
+                 << " earlier_invalid=" << invalid_ << " video=" << p.has_video
+                 << " content=" << p.video.content << " reuse=" << p.video.reuse
+                 << " color=" << p.video_color << " fds=" << p.fd_count << "," << p.video_fd_count
+                 << " fences=" << p.primary.has_fence << "," << p.video.has_fence
+                 << " video_size=" << p.video_prefix[4] << "x" << p.video_prefix[6]
+                 << " video_stride=" << p.video_prefix[5] << " video_bytes=" << p.video_prefix[7]
+                 << " format=" << p.video_prefix[8] << " tail=" << p.video_tail_bytes
+                 << " source=" << p.video.source.x << "," << p.video.source.y << ","
+                 << p.video.source.width << "," << p.video.source.height;
       invalid_ = true;
+    } else if (flights_.size() > 12) {
+      invalid_reason_ = "flight-limit";
+      invalid_ = true;
+    }
     // Poll only on the timer: BufferQueue commits its mailbox list AFTER
     // Present returns, so even rejection callbacks must be asynchronous.
   }
@@ -326,6 +397,7 @@ class Presenter final : public gl::Presenter {
     base::TimeTicks queued_at;
     base::TimeTicks processed_at;
     bool released[2] = {}, sent = false, accepted = false, processed = false;
+    bool software_video_read = false;
     gl::OverlayImage images[2];
     std::unique_ptr<WireMessage> message;
     SwapCompletionCallback complete;
@@ -353,7 +425,7 @@ class Presenter final : public gl::Presenter {
   void Poll() {
     auto keep_alive = base::WrapRefCounted(this);
     if (invalid_) {
-      Fail("invalid-scheduled-frame");
+      Fail(invalid_reason_);
       return;
     }
     if (!socket_.is_valid())
@@ -419,6 +491,10 @@ class Presenter final : public gl::Presenter {
       } else if (p.operation == WireOp::kReleased && f.accepted &&
                  !f.released[p.plane]) {
         f.released[p.plane] = true;
+        if (p.plane == 1 && f.software_video_read) {
+          ReleaseOhosSoftwareVideoRead(*f.images[1]);
+          f.software_video_read = false;
+        }
         f.images[p.plane].reset();
       } else {
         LOG(ERROR) << "OHOS overlay: reply operation="
@@ -492,6 +568,7 @@ class Presenter final : public gl::Presenter {
   gfx::Size size_;
   uint64_t sequence_ = 0;
   bool invalid_ = false;
+  const char* invalid_reason_ = "invalid-scheduled-frame";
   bool reported_ = false;
   bool video_processed_ = false;
   OhosHdrDisplayGuard hdr_guard_;
