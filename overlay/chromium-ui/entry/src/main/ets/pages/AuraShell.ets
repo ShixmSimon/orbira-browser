@@ -213,6 +213,11 @@ struct AuraShell {
   // 追加 topSafe 补偿——否则滚到页尾最后 ~topSafe 够不到（见 applyDockViewportInset
   // 与 computeTopBarHiddenForInset）。
   private topBarHiddenForInset: boolean = false;
+  // dock 是否「真的收起」。「滚动时隐藏底部栏」开着 ≠ 已经收起：不可滚动的页面
+  // （扩展页、内容不足一屏）dock 永远全显，仍按 0 下发 inset 会让页面自己的贴底栏
+  // 压在 dock 下面（用户实测：脚本猫备份恢复页的「关闭 / 导入所选」）。与顶栏同理，
+  // 只在两端翻转，滑动途中不动，避免视口反复 resize。
+  private dockHiddenForInset: boolean = false;
   // 键盘避让高度（EntryAbility 写；RESIZE 模式为 0，不重复扣减）。键盘弹起时底部
   // 内距必须换成它——setViewportInsets 是替换式，留着 dock 的值会把键盘 inset
   // 盖掉，页内固定底栏（评论输入条等）会跑到键盘后面被遮。
@@ -234,6 +239,10 @@ struct AuraShell {
   // read and copied out instead of repeated.
   @State private crashReport: string = '';
   @State private browserState: BrowserStateSnapshot = EMPTY_BROWSER_STATE;
+  // 页面可视视口被 SetInsets 缩掉一条后，露出来的是主容器的底色。用引擎
+  // 下发的页面背景色填它（见 BrowserStateSnapshot.backgroundColor），条带
+  // 与网页同色；空串 = 旧引擎或页面没有自己的背景，退回主题画布色。
+  @State private pageBackgroundColor: string = '';
   // 从主页（快捷方式/搜索框）发起导航后，把主页浮层按住到新页面真正画出来：
   // URL 一离开 chrome://newtab 就撤浮层的话，会露出垫在下面的引擎原生新
   // 标签页（白底磁贴，实测会闪一下）。loading true->false 即加载完成；
@@ -698,6 +707,8 @@ struct AuraShell {
     if (!this.hideDockOnScroll && this.swipeDockTaken) {
       this.releaseSwipeDock();
     }
+    // 开关本身会改变「dock 实际显隐」的判据（常驻 vs 可收起），先把标志刷到新状态。
+    this.refreshInsetFlags();
     this.applyDockViewportInset();
   }
 
@@ -752,7 +763,16 @@ struct AuraShell {
     if (!this.hideTopBarOnScroll) {
       return TOP_BAR_EXTENT_VP + topSafe;
     }
-    return this.hideStatusBarOnScroll ? 0 : topSafe;
+    if (this.hideStatusBarOnScroll) {
+      return 0;
+    }
+    // 155 线：「地址栏可收起」不等于「已经收起」。不可滚动的页面（扩展页、
+    // 内容不足一屏、overflow:hidden）永远停在展开态，顶栏始终占着
+    // 48+topSafe；此时只补 topSafe 会让页面视口多出 48vp，底部内容被推出
+    // 屏幕（用户实测：脚本猫的脚本恢复页，关掉「滚动时隐藏地址栏」就正常）。
+    // 补偿跟着实际显隐态走：展开补满、收起只剩状态栏。翻转点由
+    // syncDockInsetForControlsMove 重发一次，不随 ratio 每帧变。
+    return this.topBarHiddenForInset ? topSafe : (TOP_BAR_EXTENT_VP + topSafe);
   }
 
   // （1.0.131 移除 syncTopPushInset：随 ratio 每帧重发 setViewportInsets 会频繁
@@ -797,7 +817,12 @@ struct AuraShell {
       // 备注：错误页不可滚动、dock 恒浮在页内按钮上，实测该档「重新加载」仍可点；
       // 若某些不可滚动页面出现点不到，再按 URL（chrome-error）单独让位。
       const dockAlways: number = dockCoveredHeightVp(bottomSafe);
-      bottom = (this.hideDockOnScroll ? 0 : dockAlways) + this.topBarPushVp();
+      // 「可收起」≠「已收起」：不可滚动的页面 dock 永远全显，底栏常驻时按 0 下发
+      // 会让页面贴底栏被 dock 压住。改为跟实际显隐态——只有真的收起才铺满物理底边。
+      // 翻转点由 refreshInsetFlags() 判定（滞回），不随比例每帧变。
+      const dockReserve: number =
+        (this.hideDockOnScroll && this.dockHiddenForInset) ? 0 : dockAlways;
+      bottom = dockReserve + this.topBarPushVp();
     }
     this.lastTopPushSent = this.topBarPushVp();
     // 键盘弹起：底部内距改用键盘高度（替换式下发，留 dock 的值会盖掉系统 inset）。
@@ -813,13 +838,53 @@ struct AuraShell {
     });
   }
 
-  // 顶栏显隐态翻转时同步一次底部视口内距（幂等：只在翻转点重发）。
+  // 顶栏/dock 的「实际显隐态」翻转时同步一次底部视口内距（幂等：只在翻转点重发）。
   private syncDockInsetForControlsMove(): void {
-    const next: boolean = this.computeTopBarHiddenForInset();
-    if (next !== this.topBarHiddenForInset) {
-      this.topBarHiddenForInset = next;
+    if (this.refreshInsetFlags()) {
       this.applyDockViewportInset();
     }
+  }
+
+  // 更新两个「实际显隐态」标志，返回是否发生翻转。
+  private refreshInsetFlags(): boolean {
+    let changed: boolean = false;
+    const topHidden: boolean = this.computeTopBarHiddenForInset();
+    if (topHidden !== this.topBarHiddenForInset) {
+      this.topBarHiddenForInset = topHidden;
+      changed = true;
+    }
+    // dock 用两个触点做滞回：完全收起才算收起（≤0.002），完全展开才恢复（≥0.995）。
+    // 滑动途中不翻转 —— 1.0.130 试过按比例连续补，结果视口每帧 resize、页面跳动。
+    const shown: number = this.dockShownRatio();
+    const dockHidden: boolean = this.dockHiddenForInset ? shown < 0.995 : shown <= 0.002;
+    if (dockHidden !== this.dockHiddenForInset) {
+      this.dockHiddenForInset = dockHidden;
+      changed = true;
+    }
+    return changed;
+  }
+
+  // dock 的实际显隐比例：与 MobileBrowserOverlay.dockRatio() 同源同算法——
+  // 主页恒 1、底栏常驻恒 1、触摸收放档读 auraTouchDockRatio、滚动档按引擎比例归一
+  // （减掉 minTop 下限 floor）。刻意复制一份而不是每帧读组件状态：inset 只在翻转点
+  // 重发，没必要建立逐帧依赖。
+  private dockShownRatio(): number {
+    if (this.isNewTabPage() || !this.hideDockOnScroll) {
+      return 1;
+    }
+    const swipeOn: boolean = AppStorage.get<boolean>('auraSwipeDockRatioOn') === true;
+    if (!this.hideTopBarOnScroll || swipeOn) {
+      const touch: number = Number(AppStorage.get('auraTouchDockRatio') ?? 1);
+      const t: number = Number.isFinite(touch) ? touch : 1;
+      return Math.min(Math.max(t, 0), 1);
+    }
+    const topSafe: number = Number(AppStorage.get('auraTopSafeVp') ?? 0);
+    const topVp: number = TOP_BAR_EXTENT_VP + topSafe;
+    const floor: number = topVp > 0 ? topSafe / topVp : 0;
+    const raw: number = Number.isFinite(this.scrolledRatio)
+      ? Math.min(Math.max(this.scrolledRatio, 0), 1) : 1;
+    const span: number = 1 - floor;
+    return span > 0 ? Math.min(Math.max((raw - floor) / span, 0), 1) : raw;
   }
 
   // 「顶栏完全收起（贴状态栏底静息）」判定，带滞回防抖。阈值与引擎对齐：
@@ -1158,6 +1223,8 @@ struct AuraShell {
     animateTo({ duration: 220, curve: Curve.FastOutSlowIn }, (): void => {
       AppStorage.setOrCreate('auraTouchDockRatio', settle);
     });
+    // 收放到位后同步一次 inset：dock 真的收起才把页面铺满物理底边，回来时再让出高度。
+    this.syncDockInsetForControlsMove();
   }
 
   // 把 dock 交还引擎驱动（页面开始滚动 / 换页时），避免触摸值长期压着比例。
@@ -1167,6 +1234,8 @@ struct AuraShell {
     this.swipeDockValue = 1;
     AppStorage.setOrCreate('auraSwipeDockRatioOn', false);
     AppStorage.setOrCreate('auraTouchDockRatio', 1);
+    // 交还引擎后 dock 等于全显：底部要重新让出高度（幂等，只有翻转才发）。
+    this.syncDockInsetForControlsMove();
   }
 
   // Collapsed address bar -> hide the status bar too; scrolling back restores
@@ -1425,9 +1494,18 @@ struct AuraShell {
           const wasNewTab: boolean = this.isNewTabPage();
           const prevUrl: string = this.browserState.url;
           this.browserState = state;
+          this.pageBackgroundColor = (state.backgroundColor !== undefined &&
+            state.backgroundColor.length > 0) ? state.backgroundColor : '';
+          this.maybeRestoreLastSession(state);
           // 换页/换标签：触摸收起的 dock 复位（否则新页面会停在收起位）。
           if (this.swipeDockTaken && (state.url ?? '') !== prevUrl) {
             this.releaseSwipeDock();
+          }
+          // 换页后 dock 一定回到全显（新页面从顶部开始），标志同步复位：否则上一页
+          // 滚出来的「已收起」会被新页面沿用，贴底栏又落进 dock 底下。
+          if ((state.url ?? '') !== prevUrl && this.dockHiddenForInset) {
+            this.dockHiddenForInset = false;
+            this.applyDockViewportInset();
           }
           // 记下引擎原生新标签页的标题：失败导航后要靠它认出「画面还停在
           // 新标签页」（见 isNewTabPage）。
@@ -1631,7 +1709,11 @@ struct AuraShell {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('app.color.browser_canvas'))
+    // 主容器露出的那条（视口 inset 之下）用页面自己的背景色，避免深色网页
+    // 下出现一条与页面不同色的实心带。空串时保持主题画布色。
+    .backgroundColor(this.pageBackgroundColor.length > 0
+      ? (this.pageBackgroundColor as ResourceColor)
+      : $r('app.color.browser_canvas'))
     .onAreaChange((_oldValue: Area, newValue: Area): void => {
       this.onScreenSizeChanged(Number(newValue.width), Number(newValue.height));
     })
@@ -1860,6 +1942,41 @@ struct AuraShell {
     this.commandChannel.send(command);
   }
 
+  // 上次运行没走正常退出（划掉后台/被杀）时，引擎在启动后的状态快照里把
+  // lastSessionRestorable 置 true，并持有一个一次性恢复锁；此前壳层从不消费
+  // 这个标志，于是「清除后台 → 标签页全没了」（历史记录另走 HistoryService，
+  // 所以看着正常）。这里静默把上次主窗口的标签页（含前进/后退历史）接回来：
+  // 只认第一次快照；800ms 后再补发一次——命令若在 browser/tabs 就绪前被引擎
+  // 丢掉，补发能救回来；锁已被消费时引擎直接忽略，天然幂等。
+  private lastSessionRestoreAsked: boolean = false;
+  // 引擎的恢复是「追加」到当前窗口（chrome::AddRestoredTab 用 tabs->count()
+  // 作索引）：启动时那个空白新标签页会留在 index 0，恢复的页面排在它后面，
+  // 看起来就像「重开后又自动新建了一个标签页」。记下它，等
+  // lastSessionRestored 确认恢复成功后再关；恢复失败时绝不能关（否则空窗口）。
+  private restoreStartTabWasNew: boolean = false;
+  private restoreStartTabIndex: number = -1;
+
+  private maybeRestoreLastSession(state: BrowserStateSnapshot): void {
+    if (this.lastSessionRestoreAsked || state.lastSessionRestorable !== true) {
+      return;
+    }
+    this.lastSessionRestoreAsked = true;
+    const tabs = state.tabs;
+    if (tabs && tabs.length === 1 && isNewTabUrl(tabs[0].url ?? '')) {
+      this.restoreStartTabWasNew = true;
+      this.restoreStartTabIndex = tabs[0].index;
+    }
+    const restore = (): void => {
+      this.executeBrowserCommand({
+        command: 'restoreLastSession',
+        restore: true,
+        mainWindowOnly: true
+      });
+    };
+    restore();
+    setTimeout(restore, 800);
+  }
+
   // Counts handleBack requests, so a late answer to an earlier one is not
   // acted on twice.
   private backRequestId: number = 0;
@@ -1872,6 +1989,19 @@ struct AuraShell {
       if ((event.requestId ?? 0) === this.backRequestId &&
         !(event.handled ?? false)) {
         this.executeBrowserCommand({ command: 'back' });
+      }
+      return;
+    }
+    if (event.event === 'lastSessionRestored') {
+      const restored: number = event.count ?? 0;
+      if (restored > 0 && this.restoreStartTabWasNew) {
+        this.restoreStartTabWasNew = false;
+        this.executeBrowserCommand({
+          command: 'closeTab',
+          index: this.restoreStartTabIndex
+        });
+        hilog.info(0x0000, 'AuraShell',
+          'last session restored %{public}d tabs; closed the blank start tab', restored);
       }
       return;
     }
