@@ -24,7 +24,8 @@ if sdk_clang.exists():
 else:
     compiler = str(src_root / 'third_party/llvm-build/Release+Asserts/bin/clang++')
     extra = ['-fuse-ld=lld', '-nostdinc++',
-             '-isystem', str(src_root / 'third_party/libc++/src/include')]
+             '-isystem', str(src_root / 'third_party/libc++/src/include'),
+             '-isystem', str(src_root / 'buildtools/third_party/libc++')]
 subprocess.run([compiler, '--target=aarch64-linux-ohos',
                 '--sysroot=' + str(sdk / 'sysroot'), '-std=c++17', '-O2',
                 '-fno-exceptions', '-fno-rtti', '-D_LIBCPP_ABI_NAMESPACE=__h',
