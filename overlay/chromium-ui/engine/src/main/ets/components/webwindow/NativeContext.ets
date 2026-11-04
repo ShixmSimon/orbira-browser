@@ -742,7 +742,6 @@ export interface AuxiliaryWindowState {
   incognito?: boolean;
 }
 
-export interface INativeContext extends BluetoothNativePort, UsbNativePort, SystemServiceNativePort {
 export interface INativeContext extends BluetoothNativePort, UsbNativePort, SystemServiceNativePort, DisplayBrightnessNativePort {
   AttachOverlayContent?(xComponentId: string, content: NodeContent): void;
   DetachOverlayContent?(xComponentId: string): void;
