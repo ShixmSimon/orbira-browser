@@ -10,6 +10,7 @@ import router from '@ohos.router';
 import display from '@ohos.display';
 import { showSystemPasteDialog } from './SystemPasteDialog';
 import { ScanService } from './ScanService';
+import { TabThumbnailStore } from '../../utils/TabThumbnailStore';
 import {
   AutocompleteItem,
   BrowserCommandPayload,
@@ -622,6 +623,7 @@ export struct MobileBrowserOverlay {
   }
 
   private onBrowserStateChanged(): void {
+    this.maybeKeepThumbnail();
     // A' 面板页化：把当前 URL/标题同步进 AppStorage，供路由页（书签/扩展等）
     // 通过 @StorageLink 读取，替代原来从 overlay 直接传 @Prop 的耦合。
     // 只在值真正变化时写入 —— 本回调随引擎状态推送触发，高频空写会白跑一遍
@@ -811,18 +813,39 @@ export struct MobileBrowserOverlay {
   }
 
   private parseThumbnails(): void {
+    const context = this.getUIContext().getHostContext() as common.Context | undefined;
+    const tabs: BrowserTabState[] = this.browserState.tabs ?? [];
+    const map: Map<string, string> = new Map();
     try {
       const items: TabThumbnail[] = JSON.parse(this.tabThumbnailsJson) as TabThumbnail[];
-      const map: Map<string, string> = new Map();
       for (const item of items) {
         if (item.id && item.id.length > 0 && item.pngBase64 && item.pngBase64.length > 0) {
           map.set(item.id, `data:image/png;base64,${item.pngBase64}`);
+          // 落盘：恢复出来的标签会拿到新 id，只有 URL 还能把它和这张图对上。
+          for (const tab of tabs) {
+            if ((tab.id ?? '') === item.id && (tab.url ?? '').length > 0) {
+              TabThumbnailStore.save(context, tab.url, item.pngBase64);
+              break;
+            }
+          }
         }
       }
-      this.tabThumbnails = map;
     } catch (error) {
-      this.tabThumbnails = new Map();
     }
+    // 引擎只对当前标签截图、后台标签只能给内存里的旧图，而内存缓存进程一死
+    // 就空（恢复会话后满屏「已休眠」正是这个）。磁盘里有的先补上：
+    // 有图就画上次的样子，比一片占位更能认出是哪个标签。
+    for (const tab of tabs) {
+      const id: string = tab.id ?? '';
+      if (id.length === 0 || map.has(id)) {
+        continue;
+      }
+      const cached: string = TabThumbnailStore.load(context, tab.url ?? '');
+      if (cached.length > 0) {
+        map.set(id, cached);
+      }
+    }
+    this.tabThumbnails = map;
   }
 
   private thumbnailFor(tab: BrowserTabState): string {
@@ -835,7 +858,59 @@ export struct MobileBrowserOverlay {
     return '';
   }
 
+  private thumbKeepTimer: number = 0;
+  private thumbKeptKey: string = '';
+
+  // 每个标签切到前台后都留一张缩略图：引擎只在标签是当前标签时才有 surface
+  // 可截，后台标签只能回内存里的旧图；不主动截，恢复出来的标签永远没有图。
+  // 防抖 1.5s（等页面画完），同一个 `id|url` 只截一次。
+  private maybeKeepThumbnail(): void {
+    if (this.browserState.loading) {
+      return;
+    }
+    const tabs: BrowserTabState[] = this.browserState.tabs ?? [];
+    const index: number = this.browserState.activeTabIndex ?? -1;
+    if (index < 0 || index >= tabs.length) {
+      return;
+    }
+    const tab: BrowserTabState = tabs[index];
+    const id: string = tab.id ?? '';
+    if (id.length === 0) {
+      return;
+    }
+    const key: string = `${id}|${tab.url ?? ''}`;
+    if (key === this.thumbKeptKey || this.thumbKeepTimer !== 0) {
+      return;
+    }
+    this.thumbKeepTimer = setTimeout((): void => {
+      this.thumbKeepTimer = 0;
+      this.thumbKeptKey = key;
+      this.requestThumbnailFor(id);
+    }, 1500);
+  }
+
+  private requestThumbnailFor(id: string): void {
+    this.requestSeq += 1;
+    if (this.tabThumbAspect > 0) {
+      this.issueCommand({
+        command: 'getTabThumbnails',
+        requestId: this.requestSeq,
+        ids: [id],
+        widthVp: this.tabThumbWidthVp,
+        aspect: this.tabThumbAspect
+      });
+    } else {
+      this.issueCommand({
+        command: 'getTabThumbnails',
+        requestId: this.requestSeq,
+        ids: [id],
+        widthVp: this.tabThumbWidthVp
+      });
+    }
+  }
+
   private requestTabThumbnails(): void {
+    TabThumbnailStore.prune(this.getUIContext().getHostContext() as common.Context | undefined);
     this.parseThumbnails();
     const ids: string[] = [];
     for (const tab of this.browserState.tabs) {
