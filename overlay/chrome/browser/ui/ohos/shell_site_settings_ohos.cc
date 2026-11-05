@@ -621,6 +621,11 @@ void ClearPageSiteData(const ShellCommandContext& context,
                       if (!contents) {
                         return;
                       }
+                      // 删完立刻重载：页面上的登录态是清除之前渲染出来的，不重载
+                      // 就一直停在旧样子，看起来像没清掉。
+                      contents->GetController().Reload(
+                          content::ReloadType::NORMAL,
+                          /*check_for_repost=*/false);
                       reply.Set("ok", true);
                       reply.Remove("reason");
                       ReplyToShell(context, std::move(reply));
