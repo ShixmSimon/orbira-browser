@@ -1426,6 +1426,16 @@ struct AuraShell {
           const prevUrl: string = this.browserState.url;
           this.browserState = state;
           this.maybeRestoreLastSession(state);
+          // 会话恢复出来的标签是重新加载的：地址栏已经换成真网址，页面区要等
+          // 首帧才有内容，中间露的是引擎底板（黑）。这段用同色底顶住。
+          if (this.restoreCoverPending) {
+            const restoredUrl: string = state.url ?? '';
+            if (restoredUrl.length > 0 && !isNewTabUrl(restoredUrl) &&
+              !restoredUrl.startsWith('chrome')) {
+              this.restoreCoverPending = false;
+              this.armNavCover(restoredUrl);
+            }
+          }
           // 换页/换标签：触摸收起的 dock 复位（否则新页面会停在收起位）。
           if (this.swipeDockTaken && (state.url ?? '') !== prevUrl) {
             this.releaseSwipeDock();
@@ -1868,6 +1878,8 @@ struct AuraShell {
   // 只认第一次快照；800ms 后再补发一次——命令若在 browser/tabs 就绪前被引擎
   // 丢掉，补发能救回来；锁已被消费时引擎直接忽略，天然幂等。
   private lastSessionRestoreAsked: boolean = false;
+  // 已请求恢复会话、还在等恢复出来的标签给出真网址（用来起预热层）。
+  private restoreCoverPending: boolean = false;
   // 引擎的恢复是「追加」到当前窗口（chrome::AddRestoredTab 用 tabs->count()
   // 作索引）：启动时那个空白新标签页会留在 index 0，恢复的页面排在它后面，
   // 看起来就像「重开后又自动新建了一个标签页」。记下它，等
@@ -1880,6 +1892,8 @@ struct AuraShell {
       return;
     }
     this.lastSessionRestoreAsked = true;
+    // 恢复出来的标签会重新加载，页面区在首帧之前是黑的：等它报出真网址就起防。
+    this.restoreCoverPending = true;
     const tabs = state.tabs;
     if (tabs && tabs.length === 1 && isNewTabUrl(tabs[0].url ?? '')) {
       this.restoreStartTabWasNew = true;
