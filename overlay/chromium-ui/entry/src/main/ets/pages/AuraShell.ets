@@ -1957,6 +1957,19 @@ struct AuraShell {
       return;
     }
     this.coldStartHomePending = false;
+    // 后台恢复生效时启动标签一直留在前台。它可能是内置主页，也可能是
+    // 「启动时打开自定义网页」设的网址 —— 两者都是用户要的落点，不能因为
+    // URL 不是 newtab 就当成「恢复的网页抢了前台」去补开内置主页。
+    const activeIndex: number = this.browserState.activeTabIndex ?? -1;
+    if (this.coldStartTabIndex >= 0 && activeIndex === this.coldStartTabIndex) {
+      this.coldStartTabIndex = -1;
+      this.restoreCoverPending = false;
+      if (!this.closeDuplicateHomeTab()) {
+        this.releaseTabBadge(200);
+      }
+      return;
+    }
+    this.coldStartTabIndex = -1;
     if (url.length === 0 || isNewTabUrl(url) || url.startsWith('chrome')) {
       // 后台恢复已生效：主页一直在前台，没有网页首帧要遮，也不需要新开标签。
       this.restoreCoverPending = false;
@@ -2013,6 +2026,9 @@ struct AuraShell {
   // lastSessionRestored 确认恢复成功后再关；恢复失败时绝不能关（否则空窗口）。
   private restoreStartTabWasNew: boolean = false;
   private restoreStartTabIndex: number = -1;
+  // 冷启动时前台那个标签的位置。「启动时打开自定义网页」时它的 URL 是网址，
+  // 不能只看 URL 是不是 newtab 来判断后台恢复有没有抢前台。
+  private coldStartTabIndex: number = -1;
   // 恢复出来的标签数，用来判断状态里的标签列表是否已经收齐。
   private lastSessionRestoredCount: number = 0;
 
@@ -2025,6 +2041,8 @@ struct AuraShell {
       return;
     }
     this.lastSessionRestoreAsked = true;
+    // 记下冷启动前台标签的位置：后台恢复生效时它会一直是活动标签。
+    this.coldStartTabIndex = state.activeTabIndex ?? -1;
     // 恢复出来的标签会重新加载，页面区在首帧之前是黑的：等它报出真网址就起防。
     this.restoreCoverPending = true;
     // 冷启动的落点固定是主页：网页就另开一个主页标签，主页则原地不动。
@@ -2034,6 +2052,7 @@ struct AuraShell {
     // 恢复失败/迟迟没状态时别把用户后来的导航当成冷启动落点。
     setTimeout((): void => {
       this.coldStartHomePending = false;
+      this.coldStartTabIndex = -1;
       this.badgeWaitForCount = -1;
       this.releaseTabBadge();
     }, 6000);
@@ -2085,6 +2104,7 @@ struct AuraShell {
       } else {
         // 没有可恢复的网页标签（上次就停在主页）：主页一直在前台，不需要预热层。
         this.coldStartHomePending = false;
+        this.coldStartTabIndex = -1;
         this.restoreCoverPending = false;
         this.badgeWaitForCount = -1;
         this.releaseTabBadge();
