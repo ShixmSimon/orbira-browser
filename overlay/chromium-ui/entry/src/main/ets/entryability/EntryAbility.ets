@@ -109,6 +109,12 @@ export default class EntryAbility extends UIAbility {
     ThemeSchemePush.setHandler((scheme: 'light' | 'dark'): void => {
       this.applyColorSchemePush(scheme);
     });
+    // A 修复（2026-11-05）：系统切深色走独立、可靠的 colorModeChange 监听，
+    // 不再依赖 onConfigurationUpdate 对 setColorMode 的不可靠回调（注释铁证：
+    // 真机上壳已变色而引擎纹丝不动）。触发即走与设置面板同一条已验证路径
+    // applyColorSchemePush → refreshRouting('colorModeChange') → bump revision
+    // → 引擎重算配色；天然幂等，与 onConfigurationUpdate 重复触发不会二次 bump。
+    this.context.getApplicationContext().on('colorModeChange', this.onSystemColorModeChange);
     AppStorage.setOrCreate(AURA_APP_VISIBLE_KEY, true);
     AppStorage.setOrCreate(AURA_THEME_FONT_ID_KEY, initialThemeFontId);
     AppStorage.setOrCreate(AURA_THEME_FONT_REVISION_KEY, 0);
@@ -423,6 +429,11 @@ export default class EntryAbility extends UIAbility {
     } catch (error) {
     }
 
+    try {
+      this.context.getApplicationContext().off('colorModeChange', this.onSystemColorModeChange);
+    } catch (error) {
+    }
+
     if (this.routingRefreshTimer >= 0) {
       clearTimeout(this.routingRefreshTimer);
       this.routingRefreshTimer = -1;
@@ -494,6 +505,19 @@ export default class EntryAbility extends UIAbility {
     this.refreshRouting('colorModeChange');
     hilog.info(DOMAIN, 'AuraShell', 'Color scheme pushed from settings: %{public}s', scheme);
   }
+
+  // A 修复：系统 colorModeChange 监听回调。部分 API 版本回调参数可能为空，
+  // 统一从 this.context.config.colorMode 取当前系统配色决策；与 onConfigurationUpdate
+  // 互为冗余、天然幂等。回调参数 colorMode 优先，undefined 时退化到 context.config。
+  private onSystemColorModeChange = (colorMode?: ConfigurationConstant.ColorMode): void => {
+    const resolved = colorMode !== undefined
+      ? this.resolveColorScheme(colorMode)
+      : this.resolveColorScheme(this.context.config.colorMode);
+    if (resolved !== this.lastColorScheme) {
+      this.applyColorSchemePush(resolved);
+      hilog.info(DOMAIN, 'AuraShell', 'System color mode changed (colorModeChange): %{public}s', resolved);
+    }
+  };
 
   private restoreBrowserProfile(): void {
     BrowserProfileService.load(this.context)
