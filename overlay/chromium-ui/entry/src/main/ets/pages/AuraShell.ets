@@ -1565,6 +1565,8 @@ struct AuraShell {
         if (this.isMobilePhoneUi()) {
           MobileBrowserOverlay({
             browserState: this.browserState,
+            // 恢复会话期间冻结标签计数，避免徽标从 1 逐个涨到实际数量。
+            badgeTabCount: this.tabBadgeHold,
             // 引擎其实停在自己的新标签页（失败导航）时告诉顶栏层，让它按主页
             // 处理（不画地址栏、菜单显示"新标签页"、顶部不留条带命中区）。
             engineHomeCover: this.engineHomeCovered(),
@@ -1882,9 +1884,30 @@ struct AuraShell {
   private restoreCoverPending: boolean = false;
   // 冷启动要落在主页：等恢复出来的标签报出网址，再决定是原地留着还是另开主页标签。
   private coldStartHomePending: boolean = false;
+  // 标签页徽标要显示的数字：-1 表示跟着 browserState.tabCount 走。
+  // 冷启动恢复会话时引擎是一个个把标签加回来的，徽标直接跟 tabCount 会看到
+  // 1→2→3…地“数一遍”，先冻结在恢复前的值，等这一轮状态落定再放开。
+  @State private tabBadgeHold: number = -1;
 
-  // 冷启动落点：恢复出来的活动标签若是网页，另开一个主页标签（旧页面留后台）；
-  // 本来就是主页则原地不动。只在恢复完成后调用一次。
+  private holdTabBadge(): void {
+    if (this.tabBadgeHold < 0) {
+      this.tabBadgeHold = this.browserState.tabCount;
+    }
+  }
+
+  private releaseTabBadge(delayMs: number = 0): void {
+    if (delayMs <= 0) {
+      this.tabBadgeHold = -1;
+      return;
+    }
+    setTimeout((): void => {
+      this.tabBadgeHold = -1;
+    }, delayMs);
+  }
+
+  // 冷启动落点：恢复是后台的，活动标签本来就是启动时那个主页，原地不动。
+  // 万一引擎没支持后台恢复（旧版 .so），恢复的网页会被激活，这里再补开一个
+  // 主页标签并关掉空白起始标签，保证落点仍是主页。
   private landOnHomeIfNeeded(retry: number = 0): void {
     if (!this.coldStartHomePending) {
       return;
@@ -1899,11 +1922,19 @@ struct AuraShell {
     }
     this.coldStartHomePending = false;
     if (url.length === 0 || isNewTabUrl(url) || url.startsWith('chrome')) {
+      // 后台恢复已生效：主页一直在前台，没有网页首帧要遮，也不需要新开标签。
+      this.restoreCoverPending = false;
       return;
     }
-    // 直接去主页，旧页面不用再遮黑（它在后台重载）。
     this.restoreCoverPending = false;
     this.executeBrowserCommand({ command: 'newTab', background: false });
+    if (this.restoreStartTabWasNew) {
+      this.restoreStartTabWasNew = false;
+      this.executeBrowserCommand({
+        command: 'closeTab',
+        index: this.restoreStartTabIndex
+      });
+    }
   }
   // 引擎的恢复是「追加」到当前窗口（chrome::AddRestoredTab 用 tabs->count()
   // 作索引）：启动时那个空白新标签页会留在 index 0，恢复的页面排在它后面，
@@ -1921,9 +1952,12 @@ struct AuraShell {
     this.restoreCoverPending = true;
     // 冷启动的落点固定是主页：网页就另开一个主页标签，主页则原地不动。
     this.coldStartHomePending = true;
+    // 徽标数字先停在恢复前的值，别跟着逐个加回来的标签一起涨。
+    this.holdTabBadge();
     // 恢复失败/迟迟没状态时别把用户后来的导航当成冷启动落点。
     setTimeout((): void => {
       this.coldStartHomePending = false;
+      this.releaseTabBadge();
     }, 6000);
     const tabs = state.tabs;
     if (tabs && tabs.length === 1 && isNewTabUrl(tabs[0].url ?? '')) {
@@ -1934,7 +1968,10 @@ struct AuraShell {
       this.executeBrowserCommand({
         command: 'restoreLastSession',
         restore: true,
-        mainWindowOnly: true
+        mainWindowOnly: true,
+        // 恢复的标签全部放在后台，当前这个主页标签保持活动：既不会先把网页
+        // 顶到前台再切回主页（闪一下），也不用等恢复完再补开主页（有延迟）。
+        background: true
       });
     };
     restore();
@@ -1958,17 +1995,11 @@ struct AuraShell {
     }
     if (event.event === 'lastSessionRestored') {
       const restored: number = event.count ?? 0;
-      if (restored > 0 && this.restoreStartTabWasNew) {
-        this.restoreStartTabWasNew = false;
-        this.executeBrowserCommand({
-          command: 'closeTab',
-          index: this.restoreStartTabIndex
-        });
-        hilog.info(0x0000, 'AuraShell',
-          'last session restored %{public}d tabs; closed the blank start tab', restored);
-      }
-      // 恢复完成后才判落点：此刻状态里才是恢复出来的活动标签（早于事件那个
-      // 状态还是空白起始标签，会误判成"本来就在主页"）。400ms 让状态先到位。
+      // 事件是在所有标签加完之后发出的：稍等状态推送到齐，徽标一次性跳到
+      // 最终数量，不用跟着逐个加回来的标签涨。
+      this.releaseTabBadge(200);
+      // 恢复是后台的，启动时那个标签就是主页，不能在这里关掉（关了会把后台
+      // 恢复出来的网页顶成活动标签）。只有下面判定「没走后台恢复」时才补关。
       if (restored > 0) {
         setTimeout((): void => {
           this.landOnHomeIfNeeded();
