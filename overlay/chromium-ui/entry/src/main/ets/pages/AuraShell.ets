@@ -1426,6 +1426,19 @@ struct AuraShell {
           const prevUrl: string = this.browserState.url;
           this.browserState = state;
           this.maybeRestoreLastSession(state);
+          // 冷启动的落点是主页：恢复出来的标签如果是网页，就另开一个主页标签
+          // （旧页面留在后台，不丢），如果本来就是主页则原地不动。
+          if (this.coldStartHomePending) {
+            const landedUrl: string = state.url ?? '';
+            if (landedUrl.length > 0) {
+              this.coldStartHomePending = false;
+              if (!isNewTabUrl(landedUrl) && !landedUrl.startsWith('chrome')) {
+                // 直接去主页，旧页面不用再遮黑（它在后台重载）。
+                this.restoreCoverPending = false;
+                this.executeBrowserCommand({ command: 'newTab', background: false });
+              }
+            }
+          }
           // 会话恢复出来的标签是重新加载的：地址栏已经换成真网址，页面区要等
           // 首帧才有内容，中间露的是引擎底板（黑）。这段用同色底顶住。
           if (this.restoreCoverPending) {
@@ -1880,6 +1893,8 @@ struct AuraShell {
   private lastSessionRestoreAsked: boolean = false;
   // 已请求恢复会话、还在等恢复出来的标签给出真网址（用来起预热层）。
   private restoreCoverPending: boolean = false;
+  // 冷启动要落在主页：等恢复出来的标签报出网址，再决定是原地留着还是另开主页标签。
+  private coldStartHomePending: boolean = false;
   // 引擎的恢复是「追加」到当前窗口（chrome::AddRestoredTab 用 tabs->count()
   // 作索引）：启动时那个空白新标签页会留在 index 0，恢复的页面排在它后面，
   // 看起来就像「重开后又自动新建了一个标签页」。记下它，等
@@ -1894,6 +1909,12 @@ struct AuraShell {
     this.lastSessionRestoreAsked = true;
     // 恢复出来的标签会重新加载，页面区在首帧之前是黑的：等它报出真网址就起防。
     this.restoreCoverPending = true;
+    // 冷启动的落点固定是主页：网页就另开一个主页标签，主页则原地不动。
+    this.coldStartHomePending = true;
+    // 恢复失败/迟迟没状态时别把用户后来的导航当成冷启动落点。
+    setTimeout((): void => {
+      this.coldStartHomePending = false;
+    }, 6000);
     const tabs = state.tabs;
     if (tabs && tabs.length === 1 && isNewTabUrl(tabs[0].url ?? '')) {
       this.restoreStartTabWasNew = true;
