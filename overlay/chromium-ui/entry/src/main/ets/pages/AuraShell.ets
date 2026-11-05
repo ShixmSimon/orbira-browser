@@ -39,6 +39,7 @@ import {
   BrowserCommandPayload,
   BrowserRuntimeEvent,
   BrowserStateSnapshot,
+  BrowserTabState,
   DeveloperModeEvent
 } from 'engine';
 import { CHROMIUM_HOME_URL } from 'engine';
@@ -1913,8 +1914,11 @@ struct AuraShell {
       return;
     }
     const url: string = this.browserState.url ?? '';
-    if (url.length === 0 && retry < 3) {
-      // 状态还没跟上，再等一小会儿（最多 ~1.6s，之后由 6s 兜底收尾）。
+    const currentTabs: BrowserTabState[] = this.browserState.tabs ?? [];
+    if ((url.length === 0 ||
+      currentTabs.length < this.lastSessionRestoredCount + 1) && retry < 3) {
+      // 状态还没跟上（标签列表还没把恢复出来的标签收齐），再等一小会儿；
+      // 最多 ~1.6s，之后由 6s 兜底收尾。
       setTimeout((): void => {
         this.landOnHomeIfNeeded(retry + 1);
       }, 400);
@@ -1924,6 +1928,10 @@ struct AuraShell {
     if (url.length === 0 || isNewTabUrl(url) || url.startsWith('chrome')) {
       // 后台恢复已生效：主页一直在前台，没有网页首帧要遮，也不需要新开标签。
       this.restoreCoverPending = false;
+      // 上次会话里那个主页标签也被恢复回来了，和启动时的主页重复：合并掉，
+      // 否则「在主页清后台」每次重开都会多出一个标签。
+      this.closeDuplicateHomeTab();
+      this.releaseTabBadge(200);
       return;
     }
     this.restoreCoverPending = false;
@@ -1935,6 +1943,25 @@ struct AuraShell {
         index: this.restoreStartTabIndex
       });
     }
+    this.releaseTabBadge(200);
+  }
+
+  // 会话恢复把上次那个新标签页也追加回来了（冷启动本来已经给了一个）。
+  // 只保留启动时的那个，其余多余的主页标签关掉一个即可覆盖常见情形。
+  private closeDuplicateHomeTab(): void {
+    if (!this.restoreStartTabWasNew) {
+      return;
+    }
+    this.restoreStartTabWasNew = false;
+    const tabs: BrowserTabState[] = this.browserState.tabs ?? [];
+    for (const tab of tabs) {
+      const index: number = tab.index ?? -1;
+      if (index >= 0 && index !== this.restoreStartTabIndex &&
+        isNewTabUrl(tab.url ?? '')) {
+        this.executeBrowserCommand({ command: 'closeTab', index: index });
+        break;
+      }
+    }
   }
   // 引擎的恢复是「追加」到当前窗口（chrome::AddRestoredTab 用 tabs->count()
   // 作索引）：启动时那个空白新标签页会留在 index 0，恢复的页面排在它后面，
@@ -1942,6 +1969,8 @@ struct AuraShell {
   // lastSessionRestored 确认恢复成功后再关；恢复失败时绝不能关（否则空窗口）。
   private restoreStartTabWasNew: boolean = false;
   private restoreStartTabIndex: number = -1;
+  // 恢复出来的标签数，用来判断状态里的标签列表是否已经收齐。
+  private lastSessionRestoredCount: number = 0;
 
   private maybeRestoreLastSession(state: BrowserStateSnapshot): void {
     if (this.lastSessionRestoreAsked || state.lastSessionRestorable !== true) {
@@ -1995,9 +2024,9 @@ struct AuraShell {
     }
     if (event.event === 'lastSessionRestored') {
       const restored: number = event.count ?? 0;
-      // 事件是在所有标签加完之后发出的：稍等状态推送到齐，徽标一次性跳到
-      // 最终数量，不用跟着逐个加回来的标签涨。
-      this.releaseTabBadge(200);
+      this.lastSessionRestoredCount = restored;
+      // 徽标要等落点判定和「合并重复主页标签」都做完再放开，否则会先显示
+      // 恢复后的数量、关掉重复标签后又跳一次。
       // 恢复是后台的，启动时那个标签就是主页，不能在这里关掉（关了会把后台
       // 恢复出来的网页顶成活动标签）。只有下面判定「没走后台恢复」时才补关。
       if (restored > 0) {
@@ -2006,6 +2035,7 @@ struct AuraShell {
         }, 400);
       } else {
         this.coldStartHomePending = false;
+        this.releaseTabBadge();
       }
       return;
     }
