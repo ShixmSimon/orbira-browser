@@ -809,10 +809,11 @@ export struct MobileBrowserOverlay {
 
   // 回包到了就把 JSON 重新解一遍（1.0.89：这一层以前根本没有 —— 见字段注释）。
   private onTabThumbnailsChanged(): void {
-    this.parseThumbnails();
+    // 面板没开时不必去翻磁盘：这些图只有标签网格/列表要画。开着才补读。
+    this.parseThumbnails(this.menuVisible);
   }
 
-  private parseThumbnails(): void {
+  private parseThumbnails(withDisk: boolean = false): void {
     const context = this.getUIContext().getHostContext() as common.Context | undefined;
     const tabs: BrowserTabState[] = this.browserState.tabs ?? [];
     const map: Map<string, string> = new Map();
@@ -820,11 +821,12 @@ export struct MobileBrowserOverlay {
       const items: TabThumbnail[] = JSON.parse(this.tabThumbnailsJson) as TabThumbnail[];
       for (const item of items) {
         if (item.id && item.id.length > 0 && item.pngBase64 && item.pngBase64.length > 0) {
-          map.set(item.id, `data:image/png;base64,${item.pngBase64}`);
+          const dataUrl: string = `data:image/png;base64,${item.pngBase64}`;
+          map.set(item.id, dataUrl);
           // 落盘：恢复出来的标签会拿到新 id，只有 URL 还能把它和这张图对上。
           for (const tab of tabs) {
             if ((tab.id ?? '') === item.id && (tab.url ?? '').length > 0) {
-              TabThumbnailStore.save(context, tab.url, item.pngBase64);
+              this.rememberThumb(context, tab.url, dataUrl, item.pngBase64);
               break;
             }
           }
@@ -835,17 +837,36 @@ export struct MobileBrowserOverlay {
     // 引擎只对当前标签截图、后台标签只能给内存里的旧图，而内存缓存进程一死
     // 就空（恢复会话后满屏「已休眠」正是这个）。磁盘里有的先补上：
     // 有图就画上次的样子，比一片占位更能认出是哪个标签。
+    // 磁盘是同步 IO，跑在 UI 线程上：先查内存，且只有面板打开时才真正读盘。
     for (const tab of tabs) {
       const id: string = tab.id ?? '';
       if (id.length === 0 || map.has(id)) {
         continue;
       }
-      const cached: string = TabThumbnailStore.load(context, tab.url ?? '');
+      const url: string = tab.url ?? '';
+      let cached: string = this.thumbDiskCache.get(url) ?? '';
+      if (cached.length === 0 && withDisk) {
+        cached = TabThumbnailStore.load(context, url);
+        if (cached.length > 0) {
+          this.thumbDiskCache.set(url, cached);
+        }
+      }
       if (cached.length > 0) {
         map.set(id, cached);
       }
     }
     this.tabThumbnails = map;
+  }
+
+  // 新图既落盘也进内存：同一个 URL 之后再显示就不用读盘了。
+  private rememberThumb(context: common.Context | undefined, url: string,
+    dataUrl: string, pngBase64: string): void {
+    // 缓存只服务于打开面板那几屏，条数很小；超了就整体丢弃，不做精细淘汰。
+    if (this.thumbDiskCache.size > 32) {
+      this.thumbDiskCache.clear();
+    }
+    this.thumbDiskCache.set(url, dataUrl);
+    TabThumbnailStore.save(context, url, pngBase64);
   }
 
   private thumbnailFor(tab: BrowserTabState): string {
@@ -860,6 +881,8 @@ export struct MobileBrowserOverlay {
 
   private thumbKeepTimer: number = 0;
   private thumbKeptKey: string = '';
+  // URL → data URL。缩略图磁盘缓存的内存副本，避免每次回包都去同步读盘。
+  private thumbDiskCache: Map<string, string> = new Map();
 
   // 每个标签切到前台后都留一张缩略图：引擎只在标签是当前标签时才有 surface
   // 可截，后台标签只能回内存里的旧图；不主动截，恢复出来的标签永远没有图。
@@ -911,7 +934,8 @@ export struct MobileBrowserOverlay {
 
   private requestTabThumbnails(): void {
     TabThumbnailStore.prune(this.getUIContext().getHostContext() as common.Context | undefined);
-    this.parseThumbnails();
+    // 面板正要打开：这一轮把磁盘里存的旧图都读进来。
+    this.parseThumbnails(true);
     const ids: string[] = [];
     for (const tab of this.browserState.tabs) {
       if (tab.id && tab.id.length > 0) {

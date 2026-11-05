@@ -77,10 +77,13 @@ export class TabThumbnailStore {
         fs.mkdirSync(dir);
       }
       // 同一张图不重复写：面板每打开一次都会重新请求缩略图。
+      // 先比文件长度（stat 比整份读便宜得多），长度相同才读出来细比。
       if (fs.accessSync(path)) {
-        const old = fs.readTextSync(path);
-        if (old === pngBase64) {
-          return;
+        if (fs.statSync(path).size === pngBase64.length) {
+          const old = fs.readTextSync(path);
+          if (old === pngBase64) {
+            return;
+          }
         }
       }
       const file = fs.openSync(path,
