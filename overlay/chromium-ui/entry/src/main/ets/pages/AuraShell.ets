@@ -1961,26 +1961,20 @@ struct AuraShell {
     // 「启动时打开自定义网页」设的网址 —— 两者都是用户要的落点，不能因为
     // URL 不是 newtab 就当成「恢复的网页抢了前台」去补开内置主页。
     const activeIndex: number = this.browserState.activeTabIndex ?? -1;
-    if (this.coldStartTabIndex >= 0 && activeIndex === this.coldStartTabIndex) {
-      this.coldStartTabIndex = -1;
-      this.restoreCoverPending = false;
-      if (!this.closeDuplicateHomeTab()) {
-        this.releaseTabBadge(200);
-      }
-      return;
-    }
+    const stayedOnStartTab: boolean = this.coldStartTabIndex >= 0 &&
+      activeIndex === this.coldStartTabIndex;
     this.coldStartTabIndex = -1;
-    if (url.length === 0 || isNewTabUrl(url) || url.startsWith('chrome')) {
-      // 后台恢复已生效：主页一直在前台，没有网页首帧要遮，也不需要新开标签。
+    if (stayedOnStartTab || url.length === 0 ||
+      isNewTabUrl(url) || url.startsWith('chrome')) {
       this.restoreCoverPending = false;
-      // 上次会话里那个主页标签也被恢复回来了，和启动时的主页重复：合并掉，
-      // 否则「在主页清后台」每次重开都会多出一个标签。若真的关了一个，
-      // 徽标要等标签数回落之后再放开，避免先闪 16 再变 15。
+      // 万一还有重复的主页标签（旧引擎或 URL 没被识别），合并掉；若真的
+      // 关了一个，徽标要等标签数回落再放开，避免先显示多一个的数量。
       if (!this.closeDuplicateHomeTab()) {
         this.releaseTabBadge(200);
       }
       return;
     }
+    // 走到这里说明活动标签被恢复的网页换掉了（旧引擎路径），补开主页。
     this.restoreCoverPending = false;
     this.executeBrowserCommand({ command: 'newTab', background: false });
     if (this.restoreStartTabWasNew) {
@@ -1993,8 +1987,8 @@ struct AuraShell {
     this.releaseTabBadge(200);
   }
 
-  // 会话恢复把上次那个新标签页也追加回来了（冷启动本来已经给了一个）。
-  // 只保留启动时的那个，其余多余的主页标签关掉一个即可覆盖常见情形。
+  // 兜底：引擎恢复时已经跳过启动页占位标签，旧引擎或 URL 未识别时仍可能
+  // 多出一个主页标签。只关掉一个，额外开的新标签页仍保留。
   // 返回 true 表示确实发了 closeTab，徽标释放要等这次状态回落。
   private closeDuplicateHomeTab(): boolean {
     if (!this.restoreStartTabWasNew) {
@@ -2042,7 +2036,12 @@ struct AuraShell {
     }
     this.lastSessionRestoreAsked = true;
     // 记下冷启动前台标签的位置：后台恢复生效时它会一直是活动标签。
-    this.coldStartTabIndex = state.activeTabIndex ?? -1;
+    // 极早期的快照可能还没给出 activeTabIndex，退回用唯一的那个起始标签。
+    const startActive: number = state.activeTabIndex ?? -1;
+    const startTabs: BrowserTabState[] = state.tabs ?? [];
+    const firstIndex: number = startTabs.length > 0
+      ? (startTabs[0].index ?? -1) : -1;
+    this.coldStartTabIndex = startActive >= 0 ? startActive : firstIndex;
     // 恢复出来的标签会重新加载，页面区在首帧之前是黑的：等它报出真网址就起防。
     this.restoreCoverPending = true;
     // 冷启动的落点固定是主页：网页就另开一个主页标签，主页则原地不动。
