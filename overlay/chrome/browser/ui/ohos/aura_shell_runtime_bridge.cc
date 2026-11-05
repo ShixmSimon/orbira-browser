@@ -3177,10 +3177,12 @@ void OfferLastSession(gfx::AcceleratedWidget widget,
 // also reopens every other window the last run had, installed apps' windows
 // among them, and on a phone only one window is shown. The main window is the
 // first normal one the last run opened. Answers lastSessionRestored { count }.
-// Session files also contain the new-tab page the last run ended on. A cold
-// start has already opened one, so restoring it verbatim leaves the window
-// one tab too many until the shell notices and closes it again. Recognise
-// that placeholder by the URL of its current navigation.
+// Session files also contain the page the last run ended on, and a cold start
+// has already opened a tab for the shell's startup page. Restoring that page
+// verbatim leaves the window one tab too many until the shell notices and
+// closes it again. Two ways to recognise the duplicate: the built-in new-tab
+// page (or a blank navigation), and a custom URL homepage, which is simply
+// the same URL as the tab that is already active.
 namespace {
 bool IsHomePlaceholder(const sessions::SessionTab& tab) {
   const int index = tab.normalized_navigation_index();
@@ -3196,6 +3198,22 @@ bool IsHomePlaceholder(const sessions::SessionTab& tab) {
     return host == "newtab" || host == "new-tab-page";
   }
   return false;
+}
+
+// The startup page may be a real URL chosen by the reader instead of the
+// built-in new-tab page. In that case the tab already active at restore time
+// is that very page, so a session entry with the same URL is the duplicate.
+bool IsSameAsCurrentTab(const sessions::SessionTab& tab,
+                        const GURL& current_url) {
+  if (!current_url.is_valid() || current_url.is_empty()) {
+    return false;
+  }
+  const int index = tab.normalized_navigation_index();
+  if (index < 0 || index >= static_cast<int>(tab.navigations.size())) {
+    return false;
+  }
+  const GURL& url = tab.navigations[index].virtual_url();
+  return url.is_valid() && url.EqualsIgnoringRef(current_url);
 }
 }  // namespace
 
@@ -3240,6 +3258,10 @@ void RestoreLastSessionTabs(gfx::AcceleratedWidget widget,
           answer(widget, 0);
           return;
         }
+        // The tab that is already open (the shell's startup page). One session
+        // entry pointing at the same URL is the duplicate of this tab.
+        content::WebContents* current = tabs->GetActiveWebContents();
+        const GURL current_url = current ? current->GetVisibleURL() : GURL();
         int count = 0;
         const int selected = main->selected_tab_index;
         // The tabs behind the selected one, handed to the background tab
@@ -3248,17 +3270,19 @@ void RestoreLastSessionTabs(gfx::AcceleratedWidget widget,
         // tablet) and leaves the rest to load when opened. With
         // keep_current_tab every restored tab is a background one.
         std::vector<content::WebContents*> background_tabs;
-        // Skip only the first placeholder: any further new-tab pages were
-        // opened deliberately by the reader and should come back.
-        bool skipped_home_placeholder = false;
+        // Skip only the first duplicate: any further tabs (including extra
+        // new-tab pages or the same URL opened twice) were opened deliberately
+        // by the reader and should come back.
+        bool skipped_startup_tab = false;
         for (size_t i = 0; i < main->tabs.size(); ++i) {
           const sessions::SessionTab& tab = *main->tabs[i];
           if (tab.navigations.empty()) {
             continue;
           }
-          if (keep_current_tab && !skipped_home_placeholder &&
-              IsHomePlaceholder(tab)) {
-            skipped_home_placeholder = true;
+          if (keep_current_tab && !skipped_startup_tab &&
+              (IsHomePlaceholder(tab) ||
+               IsSameAsCurrentTab(tab, current_url))) {
+            skipped_startup_tab = true;
             continue;
           }
           const bool select_this =
