@@ -3683,8 +3683,7 @@ export struct MobileBrowserOverlay {
                   .width('100%')
                   .height('100%')
                   .objectFit(ImageFit.Cover)
-                  // 已休眠的标签留着上一次的缩略图，稍微压暗表示页面已不在内存里；
-                  // 压太狠会认不出是哪个站点（0.4 → 0.8），辨识交给上面那层遮罩。
+                  // 已休眠的标签留着上一次的缩略图，稍微压暗表示页面已不在内存里。
                   .opacity(tab.discarded === true ? 0.8 : 1)
               } else {
                 // 没抓到快照（后台标签被回收等）：别把整条 URL 糊上来，
@@ -3701,13 +3700,13 @@ export struct MobileBrowserOverlay {
               // 标题、图标、前进后退记录都还在，点开时自动重新加载。契约
               // 要求显示为加载中而不是空白，所以盖一层"已休眠"。
               if (tab.discarded === true) {
-                // 只轻轻压一层：太重会看不出后面是哪个站点（以前的 0.88 几乎全白）。
+                // 只轻轻压一层：太重会看不出后面是哪个站点。
                 Column()
                   .width('100%')
                   .height('100%')
                   .backgroundColor($r('app.color.surface_primary'))
                   .opacity(0.35)
-                // 文案单独放、不再跟着遮罩一起变淡；压在自己的小底板上，洗白后依然读得清。
+                // 文案压在自己的小底板上，不跟着遮罩一起变淡。
                 Column({ space: 2 }) {
                   Text('已休眠')
                     .fontSize(12)
@@ -3782,7 +3781,7 @@ export struct MobileBrowserOverlay {
             .width('100%')
             .height('100%')
             .objectFit(ImageFit.Cover)
-            // 已休眠的标签留着上一次的缩略图，稍微压暗表示页面已不在内存里（0.4 → 0.8）。
+            // 已休眠的标签留着上一次的缩略图，稍微压暗表示页面已不在内存里。
             .opacity(tab.discarded === true ? 0.8 : 1)
             .draggable(false)
         } else {
@@ -4255,8 +4254,7 @@ export struct MobileBrowserOverlay {
     .width('100%')
     .borderRadius({ topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 })
     .backgroundColor($r('app.color.menu_glass'))
-    // 底部安全区：贴屏幕底沿（含底部横条），盖住 chrome-bottom 悬浮 dock
-    // （遮罩之下，参考浏览器同行为）。
+    // 底部安全区：贴屏幕底沿（含底部横条），盖住 chrome-bottom 悬浮 dock。
     .padding({ bottom: this.bottomSafeVp })
     // 不加阴影：sheet 贴屏幕底只露顶边，shadow（暗色主题 #66000000）会在
     // 顶边糊成一条黑带（1.0.231 真机截图：左上角黑条真身）。底部通栏面板
