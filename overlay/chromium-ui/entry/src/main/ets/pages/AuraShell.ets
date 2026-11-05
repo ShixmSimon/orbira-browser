@@ -1431,6 +1431,13 @@ struct AuraShell {
           const wasNewTab: boolean = this.isNewTabPage();
           const prevUrl: string = this.browserState.url;
           this.browserState = state;
+          // 关掉重复主页标签后，等标签数真的回落再放开徽标：否则会先显示
+          // 恢复后的「多一个」数量，再跳回实际数量。
+          if (this.badgeWaitForCount >= 0 &&
+            state.tabCount === this.badgeWaitForCount) {
+            this.badgeWaitForCount = -1;
+            this.releaseTabBadge();
+          }
           // 徽标冻结只在启动窗口内；窗口结束后把真实标签数同步落盘，
           // 供下一次冷启动的第一帧直接显示。恢复期间不写，免得把中间值存进去。
           if (this.tabBadgeHold < 0 && state.tabCount !== this.lastSavedTabCount) {
@@ -1904,6 +1911,9 @@ struct AuraShell {
   @State private tabBadgeHold: number = -1;
   private lastSavedTabCount: number = -1;
   private savedTabCountContext: common.Context | undefined = undefined;
+  // 关掉恢复出来的重复主页标签后，等状态里的标签数落到这个值再放开徽标；
+  // 否则会先闪一下「多一个」的数量再跳回来。
+  private badgeWaitForCount: number = -1;
 
   private holdTabBadge(): void {
     if (this.tabBadgeHold < 0) {
@@ -1951,9 +1961,11 @@ struct AuraShell {
       // 后台恢复已生效：主页一直在前台，没有网页首帧要遮，也不需要新开标签。
       this.restoreCoverPending = false;
       // 上次会话里那个主页标签也被恢复回来了，和启动时的主页重复：合并掉，
-      // 否则「在主页清后台」每次重开都会多出一个标签。
-      this.closeDuplicateHomeTab();
-      this.releaseTabBadge(200);
+      // 否则「在主页清后台」每次重开都会多出一个标签。若真的关了一个，
+      // 徽标要等标签数回落之后再放开，避免先闪 16 再变 15。
+      if (!this.closeDuplicateHomeTab()) {
+        this.releaseTabBadge(200);
+      }
       return;
     }
     this.restoreCoverPending = false;
@@ -1970,9 +1982,10 @@ struct AuraShell {
 
   // 会话恢复把上次那个新标签页也追加回来了（冷启动本来已经给了一个）。
   // 只保留启动时的那个，其余多余的主页标签关掉一个即可覆盖常见情形。
-  private closeDuplicateHomeTab(): void {
+  // 返回 true 表示确实发了 closeTab，徽标释放要等这次状态回落。
+  private closeDuplicateHomeTab(): boolean {
     if (!this.restoreStartTabWasNew) {
-      return;
+      return false;
     }
     this.restoreStartTabWasNew = false;
     const tabs: BrowserTabState[] = this.browserState.tabs ?? [];
@@ -1980,10 +1993,19 @@ struct AuraShell {
       const index: number = tab.index ?? -1;
       if (index >= 0 && index !== this.restoreStartTabIndex &&
         isNewTabUrl(tab.url ?? '')) {
+        this.badgeWaitForCount = this.browserState.tabCount - 1;
         this.executeBrowserCommand({ command: 'closeTab', index: index });
-        break;
+        // 状态万一没回来也不能一直冻结；状态先到时这个定时器会自然空转。
+        setTimeout((): void => {
+          if (this.badgeWaitForCount >= 0) {
+            this.badgeWaitForCount = -1;
+            this.releaseTabBadge();
+          }
+        }, 1000);
+        return true;
       }
     }
+    return false;
   }
   // 引擎的恢复是「追加」到当前窗口（chrome::AddRestoredTab 用 tabs->count()
   // 作索引）：启动时那个空白新标签页会留在 index 0，恢复的页面排在它后面，
@@ -2012,6 +2034,7 @@ struct AuraShell {
     // 恢复失败/迟迟没状态时别把用户后来的导航当成冷启动落点。
     setTimeout((): void => {
       this.coldStartHomePending = false;
+      this.badgeWaitForCount = -1;
       this.releaseTabBadge();
     }, 6000);
     const tabs = state.tabs;
