@@ -43,6 +43,9 @@ const KEY_DESKTOP_SITES = 'desktopSites';
 const KEY_MOBILE_SITES = 'mobileSites';
 // 全局默认 UA：'mobile'（默认，手机浏览体验）或 'desktop'（所有站点用桌面 UA）。
 const KEY_UA_DEFAULT = 'uaDefault';
+// 冷启动时标签徽标的初值：上次退出时的标签数。会话恢复期间徽标冻结在这个值上，
+// 免得从 0 一路数到实际数量。用同步 API，保证首帧就能拿到。
+const KEY_LAST_TAB_COUNT = 'lastTabCount';
 
 export class ShellUiPrefs {
   static async loadHideStatusBar(context: common.Context): Promise<boolean> {
@@ -374,6 +377,25 @@ export class ShellUiPrefs {
       const store = await preferences.getPreferences(context, STORE_NAME);
       await store.put(KEY_UA_DEFAULT, value === 'desktop' ? 'desktop' : 'mobile');
       await store.flush();
+    } catch (error) {
+    }
+  }
+
+  static loadLastTabCountSync(context: common.Context): number {
+    try {
+      const store = preferences.getPreferencesSync(context, { name: STORE_NAME });
+      const value = Number(store.getSync(KEY_LAST_TAB_COUNT, 1));
+      return value > 0 && value < 1000 ? Math.floor(value) : 1;
+    } catch (error) {
+      return 1;
+    }
+  }
+
+  static saveLastTabCountSync(context: common.Context, count: number): void {
+    try {
+      const store = preferences.getPreferencesSync(context, { name: STORE_NAME });
+      store.putSync(KEY_LAST_TAB_COUNT, count);
+      store.flushSync();
     } catch (error) {
     }
   }
