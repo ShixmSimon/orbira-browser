@@ -3177,6 +3177,28 @@ void OfferLastSession(gfx::AcceleratedWidget widget,
 // also reopens every other window the last run had, installed apps' windows
 // among them, and on a phone only one window is shown. The main window is the
 // first normal one the last run opened. Answers lastSessionRestored { count }.
+// Session files also contain the new-tab page the last run ended on. A cold
+// start has already opened one, so restoring it verbatim leaves the window
+// one tab too many until the shell notices and closes it again. Recognise
+// that placeholder by the URL of its current navigation.
+namespace {
+bool IsHomePlaceholder(const sessions::SessionTab& tab) {
+  const int index = tab.normalized_navigation_index();
+  if (index < 0 || index >= static_cast<int>(tab.navigations.size())) {
+    return true;
+  }
+  const GURL& url = tab.navigations[index].virtual_url();
+  if (url.is_empty() || url.IsAboutBlank()) {
+    return true;
+  }
+  if (url.SchemeIs("chrome") || url.SchemeIs("chrome-native")) {
+    const std::string host = url.host();
+    return host == "newtab" || host == "new-tab-page";
+  }
+  return false;
+}
+}  // namespace
+
 // `keep_current_tab` restores every tab in the background: the window keeps
 // whatever tab is active now (on a cold start that is the shell's home tab),
 // so the restored pages neither flash their blank first frame nor steal the
@@ -3226,9 +3248,17 @@ void RestoreLastSessionTabs(gfx::AcceleratedWidget widget,
         // tablet) and leaves the rest to load when opened. With
         // keep_current_tab every restored tab is a background one.
         std::vector<content::WebContents*> background_tabs;
+        // Skip only the first placeholder: any further new-tab pages were
+        // opened deliberately by the reader and should come back.
+        bool skipped_home_placeholder = false;
         for (size_t i = 0; i < main->tabs.size(); ++i) {
           const sessions::SessionTab& tab = *main->tabs[i];
           if (tab.navigations.empty()) {
+            continue;
+          }
+          if (keep_current_tab && !skipped_home_placeholder &&
+              IsHomePlaceholder(tab)) {
+            skipped_home_placeholder = true;
             continue;
           }
           const bool select_this =

@@ -2083,7 +2083,10 @@ struct AuraShell {
           this.landOnHomeIfNeeded();
         }, 400);
       } else {
+        // 没有可恢复的网页标签（上次就停在主页）：主页一直在前台，不需要预热层。
         this.coldStartHomePending = false;
+        this.restoreCoverPending = false;
+        this.badgeWaitForCount = -1;
         this.releaseTabBadge();
       }
       return;
