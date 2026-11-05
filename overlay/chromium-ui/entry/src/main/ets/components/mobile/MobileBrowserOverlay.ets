@@ -3653,6 +3653,29 @@ export struct MobileBrowserOverlay {
     .backgroundColor(Color.Transparent)
   }
 
+  // 标签的稳定标识。引擎 JSON 里的 id 未必是字符串，一律 String() 归一化；
+  // index 会随邻居关掉或会话恢复追加而漂移，不能拿来做组件 key 或删除依据。
+  private stableTabId(tab: BrowserTabState): string {
+    const raw: string | undefined = tab.id;
+    return raw === undefined ? '' : String(raw);
+  }
+
+  private tabKey(tab: BrowserTabState): string {
+    const id: string = this.stableTabId(tab);
+    return id.length > 0 ? id : `idx-${tab.index}`;
+  }
+
+  // 按稳定 id 关闭：引擎的 closeTab 在 index 解析不到时会回退到活动标签，
+  // 表现就是「点哪张都删最近的」。有 id 一律走 closeTabById。
+  private closeTabOf(tab: BrowserTabState): void {
+    const id: string = this.stableTabId(tab);
+    if (id.length > 0) {
+      this.issueCommand({ command: 'closeTabById', id: id });
+      return;
+    }
+    this.issueCommand({ command: 'closeTab', index: tab.index });
+  }
+
   // 网格排布：两列卡片，缩略图按卡片形状取（见 measureTabGrid）。
   @Builder
   private TabGrid() {
@@ -3679,8 +3702,8 @@ export struct MobileBrowserOverlay {
               .height(30)
               .backgroundColor(Color.Transparent)
               .accessibilityText('关闭标签页')
-              .onClick(() => {
-                this.issueCommand({ command: 'closeTab', index: tab.index });
+              .onClick((): void => {
+                this.closeTabOf(tab);
               })
             }
             .width('100%')
@@ -3749,12 +3772,17 @@ export struct MobileBrowserOverlay {
           .backgroundColor($r('app.color.surface_primary'))
           .onClick(() => {
             // Switch first, then dismiss: the reader expects to land on
-            // the page they tapped, with the sheet gone.
-            this.issueCommand({ command: 'activateTab', index: tab.index });
+            // the page they tapped, with the sheet gone. 引擎优先按稳定 id
+            // 找标签，index 只作老引擎的兜底。
+            this.issueCommand({
+              command: 'activateTab',
+              id: this.stableTabId(tab),
+              index: tab.index
+            });
             this.closeMenuSheet();
           })
         }
-      }, (tab: BrowserTabState): string => tab.index.toString())
+      }, (tab: BrowserTabState): string => this.tabKey(tab))
     }
     .columnsTemplate('1fr 1fr')
     .columnsGap(10)
@@ -3774,7 +3802,7 @@ export struct MobileBrowserOverlay {
       Column({ space: 8 }) {
         ForEach(this.browserState.tabs, (tab: BrowserTabState) => {
           this.TabListRow(tab)
-        }, (tab: BrowserTabState): string => tab.index.toString())
+        }, (tab: BrowserTabState): string => this.tabKey(tab))
       }
       .width('100%')
     }
@@ -3841,7 +3869,7 @@ export struct MobileBrowserOverlay {
       .backgroundColor(Color.Transparent)
       .accessibilityText('关闭标签页')
       .onClick((): void => {
-        this.issueCommand({ command: 'closeTab', index: tab.index });
+        this.closeTabOf(tab);
       })
     }
     .width('100%')
@@ -3854,7 +3882,11 @@ export struct MobileBrowserOverlay {
     })
     .backgroundColor($r('app.color.surface_primary'))
     .onClick((): void => {
-      this.issueCommand({ command: 'activateTab', index: tab.index });
+      this.issueCommand({
+        command: 'activateTab',
+        id: this.stableTabId(tab),
+        index: tab.index
+      });
       this.closeMenuSheet();
     })
   }
