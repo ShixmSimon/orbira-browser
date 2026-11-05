@@ -4959,14 +4959,6 @@ void ApplyColorSchemeOnUiThread(std::string color_scheme) {
     int window_count = 0;
     browsers->ForEach([&preferred_scheme,
                        &window_count](BrowserWindowInterface* browser) {
-      TabStripModel* tabs = browser->GetTabStripModel();
-      if (tabs) {
-        for (int index = 0; index < tabs->count(); ++index) {
-          if (content::WebContents* contents = tabs->GetWebContentsAt(index)) {
-            contents->NotifyPreferencesChanged();
-          }
-        }
-      }
       if (BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(
               browser)) {
         // A page's preferred color scheme is computed from the browser
@@ -4985,6 +4977,19 @@ void ApplyColorSchemeOnUiThread(std::string color_scheme) {
         }
         browser_view->InvalidateLayout();
         browser_view->SchedulePaint();
+      }
+      // Order matters: NotifyPreferencesChanged() re-runs
+      // OverrideWebkitPrefs -> GetPreferredColorScheme, which reads the
+      // window's color mode. Doing it before SetColorModeOverride made every
+      // page recompute with the OLD mode, so the first load stayed light and
+      // only a manual reload picked up dark (or vice versa).
+      TabStripModel* tabs = browser->GetTabStripModel();
+      if (tabs) {
+        for (int index = 0; index < tabs->count(); ++index) {
+          if (content::WebContents* contents = tabs->GetWebContentsAt(index)) {
+            contents->NotifyPreferencesChanged();
+          }
+        }
       }
       return true;
     });

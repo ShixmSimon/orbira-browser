@@ -551,7 +551,9 @@ void GetPageInfo(const ShellCommandContext& context,
 void SetPagePermission(const ShellCommandContext& context,
                        const base::DictValue& command) {
   auto reply = PageInfoReply(command, "pageInfoActionResult");
-  auto* contents = PageForInfo(context, command, true);
+  // The shell's site settings panel sends tabId but has no navigationId;
+  // requiring one here made every permission change a silent no-op.
+  auto* contents = PageForInfo(context, command, false);
   const auto* type = FindType(command.FindString("type"));
   const auto* name = command.FindString("setting");
   auto setting = SettingFromShell(name);
@@ -580,7 +582,11 @@ void SetPagePermission(const ShellCommandContext& context,
 void ClearPageSiteData(const ShellCommandContext& context,
                        const base::DictValue& command) {
   auto reply = PageInfoReply(command, "pageInfoActionResult");
-  auto* contents = PageForInfo(context, command, true);
+  // Same reason as SetPagePermission: the site settings panel has tabId but
+  // never a navigationId. With require_navigation=true this returned nullptr
+  // before ClearDataForOrigin was ever called, so "clear site data" did
+  // nothing while the settings page's BrowsingDataRemover path worked.
+  auto* contents = PageForInfo(context, command, false);
   if (!contents) {
     ReplyToShell(context, std::move(reply));
     return;
