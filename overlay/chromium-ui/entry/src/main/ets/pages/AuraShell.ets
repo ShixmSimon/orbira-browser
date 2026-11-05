@@ -1426,19 +1426,6 @@ struct AuraShell {
           const prevUrl: string = this.browserState.url;
           this.browserState = state;
           this.maybeRestoreLastSession(state);
-          // 冷启动的落点是主页：恢复出来的标签如果是网页，就另开一个主页标签
-          // （旧页面留在后台，不丢），如果本来就是主页则原地不动。
-          if (this.coldStartHomePending) {
-            const landedUrl: string = state.url ?? '';
-            if (landedUrl.length > 0) {
-              this.coldStartHomePending = false;
-              if (!isNewTabUrl(landedUrl) && !landedUrl.startsWith('chrome')) {
-                // 直接去主页，旧页面不用再遮黑（它在后台重载）。
-                this.restoreCoverPending = false;
-                this.executeBrowserCommand({ command: 'newTab', background: false });
-              }
-            }
-          }
           // 会话恢复出来的标签是重新加载的：地址栏已经换成真网址，页面区要等
           // 首帧才有内容，中间露的是引擎底板（黑）。这段用同色底顶住。
           if (this.restoreCoverPending) {
@@ -1895,6 +1882,29 @@ struct AuraShell {
   private restoreCoverPending: boolean = false;
   // 冷启动要落在主页：等恢复出来的标签报出网址，再决定是原地留着还是另开主页标签。
   private coldStartHomePending: boolean = false;
+
+  // 冷启动落点：恢复出来的活动标签若是网页，另开一个主页标签（旧页面留后台）；
+  // 本来就是主页则原地不动。只在恢复完成后调用一次。
+  private landOnHomeIfNeeded(retry: number = 0): void {
+    if (!this.coldStartHomePending) {
+      return;
+    }
+    const url: string = this.browserState.url ?? '';
+    if (url.length === 0 && retry < 3) {
+      // 状态还没跟上，再等一小会儿（最多 ~1.6s，之后由 6s 兜底收尾）。
+      setTimeout((): void => {
+        this.landOnHomeIfNeeded(retry + 1);
+      }, 400);
+      return;
+    }
+    this.coldStartHomePending = false;
+    if (url.length === 0 || isNewTabUrl(url) || url.startsWith('chrome')) {
+      return;
+    }
+    // 直接去主页，旧页面不用再遮黑（它在后台重载）。
+    this.restoreCoverPending = false;
+    this.executeBrowserCommand({ command: 'newTab', background: false });
+  }
   // 引擎的恢复是「追加」到当前窗口（chrome::AddRestoredTab 用 tabs->count()
   // 作索引）：启动时那个空白新标签页会留在 index 0，恢复的页面排在它后面，
   // 看起来就像「重开后又自动新建了一个标签页」。记下它，等
@@ -1956,6 +1966,15 @@ struct AuraShell {
         });
         hilog.info(0x0000, 'AuraShell',
           'last session restored %{public}d tabs; closed the blank start tab', restored);
+      }
+      // 恢复完成后才判落点：此刻状态里才是恢复出来的活动标签（早于事件那个
+      // 状态还是空白起始标签，会误判成"本来就在主页"）。400ms 让状态先到位。
+      if (restored > 0) {
+        setTimeout((): void => {
+          this.landOnHomeIfNeeded();
+        }, 400);
+      } else {
+        this.coldStartHomePending = false;
       }
       return;
     }
