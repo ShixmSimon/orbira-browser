@@ -3177,8 +3177,13 @@ void OfferLastSession(gfx::AcceleratedWidget widget,
 // also reopens every other window the last run had, installed apps' windows
 // among them, and on a phone only one window is shown. The main window is the
 // first normal one the last run opened. Answers lastSessionRestored { count }.
+// `keep_current_tab` restores every tab in the background: the window keeps
+// whatever tab is active now (on a cold start that is the shell's home tab),
+// so the restored pages neither flash their blank first frame nor steal the
+// view from the home page the shell wants to land on.
 void RestoreLastSessionTabs(gfx::AcceleratedWidget widget,
-                            BrowserWindowInterface* browser) {
+                            BrowserWindowInterface* browser,
+                            bool keep_current_tab) {
   SessionService* service =
       browser ? SessionServiceFactory::GetForProfile(browser->GetProfile())
               : nullptr;
@@ -3194,6 +3199,7 @@ void RestoreLastSessionTabs(gfx::AcceleratedWidget widget,
   }
   service->GetLastSession(base::BindOnce(
       [](decltype(answer) answer, gfx::AcceleratedWidget widget,
+         bool keep_current_tab,
          std::vector<std::unique_ptr<sessions::SessionWindow>> windows,
          SessionID active_window_id, bool read_error) {
         BrowserWindowInterface* browser = FindBrowserForWidget(widget);
@@ -3217,22 +3223,25 @@ void RestoreLastSessionTabs(gfx::AcceleratedWidget widget,
         // The tabs behind the selected one, handed to the background tab
         // loader as SessionRestore does; it loads as many as the device's
         // cap allows (OhosTabDiscardingPolicy: none on a phone, 3 on a
-        // tablet) and leaves the rest to load when opened.
+        // tablet) and leaves the rest to load when opened. With
+        // keep_current_tab every restored tab is a background one.
         std::vector<content::WebContents*> background_tabs;
         for (size_t i = 0; i < main->tabs.size(); ++i) {
           const sessions::SessionTab& tab = *main->tabs[i];
           if (tab.navigations.empty()) {
             continue;
           }
+          const bool select_this =
+              !keep_current_tab && static_cast<int>(i) == selected;
           content::WebContents* contents = chrome::AddRestoredTab(
               browser, tab.navigations, tabs->count(),
               tab.normalized_navigation_index(), tab.extension_app_id,
-              tab.group, static_cast<int>(i) == selected, tab.pinned,
+              tab.group, select_this, tab.pinned,
               base::TimeTicks::Now(), tab.last_active_time,
               /*storage_namespace=*/nullptr, tab.user_agent_override,
               tab.extra_data, /*from_session_restore=*/true,
               /*is_active_browser=*/std::nullopt);
-          if (contents && static_cast<int>(i) != selected) {
+          if (contents && !select_this) {
             background_tabs.push_back(contents);
           }
           ++count;
@@ -3246,12 +3255,13 @@ void RestoreLastSessionTabs(gfx::AcceleratedWidget widget,
                      << " tabs of the last session's main window";
         answer(widget, count);
       },
-      answer, widget));
+      answer, widget, keep_current_tab));
 }
 
-// restoreLastSession { restore: boolean, mainWindowOnly?: boolean }. false
-// lets the session go; mainWindowOnly restores just the main window's tabs
-// into this window (RestoreLastSessionTabs).
+// restoreLastSession { restore: boolean, mainWindowOnly?: boolean,
+// background?: boolean }. false lets the session go; mainWindowOnly restores
+// just the main window's tabs into this window (RestoreLastSessionTabs);
+// background keeps the current tab active and restores every tab behind it.
 void AnswerLastSession(gfx::AcceleratedWidget widget,
                        BrowserWindowInterface* browser,
                        const base::DictValue& command) {
@@ -3265,7 +3275,8 @@ void AnswerLastSession(gfx::AcceleratedWidget widget,
   }
   if (command.FindBool("restore").value_or(true) && browser) {
     if (command.FindBool("mainWindowOnly").value_or(false)) {
-      RestoreLastSessionTabs(widget, browser);
+      RestoreLastSessionTabs(widget, browser,
+                             command.FindBool("background").value_or(false));
     } else {
       SessionRestore::RestoreSessionAfterCrash(browser);
     }

@@ -300,6 +300,9 @@ export struct MobileBrowserOverlay {
   // 全屏时状态栏已被藏起来，外壳不能再按"有状态栏"垫底（见状态栏垫底层）。
   @StorageProp('auraPageFullscreen') pageFullscreen: boolean = false;
   @Prop @Watch('onBrowserStateChanged') browserState: BrowserStateSnapshot;
+  // 冷启动恢复会话期间，AuraShell 会把标签计数冻结在恢复前的值（-1 表示不冻结）。
+  // 引擎是逐个把标签加回来的，直接跟 tabCount 会让徽标「从 1 数到 N」。
+  @Prop badgeTabCount: number = -1;
   // 引擎那边**其实正停在自己的新标签页**（导航失败没提交，browserState.url 还
   // 挂着那个连不上的地址，画面却是原生新标签页 + 外壳已用 HomeSurface 盖住）。
   // 由 AuraShell 判定后传下来（见 AuraShell.isNewTabPage）；这里据此把顶栏、
@@ -856,6 +859,13 @@ export struct MobileBrowserOverlay {
       }
     }
     this.tabThumbnails = map;
+  }
+
+  private tabBadgeText(): string {
+    const count: number = this.badgeTabCount >= 0
+      ? this.badgeTabCount
+      : this.browserState.tabCount;
+    return count > 99 ? '99+' : count.toString();
   }
 
   // 新图既落盘也进内存：同一个 URL 之后再显示就不用读盘了。
@@ -1790,7 +1800,7 @@ export struct MobileBrowserOverlay {
 
     // 标签页
     Button({ type: ButtonType.Circle, stateEffect: false }) {
-      Text(this.browserState.tabCount > 99 ? '99+' : this.browserState.tabCount.toString())
+      Text(this.tabBadgeText())
         .fontSize(10)
         .fontWeight(FontWeight.Medium)
         .fontColor($r('app.color.icon_primary'))
@@ -2130,7 +2140,7 @@ export struct MobileBrowserOverlay {
   @Builder
   private ChromeBarTabCount() {
     Button({ type: ButtonType.Circle, stateEffect: false }) {
-      Text(this.browserState.tabCount > 99 ? '99+' : this.browserState.tabCount.toString())
+      Text(this.tabBadgeText())
         .fontSize(10)
         .fontWeight(FontWeight.Medium)
         .fontColor($r('app.color.icon_primary'))
@@ -3308,7 +3318,9 @@ export struct MobileBrowserOverlay {
     DockMaterialPlate({
       canGoBack: this.browserState.canGoBack,
       canGoForward: this.browserState.canGoForward,
-      tabCount: this.browserState.tabCount,
+      tabCount: this.badgeTabCount >= 0
+        ? this.badgeTabCount
+        : this.browserState.tabCount,
       barWidthVp: this.dockBarWidthVp(DOCK_SIDE_MARGIN_VP),
       barHeightVp: DOCK_BAR_HEIGHT_VP,
       sideMarginVp: DOCK_SIDE_MARGIN_VP,
@@ -3420,7 +3432,7 @@ export struct MobileBrowserOverlay {
 
       Button({ type: ButtonType.Normal, stateEffect: true }) {
         // 去字后只剩计数徽标。
-        Text(this.browserState.tabCount > 99 ? '99+' : this.browserState.tabCount.toString())
+        Text(this.tabBadgeText())
           .fontSize(10)
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.icon_primary'))
