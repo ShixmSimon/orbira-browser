@@ -311,6 +311,11 @@ struct AuraShell {
     this.readCrashReport();
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
     if (context) {
+      // 同步读：首帧就把徽标设成上次退出时的标签数，恢复会话期间不再跳动。
+      this.savedTabCountContext = context;
+      const tabCountSeed: number = ShellUiPrefs.loadLastTabCountSync(context);
+      this.tabBadgeHold = tabCountSeed;
+      this.lastSavedTabCount = tabCountSeed;
       ShellUiPrefs.loadHideStatusBar(context).then((value: boolean): void => {
         AppStorage.setOrCreate('auraHideStatusBarOnScroll', value);
       });
@@ -1426,6 +1431,14 @@ struct AuraShell {
           const wasNewTab: boolean = this.isNewTabPage();
           const prevUrl: string = this.browserState.url;
           this.browserState = state;
+          // 徽标冻结只在启动窗口内；窗口结束后把真实标签数同步落盘，
+          // 供下一次冷启动的第一帧直接显示。恢复期间不写，免得把中间值存进去。
+          if (this.tabBadgeHold < 0 && state.tabCount !== this.lastSavedTabCount) {
+            this.lastSavedTabCount = state.tabCount;
+            if (this.savedTabCountContext) {
+              ShellUiPrefs.saveLastTabCountSync(this.savedTabCountContext, state.tabCount);
+            }
+          }
           this.maybeRestoreLastSession(state);
           // 会话恢复出来的标签是重新加载的：地址栏已经换成真网址，页面区要等
           // 首帧才有内容，中间露的是引擎底板（黑）。这段用同色底顶住。
@@ -1886,9 +1899,11 @@ struct AuraShell {
   // 冷启动要落在主页：等恢复出来的标签报出网址，再决定是原地留着还是另开主页标签。
   private coldStartHomePending: boolean = false;
   // 标签页徽标要显示的数字：-1 表示跟着 browserState.tabCount 走。
-  // 冷启动恢复会话时引擎是一个个把标签加回来的，徽标直接跟 tabCount 会看到
-  // 1→2→3…地“数一遍”，先冻结在恢复前的值，等这一轮状态落定再放开。
+  // 首帧先显示上次退出时的标签数（壳层同步持久化），恢复会话期间一直冻结在
+  // 这个值上：引擎是一个个把标签加回来的，直接跟 tabCount 会看到「数一遍」。
   @State private tabBadgeHold: number = -1;
+  private lastSavedTabCount: number = -1;
+  private savedTabCountContext: common.Context | undefined = undefined;
 
   private holdTabBadge(): void {
     if (this.tabBadgeHold < 0) {
@@ -1897,13 +1912,20 @@ struct AuraShell {
   }
 
   private releaseTabBadge(delayMs: number = 0): void {
-    if (delayMs <= 0) {
+    const release = (): void => {
       this.tabBadgeHold = -1;
+      // 窗口结束时把真实数量同步落盘，下次冷启动首帧就能直接显示它。
+      const count: number = this.browserState.tabCount;
+      if (count > 0 && count !== this.lastSavedTabCount && this.savedTabCountContext) {
+        this.lastSavedTabCount = count;
+        ShellUiPrefs.saveLastTabCountSync(this.savedTabCountContext, count);
+      }
+    };
+    if (delayMs <= 0) {
+      release();
       return;
     }
-    setTimeout((): void => {
-      this.tabBadgeHold = -1;
-    }, delayMs);
+    setTimeout(release, delayMs);
   }
 
   // 冷启动落点：恢复是后台的，活动标签本来就是启动时那个主页，原地不动。
@@ -1974,6 +1996,10 @@ struct AuraShell {
 
   private maybeRestoreLastSession(state: BrowserStateSnapshot): void {
     if (this.lastSessionRestoreAsked || state.lastSessionRestorable !== true) {
+      // 这次不是崩溃恢复（正常启动），没有恢复窗口，徽标直接跟真实值。
+      if (state.lastSessionRestorable !== true && this.tabBadgeHold >= 0) {
+        this.releaseTabBadge();
+      }
       return;
     }
     this.lastSessionRestoreAsked = true;
@@ -1981,7 +2007,7 @@ struct AuraShell {
     this.restoreCoverPending = true;
     // 冷启动的落点固定是主页：网页就另开一个主页标签，主页则原地不动。
     this.coldStartHomePending = true;
-    // 徽标数字先停在恢复前的值，别跟着逐个加回来的标签一起涨。
+    // 首帧已经把徽标冻结在上次的标签数上；这里只作兜底（context 没拿到时）。
     this.holdTabBadge();
     // 恢复失败/迟迟没状态时别把用户后来的导航当成冷启动落点。
     setTimeout((): void => {
