@@ -3194,7 +3194,9 @@ bool IsHomePlaceholder(const sessions::SessionTab& tab) {
     return true;
   }
   if (url.SchemeIs("chrome") || url.SchemeIs("chrome-native")) {
-    const std::string host = url.host();
+    // GURL::host() is a std::string_view here; ToLowerASCII returns a
+    // std::string, the same idiom used elsewhere in this file.
+    const std::string host = base::ToLowerASCII(url.host());
     return host == "newtab" || host == "new-tab-page";
   }
   return false;
@@ -3260,8 +3262,10 @@ void RestoreLastSessionTabs(gfx::AcceleratedWidget widget,
         }
         // The tab that is already open (the shell's startup page). One session
         // entry pointing at the same URL is the duplicate of this tab.
-        content::WebContents* current = tabs->GetActiveWebContents();
-        const GURL current_url = current ? current->GetVisibleURL() : GURL();
+        GURL current_url;
+        if (content::WebContents* current = tabs->GetActiveWebContents()) {
+          current_url = current->GetVisibleURL();
+        }
         int count = 0;
         const int selected = main->selected_tab_index;
         // The tabs behind the selected one, handed to the background tab
