@@ -3659,8 +3659,9 @@ export struct MobileBrowserOverlay {
                   .width('100%')
                   .height('100%')
                   .objectFit(ImageFit.Cover)
-                  // 已休眠的标签留着上一次的缩略图，压暗表示页面已不在内存里。
-                  .opacity(tab.discarded === true ? 0.4 : 1)
+                  // 已休眠的标签留着上一次的缩略图，稍微压暗表示页面已不在内存里；
+                  // 压太狠会认不出是哪个站点（0.4 → 0.8），辨识交给上面那层遮罩。
+                  .opacity(tab.discarded === true ? 0.8 : 1)
               } else {
                 // 没抓到快照（后台标签被回收等）：别把整条 URL 糊上来，
                 // 用页面标题占位更可读。
@@ -3676,20 +3677,26 @@ export struct MobileBrowserOverlay {
               // 标题、图标、前进后退记录都还在，点开时自动重新加载。契约
               // 要求显示为加载中而不是空白，所以盖一层"已休眠"。
               if (tab.discarded === true) {
+                // 只轻轻压一层：太重会看不出后面是哪个站点（以前的 0.88 几乎全白）。
+                Column()
+                  .width('100%')
+                  .height('100%')
+                  .backgroundColor($r('app.color.surface_primary'))
+                  .opacity(0.35)
+                // 文案单独放、不再跟着遮罩一起变淡；压在自己的小底板上，洗白后依然读得清。
                 Column({ space: 2 }) {
                   Text('已休眠')
                     .fontSize(12)
                     .fontWeight(FontWeight.Medium)
-                    .fontColor($r('app.color.text_secondary'))
+                    .fontColor($r('app.color.text_primary'))
                   Text('点击重新加载')
                     .fontSize(10)
                     .fontColor($r('app.color.text_secondary'))
                 }
-                .width('100%')
-                .height('100%')
-                .justifyContent(FlexAlign.Center)
+                .padding({ left: 12, right: 12, top: 6, bottom: 6 })
                 .backgroundColor($r('app.color.surface_primary'))
-                .opacity(0.88)
+                .borderRadius(12)
+                .opacity(0.92)
               }
             }
             .width('100%')
@@ -3751,8 +3758,8 @@ export struct MobileBrowserOverlay {
             .width('100%')
             .height('100%')
             .objectFit(ImageFit.Cover)
-            // 已休眠的标签留着上一次的缩略图，压暗表示页面已不在内存里。
-            .opacity(tab.discarded === true ? 0.4 : 1)
+            // 已休眠的标签留着上一次的缩略图，稍微压暗表示页面已不在内存里（0.4 → 0.8）。
+            .opacity(tab.discarded === true ? 0.8 : 1)
             .draggable(false)
         } else {
           Text(tab.title.length > 0 ? tab.title.substring(0, 1).toUpperCase() : '?')
