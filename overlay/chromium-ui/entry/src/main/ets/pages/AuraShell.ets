@@ -112,6 +112,11 @@ const CONTROLS_RATIO_EPS: number = 0.02;
 // 完整但离键盘还差半个表情（搜狐、贴吧同一量级，约 15vp）。取 85。
 // ⚠️ 这是按实测标定的常数：各站页面自身底部留白不同，个别站点仍可能差几 vp。
 const KEYBOARD_INSET_EXTRA_VP: number = 85;
+// 前进/后退都铺同色遮盖，但分两档：落点是主页时铺较长的一层（引擎先画原生
+// 前进/后退的同色遮盖只在「落点是主页」时铺：那一次引擎会先画原生 NTP 磁贴，
+// 而壳层主页层要等 url 变成 newtab 才挂。网页↔网页交给引擎硬切——换页空档
+// 由引擎侧 gutter 色兜底，深色下与页面底色一致，观感等价硬切（22.18/22.19）。
+const HISTORY_NAV_COVER_HOME_ONLY: boolean = true;
 
 // 引擎原生新标签页的几种 URL 形态。引擎自己 newTab 用的是 chrome://newtab/
 // （aura_shell_runtime_bridge.cc 里 NavigateOnUiThread(GURL("chrome://newtab/"))），
@@ -152,6 +157,16 @@ const EMPTY_BROWSER_STATE: BrowserStateSnapshot = {
 struct AuraShell {
   @StorageLink('auraRoutingRevision') @Watch('onRoutingRevisionForThemeReload') routingRevision: number = 0;
   @StorageLink('auraThemeReloadPending') themeReloadPending: boolean = false;
+  // 强制深色 pref 由 setPref 下发，PrefWatcher 即时重绘已打开的标签页。
+  // revision 用于在配色不变、仅覆盖态变化时也触发一次同步。
+  @StorageLink('auraColorScheme') @Watch('onForceDarkSyncStateChanged') colorScheme: string = 'light';
+  @StorageLink('auraForceDarkOverride') @Watch('onForceDarkSyncStateChanged') forceDarkOverride: string = 'follow';
+  @StorageLink('auraForceDarkRevision') @Watch('onForceDarkSyncStateChanged') forceDarkRevision: number = 0;
+  // 命令通道刚接上时首条 setPref 可能丢失，用 prefsChanged 回执确认生效，
+  // 未收到就按当前状态延时补发。
+  private forceDarkStartupSynced: boolean = false;
+  private forceDarkStartupRetryTimers: number[] = [];
+  private lastForceDarkPrefSent: boolean | undefined = undefined;
   @StorageLink('auraStartupConfig') startupConfigText: string = '';
   @StorageLink('auraStartUrl') startUrl: string = CHROMIUM_HOME_URL;
   @StorageLink('auraAppVisible') @Watch('onAppVisibleChanged') appVisible: boolean = true;
@@ -168,28 +183,31 @@ struct AuraShell {
   // “滚动时隐藏底部栏”（dock）：默认开（两栏跟手同收）；关掉后 dock 常驻，
   // 页面底部为它让出高度（见 applyDockViewportInset）。
   @StorageLink('auraHideDockOnScroll') @Watch('onHideDockPrefChanged') hideDockOnScroll: boolean = true;
-  // 1.0.91 主页风格与 Chrome 风格 dock 位置；变化时重发浏览器控件 inset。
+  // 主页风格与 Chrome 风格 dock 位置；变化时重发浏览器控件 inset。
   @StorageLink('auraHomeStyle') @Watch('onHomeStyleChanged') homeStyle: string = 'minimal';
   @StorageLink('auraDockPosition') @Watch('onDockPositionChanged') dockPosition: string = 'bottom';
   // 网页外链是否交给本机应用打开（知乎/B站等 scheme）。默认开；关掉后
   // externalUrlRequested 一律走 fallbackUrl，留在浏览器里。
   @StorageLink('auraExternalAppLinks') externalAppLinks: boolean = true;
-  // 扩展 popup 让位：主页（新标签页）上点扩展时由 ExtensionPanel 置值，
-  // 让 HomeSurface 暂时让位给原生 popup；返回键、离开主页、或收到引擎的
-  // extensionPopupClosed 事件（popup widget 销毁）时清零恢复。native 侧
-  // ExtensionPopupCloseWatcher 监听 popup widget 销毁并派发该事件，所以
-  // 关闭后主页立即回来（1.0.175）——这条才是日常路径，popup 想开多久开多久。
-  // 定时器不是「自动关闭」而是最后防线：只在上面几条都没能触发的极端情况
-  // （比如 popup widget 泄漏、事件丢失）下把主页层放回来，否则 HomeSurface
-  // 会永久让位、主页磁贴再也出不来。10 分钟远超任何正常驻留时长，日常不会
-  // 碰到（1.0.175 定 8 秒时误按「页面很快就该 done」来设，实际是 popup 的
-  // 存活时长，于是开着看内容的 popup 到点就被主页盖住，1.0.208 修正）。
   @StorageLink('auraPopupHomeHold') @Watch('onPopupHomeHoldChanged') popupHomeHold: number = 0;
+  // 「点扩展 → 跳转」期间的全屏同色遮盖。点击瞬间铺上，盖住 onClose 回主页
+  // 那一帧和扩展页首帧前的空白；popup 上屏或扩展页加载完时撤掉。
+  // 只由 ExtensionPanel.runExtension() 置位，其它任何路径都不会触发。
+  @StorageLink('auraExtensionJumpCover') @Watch('onExtensionJumpCoverChanged')
+  extensionJumpCover: number = 0;
+  @StorageLink('auraExtensionJumpPopup') extensionJumpPopup: boolean = false;
+  private extensionJumpTimer: number = -1;
   private popupHoldTimer: number = -1;
 
   private onPopupHomeHoldChanged(): void {
     hilog.info(0x0000, 'ExtPanel', 'popupHomeHold -> %{public}d', this.popupHomeHold);
+    hilog.info(0x0000, 'NtpCover', 'popupHomeHold=%{public}d homeVisible=%{public}s',
+      this.popupHomeHold, String(this.homeSurfaceVisible()));
     if (this.popupHomeHold > 0) {
+      // 让位时刻 = 转场结束、popup 已上屏：撤掉跳转遮盖，弹窗即可见。
+      if (this.extensionJumpCover > 0) {
+        AppStorage.setOrCreate('auraExtensionJumpCover', 0);
+      }
       if (this.popupHoldTimer !== -1) {
         clearTimeout(this.popupHoldTimer);
       }
@@ -206,11 +224,30 @@ struct AuraShell {
       this.popupHoldTimer = -1;
     }
   }
+
+  // 跳转遮盖的兜底。真正的撤罩由 popup 让位事件（上）或扩展页加载完成
+  // （onBrowserState）提前触发；这里只防事件丢失把遮盖卡死。
+  private onExtensionJumpCoverChanged(): void {
+    if (this.extensionJumpTimer !== -1) {
+      clearTimeout(this.extensionJumpTimer);
+      this.extensionJumpTimer = -1;
+    }
+    if (this.extensionJumpCover <= 0) {
+      return;
+    }
+    // 无 popup（扩展页跳转）现在点击当帧就收面板页，转场 ~220ms 内设置页
+    // 已 commit（实测 154ms），兜底留 450ms 足够；有 popup 仍等 300ms 让位。
+    const fallback: number = this.extensionJumpPopup ? 360 : 450;
+    this.extensionJumpTimer = setTimeout((): void => {
+      this.extensionJumpTimer = -1;
+      AppStorage.setOrCreate('auraExtensionJumpCover', 0);
+    }, fallback);
+  }
   private statusBarHiddenByScroll: boolean = false;
   // 网页自己进了全屏（video / requestFullscreen）。引擎把页面铺满自己的区域，
   // 外围的状态栏与条带要让开：隐藏系统栏 + 控件高度清零（见 setPageFullscreen）。
   private pageFullscreen: boolean = false;
-  // 1.0.103：顶栏是否已「完全收起」（贴状态栏底模式的静息态）。视口底部内距按它
+  // 顶栏是否已「完全收起」（贴状态栏底模式的静息态）。视口底部内距按它
   // 追加 topSafe 补偿——否则滚到页尾最后 ~topSafe 够不到（见 applyDockViewportInset
   // 与 computeTopBarHiddenForInset）。
   private topBarHiddenForInset: boolean = false;
@@ -246,38 +283,45 @@ struct AuraShell {
   private homeHoldExtensions: number = 0;
   // 「秒开页」的快速撤防确认（见 onBrowserState 的 homeHold 分支）。
   private homeHoldQuickTimer: number = -1;
-  // 1.0.68：「主页键」立即铺主页层（1.0.68）：按下后引擎要过一两帧才 commit URL，这
-  // 一两帧里引擎已清成白底 → "回主页闪一下"（真机反馈）。按下即挂 HomeSurface
-  // 盖住，URL 落成 chrome://newtab 后（或 1.2s 兜底）撤防。
   @State private homeReturnCover: boolean = false;
   // 「回主页又弹回原网页」的自愈重试：兜底撤防时若引擎还没把 tab 带回新标签
   // 页，重发一次 home。只重试一次，防引擎真不可用时永久捂住主页层。
   private homeRetryDone: boolean = false;
   private homeReturnTimer: number = -1;
-  // 1.0.120：导航预热层。跳去某个真网址时（冷启动的「网址主页」/ 主页键的
-  // 自定义主页），引擎会把画面清掉、而新页要一两帧才画出来，中间露的就是引擎
-  // 底板（#3A3A3A，浅色下观感即「闪黑」——真机反馈）。这里铺一块与外壳同色
-  // 的底顶住，等目标页**首帧真的提交**再淡出。
-  // 1.0.121 修正：1.0.120 在「url 一变」就撤防，撤在了首帧之前，等于没盖住；
-  // 现在改用「见过 loading 且已结束」判据（与 homeHold 同一套），并对已缓存
-  // 的瞬时提交补一段首帧宽限。
   @State private navCover: boolean = false;
   private navCoverTimer: number = -1;
   // 起防那一刻的 url：只有 url 离开了它，才算新页面已切换过来（主页键从某个
   // 网页跳自定义主页时，起防瞬间 url 本来就不是 newtab，必须靠这个判据）。
   private navCoverFromUrl: string = '';
+  private navCoverFromTabIndex: number = -1;
   // 要去的那个网址：url 直接等于它也算到了（原地按主页键重载时 url 不变，
   // 只靠「离开 fromUrl」会一直挂到兜底，白盖 1.6s）。
   private navCoverTargetUrl: string = '';
-  // 1.0.121：navCover 期间是否见过 loading（= 目标页确实在加载，等它结束才
+  // navCover 期间是否见过 loading（= 目标页确实在加载，等它结束才
   // 算画出来）。与 homeHoldSawLoading 同一套判据。
   private navCoverSawLoading: boolean = false;
-  // 1.0.121：首帧宽限定器——url 已切到目标却没报过 loading 时，等一小会儿
+  // 首帧宽限定器——url 已切到目标却没报过 loading 时，等一小会儿
   // 让渲染器上帧再撤防（见 onBrowserState 的 navCover 分支）。
   private navCoverGraceTimer: number = -1;
   // 兜底续命次数（仍在加载时不撤防，见 armNavCover 注释）。
   private navCoverExtensions: number = 0;
-  // 1.0.124：主页键（自定义网址主页）导航落地后主动收一次输入法。
+  // 历史导航的遮盖只顶住主页层撤掉到引擎旧帧接管这一小段。
+  // 不按 loading 续命：长连接页面会持续报 loading。
+  private navCoverHistoryNav: boolean = false;
+  private navCoverQuick: boolean = false;
+  // 遮盖淡出时长：历史导航用短淡出，普通导航用较长值。
+  private navCoverFadeMs: number = 200;
+  // 统一的「离开主页 / 切到未加载标签」过渡态：命令侧判定入口、
+  // 状态回包侧判定落地，过渡期铺与外壳同色的底。
+  // 与 navCover 互斥，避免双重定时。
+  @State private homeTransition: boolean = false;
+  private homeTransitionTimer: number = -1;
+  private homeTransitionGraceTimer: number = -1;
+  private homeTransitionFromUrl: string = '';
+  private homeTransitionFromTabIndex: number = -1;
+  // 切到需重新加载的标签时，撤防要等引擎报加载结束；瞬时切换不等。
+  private homeTransitionWaitsLoading: boolean = false;
+  // 主页键（自定义网址主页）导航落地后主动收一次输入法。
   // 很多站点的搜索框带 autofocus（cn.bing.com 的 sb_form_q 就是
   // `type="search" ... autofocus`），页面一提交就自己抢焦点、把键盘顶起来
   // —— 用户只是按了个主页键，却被塞了一个键盘。这是网页自身行为，外壳挡
@@ -286,7 +330,7 @@ struct AuraShell {
   // 一套定时器，免得两处判据漂移。
   private navCoverHideIme: boolean = false;
   private imeHideTimers: number[] = [];
-  // 1.0.108：回主页后补发「控件全展开」的延时定时器（见 restoreTopControlsForHome）。
+  // 回主页后补发「控件全展开」的延时定时器（见 restoreTopControlsForHome）。
   private homeControlsTimer: number = -1;
   // 引擎原生新标签页落地的**标题**（中文包是「新建标签页」）。导航失败时引擎
   // 画面上停着它、而 state.url 报的是失败的待定地址，只能靠标题认人
@@ -294,6 +338,11 @@ struct AuraShell {
   private newTabTitleSeen: string = '';
   @StorageLink('auraBrowserCommandText') browserCommandText: string = '';
   @StorageLink('auraBrowserCommandRevision') browserCommandRevision: number = 0;
+  // 独立通道：配色命令不与刷新系统状态的 browserCommand 通道共用，避免紧邻下发
+  // 互相覆盖。本组件是 @Component（V1），持有 @StorageLink 后经 @Param 传给
+  // @ComponentV2 的 WebWindow。
+  @StorageLink('auraColorSchemeCommandText') colorSchemeCmdText: string = '';
+  @StorageLink('auraColorSchemeCommandRevision') colorSchemeCmdRev: number = 0;
   @State private auxiliaryWindows: AuxiliaryWindowView[] = [];
   @State private screenSizeVp: ScreenSizeVp = { width: 0, height: 0 };
   @State private activeAuxiliaryWidget: number = 0;
@@ -309,6 +358,12 @@ struct AuraShell {
     this.startKnockShare();
     this.useSystemDownloadDirectory();
     this.readCrashReport();
+    // @StorageLink 初值不触发 @Watch：冷启动必须补发一次强制深色 pref，
+    // 否则首个页面会一直用引擎默认值（浅色）直到用户手动切一次主题。
+    // 这一条常因命令通道尚未接上被引擎吞掉，所以再挂一轮带回执的延时补发。
+    // @StorageLink 初值不触发 @Watch：冷启动手动补一次（内部会武装带回执的
+    // 延时补发），否则首个页面会一直用引擎落盘的旧配色直到手动切一次主题。
+    this.onForceDarkSyncStateChanged();
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
     if (context) {
       // 同步读：首帧就把徽标设成上次退出时的标签数，恢复会话期间不再跳动。
@@ -334,22 +389,22 @@ struct AuraShell {
       ShellUiPrefs.loadDockPosition(context).then((value: string): void => {
         AppStorage.setOrCreate('auraDockPosition', value);
       });
-      // 1.0.111「网址主页」：自定义主页网址（空 = 内置新标签页）。
+      // 「网址主页」：自定义主页网址（空 = 内置新标签页）。
       ShellUiPrefs.loadHomeUrl(context).then((value: string): void => {
         AppStorage.setOrCreate('auraHomeUrl', value);
       });
-      // 1.0.119「启动页」：冷启动默认打开网址主页还是内置启动页。
+      // 「启动页」：冷启动默认打开网址主页还是内置启动页。
       ShellUiPrefs.loadStartupPage(context).then((value: string): void => {
         AppStorage.setOrCreate('auraStartupPage', value);
       });
-      // 1.0.120「自定义网址」：多组网址列表（设置面板显示条数/勾选项用）。
+      // 「自定义网址」：多组网址列表（设置面板显示条数/勾选项用）。
       ShellUiPrefs.loadHomeUrls(context).then((list: string[]): void => {
         AppStorage.setOrCreate('auraHomeUrls', ShellUiPrefs.joinUrlList(list));
         if (AppStorage.get('auraHomeUrl') === '' && list.length > 0) {
           AppStorage.setOrCreate('auraHomeUrl', list[0]);
         }
       });
-      // 1.0.190「桌面版网站」站点名单与全局 UA 默认：启动期灌入 AppStorage，
+      // 「桌面版网站」站点名单与全局 UA 默认：启动期灌入 AppStorage，
       // 供 WebWindow 在导航前推导桌面 UA、设置面板展示/管理。
       ShellUiPrefs.loadDesktopSites(context).then((list: string[]): void => {
         AppStorage.setOrCreate('auraDesktopSites', ShellUiPrefs.joinUrlList(list));
@@ -363,26 +418,150 @@ struct AuraShell {
         AppStorage.setOrCreate('auraUaDefault', value);
       });
     }
-    // 1.0.121：冷启动预热（见 navCover 注释）。
+    // 冷启动预热（见 navCover 注释）。
     this.armNavCover(this.startUrl ?? '');
   }
 
-  // 1.0.121：要跳去某个真网址（冷启动的网址主页 / 主页键的自定义主页）→ 起防，
+  // 要跳去某个真网址（冷启动的网址主页 / 主页键的自定义主页）→ 起防，
   // 铺一层同色底顶住，等目标页首帧提交再淡出。
-  private armNavCover(target: string): void {
+  private armNavCover(target: string, quick: boolean = false): void {
     if (target.length === 0 || isNewTabUrl(target)) {
       this.navCover = false;
+      this.navCoverQuick = false;
       return;
     }
     this.navCover = true;
     this.navCoverSawLoading = false;
     this.navCoverExtensions = 0;
+    this.navCoverHistoryNav = false;
+    this.navCoverQuick = quick;
+    this.navCoverFadeMs = quick ? 100 : 200;
     this.navCoverHideIme = false;
     // 记下起防时的 url：撤防判据是「url 离开了它」，而不是「url 不是 newtab」
     // —— 从网页按主页键时，起防那一刻 url 本来就不是 newtab，用后者会立刻撤防。
     this.navCoverFromUrl = this.browserState.url ?? '';
     this.navCoverTargetUrl = target;
-    this.armNavCoverTimer(1600);
+    this.navCoverFromTabIndex = this.browserState.activeTabIndex ?? -1;
+    this.armNavCoverTimer(quick ? 500 : 1600);
+  }
+
+  // 前进/后退的遮盖只顶「落点是主页」那一次：引擎会先画自己的原生 NTP
+  //（满屏磁贴），而壳层主页层要等 url 变成 newtab 才挂，中间会露磁贴。
+  // 网页 ↔ 网页不需要盖：白闪已由引擎侧 gutter 色根治（22.18）。
+  // 遮盖必须短：不按 loading 续命，固定硬上限 + 短淡出。
+  private armNavCoverForHistoryNav(targetUrl: string): void {
+    if (!HISTORY_NAV_COVER_HOME_ONLY || !isNewTabUrl(targetUrl)) {
+      return;
+    }
+    this.navCover = true;
+    this.navCoverSawLoading = false;
+    this.navCoverExtensions = 0;
+    this.navCoverHistoryNav = true;
+    this.navCoverQuick = false;
+    this.navCoverFadeMs = 60;
+    this.navCoverHideIme = false;
+    this.navCoverFromUrl = this.browserState.url ?? '';
+    this.navCoverTargetUrl = '';
+    this.navCoverFromTabIndex = this.browserState.activeTabIndex ?? -1;
+    this.armNavCoverTimer(250);
+  }
+
+  // 过渡态：铺同色底盖住 commit 到首帧的空窗。已有显式遮盖时不重复起。
+  // 不按 loading 续命，固定硬上限，落地后由首帧宽限提前收口。
+  private beginHomeTransition(waitsLoading: boolean = false): void {
+    if (!this.isMobilePhoneUi() || this.navCover || this.homeTransition) {
+      return;
+    }
+    this.homeTransition = true;
+    this.homeTransitionWaitsLoading = waitsLoading;
+    this.homeTransitionFromUrl = this.browserState.url ?? '';
+    this.homeTransitionFromTabIndex = this.browserState.activeTabIndex ?? -1;
+    this.navCoverFadeMs = 100;
+    hilog.info(0x0000, 'NtpCover', 'transition begin waits=%{public}s from=%{public}s',
+      String(waitsLoading), this.homeTransitionFromUrl);
+    if (this.homeTransitionGraceTimer >= 0) {
+      clearTimeout(this.homeTransitionGraceTimer);
+      this.homeTransitionGraceTimer = -1;
+    }
+    if (this.homeTransitionTimer >= 0) {
+      clearTimeout(this.homeTransitionTimer);
+    }
+    this.homeTransitionTimer = setTimeout((): void => {
+      this.homeTransitionTimer = -1;
+      this.releaseHomeTransition();
+    }, waitsLoading ? 300 : 250);
+  }
+
+  // 落地后不立刻撤：loading=false 只代表提交完成，渲染器未必已上帧，此时撤防
+  // 露出的正是引擎底板。补一小段首帧宽限，复用历史导航那套已验证的判据。
+  private scheduleHomeTransitionRelease(): void {
+    if (!this.homeTransition || this.homeTransitionGraceTimer >= 0) {
+      return;
+    }
+    this.homeTransitionGraceTimer = setTimeout((): void => {
+      this.homeTransitionGraceTimer = -1;
+      this.releaseHomeTransition();
+    }, 120);
+  }
+
+  private releaseHomeTransition(): void {
+    hilog.info(0x0000, 'NtpCover', 'transition release waits=%{public}s',
+      String(this.homeTransitionWaitsLoading));
+    this.homeTransition = false;
+    this.homeTransitionWaitsLoading = false;
+    if (this.homeTransitionTimer >= 0) {
+      clearTimeout(this.homeTransitionTimer);
+      this.homeTransitionTimer = -1;
+    }
+    if (this.homeTransitionGraceTimer >= 0) {
+      clearTimeout(this.homeTransitionGraceTimer);
+      this.homeTransitionGraceTimer = -1;
+    }
+  }
+
+  // 只在两类命令下起过渡态：当前在主页且要离开主页、或切到已休眠标签。
+  // 普通标签切换是瞬时切帧，不铺底。
+  // home 不在此列：引擎对已在 newtab 的标签是空操作，url 不变会让
+  // leftOrigin 判据永不命中；回主页由 homeReturnCover 兜底，
+  // 自定义网址主页会转成 navigate 并走 armNavCover。
+  private maybeBeginHomeTransition(command: BrowserCommandPayload): void {
+    if (this.homeHold || this.homeReturnCover) {
+      return;
+    }
+    const name: string = command.command;
+    if (name !== 'navigate' && name !== 'activateTab' && name !== 'back' &&
+      name !== 'forward') {
+      return;
+    }
+    if (name === 'activateTab') {
+      const tabs: BrowserTabState[] = this.browserState.tabs ?? [];
+      const requestedIndex: number = command.index ?? -1;
+      const requestedId: string = String(command.id ?? '');
+      let hit: boolean = false;
+      let discarded: boolean = false;
+      tabs.forEach((tab: BrowserTabState): void => {
+        const tabId: string = String(tab.id ?? '');
+        if ((requestedId.length > 0 && tabId === requestedId) ||
+          (requestedIndex >= 0 && tab.index === requestedIndex)) {
+          hit = true;
+          discarded = tab.discarded === true;
+        }
+      });
+      const fromHome: boolean = this.isNewTabPage();
+      // 快照没找到目标标签时无法判断是否要重载，按需要遮盖处理。
+      const needCover: boolean = discarded || fromHome || !hit;
+      if (needCover) {
+        this.beginHomeTransition(discarded);
+      }
+      hilog.info(0x0000, 'NtpCover',
+        'activateTab id=%{public}s idx=%{public}d hit=%{public}s discarded=%{public}s fromHome=%{public}s tabs=%{public}d from=%{public}s',
+        requestedId, requestedIndex, String(hit), String(discarded), String(fromHome),
+        tabs.length, this.browserState.url ?? '');
+      return;
+    }
+    if (this.isNewTabPage()) {
+      this.beginHomeTransition();
+    }
   }
 
   private armNavCoverTimer(ms: number): void {
@@ -392,6 +571,11 @@ struct AuraShell {
     this.navCoverTimer = setTimeout((): void => {
       this.navCoverTimer = -1;
       if (!this.navCover) {
+        return;
+      }
+      // 历史导航到期直接撤防，不按 loading 续命。
+      if (this.navCoverHistoryNav || this.navCoverQuick) {
+        this.releaseNavCover();
         return;
       }
       // 仍在加载就续命：github 这类连不上的站点要 20s+ 才 commit，固定撤防会把
@@ -411,6 +595,8 @@ struct AuraShell {
     }
     this.navCover = false;
     this.navCoverSawLoading = false;
+    this.navCoverHistoryNav = false;
+    this.navCoverQuick = false;
     if (this.navCoverTimer >= 0) {
       clearTimeout(this.navCoverTimer);
       this.navCoverTimer = -1;
@@ -419,20 +605,13 @@ struct AuraShell {
       clearTimeout(this.navCoverGraceTimer);
       this.navCoverGraceTimer = -1;
     }
-    // 1.0.124：主页键来的这一趟，落地即收键盘（见 navCoverHideIme 注释）。
+    // 主页键导航落地即收键盘（见 navCoverHideIme 注释）。
     if (this.navCoverHideIme) {
       this.navCoverHideIme = false;
       this.hideImeAfterHomeNav();
     }
   }
 
-  // 1.0.124：收起输入法。主页键跳去自定义主页时，目标页的搜索框可能带
-  // autofocus（cn.bing.com 就是），页面一落地就把键盘顶起来。这里在落地后
-  // 连收几次，把"页面自己抢焦点"抬起的键盘按回去。
-  // 分几拍是必要的：autofocus 的触发点在不同站点上落得或早或晚（有的在
-  // 首帧前、有的等脚本跑完），单次收不住。
-  // 硬边界：一旦用户自己进了地址栏编辑态（主动要输入），立刻停手 —— 不能
-  // 跟用户抢键盘。
   private hideImeAfterHomeNav(): void {
     [0, 180, 420].forEach((delay: number): void => {
       this.imeHideTimers.push(setTimeout((): void => {
@@ -453,18 +632,19 @@ struct AuraShell {
     this.imeHideTimers = [];
   }
 
-  // 首帧宽限：判定「已经到了」之后不立刻撤防，再捂一小会儿让渲染器把真实首帧
-  // 画出来。撤在首帧之前露出的就是引擎底板（#3A3A3A）= 用户看到的「闪黑」。
-  // 幂等：已在宽限中就不重复起；期间 loading 若又起来，撤防会走上面的
-  // sawLoading 分支重新计时。
+  // 落地后不立刻撤防，再留一小段首帧宽限，避免撤在首帧之前露出引擎底板。
+  // 幂等；历史导航用短宽限，不按 loading 续期。
   private armNavCoverGrace(): void {
     if (this.navCoverGraceTimer >= 0 || !this.navCover) {
       return;
     }
+    // 历史导航要把主页层挂载算进去：引擎先把 url 切到 newtab，
+    // 壳层下一拍才挂 HomeSurface；普通导航等首帧画稳再撤。
+    const wait: number = this.navCoverHistoryNav ? 80 : (this.navCoverQuick ? 120 : 260);
     this.navCoverGraceTimer = setTimeout((): void => {
       this.navCoverGraceTimer = -1;
       this.releaseNavCover();
-    }, 260);
+    }, wait);
   }
 
   private onControlsRatioMoved(): void {
@@ -490,6 +670,58 @@ struct AuraShell {
     this.executeBrowserCommand({ command: 'reload' });
   }
 
+  // 把外观主题同步到 Blink 的强制深色 pref。只靠 prefers-color-scheme 无法让
+  // 百度、必应这类不实现深色媒体查询的站点变暗；这个开关由引擎的 PrefWatcher
+  // 立即应用到所有已打开的标签页。设置里的手动覆盖优先于自动值。
+  private onForceDarkSyncStateChanged(): void {
+    const forced: boolean = this.forceDarkOverride === 'on' ? true
+      : this.forceDarkOverride === 'off' ? false
+        : this.colorScheme === 'dark';
+    const changed: boolean = this.lastForceDarkPrefSent !== forced;
+    this.sendForceDarkPref();
+    if (changed) {
+      this.rearmForceDarkStartupSync();
+    }
+  }
+
+  // 按当前覆盖态与主题现算并发一次。补发也走这里，但不再触发重挂，
+  // 否则定时器回调会递归地反复武装自己。
+  private sendForceDarkPref(forceSend: boolean = false): void {
+    const forced: boolean = this.forceDarkOverride === 'on' ? true
+      : this.forceDarkOverride === 'off' ? false
+        : this.colorScheme === 'dark';
+    if (!forceSend && this.lastForceDarkPrefSent === forced) {
+      return;
+    }
+    this.lastForceDarkPrefSent = forced;
+    this.executeBrowserCommand({
+      command: 'setPref',
+      key: 'forceDarkWebContents',
+      value: forced
+    });
+  }
+
+  // 命令通道尚未接上时首条会被吞掉，按 600/1200/2400ms 补发三轮；
+  // 每次现算，收到引擎回执即停。
+  private rearmForceDarkStartupSync(): void {
+    this.clearForceDarkStartupRetryTimers();
+    this.forceDarkStartupSynced = false;
+    [600, 1200, 2400].forEach((delay: number): void => {
+      const timer: number = setTimeout((): void => {
+        if (this.forceDarkStartupSynced) {
+          return;
+        }
+        this.sendForceDarkPref(true);
+      }, delay);
+      this.forceDarkStartupRetryTimers.push(timer);
+    });
+  }
+
+  private clearForceDarkStartupRetryTimers(): void {
+    this.forceDarkStartupRetryTimers.forEach((timer: number): void => clearTimeout(timer));
+    this.forceDarkStartupRetryTimers = [];
+  }
+
   // 主页风格变化：Chrome 风格无独立顶栏、dock 常驻，需重发浏览器控件 inset。
   private onHomeStyleChanged(): void {
     this.sendBrowserControls();
@@ -509,12 +741,6 @@ struct AuraShell {
     } else {
       this.updateStatusBarForScroll(this.scrolledRatio);
     }
-    // 1.0.104（用户反馈「这个开关有时候不起作用」）：该开关同时决定
-    // sendBrowserControls 下发的几何（minTop 分流：顶置/底置的收起终点是
-    // 物理顶还是状态栏底），原先只在「滚动隐藏地址栏」变化时重发 —— 单独拨
-    // 这个开关时引擎几何要等下一次别的重发（换风格/换 dock 位置/重启）才跟上，
-    // 表现为时灵时不灵、甚至在切 dock 位置时突然生效、垫底整条消失。改为一拨
-    // 即重发。
     this.sendBrowserControls();
     // 视口底部内距跟着重算（底置 dock 的底距、以及页尾死角都与收起终点相关，
     // 直接重算重发，不走带滞回的 syncDockInsetForControlsMove）。
@@ -549,8 +775,6 @@ struct AuraShell {
   // 切换、启动后的兜底重发共用这一份。
   private sendBrowserControls(): void {
     if (this.pageFullscreen) {
-      // 网页全屏：控件区整体让位 —— top/minTop/bottom 全 0 且直接切 hidden，
-      // 页面铺满整屏（此前不发这条，状态栏那一条始终占着，视频只能缩着放）。
       this.executeBrowserCommand({
         command: 'setBrowserControls',
         top: 0,
@@ -566,28 +790,14 @@ struct AuraShell {
     }
     const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
     if (this.homeStyle === 'chrome') {
-      // 1.0.99：顶置回传统通栏几何（用户三图定案，看得是状态栏/网页/地址栏相对
-      // 位置）：不滚动=状态栏→通宽地址栏→网页（网页从条带下缘开始）；滚动=地址栏
-      // 整条消失、网页顶到状态栏。即简约 TopAddressBar 同款引擎几何——
-      //  · top 预留「48+topSafe」，网页顶边从条带下缘开始；
-      //  · 开「滚动隐藏地址栏」时 minTop=0，收起后网页同步顶到状态栏，条带整条
-      //    离屏无残留（引擎原产 controlsRatio 驱动，跟手）；
-      //  · 1.0.98 的 top=0「纯外壳悬浮」浮胶囊形态被真机反馈否决（「怎么把悬浮
-      //    胶囊地址栏还给我改了」），回退；浮胶囊只留底置（1.0.93 定案）。
-      // 底置保持 1.0.98：top=0/bottom=0 网页铺满物理屏幕，dock 悬浮，滚动隐藏
-      // 走触摸驱动（引擎底置无 ratio，onChromeBottomDockTouch）。
       if (this.dockPosition === 'top') {
         const top = CHROME_DOCK_EXTENT_VP + topSafe;
         const collapsing: boolean = this.hideTopBarOnScroll;
-        // 1.0.101：同简约分支——「上滑时隐藏状态栏」关着时收起下限=topSafe，
+        // 同简约分支——「上滑时隐藏状态栏」关着时收起下限=topSafe，
         // 收起后网页停在状态栏底（那一条由外壳常驻垫底显示页面底色）。
         this.executeBrowserCommand({
           command: 'setBrowserControls',
           top: top,
-          // 1.0.128：与简约分支同式还原收起下限——「上滑时隐藏状态栏」关着 → topSafe
-          // （收起后网页停在状态栏底，那一条由外壳常驻垫底显示页面底色）；开着 → 0
-          // （沉浸、网页铺满物理顶）。1.0.117 压成 0 是为绕「顶置收起时底部固定条被切」，
-          // 那条裁切真因是引擎 shrink=true 扣了视口，已由 shrink=false 修掉（视口恒满高）。
           minTop: collapsing ? (this.hideStatusBarOnScroll ? 0 : topSafe) : top,
           bottom: 0
         });
@@ -597,18 +807,6 @@ struct AuraShell {
           animate: true
         });
       } else {
-        // 1.0.102：底置也留状态栏垫底——网页顶边停在 topSafe（外壳常驻垫底的
-        // 下边）。1.0.98 的 top=0「网页铺满物理顶、状态栏区即网页」被真机反馈
-        // 否决（「Chrome风格地址栏在下的时候状态栏没有垫底层」）。
-        // 1.0.104（用户反馈「上滑时隐藏状态栏对地址栏在下有时不起作用 / 从上切到
-        // 下垫底层会消失」）：1.0.103 写成「开着该开关时 top=minTop=0」——比例被
-        // 锁死在 1，引擎根本不产 ratio：状态栏图标永远不隐（updateStatusBarForScroll
-        // 只在 ratio≤0.1 时动手）、静息态网页也永远铺到物理顶（垫底自然没了），
-        // 而偏偏这个几何又依赖别的事件重发，才有时灵时不灵。
-        // 现在改成与顶置同一套：top **恒为 topSafe**（静息=网页停在状态栏底、
-        // 垫底照旧），minTop=0 允许引擎按滚动收起——上滑收起完成时网页铺满物理
-        // 屏幕、状态栏图标一起隐（底置没有顶栏可让，所以不挂 hideTopBarOnScroll），
-        // 回到页顶再展开。关着该开关时维持常驻停靠（minTop=topSafe，比例锁 1）。
         const bottomCollapsing: boolean = this.hideStatusBarOnScroll;
         this.executeBrowserCommand({
           command: 'setBrowserControls',
@@ -624,27 +822,8 @@ struct AuraShell {
       }
       return;
     }
-    // 同样不因状态栏显隐改变 top：视口高度恒定，状态栏显隐不再牵动页面位移。
-    // 1.0.101：收起下限按「上滑时隐藏状态栏」分流（真机反馈：开「滚动隐藏地址
-    // 栏」后上滑，网页顶到物理顶、搜索栏与状态栏图标重叠）：
-    //  · 隐藏状态栏=ON → minTop=0：收起后网页贴物理顶（沉浸）——用户明确此
-    //    开关打开时才用这种方式；
-    //  · 隐藏状态栏=OFF（默认）→ minTop=topSafe：收起后网页顶边停在状态栏底
-    //    （引擎 ratio 下限=minTop/top，offset=top*ratio 在收起终点=topSafe）；
-    //    状态栏那一条由外壳常驻垫底显示页面底色（MobileBrowserOverlay.build）。
     const top = TOP_BAR_EXTENT_VP + topSafe;
     const collapsing: boolean = this.hideTopBarOnScroll;
-    // 1.0.128（引擎改 shrinkRendererSize=false 后的还原）：1.0.117 把收起下限从 topSafe
-    // 压成 0 是为了绕「底部固定条被切」——那条裁切的真因是引擎 shrink=true 时
-    // `renderer 视口高 = H − offset`（1.0.112 注释：控件高度在渲染前就从 renderer 尺寸里
-    // 扣掉、控件滑走才长回）。引擎恒不 shrink 后视口**恒为满高**，底部那一截不再被扣，
-    // 于是下限可以收回引擎本意值：
-    //  · 「上滑时隐藏状态栏」关着（默认）→ minTop=topSafe：收起终点 offset=topSafe，
-    //    网页顶边停在状态栏底（引擎 bridge 的收起判据下限本来就是 topSafe/(条高+topSafe)，
-    //    见 computeTopBarHiddenForInset 与 MBO.topBarRatioFloor），那一条由外壳常驻垫底显示页面底色；
-    //  · 开着 → minTop=0：网页铺满物理顶（沉浸），状态栏图标随之隐（updateStatusBarForScroll）。
-    // 常显档仍需 minTop=top 才锁得住（1.0.116 教训不变）。
-    // ⚠️ 本值必须与 MBO.topBarRatioFloor() 成对：改一处不同步另一处 → 条带提前隐入/垫层错位。
     const immersive: boolean = this.hideStatusBarOnScroll;
     const minTop: number = collapsing ? (immersive ? 0 : topSafe) : top;
     this.executeBrowserCommand({
@@ -674,13 +853,9 @@ struct AuraShell {
     });
     this.lastControlsRatio = 1;
     AppStorage.setOrCreate('auraBrowserControlsRatio', 1);
-    // 1.0.98：chrome 风格的 dock 位移挂触摸键，主页回归一并复位，避免上次在
+    // chrome 风格的 dock 位移挂触摸键，主页回归一并复位，避免上次在
     // 网页里上滑隐藏后回到主页 dock 不回来。
     AppStorage.setOrCreate('auraChromeBottomRatio', 1);
-    // 1.0.108（真机录屏逐帧实测）：导航途中引擎还会吐一个"半收起"的中间比例，
-    // 把上面这发 shown 盖掉——顶置条带上跳约 45vp 后卡住不回位（用户报「点主页
-    // 会往上跳」）。260ms 后补发一发，把引擎的控件 offset 真正拨回全展开；
-    // 主页无滚动、画面被 HomeSurface 盖住，重发不会产生可见的页面瞬移。
     if (this.homeControlsTimer !== -1) {
       clearTimeout(this.homeControlsTimer);
     }
@@ -712,31 +887,8 @@ struct AuraShell {
     this.applyDockViewportInset();
   }
 
-  // 底部视口内距。四条几何：
-  //  · dock 常驻（不随滚动收起）→ 留 dockCoveredHeightVp（dock 高度 + 安全区），
-  //    否则页面最后一行永远被 dock 盖住；
-  //  · dock 随滚动收起 → **0（网页铺满物理底边）**。1.0.97 改：原先这里留
-  //    auraBottomSafeVp，网页视口下方那一条露出的是引擎 surface 的不透明底板
-  //    （不是网页延伸），与页面形成一条可见色带（用户两次反馈「最下端小白条
-  //    位置有一条不透明」）。铺满后系统手势条浮在网页上——这是既定取舍：
-  //    1.0.86「必应页脚最后一行被手势条压住」的问题由用户拍板选「铺满去带」。
-  //  · Chrome 顶置 / 简约：**补常量 `topSafe`**（1.0.131；仅「地址栏可随滚动收起」
-  //    且非沉浸档）。引擎侧真机制：命令 setViewportInsets 只做
-  //    `view->SetInsets(TLBR(0,0,bottom,0))`；而 minTop（patch 里
-  //    GetTopControlsMinHeight → GetAuraShellTopControlsMinHeight）会让 renderer 视口
-  //    底部恒少一截 → 页面底部内容够不到 / 下方露引擎底板 #383838（bing 实测 139px）。
-  //    把同量补回即可。
-  //    ⚠️ 1.0.130 试过「按 (48+topSafe)×ratio 连续补」，实测失败：收起时 ratio→0 令补偿
-  //    归零（收起态退化），且每帧 resize → 跳动 + 卡顿。**补偿必须是常量，不能跟 ratio。**
-  //    1.0.112 撤销补 topSafe 的原因已失效：当时引擎 shrinkRendererSize=true，控件高度
-  //    由引擎自己从 renderer 尺寸里扣，外壳再补＝重复扣（贴底元素上移、下方露底板）。
   private lastTopPushSent: number = -1;
 
-  // 底部缺口补偿（vp）= **常量**。1.0.130 曾按「顶栏高 × ratio」连续补，实测失败：
-  // 收起时 ratio→0 → 补偿归零（收起态反而退化回裁切），且每帧 resize renderer →
-  // 页面跳动 + 滚动发卡、知乎收起态还多出一条空条（用户 1.0.130 实测四条）。
-  // 故回退为常量：仅「地址栏可随滚动收起」且非沉浸档补 topSafe。常显档实测底部本来
-  // 就正常（关闭隐藏地址栏截图底部无空条）→ 不补，免得补出空条。
   private topBarPushVp(): number {
     const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
     if (topSafe <= 0) {
@@ -745,24 +897,12 @@ struct AuraShell {
     if (this.homeStyle === 'chrome' && this.dockPosition === 'bottom') {
       return this.hideStatusBarOnScroll ? 0 : topSafe;   // 底置沿用 1.0.111 的常量
     }
-    // 1.0.133：常显档（「滚动隐藏地址栏」关着）minTop = top = 48+topSafe —— 页面顶部
-    // 常年被「状态栏 + 地址栏」占住，视口底部同样少这么多，必须补回来。
-    // 用户实测确认的两处：简约「底栏关 + 地址栏也关」要在 dock 占位之外**额外**抬一份；
-    // Chrome 顶置「地址栏关」也要抬。
-    // （1.0.131 曾把常显档判成 0：当时那张截图是「内容一直延伸到屏幕底」，看着像正常，
-    //  其实底部内容已被推出屏幕 —— 与收起档的「裁切」是同一个现象，只是没有空条。）
-    // 155 线补充：1.0.3 一度把它改成 topSafe，那是因为当时 155 上游把 renderer 改成
-    // 「收缩式」（顶栏显示就收缩），引擎的收缩与这里的 inset 双重抬高 → 底部空一大截。
-    // 现在引擎已改回「顶栏存在即不收缩」，与 154/1.0.2 行为等价，这里必须回到 minTop
-    // 全量；否则地址栏常显时页面底部少 48vp，最后一行会被 dock 盖住（1.0.3 实测）。
     if (!this.hideTopBarOnScroll) {
       return TOP_BAR_EXTENT_VP + topSafe;
     }
     return this.hideStatusBarOnScroll ? 0 : topSafe;
   }
 
-  // （1.0.131 移除 syncTopPushInset：随 ratio 每帧重发 setViewportInsets 会频繁
-  // resize renderer → 页面跳动 + 滚动发卡。补偿改回常量后无需再挂 ratio 事件。）
   private applyDockViewportInset(): void {
     if (this.pageFullscreen) {
       // 网页全屏：底部也不留任何内距，视口就是整屏。
@@ -781,19 +921,9 @@ struct AuraShell {
     let bottom: number;
     if (this.homeStyle === 'chrome') {
       if (this.dockPosition === 'bottom') {
-        // 1.0.132「智能抬高」：底置 dock **常驻**时把页面底部抬到 dock 上边，否则
-        // 最后一行 / 贴底元素被 dock 盖住。判据：「滚动隐藏地址栏」关着 = dock 常驻
-        // → 抬到 dock 上边；开着 = 可收起 → 收起后铺满物理底边（1.0.111 起的行为）。
-        // 155 线修的是**重发**：该档 computeTopBarHiddenForInset() 恒返回 false，
-        // 旧代码在开关切换时只走 syncDockInsetForControlsMove()（不翻转就不发），
-        // 于是这里的判断变了、inset 却还是旧值 —— 用户实测「地址栏在下固定时页面
-        // 没抬高」正是这个。现在 onHideTopBarPrefChanged 直接 applyDockViewportInset()。
         const dockCover: number = this.hideTopBarOnScroll ? 0 : dockCoveredHeightVp(bottomSafe);
         bottom = dockCover + (this.hideStatusBarOnScroll ? 0 : topSafe);
       } else {
-        // 1.0.130：补偿 = 引擎的「顶栏下推量」，随 ratio 连续（见 topBarPushVp）。
-        // 1.0.129 只在「收起完成」补常量 topSafe：收起态对了（用户实测「上滑完整」），
-        // 展开态没补 → 「下滑时底部固定条被裁」（1.0.129 用户实测）。
         bottom = this.topBarPushVp();
       }
     } else {
@@ -927,21 +1057,12 @@ struct AuraShell {
     AppStorage.setOrCreate('auraTouchDockRatio', ratio);
   }
 
-  // ---- Chrome dock 的滚动隐藏：触摸驱动（1.0.95 建，1.0.98 起顶/底通用）----
-  // 1.0.98：chrome 风格引擎 top=0/minTop=0（网页铺满全屏，dock 纯外壳悬浮），
-  // 引擎不再产出 controlsRatio，顶/底置都改用这里：页面区触摸位移直接驱动
-  // dock 离屏（与 onDockObserverTouch 同一观察层、条件互斥）。写
-  // auraChromeBottomRatio → MobileBrowserOverlay 的 chromeDockRatio() →
-  // GoogleDockTop/Bottom 的 translate。
   private touchChromeBottomTracking: boolean = false;
   private touchChromeBottomStartY: number = 0;
   private touchChromeBottomTravel: number = 1;
   private touchChromeBottomHidden: number = 0;
 
   private touchChromeBottomActive(): boolean {
-    // 仅底置（1.0.99 收回）：顶置的「滚动隐藏地址栏」由引擎 controlsRatio 驱动
-    // （sendBrowserControls chrome 顶置分支恢复 top 预留 + minTop=0）；底置引擎
-    // 把 top 锁死不产 ratio，仍走本触摸驱动。
     return this.isMobilePhoneUi() && this.homeStyle === 'chrome' &&
       this.dockPosition === 'bottom' && this.hideTopBarOnScroll &&
       !this.addressEditing && !this.isNewTabPage() &&
@@ -1100,7 +1221,6 @@ struct AuraShell {
       // 的重排叠在一起、途中顿一下。dock 是浮层（底部内距恒 0），只改 translate，
       // 零重排——上滑收、下滑放都是平滑的，地址栏始终不动。
       if (this.swipeDockOnlyOn()) {
-        // 已开始驱动就继续跟手（手指回退时 dock 也要跟着回），未开始才看阈值。
         if (this.swipeDockDriving || up >= SWIPE_TRIGGER_VP) {
           this.driveSwipeDock(up - SWIPE_TRIGGER_VP, hideProgress);
           return;
@@ -1179,7 +1299,6 @@ struct AuraShell {
   // it. **不再**向引擎重发 setBrowserControls：保留高度与状态栏显隐无关
   // （top/minTop 是常量，见 sendBrowserControls），而同值重发同样会让引擎
   // 把顶栏控件重置为"全展开"——页面在状态栏出现的那一帧瞬移整整一条高度
-  // （真机录屏实测 ≈91vp，即"出现状态栏的一瞬间跳一个界面"）。状态栏纯为
   // 系统栏图标显隐，不牵动任何布局。
   private updateStatusBarForScroll(ratio: number): void {
     if (!this.hideStatusBarOnScroll || !this.isMobilePhoneUi()) {
@@ -1247,14 +1366,6 @@ struct AuraShell {
     });
   }
 
-  // 【已移除 sendScrollTopExtent()：保留高度只在"滚动时隐藏地址栏"开关变化
-  //   时经 sendBrowserControls() 重发；状态栏显隐不再触发任何引擎指令
-  //   （同值重发亦会让引擎把顶栏重置为全展开 → 页面瞬移一条高度，真机实
-  //   测即"出现状态栏的一瞬间跳一个界面"）。】
-  //
-  // 原实现要点存档（如需重发通道，照此补回）：top = TOP_BAR_EXTENT_VP +
-  // auraTopSafeVp（常量，页面顶边与条带底边按同一 ratio 缩放、天然对齐；
-  // 页面能铺到屏幕顶靠的是 minTop=0，与 top 值无关；dock 不给页面留位）。
 
   // v8a diagnostic: read / clear / copy the crash file EntryAbility wrote.
   private crashReportPath(): string {
@@ -1318,6 +1429,10 @@ struct AuraShell {
 
   onPageShow(): void {
     this.startKnockShare();
+    // 不能在这里清 popup 让位态：点扩展时先设让位、再收起面板页回到本页，
+    // 最后才由引擎弹 popup；清掉会让主页层盖住 popup。只记录状态供排查。
+    hilog.info(0x0000, 'NtpCover', 'pageShow hold=%{public}d homeVisible=%{public}s',
+      this.popupHomeHold, String(this.homeSurfaceVisible()));
   }
 
   onPageHide(): void {
@@ -1335,7 +1450,21 @@ struct AuraShell {
       clearTimeout(this.navCoverGraceTimer);
       this.navCoverGraceTimer = -1;
     }
+    if (this.extensionJumpTimer >= 0) {
+      clearTimeout(this.extensionJumpTimer);
+      this.extensionJumpTimer = -1;
+    }
+    // 过渡态的两个定时器随页面销毁一起清掉，避免悬空回调改已卸载状态。
+    if (this.homeTransitionTimer >= 0) {
+      clearTimeout(this.homeTransitionTimer);
+      this.homeTransitionTimer = -1;
+    }
+    if (this.homeTransitionGraceTimer >= 0) {
+      clearTimeout(this.homeTransitionGraceTimer);
+      this.homeTransitionGraceTimer = -1;
+    }
     this.clearImeHideTimers();
+    this.clearForceDarkStartupRetryTimers();
     this.currentTabCastSession.stop().catch((error: Error): void => {
       console.error('Failed to stop current-tab cast session:', error);
     });
@@ -1399,15 +1528,27 @@ struct AuraShell {
         themeFontRevision: this.themeFontRevision,
         browserCommandText: this.browserCommandText,
         browserCommandRevision: this.browserCommandRevision,
+        colorSchemeCmdText: this.colorSchemeCmdText,
+        colorSchemeCmdRev: this.colorSchemeCmdRev,
         auxiliaryDismissWidget: this.auxiliaryDismissWidget,
         auxiliaryDismissRevision: this.auxiliaryDismissRevision,
         onBrowserState: (state: BrowserStateSnapshot): void => {
-          // 1.0.121 修正：1.0.120 在「url 一提交」就撤防，但渲染器此刻还没画出
-          // 第一帧 —— 撤防那一下露出的正是引擎底板（#3A3A3A，暗色下观感就是
-          // 闪黑）。撤防必须等页面真的画出来，沿用 homeHold 那套成熟判据：
-          // ① url 已离开起防时的那个（= 新页面已切换）；② 见过 loading 且已
-          // 结束（= 首帧已提交）。没见过 loading 的瞬时/缓存命中，补一段首帧
-          // 宽限再撤，别撤在首帧之前。
+          // 无 popup 扩展（调姬助手）由扩展自己导航到 chrome-extension:// 页。
+          // 点击当帧就收了面板页，转场期靠这层同色底护住；等它 commit 且
+          // 加载结束就撤底，只留一帧（16ms）给首帧绘制；
+          // 事件不来时由 onExtensionJumpCoverChanged 的兜底定时器收口。
+          if (this.extensionJumpCover > 0 && !this.extensionJumpPopup) {
+            const jumpUrl: string = state.url ?? '';
+            if (jumpUrl.startsWith('chrome-extension://') && !state.loading) {
+              if (this.extensionJumpTimer !== -1) {
+                clearTimeout(this.extensionJumpTimer);
+              }
+              this.extensionJumpTimer = setTimeout((): void => {
+                this.extensionJumpTimer = -1;
+                AppStorage.setOrCreate('auraExtensionJumpCover', 0);
+              }, 16);
+            }
+          }
           if (this.navCover) {
             const nowUrl: string = state.url ?? '';
             if (state.loading) {
@@ -1415,17 +1556,35 @@ struct AuraShell {
               // 待定导航期间引擎可能还报着旧 url（GetVisibleURL 的语义），若把
               // loading 记在 url 变化的分支里就永远记不到，只能等兜底定时器。
               this.navCoverSawLoading = true;
-            } else {
-              // 到了吗？两种到法：url 切走了，或原地重载直接等于目标。
-              // 注意「loading 刚结束」也算到 —— 但**不能**据此立刻撤防：
-              // loading=false 只代表提交完成，渲染器未必已上帧，此刻撤防露出的
-              // 正是引擎底板（#3A3A3A）= 用户看到的「闪黑」。所以统一走宽限：
-              // 到了之后再捂一小会儿，等真实首帧画出来。
-              const moved: boolean = nowUrl.length > 0 && nowUrl !== this.navCoverFromUrl;
-              const landed: boolean = this.navCoverTargetUrl.length > 0 && nowUrl === this.navCoverTargetUrl;
-              if (this.navCoverSawLoading || moved || landed) {
+            }
+            const moved: boolean = nowUrl.length > 0 && nowUrl !== this.navCoverFromUrl;
+            const landed: boolean = this.navCoverTargetUrl.length > 0 && nowUrl === this.navCoverTargetUrl;
+            const tabSwitched: boolean = (state.activeTabIndex ?? -1) !== this.navCoverFromTabIndex;
+            if (this.navCoverHistoryNav) {
+              // 历史导航不等 loading 结束：长连接页面会持续报 loading，
+              // 以 url 离开起防值作为落地判据，硬上限仅作兜底。
+              if (moved || landed || tabSwitched) {
                 this.armNavCoverGrace();
               }
+            } else if (this.navCoverQuick) {
+              if (moved || landed || tabSwitched || this.navCoverSawLoading) {
+                this.armNavCoverGrace();
+              }
+            } else if (!state.loading && (this.navCoverSawLoading || moved || landed)) {
+              // 普通导航维持原判据：loading 结束且确实到过，才起首帧宽限。
+              this.armNavCoverGrace();
+            }
+          }
+          // 过渡态落地判据：url 离开起防值即视为已提交，再留首帧宽限。
+          if (this.homeTransition) {
+            const transitionUrl: string = state.url ?? '';
+            const leftOrigin: boolean = transitionUrl.length > 0 &&
+              transitionUrl !== this.homeTransitionFromUrl;
+            const transitionSwitched: boolean =
+              (state.activeTabIndex ?? -1) !== this.homeTransitionFromTabIndex;
+            if ((leftOrigin || transitionSwitched) &&
+              (!this.homeTransitionWaitsLoading || !state.loading)) {
+              this.scheduleHomeTransitionRelease();
             }
           }
           const wasNewTab: boolean = this.isNewTabPage();
@@ -1480,10 +1639,6 @@ struct AuraShell {
           }
         if (this.homeHold) {
           if (this.isNewTabPage()) {
-            // 命令刚发出、导航尚未启动时的残留 newtab 状态**不能**据此撤防——
-            // 否则 url 一翻到目标网址主页层就没了，露出引擎默认新标签页
-            // （真机：失败加载时先闪 Chromium 新标签页，错误页出来才结束）。
-            // 只有见过 loading 之后再回 newtab，才算"导航已落地"。
             if (this.homeHoldSawLoading) {
               this.releaseHomeHold();
             }
@@ -1492,11 +1647,6 @@ struct AuraShell {
           } else if (this.homeHoldSawLoading) {
             this.releaseHomeHold();
           } else if (this.homeHoldQuickTimer === -1) {
-            // url 已离开主页、却一次 loading 都没见过：本地页（扩展页
-            // chrome-extension://、错误页之类）秒开，中间那帧 loading=true
-            // 根本不会出现。此前只有 8s 兜底能撤防 —— 真机表现就是
-            // 「点扩展磁贴像没反应，要再点一次」（2026-10-21 录屏）。
-            // 250ms 后再确认一次：真网址这期间必然已经 loading=true，不会误撤。
             this.homeHoldQuickTimer = setTimeout((): void => {
               this.homeHoldQuickTimer = -1;
               if (!this.homeHold || this.isNewTabPage()) {
@@ -1506,12 +1656,6 @@ struct AuraShell {
                 this.releaseHomeHold();
                 return;
               }
-              // 桌面版开着时本地页（扩展选项页等）也可能被拖到秒级才画完：
-              // 期间主页全屏捂着、地址栏虽已更新但页面纹丝不动，读起来就是
-              // 「点了没反应，要再点一次」（19:40 录屏）。本地页最多再捂
-              // 800ms 就让位 —— 一帧过渡底色，好过「没反应」。http(s) 慢站
-              // 维持原判据（等 loading 结束 / 8s 兜底续命），避免回归
-              // 「失败加载先闪 Chromium 新标签页」（见 holdHomeForPaint 注释）。
               const pendingUrl: string = this.browserState.url ?? '';
               if (pendingUrl.startsWith('chrome-extension://') ||
                 pendingUrl.startsWith('chrome://')) {
@@ -1558,13 +1702,12 @@ struct AuraShell {
           })
             .width('100%')
             .height('100%')
-            // 状态栏避让进了 HomeSurface 内部（它自己读 auraTopSafeVp 做
-            // 内边距）——这样 surface_primary 背景能铺满状态栏条带，首页
-            // 顶部与下边同色；此前外层 padding 让条带露出垫底的引擎原生
-            // 新标签页（深色下是一段灰条，用户可从截图辨认）。
-        } else if (this.isMobilePhoneUi() && this.navCover) {
-          // 1.0.121：导航预热层——盖住引擎清屏到新页首帧之间的那段底板
-          //（见 navCover 注释）。
+        }
+        if (this.isMobilePhoneUi() && this.needsHomeBackdrop() &&
+          !(this.homeSurfaceVisible() && (this.homeHold || this.homeReturnCover))) {
+          // 预热层盖住引擎清屏到新页首帧之间的底板。与主页层用独立 if，
+          // 避免起防那一帧两层皆空露出原生 NTP；但主页层被 homeHold /
+          // homeReturnCover 显式保持时不叠，否则会出现「淡出→恢复→再切页」双跳。
           this.NavCoverView()
         }
         // 触摸观察层：Transparent 全屏节点——自己收得到页面区触摸，又不阻塞
@@ -1604,36 +1747,15 @@ struct AuraShell {
                 return;
               }
               if (command.command === 'homeSurface') {
-                // 1.0.125：强行回内置主页层，**绕过** 1.0.111「网址主页」拦截。
-                // 「自定义主页布局」按钮走这条——它要在内置主页上开布局弹层，
-                // 若走 'home' 会被劫持去导航自定义网址（bing），弹层背后不是主页、
-                // 调位置条看不到效果。这里直接铺 homeReturnCover 并令引擎回到内置
-                // 新标签页，使内置主页层常驻可见（与「无网址主页」时的主页键一致）。
                 this.beginHomeReturnCover();
                 this.executeBrowserCommand({ command: 'home' });
                 return;
               }
               if (command.command === 'home') {
-                // 1.0.125：主页键**跟随「启动页」设置**（与冷启动同源），不再只看
-                // auraHomeUrl。启动页='homeUrl' 且设了网址主页 → 打开该网址；
-                // 否则（启动页='builtin'，或没设网址主页）→ 回内置主页。
-                // 这样「主页设置」里的「启动页」开关成为主页行为的唯一开关：
-                // 用户把启动页切到「内置启动页」，主页键就不再被锁死在网址上。
-                // （1.0.111 旧逻辑只看 auraHomeUrl，导致启动页切回 builtin 后
-                //  主页键仍去网址，给人"锁死"的错觉。）
                 const startupPage: string = (AppStorage.get('auraStartupPage') as string) ?? 'builtin';
                 const customHome: string = (AppStorage.get('auraHomeUrl') as string) ?? '';
                 if (startupPage === 'homeUrl' && customHome.length > 0) {
-                  // 1.0.121：主页键去的是真实网址（不是 chrome://newtab）。导航
-                  // 一发出引擎就把画面清了，而新页要一两帧才画出来 —— 中间露的
-                  // 就是引擎底板（#3A3A3A，暗色下观感即「闪黑」；真机反馈）。
-                  // 铺一层与外壳同色的 navCover 顶住，等新页首帧提交再淡出
-                  //（见 armNavCover）。不用 HomeSurface：那是内置主页界面，
-                  // 从网页点主页键时它会闪一整屏主页再跳走，比纯色底更跳。
-                  this.armNavCover(customHome);
-                  // 1.0.124：目标页可能 autofocus 抢键盘，落地后收一次
-                  //（见 navCoverHideIme 注释）。只认主页键这条路径——地址栏
-                  // 提交导航是用户自己敲的，不收。
+                  this.armNavCover(customHome, true);
                   this.navCoverHideIme = true;
                   this.executeBrowserCommand({ command: 'navigate', url: customHome });
                   return;
@@ -1642,12 +1764,6 @@ struct AuraShell {
                 //（见 homeReturnCover 注释）。
                 this.beginHomeReturnCover();
               }
-              // 1.0.142：从内置主页（引擎原生新标签页）的地址栏提交一个网址时，
-              // 导航未提交前引擎会停在原生新标签页（满屏磁贴、地址栏显示"X 正在加载"），
-              // 直到失败页提交才切走 —— 即用户报的"先闪磁贴页再出错误页"。离开主页去真
-              // 网址时铺 navCover 同色底顶住，加载中（含失败）一直盖着，目标页/错误页首帧
-              // 提交再淡出，与主页键去自定义网址同一套覆盖机制。仅在当前就在主页时补防，
-              // 普通网页间跳转不动（保留 Fix F 旧页 ghost 行为）。
               if (command.command === 'navigate') {
                 const navUrl: string = command.url ?? '';
                 if (navUrl.length > 0 && !isNewTabUrl(navUrl) && this.isNewTabPage()) {
@@ -1661,6 +1777,20 @@ struct AuraShell {
         if (this.auxiliaryWindows.length > 0) {
           this.AuxiliaryWindowLayer()
         }
+        // 点扩展后的跳转同色底：点击当帧铺上，护住 router 转场期间
+        // 露出的主页 / 当前网页 / 扩展页首帧前的空白。用外壳底色。
+        // 撤底必须淡出而不是直接移除：面板页的 pop 转场只有 ~130ms，
+        // 而设置页在 ~154ms 就绪，直接撤会让新页在旧页右滑未完成时
+        //「整块」跳出来（录屏实测：左 80% 已是设置页、右侧仍残留旧页边条）。
+        // 常驻 + opacity 过渡后，旧页滑出的同时新页渐显，衔接自然；
+        // 不显示时 opacity=0 且不接收触摸，对其余路径零影响。
+        Column()
+          .width('100%')
+          .height('100%')
+          .backgroundColor($r('app.color.browser_canvas'))
+          .opacity(this.extensionJumpCover > 0 ? 1 : 0)
+          .animation({ duration: 200, curve: Curve.Friction })
+          .hitTestBehavior(HitTestMode.None)
       }
     }
     .width('100%')
@@ -1890,16 +2020,20 @@ struct AuraShell {
     });
 
   private executeBrowserCommand(command: BrowserCommandPayload): void {
-    // 1.0.220 取证：进引擎前的最终漏斗。reload 会杀进行中的导航，命令侧
+    // 取证：进引擎前的最终漏斗。back/forward 的落点由引擎快照里的
+    // backUrl/forwardUrl 给出，只有落点是主页才铺底（见
+    // armNavCoverForHistoryNav 的注释）；网页↔网页交给引擎硬切。
+    if (command.command === 'back' && this.browserState.canGoBack) {
+      this.armNavCoverForHistoryNav(this.browserState.backUrl ?? '');
+    } else if (command.command === 'forward' && this.browserState.canGoForward) {
+      this.armNavCoverForHistoryNav(this.browserState.forwardUrl ?? '');
+    }
+    // 统一兜底：显式遮盖已起的路径内部会跳过，只补没有遮盖的路径
+    //（主要是切到已休眠标签）。
+    this.maybeBeginHomeTransition(command);
     this.commandChannel.send(command);
   }
 
-  // 上次运行没走正常退出（划掉后台/被杀）时，引擎在启动后的状态快照里把
-  // lastSessionRestorable 置 true，并持有一个一次性恢复锁；此前壳层从不消费
-  // 这个标志，于是「清除后台 → 标签页全没了」（历史记录另走 HistoryService，
-  // 所以看着正常）。这里静默把上次主窗口的标签页（含前进/后退历史）接回来：
-  // 只认第一次快照；800ms 后再补发一次——命令若在 browser/tabs 就绪前被引擎
-  // 丢掉，补发能救回来；锁已被消费时引擎直接忽略，天然幂等。
   private lastSessionRestoreAsked: boolean = false;
   // 已请求恢复会话、还在等恢复出来的标签给出真网址（用来起预热层）。
   private restoreCoverPending: boolean = false;
@@ -2126,7 +2260,7 @@ struct AuraShell {
     if (event.event === 'downloadUpdated') {
       const updated = shellEvent<DownloadUpdatedEvent>(event);
       this.downloadNotifier?.update(updated);
-      // 1.0.2：App 内下载通知条数据源（snackbar 挂在 MobileBrowserOverlay：
+      // App 内下载通知条数据源（snackbar 挂在 MobileBrowserOverlay：
       // 开始下载 → 下载完成[.crx→安装 / 其他→打开] → 失败）。系统通知栏仍由
       // DownloadNotifier 负责，这里是 App 内浮层通道。revision 保证内容变化
       // 必触发 @Watch（AppStorage 逐字节相同不算变，见 auraFindResult 先例）。
@@ -2311,7 +2445,7 @@ struct AuraShell {
       return;
     }
 
-    // 1.0.104 下拉刷新：引擎自己判定「页面已到顶 + 不是内层滚动 + overscroll-behavior
+    // 下拉刷新：引擎自己判定「页面已到顶 + 不是内层滚动 + overscroll-behavior
     // 允许」并负责 reload，外壳只负责把指示器画出来（见 engine ShellServiceTypes
     // 的 PullToRefreshEvent）。整包转存，由 MobileBrowserOverlay 渲染：
     // start→阈值 / pull→已拉距离 / release→是否真的刷新 / reset→收起。
@@ -2402,7 +2536,6 @@ struct AuraShell {
       const ctx = this.getUIContext().getHostContext() as common.Context | undefined;
       SearchEnginesPrefs.loadDefaultId(ctx).then((id: string): void => {
         let template = '';
-        // 持久化的内置默认优先（用户选过的内置引擎，重启后仍生效）。
         if (id.length > 0 && !id.startsWith('custom:')) {
           const hit = engines.find((e: SearchEngine): boolean => e.id === id);
           if (hit && hit.searchUrl && hit.searchUrl.length > 0) {
@@ -2480,7 +2613,13 @@ struct AuraShell {
     // （@Watch('onPopupHomeHoldChanged') 见 popupHomeHold 声明处）。
     if (event.event === 'extensionPopupClosed') {
       hilog.info(0x0000, 'ExtPanel', 'extensionPopupClosed received, hold -> 0');
+      hilog.info(0x0000, 'NtpCover', 'extensionPopupClosed hold -> 0');
+      // 关闭时刻留戳：让位是转场结束后才置位的（ExtensionPanel.runExtension），
+      // 置位前要比一下，避免 popup 早关后又被置位、主页层挂到 10 分钟兜底。
+      AppStorage.setOrCreate('auraPopupClosedAt', Date.now());
       AppStorage.setOrCreate('auraPopupHomeHold', 0);
+      // popup 早关时别让跳转遮盖留到兜底超时。
+      AppStorage.setOrCreate('auraExtensionJumpCover', 0);
       return;
     }
     if (event.event === 'developerMode') {
@@ -2535,6 +2674,13 @@ struct AuraShell {
       event.event === 'bookmarksChanged' || event.event === 'historyChanged' ||
       event.event === 'prefsChanged' || event.event === 'clearBrowsingDataDone' ||
       event.event === 'savedPasswordsChanged') {
+      // setPref 写入成功后引擎广播 prefsChanged{keys:[key]}：拿它当冷启动
+      // 强制深色「已生效」的回执，收到就停掉补发，避免后续重绘被打断。
+      if (event.event === 'prefsChanged' && !this.forceDarkStartupSynced &&
+        JSON.stringify(event).indexOf('forceDarkWebContents') >= 0) {
+        this.forceDarkStartupSynced = true;
+        this.clearForceDarkStartupRetryTimers();
+      }
       AppStorage.setOrCreate('auraPanelEvent',
         JSON.stringify({ kind: event.event, revision: Date.now() }));
       return;
@@ -2783,10 +2929,6 @@ struct AuraShell {
     // Pull the search engines once, so the home surface and the address bar
     // search the same way the settings page shows before it has been opened.
     this.requestSearchEngines();
-    // 真机实测（2026-10-09）：state.ready 那一瞬发出的这组命令会被引擎吞掉
-    // （命令通道尚未接上），并且不会自愈——表现为"滚动时两栏永远不收起"，
-    // 直到用户动一次设置开关（相当于重发）才恢复。这里启动一个带证据判据的
-    // 兜底重发：一旦收到 browserControlsRatio（说明配置已生效）就停。
     this.scheduleBrowserControlsRetry(1);
   }
 
@@ -2798,9 +2940,6 @@ struct AuraShell {
     });
   }
 
-  // 引擎只在内存里保存桌面站点名单，持久化在外壳。启动时补发几次：命令通道
-  // 刚接上时会吞命令（真机实测），而脚本后台新开的标签不经过外壳导航，只能
-  // 靠这里把名单送进引擎。
   private desktopSitesRetries: number = 0;
 
   private desktopSitesSynced: boolean = false;
@@ -2952,10 +3091,6 @@ struct AuraShell {
     this.auxiliaryDismissRevision += 1;
   }
 
-  // 见 homeHold 字段注释。兜底定时器遇到「仍在加载」就续命：github 这类
-  // 连不上的站点要 20s+ 才 commit，固定 8s 撤防会把引擎默认新标签页露出
-  // 好几秒（真机反馈"先闪一个 Chromium 页面再出错误页"）。续命封顶 8 次
-  // （≈56s）防引擎卡死时主页层永久盖住。
   private holdHomeForPaint(): void {
     this.homeHold = true;
     this.homeHoldSawLoading = false;
@@ -3009,9 +3144,6 @@ struct AuraShell {
       if (!this.homeReturnCover) {
         return;
       }
-      // url 还停在原网页 = 引擎的 newtab 导航没落地（用户报「按主页键回到主页
-      // 之后又被弹回之前的网页」：主页层只是被这 1.2s 假捂着，到点撤防就露出
-      // 原页面）。撤防前先重发一次 home 再捂一拍；只重试一次。
       if (!this.isNewTabPage() && !this.homeRetryDone) {
         this.homeRetryDone = true;
         this.executeBrowserCommand({ command: 'home' });
@@ -3036,30 +3168,35 @@ struct AuraShell {
     return isNewTabUrl(this.browserState.url ?? '') || this.engineHomeCovered();
   }
 
-  // 1.0.120：内置启动主页层要不要挂。在原来的 isNewTabPage() 基础上多一条
+  // 内置启动主页层要不要挂。在原来的 isNewTabPage() 基础上多一条
   // 冷启动预热判据：本次启动目标是真网址、且还没被引擎提交上来时，browserState
   // 仍是 EMPTY_BROWSER_STATE（url = chrome://newtab），照旧判定会先闪一帧内置
   // 启动页。预热期返回 false，交给 NavCoverView 那块同色底顶着。
   private homeSurfaceVisible(): boolean {
-    // 扩展 popup 让位**最先判**：原生 popup 画在窗口层，主页盖层留着就会把它
-    // 压在底下，用户看到的是「点扩展没反应」。这条必须压过 homeHold /
-    // homeReturnCover —— 那两者是导航落地期的遮盖，从扩展页 back 回浏览器
-    // 那一刻可能仍为真，顺序反了就会把 popup 盖回去（偶发「有时候弹不出来」）。
-    // 清零来源：返回键（overlay 的 handleSystemBack）、导航离开主页、引擎的
-    // extensionPopupClosed 事件；另有 10 分钟兜底。
     if (this.popupHomeHold > 0) {
       return false;
     }
     if (this.homeHold || this.homeReturnCover) {
       return true;
     }
-    if (this.navCover) {
+    if (this.navCover && !this.navCoverHistoryNav) {
       return false;
     }
     return this.isNewTabPage();
   }
 
-  // 1.0.121：导航预热层。用 browser_canvas（外壳底同色）铺满，淡出时不会
+  // 主页层缺席时是否要铺同色底。native popup 让位期间不铺，避免盖住 popup。
+  private needsHomeBackdrop(): boolean {
+    if (this.navCover || this.homeTransition) {
+      return true;
+    }
+    if (this.popupHomeHold > 0) {
+      return false;
+    }
+    return this.isNewTabPage() && !this.homeSurfaceVisible();
+  }
+
+  // 导航预热层。用 browser_canvas（外壳底同色）铺满，淡出时不会
   // 出现第二种颜色；退场动画挂在 if 分支根节点上才播得出来。
   @Builder
   private NavCoverView() {
@@ -3067,18 +3204,11 @@ struct AuraShell {
       .width('100%')
       .height('100%')
       .backgroundColor($r('app.color.browser_canvas'))
-      .transition(TransitionEffect.opacity(0).animation({ duration: 200, curve: Curve.Friction }))
+      // 历史导航用短淡出：切换不该因为过渡动画再等 200ms。值在起防时定，
+      // releaseNavCover 不清它，这样淡出这一帧读到的仍是本次起防设定的时长。
+      .transition(TransitionEffect.opacity(0).animation({ duration: this.navCoverFadeMs, curve: Curve.Friction }))
   }
 
-  // 「导航失败后露出的引擎新标签页」（用户报：github 连不上网，返回后到这个满屏
-  // 原生磁贴的页面，地址栏却还是 github.com）。成因在引擎侧：
-  // aura_shell_runtime_bridge.cc:2968 的 state.url 取的是
-  // WebContents::GetVisibleURL() —— 失败的待定导航**没提交**，于是 url 报的是那个
-  // 失败的地址，而画面还停在最后提交的那一页 = 引擎自己的新标签页。
-  // 判据（三条同时满足才认，避免误盖真的页面）：
-  //   ① 不在加载中；
-  //   ② 没有可后退的历史（失败导航不产生历史项，说明这一页就是本次会话的第一页）；
-  //   ③ URL 是 http(s)，但标题仍是新标签页的标题（或压根没标题 = 什么页面都没提交）。
   private engineHomeCovered(): boolean {
     const url = this.browserState.url ?? '';
     if (isNewTabUrl(url)) {

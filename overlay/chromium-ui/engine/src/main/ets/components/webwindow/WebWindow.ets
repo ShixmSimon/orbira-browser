@@ -57,6 +57,8 @@ export interface WebWindowOptions {
   themeFontRevision?: number;
   browserCommandText?: string;
   browserCommandRevision?: number;
+  colorSchemeCmdText?: string;
+  colorSchemeCmdRev?: number;
   auxiliaryDismissWidget?: number;
   auxiliaryDismissRevision?: number;
   onBrowserState?: (state: BrowserStateSnapshot) => void;
@@ -104,6 +106,14 @@ export struct WebWindow {
   @Param onPageLoadFinish?: (url: string) => void = undefined;
   @Param onTitleReceive?: (title: string) => void = undefined;
   @Param onError?: (error: Error) => void = undefined;
+
+  // 独立通道：系统深色 / 设置面板切外观时下发 setColorScheme 命令。与
+  // refreshSystemState 共用的 browserCommand 通道分开，避免两者紧邻下发时
+  // 后者覆盖前者、丢失配色命令（引擎只在启动时应用一次，运行时必须显式下发）。
+  // 本组件是 @ComponentV2，AppStorage 的 @StorageLink 只能由 V1 父组件持有后
+  // 经 @Param 传入，不能在这里直接声明。
+  @Param colorSchemeCmdText: string = '';
+  @Param colorSchemeCmdRev: number = 0;
 
   @Local currentUrl: string = CHROMIUM_HOME_URL;
   private lockSurfaceRotation: boolean = false;
@@ -208,6 +218,29 @@ export struct WebWindow {
   @Monitor('browserCommandRevision')
   private onBrowserCommandRevisionChange(_monitor: IMonitor): void {
     this.executePendingBrowserCommand();
+  }
+
+  @Monitor('colorSchemeCmdRev')
+  private onColorSchemeCmdChange(_monitor: IMonitor): void {
+    this.executePendingColorSchemeCommand();
+  }
+
+  // 配色命令在 Ability 启动/回前台对账时就会写入 AppStorage，那时本组件可能
+  // 还没挂载、nativeContext 尚未建立；@Monitor 只认变化，挂载时的初值不会触发。
+  // 因此缓存待执行命令，在 onLoad 建好 nativeContext 后补放一次，避免冷启动或
+  // 后台恢复时丢掉整条配色命令（引擎按值去重，重复执行无害）。
+  private pendingColorSchemeCommand: string = '';
+
+  private executePendingColorSchemeCommand(): void {
+    const text = this.colorSchemeCmdText;
+    if (text && text.trim().length > 0) {
+      this.pendingColorSchemeCommand = text;
+    }
+    if (!this.nativeContext || this.pendingColorSchemeCommand.length === 0) {
+      return;
+    }
+    this.nativeContext.ExecuteBrowserCommand(this.pendingColorSchemeCommand);
+    this.pendingColorSchemeCommand = '';
   }
 
   @Monitor('auxiliaryDismissRevision')
@@ -355,6 +388,9 @@ export struct WebWindow {
       );
       this.executePendingBrowserCommand();
       this.executePendingAuxiliaryDismiss();
+      // 挂载前写入的配色命令在这里补放：Ability 的启动/回前台对账可能早于
+      // WebWindow 挂载，@Monitor 不会因初值触发，冷启动靠这一步落地。
+      this.executePendingColorSchemeCommand();
       this.nativeContext.OnSurfaceCreated();
       this.notifyWindowId();
       this.nativeContext.OnThemeFontChanged(this.themeFontId);

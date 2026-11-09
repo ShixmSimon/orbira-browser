@@ -7,7 +7,7 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import bundleManager from '@ohos.bundle.bundleManager';
 import deviceInfo from '@ohos.deviceInfo';
-import { AppearanceSettings, ColorModeSetting } from '../../utils/appearance/AppearanceSettings';
+import { AppearanceSettings, ColorModeSetting, ForceDarkOverride } from '../../utils/appearance/AppearanceSettings';
 import { ThemeSchemePush } from '../../bus/ThemeSchemePush';
 import { glassBottomInsetVp, glassHeaderInsetVp } from './GlassPage';
 import { curves } from '@kit.ArkUI';
@@ -56,6 +56,7 @@ const PREF_ROWS: PrefRow[] = [
   { key: 'popupsBlocked', label: '拦截弹窗' },
   { key: 'doNotTrack', label: '发送"请勿追踪"请求' },
   { key: 'preloadPages', label: '预加载网页' },
+  // 实际文案随主题派生（见 forceDarkLabel），这里只是列表数据的占位值。
   { key: 'forceDarkWebContents', label: '网页强制深色' },
   { key: 'downloadAskWhereToSave', label: '下载前询问' }
 ];
@@ -90,12 +91,9 @@ const CLEAR_TYPE_ROWS: ClearTypeRow[] = [
   { key: 'downloads', label: '下载记录' }
 ];
 
-// 默认勾选：前三种 + 下载记录（历史上本页一直清它，取消默认勾选等于
-// 悄悄改变行为）。密码/自动填充/网站设置关掉 —— 它们是不可逆的账号与
-// 站点偏好，用户主动勾了才清。
 const CLEAR_TYPES_DEFAULT: BrowsingDataType[] = ['history', 'cookies', 'cache', 'downloads'];
 
-// 1.0.142：「法律许可」页内联文本。应用自身按 Chromium BSD 3-Clause 发布
+// 「法律许可」页内联文本。应用自身按 Chromium BSD 3-Clause 发布
 // （复制自仓库 LICENSE，与上游一致）；Apache-2.0 / MIT / MPL / LGPL 等是捆绑进
 // 来的第三方组件各自携带的许可，只在此页简述并指向完整清单，不粘贴全文。
 const APP_LICENSE_TEXT: string = `Copyright 2015 The Chromium Authors. All rights reserved.
@@ -108,7 +106,7 @@ Redistribution and use in source and binary forms, with or without modification,
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.`;
 
-// 1.0.243：去掉此段硬编码的内核版本（原 'Chromium 150.0.7871.114'，实际引擎
+// 去掉此段硬编码的内核版本（原 'Chromium 150.0.7871.114'，实际引擎
 // 已 154，会误导）——版本号只在「版权声明」段动态显示（getAboutInfo）。
 const THIRD_PARTY_LICENSE_NOTE: string = `除应用自身采用上述 BSD 3-Clause 许可外，所捆绑的第三方组件按其各自许可发布，主要包括：
 
@@ -184,7 +182,8 @@ const SETTINGS_ENTRIES: SettingsEntry[] = [
   { id: 'zoom', title: '网页缩放', subtitle: '整页一起放大或缩小',
     keywords: ['zoom', '缩放', '字体', '放大', '缩小', 'textScale'], section: '外观', kind: 'page' },
   { id: 'forceDarkWebContents', title: '网页强制深色', subtitle: '',
-    keywords: ['dark', '深色', '网页', '强制'], section: '外观', kind: 'toggle' },
+    keywords: ['dark', '深色', '网页', '强制', '关闭', '恢复', '原色', '浅色'],
+    section: '外观', kind: 'toggle' },
 
   { id: 'downloadAskWhereToSave', title: '下载前询问', subtitle: '安装包和未知文件总是询问',
     keywords: ['download', '下载', '询问', '保存位置'], section: '下载', kind: 'toggle' },
@@ -216,17 +215,13 @@ export struct SettingsPanel {
   onOpenExtensions: () => void = (): void => {};
   onOpenSitePermissions: () => void = (): void => {};
   onOpenPasswords: () => void = (): void => {};
-  // 1.0.93：「主页设置 → 自定义主页布局」需先收起设置面板、再打开主页布局弹层
+  // 「主页设置 → 自定义主页布局」需先收起设置面板、再打开主页布局弹层
   // （HomeSurface 在设置面板打开时未挂载 / 被遮挡，直发信号无效）。
   onOpenHomeLayout: () => void = (): void => {};
-  // 1.0.109：「主页设置右上角 → 添加网址主页」同一条路子——先收起面板、回主页，
+  // 「主页设置右上角 → 添加网址主页」同一条路子——先收起面板、回主页，
   // 再由信号在 HomeSurface 上打开添加表单。
   onAddHomeTile: () => void = (): void => {};
 
-  // 1.0.159：改用真 Navigation 路由栈（同 ExtensionPanel 1.0.157 套路）——
-  // 二级页作为 NavDestination 推入，系统走原生 push-pop 转场（干净减速、
-  // 零过冲、无回弹）。主面板是 Navigation 内容、常驻挂载：返回时其滚动
-  // 位置天然保留，不必再靠「常驻挂载 + Visibility + 手写位移」那套。
   private pathStack: NavPathStack = new NavPathStack();
   // 设置检索：常驻搜索框，输入即就地过滤设置项（不单独开搜索页）。
   @State private searchText: string = '';
@@ -253,11 +248,8 @@ export struct SettingsPanel {
   private enginesScroller: Scroller = new Scroller();
   private filteredScroller: Scroller = new Scroller();
   private aboutScroller: Scroller = new Scroller();
-  // 1.0.142：「法律许可」子页滚动容器。
+  // 「法律许可」子页滚动容器。
   private legalScroller: Scroller = new Scroller();
-  // 1.0.104：四个二级页（深色模式 / 主页设置 / 网页缩放 / 清除浏览数据）此前
-  // 要么根本没有滚动容器、要么没挂回弹，滑动到位后没有回弹动画。各自给一个
-  // Scroller（交给 Navigation/NavDestination 的 bindToScrollable 绑官方渐变模糊）。
   private appearanceScroller: Scroller = new Scroller();
   private homeScroller: Scroller = new Scroller();
   private zoomScroller: Scroller = new Scroller();
@@ -291,29 +283,36 @@ export struct SettingsPanel {
   @State private browsingFormDataCount: number = -1;
   @State private browsingSiteSettingsCount: number = -1;
   @State private colorModeSetting: ColorModeSetting = 'system';
+  // 解析后的实际配色（'system' 时由 ability 按系统 colorMode 算出）。网页强制深色
+  // 的开关是「相对当前主题默认值的偏离」，必须知道当前实际深浅才能决定文案与显示值。
+  @StorageLink('auraColorScheme') actualColorScheme: string = 'light';
+  // 开关显示以壳层的覆盖态为准（用户意图），不用引擎 pref 反推：冷启动时引擎
+  // pref 可能还没同步到当前主题默认值，用绝对值会把「引擎值 ≠ 主题默认」误判成
+  // 「用户手动偏离」，导致深色主题下开关默认显示打开。
+  @StorageLink('auraForceDarkOverride') forceDarkOverride: string = 'follow';
   @State private textScalePercent: number = 100;
   @StorageLink('auraHideStatusBarOnScroll') hideStatusBarOnScroll: boolean = false;
   @StorageLink('auraHideTopBarOnScroll') hideTopBarOnScroll: boolean = true;
   @StorageLink('auraHideDockOnScroll') hideDockOnScroll: boolean = true;
   @StorageLink('auraExternalAppLinks') externalAppLinks: boolean = true;
   @StorageLink('auraHuaweiAccount') accountJson: string = '';
-  // 1.0.91 主页风格（'minimal' | 'chrome'）与 Chrome 风格下 dock 位置（'bottom' | 'top'）。
+  // 主页风格（'minimal' | 'chrome'）与 Chrome 风格下 dock 位置（'bottom' | 'top'）。
   @StorageLink('auraHomeStyle') homeStyle: string = 'minimal';
   @StorageLink('auraDockPosition') dockPosition: string = 'bottom';
-  // 1.0.119「启动页」：冷启动打开网址主页('homeUrl')还是内置启动页('builtin')。
+  // 「启动页」：冷启动打开网址主页('homeUrl')还是内置启动页('builtin')。
   @StorageLink('auraStartupPage') startupPage: string = 'builtin';
   @StorageLink('auraHomeUrl') homeUrl: string = '';
-  // 1.0.120「自定义网址」：多组网址（\n 分隔字符串，见 ShellUiPrefs.parseUrlList）。
+  // 「自定义网址」：多组网址（\n 分隔字符串，见 ShellUiPrefs.parseUrlList）。
   // 存字符串而不是数组——ArkTS 里 @StorageLink 换数组要整份新建才不会漏刷新，
   // 字符串最省心，解析一次即可。
   @StorageLink('auraHomeUrls') homeUrlsRaw: string = '';
-  // 1.0.143「Vulkan 渲染加速」：默认 false=走 GLES（规避部分机型滑动掉帧）；
+  // 「Vulkan 渲染加速」：默认 false=走 GLES（规避部分机型滑动掉帧）；
   // 开启则引擎走 ANGLE Vulkan 后端。启动时读取一次，改动需重启生效。
   @StorageLink('auraVulkanEnabled') vulkanEnabled: boolean = false;
-  // 1.0.146「WebGPU 加速」：默认 false。开启后页面可用 navigator.gpu。
+  // 「WebGPU 加速」：默认 false。开启后页面可用 navigator.gpu。
   // 与 ANGLE 后端（gles/vulkan）互不干扰，外壳注入命令行即开，改动需重启生效。
   @StorageLink('auraWebGpuEnabled') webgpuEnabled: boolean = false;
-  // 1.0.190「桌面版网站」：全局 UA 默认（'mobile' | 'desktop'）与站点名单
+  // 「桌面版网站」：全局 UA 默认（'mobile' | 'desktop'）与站点名单
   // （\n 分隔的 host）。两者决定 WebWindow 是否在该站点用桌面形状 UA。
   @StorageLink('auraUaDefault') uaDefault: string = 'mobile';
   @StorageLink('auraDesktopSites') desktopSitesRaw: string = '';
@@ -344,7 +343,7 @@ export struct SettingsPanel {
       this.customEngines = list;
       this.applyMergedEngines();
     });
-    // 1.0.119：确保「启动页」与「网址主页」设置项有最新值可显示。
+    // 确保「启动页」与「网址主页」设置项有最新值可显示。
     if (ctx) {
       ShellUiPrefs.loadStartupPage(ctx).then((value: string): void => {
         AppStorage.setOrCreate('auraStartupPage', value);
@@ -352,19 +351,19 @@ export struct SettingsPanel {
       ShellUiPrefs.loadHomeUrl(ctx).then((value: string): void => {
         AppStorage.setOrCreate('auraHomeUrl', value);
       });
-      // 1.0.120：多组网址列表也要有值，否则进入这一页看到的是「未添加」。
+      // 多组网址列表也要有值，否则进入这一页看到的是「未添加」。
       ShellUiPrefs.loadHomeUrls(ctx).then((list: string[]): void => {
         AppStorage.setOrCreate('auraHomeUrls', ShellUiPrefs.joinUrlList(list));
         if (AppStorage.get('auraHomeUrl') === '' && list.length > 0) {
           AppStorage.setOrCreate('auraHomeUrl', list[0]);
         }
       });
-      // 1.0.143：Vulkan 开关从持久化读回（EntryAbility 启动时已写入默认值，
+      // Vulkan 开关从持久化读回（EntryAbility 启动时已写入默认值，
       // 这里在用户打开设置页时刷新为最新）。
       ShellUiPrefs.loadVulkanEnabled(ctx).then((value: boolean): void => {
         AppStorage.setOrCreate('auraVulkanEnabled', value);
       });
-      // 1.0.146：WebGPU 开关同上，从持久化读回最新值。
+      // WebGPU 开关同上，从持久化读回最新值。
       ShellUiPrefs.loadWebGpuEnabled(ctx).then((value: boolean): void => {
         AppStorage.setOrCreate('auraWebGpuEnabled', value);
       });
@@ -464,9 +463,6 @@ export struct SettingsPanel {
     try {
       const engines = JSON.parse(this.enginesJson) as SearchEngine[];
       this.baseEngines = engines;
-      // 还没有持久化选择时，先沿用引擎上报的默认项；引擎没标默认就以 Bing 兜底
-      // （用户明确要求默认 Bing），再不行用第一个内置引擎。结果写回持久化，
-      // 保证搜索引擎列表里永远有一个对勾。
       if (this.defaultEngineId.length === 0) {
         let found: string = '';
         for (const engine of engines) {
@@ -520,8 +516,6 @@ export struct SettingsPanel {
     this.engines = list;
   }
 
-  // Bing / Google 受保护：不可删除（用户要求）。按 id/name 命中（Chromium 预置 id
-  // 即 'bing'/'google'）；自定义引擎 id 以 'custom:' 开头，不会误伤。
   private isEngineProtected(engine: SearchEngine): boolean {
     const id = engine.id.toLowerCase();
     const name = engine.name.toLowerCase();
@@ -540,7 +534,6 @@ export struct SettingsPanel {
     const context = this.hostContext();
     await SearchEnginesPrefs.saveCustom(context, list);
     if (this.defaultEngineId === engine.id) {
-      // 删掉的是当前默认：回退到引擎默认（清空持久化，applyMerged 会沿用引擎上报项）。
       this.defaultEngineId = '';
       SearchEnginesPrefs.saveDefaultId(context, '');
       this.reloadEngines();
@@ -662,10 +655,6 @@ export struct SettingsPanel {
     }
   }
 
-  // 关于页「项目主页」等外链：在浏览器自身的新标签页打开。原先走
-  // context.openLink，当本应用是系统默认浏览器时会应用内自唤起而静默失败
-  // （hideFailureTipDialog 把错误吞掉），表现就是「点了没反应」。改为经引擎开新标签，
-  // 与系统默认浏览器是谁无关；随后收起设置面板让新标签可见。
   private openExternalLink(url: string): void {
     this.onCommand({ command: 'newTab', url: url, background: false });
     this.onBack();
@@ -697,7 +686,59 @@ export struct SettingsPanel {
     }
   }
 
+  // 「网页强制深色」只有一个含义：不响应深色模式的网页要不要由浏览器强制反色。
+  // 早先按主题翻转文案（深色下写成「关闭网页强制深色」）是双重否定，已废弃；
+  // 浅色主题下这一项整体不显示（见 entryVisible 与外观页渲染处），避免留下
+  // 「开关关着却看不出为什么不生效」的死项。
+  private isDarkScheme(): boolean {
+    return this.actualColorScheme === 'dark';
+  }
+
+  private forceDarkLabel(): string {
+    return '网页强制深色';
+  }
+
+  private forceDarkSubtitle(): string {
+    return this.isDarkScheme()
+      ? '不响应深色模式的网页将以深色显示'
+      : '仅深色模式下生效';
+  }
+
+  // 开关显示的是「强制深色当前是否生效」，不是「是否偏离主题默认值」：
+  // follow 时跟主题（深色开 / 浅色关），on/off 是用户显式选择。
+  private forceDarkActive(): boolean {
+    if (this.forceDarkOverride === 'on') {
+      return true;
+    }
+    if (this.forceDarkOverride === 'off') {
+      return false;
+    }
+    return this.isDarkScheme();
+  }
+
+  private setForceDarkActive(on: boolean): void {
+    this.setPref('forceDarkWebContents', on);
+  }
+
+  private entryTitle(entry: SettingsEntry): string {
+    return entry.id === 'forceDarkWebContents' ? this.forceDarkLabel() : entry.title;
+  }
+
+  private entrySubtitle(entry: SettingsEntry): string {
+    return entry.id === 'forceDarkWebContents' ? this.forceDarkSubtitle() : entry.subtitle;
+  }
+
   private setPref(key: ShellPrefKey, value: boolean): void {
+    // 受控 Toggle 程序置位也会触发 onChange：值没真变就直接返回，避免乒乓。
+    // forceDark 比的是「强制深色当前是否生效」：冷启动引擎 pref 可能还没同步，
+    // 拿 prefValue 比较会把用户首次拨动误判成「值没变」而吞掉。
+    if (key === 'forceDarkWebContents') {
+      if (this.forceDarkActive() === value) {
+        return;
+      }
+    } else if (this.prefValue(key) === value) {
+      return;
+    }
     const next: PrefToggleItem[] = [];
     this.toggleItems.forEach((item: PrefToggleItem): void => {
       next.push({
@@ -707,6 +748,24 @@ export struct SettingsPanel {
       });
     });
     this.toggleItems = next;
+    if (key === 'forceDarkWebContents') {
+      // 拨回「当前主题默认值」就直接恢复跟随，而不是留一个恰好等于默认的
+      // 绝对覆盖值；主题变化时 applyColorSchemePush 也会把覆盖态重置为 follow。
+      const defaultForced: boolean = this.isDarkScheme();
+      const override: ForceDarkOverride = value === defaultForced ? 'follow'
+        : (value ? 'on' : 'off');
+      AppStorage.setOrCreate('auraForceDarkOverride', override);
+      const revision = Number(AppStorage.get('auraForceDarkRevision') ?? 0);
+      AppStorage.setOrCreate('auraForceDarkRevision', revision + 1);
+      const context = this.getUIContext().getHostContext() as common.Context | undefined;
+      if (context) {
+        // 带上写入时的配色：跨主题冷启动时该覆盖态应自动失效，
+        // 避免上次深色主题内手动拨的 'on' 在浅色下把网页强制拉深。
+        AppearanceSettings.saveForceDarkOverride(context, override,
+          this.isDarkScheme() ? 'dark' : 'light');
+      }
+      return;
+    }
     this.onCommand({ command: 'setPref', key: key, value: value });
   }
 
@@ -733,7 +792,7 @@ export struct SettingsPanel {
     return this.searchText.trim().toLowerCase();
   }
 
-  // 1.0.135：设置项「智能显隐」。「上滑时隐藏状态栏」只在**真正起作用**时显示：
+  // 设置项「智能显隐」。「上滑时隐藏状态栏」只在**真正起作用**时显示：
   //  · Chrome 底置：地址栏在屏幕下方、顶端无地址栏阻拦，状态栏显隐由
   //    sendBrowserControls 底置分支的 bottomCollapsing(=hideStatusBarOnScroll) 独立
   //    决定，与「滚动隐藏地址栏」开关无关（见 AuraShell 底置分支 "底置没有顶栏可让，
@@ -753,12 +812,17 @@ export struct SettingsPanel {
 
   // 与主设置页共用同一判据，保证搜索结果里也不会冒出被隐藏的项。
   private entryVisible(entry: SettingsEntry): boolean {
+    // 浅色主题下 auto-dark 是空操作（默认就不强制），这一项不参与展示，
+    // 保证搜索结果与外观页看到的是同一套项。
+    if (entry.id === 'forceDarkWebContents') {
+      return this.isDarkScheme();
+    }
     return entry.id !== 'hideStatusBarOnScroll' || this.hideStatusBarRowVisible();
   }
 
   private matchedEntries(): SettingsEntry[] {
     const query = this.searchQuery();
-    // 1.0.134：先按当前风格/开关过滤掉不起作用的项（与主设置页保持一致）。
+    // 先按当前风格/开关过滤掉不起作用的项（与主设置页保持一致）。
     const pool: SettingsEntry[] = SETTINGS_ENTRIES.filter(
       (entry: SettingsEntry): boolean => this.entryVisible(entry));
     if (query.length === 0) {
@@ -767,7 +831,7 @@ export struct SettingsPanel {
     const hits: SettingsEntry[] = [];
     pool.forEach((entry: SettingsEntry): void => {
       const haystack: string =
-        `${entry.title} ${entry.subtitle} ${entry.section} ${entry.keywords.join(' ')}`.toLowerCase();
+        `${this.entryTitle(entry)} ${this.entrySubtitle(entry)} ${entry.section} ${entry.keywords.join(' ')}`.toLowerCase();
       if (haystack.indexOf(query) >= 0) {
         hits.push(entry);
       }
@@ -776,6 +840,9 @@ export struct SettingsPanel {
   }
 
   private entryValue(entry: SettingsEntry): boolean {
+    if (entry.id === 'forceDarkWebContents') {
+      return this.forceDarkActive();
+    }
     if (entry.kind === 'externalToggle') {
       return this.externalAppLinks;
     }
@@ -788,11 +855,11 @@ export struct SettingsPanel {
     if (entry.id === 'hideDockOnScroll') {
       return this.hideDockOnScroll;
     }
-    // 1.0.143：Vulkan 开关是外壳侧偏好，不走引擎 prefs。
+    // Vulkan 开关是外壳侧偏好，不走引擎 prefs。
     if (entry.id === 'vulkanEnabled') {
       return this.vulkanEnabled;
     }
-    // 1.0.146：WebGPU 开关同属外壳侧偏好。
+    // WebGPU 开关同属外壳侧偏好。
     if (entry.id === 'webgpuEnabled') {
       return this.webgpuEnabled;
     }
@@ -801,6 +868,10 @@ export struct SettingsPanel {
 
   private toggleEntry(entry: SettingsEntry, value: boolean): void {
     const context = this.getUIContext().getHostContext() as common.Context | undefined;
+    if (entry.id === 'forceDarkWebContents') {
+      this.setForceDarkActive(value);
+      return;
+    }
     if (entry.kind === 'externalToggle') {
       AppStorage.setOrCreate('auraExternalAppLinks', value);
       if (context) {
@@ -829,7 +900,7 @@ export struct SettingsPanel {
       }
       return;
     }
-    // 1.0.143：Vulkan 开关持久化到 ShellUiPrefs + AppStorage（重启后由引擎启动配置读取）。
+    // Vulkan 开关持久化到 ShellUiPrefs + AppStorage（重启后由引擎启动配置读取）。
     if (entry.id === 'vulkanEnabled') {
       this.vulkanEnabled = value;
       AppStorage.setOrCreate('auraVulkanEnabled', value);
@@ -838,7 +909,7 @@ export struct SettingsPanel {
       }
       return;
     }
-    // 1.0.146：WebGPU 开关同理。外壳注入命令行即开，无需重编。
+    // WebGPU 开关同理。外壳注入命令行即开，无需重编。
     if (entry.id === 'webgpuEnabled') {
       this.webgpuEnabled = value;
       AppStorage.setOrCreate('auraWebGpuEnabled', value);
@@ -903,10 +974,6 @@ export struct SettingsPanel {
     AppStorage.setOrCreate('auraThemeReloadPending', true);
     AppearanceSettings.save(context, mode).then((): void => {
       AppearanceSettings.apply(context, mode);
-      // 不等系统的 onConfigurationUpdate 回调（对 setColorMode 它不保证按时
-      // 到达，真机上壳已变色而引擎纹丝不动）——把新配色直接递给 ability，由它
-      // 重序列化启动配置并顶起 revision，走折叠/旋转同一条已验证的下发路径。
-      // 回调若随后也到，算出同一个值，签名不变，不会二次下发。
       const scheme: 'light' | 'dark' = mode === 'dark' ? 'dark'
         : mode === 'light' ? 'light'
         : ((context as common.UIAbilityContext).config.colorMode
@@ -1140,13 +1207,29 @@ export struct SettingsPanel {
         .width(22)
         .height(22)
         .fillColor($r('app.color.icon_primary'))
-      Text(label)
-        .fontSize(16)
-        .fontColor($r('app.color.text_primary'))
-      Blank()
-      Toggle({ type: ToggleType.Switch, isOn: this.prefValue(key) })
+      Column({ space: 2 }) {
+        // 文案与显示值在 builder 内现读 state：按值传入会在挂载时定死，
+        // 主题切换后不刷新。
+        Text(key === 'forceDarkWebContents' ? this.forceDarkLabel() : label)
+          .fontSize(16)
+          .fontColor($r('app.color.text_primary'))
+        if (key === 'forceDarkWebContents' && this.forceDarkSubtitle().length > 0) {
+          Text(this.forceDarkSubtitle())
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+        }
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      Toggle({ type: ToggleType.Switch,
+        isOn: key === 'forceDarkWebContents'
+          ? this.forceDarkActive() : this.prefValue(key) })
         .onChange((isOn: boolean) => {
-          this.setPref(key, isOn);
+          if (key === 'forceDarkWebContents') {
+            this.setForceDarkActive(isOn);
+          } else {
+            this.setPref(key, isOn);
+          }
         })
     }
     .width('100%')
@@ -1178,11 +1261,11 @@ export struct SettingsPanel {
   private SearchResultRow(entry: SettingsEntry) {
     Row({ space: 12 }) {
       Column({ space: 2 }) {
-        Text(entry.title)
+        Text(this.entryTitle(entry))
           .fontSize(16)
           .fontColor($r('app.color.text_primary'))
-        if (entry.subtitle.length > 0) {
-          Text(entry.subtitle)
+        if (this.entrySubtitle(entry).length > 0) {
+          Text(this.entrySubtitle(entry))
             .fontSize(12)
             .fontColor($r('app.color.text_secondary'))
         }
@@ -1277,7 +1360,6 @@ export struct SettingsPanel {
               }
             })
             this.CardDivider()
-            // 主页设置：双风格缩略图选择（1.0.91）。原主页右上角「主页布局」入口移入此处。
             SettingsNavRow({
               icon: $r('app.media.aura_home'),
               label: '主页设置',
@@ -1300,9 +1382,9 @@ export struct SettingsPanel {
                     ShellUiPrefs.saveHideTopBar(context, isOn);
                   }
                 })
-              // 1.0.103：与简约风格对齐——该开关在 Chrome 风格同样生效（收起后
+              // 与简约风格对齐——该开关在 Chrome 风格同样生效（收起后
               // 网页贴顶沉浸 / 停在状态栏底两种几何，见 AuraShell.sendBrowserControls）。
-              // 1.0.134：仅**顶置**且「滚动时隐藏地址栏」开着时显示（底置或常驻时它
+              // 仅**顶置**且「滚动时隐藏地址栏」开着时显示（底置或常驻时它
               // 不起作用 → 隐藏该行，免得拨了没反应）。
               if (this.hideStatusBarRowVisible()) {
                 this.CardDivider()
@@ -1316,10 +1398,6 @@ export struct SettingsPanel {
                   })
               }
             } else {
-              // 简约风格：保留独立顶栏 + 底栏，隐藏「地址栏布局设置项」（地址栏上/下）。
-              // 1.0.136：按用户要求把「上滑时隐藏状态栏」排到「滚动时隐藏底部栏」下方
-              // （原先在「滚动时隐藏地址栏」上方）——先讲"滚动怎么收"，再讲"收起来后
-              // 状态栏要不要一起隐"，阅读顺序更顺。
               this.CardDivider()
               this.ShellToggleRow($r('app.media.aura_topbar'), '滚动时隐藏地址栏', '',
                 this.hideTopBarOnScroll, (isOn: boolean): void => {
@@ -1338,7 +1416,7 @@ export struct SettingsPanel {
                     ShellUiPrefs.saveHideDock(context, isOn);
                   }
                 })
-              // 1.0.134：仅「滚动时隐藏地址栏」开着时显示（关着时地址栏常驻、没有
+              // 仅「滚动时隐藏地址栏」开着时显示（关着时地址栏常驻、没有
               // 收起这一刻，该开关不起作用）。
               if (this.hideStatusBarRowVisible()) {
                 this.CardDivider()
@@ -1361,8 +1439,13 @@ export struct SettingsPanel {
                 this.pushPage('zoom');
               }
             })
-            this.CardDivider()
-            this.ToggleRow($r('app.media.aura_display'), '网页强制深色', 'forceDarkWebContents')
+            // 只在深色主题下出现：浅色主题不存在「强制深色」这件事，
+            // 显示出来只会是一条关着又看不出原因的项。
+            if (this.isDarkScheme()) {
+              this.CardDivider()
+              // label 参数会被 builder 内的动态文案覆盖，见 forceDarkLabel。
+              this.ToggleRow($r('app.media.aura_display'), '网页强制深色', 'forceDarkWebContents')
+            }
           }
           .width('100%')
           .padding({ left: 0, right: 0, top: 2, bottom: 2 })
@@ -1473,7 +1556,7 @@ export struct SettingsPanel {
             this.CardDivider()
             this.ToggleRow($r('app.media.aura_bolt'), '预加载网页', 'preloadPages')
             this.CardDivider()
-            // 1.0.144「Vulkan 渲染加速」：外壳侧偏好，不走引擎 prefs。经 angleBackend
+            // 「Vulkan 渲染加速」：外壳侧偏好，不走引擎 prefs。经 angleBackend
             // 切换 ANGLE 后端：关 = gles-egl（默认，稳），开 = vulkan（实验性，实测
             // Pura80 上会掉帧，且与上游 patch 自述的 Mate70 数据吻合）。保留它是为了让
             // 用户能自己对比，而不是因为它更快 —— 故文案明确提示风险。
@@ -1489,7 +1572,7 @@ export struct SettingsPanel {
                 }
               })
             this.CardDivider()
-            // 1.0.146「WebGPU 加速」：外壳侧偏好，不走引擎 prefs。外壳注入
+            // 「WebGPU 加速」：外壳侧偏好，不走引擎 prefs。外壳注入
             // --enable-unsafe-webgpu 即开（引擎侧 Dawn/WebGPU 已编入），与 ANGLE 后端互
             // 不干扰。默认关（稳定性/兼容性考虑）。图标用立方体，区别于 Vulkan 的芯片。
             // 启动时读取一次，改动需重启生效。
@@ -1720,7 +1803,7 @@ export struct SettingsPanel {
           .clip(true)
         }
         .width('100%')
-        // 1.0.122：同 HomeStyleView —— 内缩放滚动内容上，别压在外层（会丢顶部渐变模糊）。
+        // 同 HomeStyleView —— 内缩放滚动内容上，别压在外层（会丢顶部渐变模糊）。
         .padding({ top: glassHeaderInsetVp() })
       }
       .width('100%')
@@ -1963,7 +2046,7 @@ export struct SettingsPanel {
   @Builder
   private AppearanceView() {
     Column() {
-      // 1.0.104：改成由 Scroll 承载内容（Spring 回弹 + alwaysEnabled）——内容
+      // 改成由 Scroll 承载内容（Spring 回弹 + alwaysEnabled）——内容
       // 不足一屏时也能像主面板一样上拉回弹。顶部内边距仍留在外层，静态位置不变。
       Scroll(this.appearanceScroller) {
         Column() {
@@ -1992,7 +2075,7 @@ export struct SettingsPanel {
           .margin({ top: 4 })
         }
         .width('100%')
-        // 1.0.122：同 HomeStyleView —— 内缩放滚动内容上，别压在外层（会丢顶部渐变模糊）。
+        // 同 HomeStyleView —— 内缩放滚动内容上，别压在外层（会丢顶部渐变模糊）。
         .padding({ top: glassHeaderInsetVp() })
       }
       .width('100%')
@@ -2041,7 +2124,7 @@ export struct SettingsPanel {
   @Builder
   private ZoomView() {
     Column() {
-      // 1.0.104：同「深色模式」页——挂 Scroll + Spring 回弹（档位不足一屏也有反馈）。
+      // 同「深色模式」页——挂 Scroll + Spring 回弹（档位不足一屏也有反馈）。
       Scroll(this.zoomScroller) {
         Column() {
           Text('整页一起放大或缩小，对所有网页生效。')
@@ -2085,7 +2168,7 @@ export struct SettingsPanel {
           .clip(true)
         }
         .width('100%')
-        // 1.0.122：同 HomeStyleView —— 内缩放滚动内容上，别压在外层（会丢顶部渐变模糊）。
+        // 同 HomeStyleView —— 内缩放滚动内容上，别压在外层（会丢顶部渐变模糊）。
         .padding({ top: glassHeaderInsetVp() })
       }
       .width('100%')
@@ -2170,7 +2253,7 @@ export struct SettingsPanel {
             .margin({ bottom: 28 })
         }
         .width('100%')
-        // 1.0.122：同 HomeStyleView —— 内缩放滚动内容上，别压在外层（会丢顶部渐变模糊）。
+        // 同 HomeStyleView —— 内缩放滚动内容上，别压在外层（会丢顶部渐变模糊）。
         .padding({ top: glassHeaderInsetVp() })
       }
       .layoutWeight(1)
@@ -2182,7 +2265,7 @@ export struct SettingsPanel {
     .height('100%')
   }
 
-  // 1.0.142：「法律许可」子页。应用自身许可（BSD 3-Clause 全文）+ 版权声明 +
+  // 「法律许可」子页。应用自身许可（BSD 3-Clause 全文）+ 版权声明 +
   // 第三方组件许可简述。文本来自仓库 LICENSE / OPEN_SOURCE_NOTICES.md，与上游一致。
   @Builder
   private LegalSectionTitle(title: string) {
@@ -2202,7 +2285,7 @@ export struct SettingsPanel {
           this.LegalSectionTitle('版权声明')
           Text('Orbira 星轨浏览器（基于 Chromium 的鸿蒙浏览器）\n' +
             'Copyright © 2015 The Chromium Authors. All rights reserved.\n' +
-            // 1.0.243：内核版本改为动态读取（getAboutInfo → chromiumVersion，
+            // 内核版本改为动态读取（getAboutInfo → chromiumVersion，
             // 与下方「关于」页的内核版本行同源）。原硬编码 150.0.7871.114，
             // 实际引擎已基于 154，装机反馈「法律页显示 150」。
             `基于 Chromium ${this.chromiumVersion.length > 0 ? this.chromiumVersion : '—'} 构建。`)
@@ -2236,7 +2319,7 @@ export struct SettingsPanel {
             .textAlign(TextAlign.Start)
         }
         .width('100%')
-        // 1.0.122：内容内缩放，别压外层（会丢顶部渐变模糊）。
+        // 内容内缩放，别压外层（会丢顶部渐变模糊）。
         .padding({ top: glassHeaderInsetVp() })
       }
       .layoutWeight(1)
@@ -2297,12 +2380,10 @@ export struct SettingsPanel {
     .onClick(action)
   }
 
-  // 1.0.91 主页设置子页：双风格缩略图选择。
+  // 主页设置子页：双风格缩略图选择。
   @Builder
   private HomeStyleView() {
     Column() {
-      // 1.0.104：此前这个 Scroll 没挂 edgeEffect / scroller——内容不足一屏时
-      // 滑动没有任何回弹。对齐其它面板补上（布局与对齐方式不动）。
       Scroll(this.homeScroller) {
         Column({ space: 16 }) {
           this.SectionLabel('选择主页风格', true)
@@ -2313,7 +2394,7 @@ export struct SettingsPanel {
           .width('100%')
           .padding({ left: 16, right: 16 })
 
-          // 1.0.119「启动页」：冷启动打开内置启动页还是已设置的网址主页。
+          // 「启动页」：冷启动打开内置启动页还是已设置的网址主页。
           this.SectionLabel('启动行为', true)
           Column() {
             this.StartupPageRow()
@@ -2324,7 +2405,7 @@ export struct SettingsPanel {
           .backgroundColor($r('app.color.card_background'))
           .clip(true)
 
-          // 1.0.96：「地址栏位置」从此子页去掉——外观区已有同项（上/下分段），
+          // 「地址栏位置」从此子页去掉——外观区已有同项（上/下分段），
           // 主页设置只留风格选择 + 自定义入口，避免同一设置两处出现。
 
           this.SectionLabel('主页自定义', true)
@@ -2334,11 +2415,6 @@ export struct SettingsPanel {
               label: '自定义主页布局',
               value: '',
               onTap: (): void => {
-                // 1.0.97：先回首页再打开布局弹层——弹层挂在 HomeSurface 上，
-                // 若当前在网页态，背后不是主页，调位置条看不到效果。
-                // 1.0.125：改用 'homeSurface' —— 绕过 1.0.111「网址主页」对
-                // 'home' 的劫持（设了自定义网址主页时 'home' 会被导航去那个网址，
-                // 例如 bing），让布局层始终落在内置主页上。
                 this.onCommand({ command: 'homeSurface' });
                 this.onOpenHomeLayout();
               }
@@ -2356,11 +2432,6 @@ export struct SettingsPanel {
             .padding({ left: 16, right: 16 })
         }
         .width('100%')
-        // 1.0.122：玻璃标题栏内缩必须加在**滚动内容**上（与 MainView / 搜索
-        // 引擎页一致），不能加在外层 Column —— 加在外层会把 Scroll 视口整体
-        // 推到标题行下方，内容再也穿不过标题行，HDS 的渐变模糊就没有可虚化
-        // 的内容了（真机反馈：多个二级页顶部模糊丢失）。放这里静态位置分毫
-        // 不差，滚动时内容从标题行底下穿过，模糊照常生效。
         .padding({ top: glassHeaderInsetVp() })
       }
       .width('100%')
@@ -2375,9 +2446,6 @@ export struct SettingsPanel {
   @Builder
   private HomeStyleCard(value: string, title: string, desc: string, thumb: Resource) {
     Column({ space: 8 }) {
-      // 选中框（1.0.96 重做）：accent 实底圆角框 + 内嵌缩略图。原先 border 直接
-      // 描在圆角图片上，描边在四个圆角处被切断、拐角发空（真机反馈「四角是空的」）；
-      // 实底圆角框四角是完整圆弧。未选中用 divider 同造型 1vp 细框。
       Stack({ alignContent: Alignment.TopStart }) {
         Image(thumb)
           .width('100%')
@@ -2470,12 +2538,6 @@ export struct SettingsPanel {
       })
   }
 
-  // 1.0.119「启动页」：冷启动默认打开内置启动页还是已设置的网址主页。
-  // 1.0.120 重排（用户反馈截图：标题/说明被挤成一列竖排文字）——分段控件原先
-  // 和图标+文案挤在同一行，它自己就占掉 4 个汉字 + 左右内边距，左侧文案列在
-  // 大字号的机器上被压到只剩一个字宽，于是「启动页」竖着排。现在拆成上下两块：
-  // 上行 = 图标 + 标题 + 说明（独占整行宽度），下行 = 分段控件独占一行、两段等宽。
-  // 这样任何字号下文案都是横排，且控件不会再被文案挤压。
   @Builder
   private StartupPageRow() {
     Column({ space: 12 }) {
@@ -2515,7 +2577,7 @@ export struct SettingsPanel {
     .padding({ left: 16, right: 16, top: 12, bottom: 12 })
   }
 
-  // 1.0.120：多组网址（\n 分隔）解析成列表，用于文案里的条数与「未添加」判定。
+  // 多组网址（\n 分隔）解析成列表，用于文案里的条数与「未添加」判定。
   private homeUrlList(): string[] {
     return ShellUiPrefs.parseUrlList(this.homeUrlsRaw);
   }
@@ -2528,8 +2590,6 @@ export struct SettingsPanel {
     const active: string = this.homeUrl.length > 0 ? this.homeUrl
       : (list.length > 0 ? list[0] : '');
     if (active.length === 0) {
-      // 1.0.120：没网址时把用户指到右上角的「自定义网址」入口，别只说一句
-      // 「将回退为内置启动页」让人不知道去哪儿加。
       return '尚未添加网址，点右上角「自定义网址」添加';
     }
     if (list.length > 1) {
@@ -2562,8 +2622,6 @@ export struct SettingsPanel {
       })
   }
 
-  // 二级页统一由这一个 destination builder 承载（1.0.159 真路由栈）：内容、
-  // 标题、右上角菜单、滚动绑定都按路由名分流。name = pushPathByName 传入的路由名。
   @Builder
   private buildSubPageDestination(name: string, _param: Object): void {
     HdsNavDestination() {
@@ -2611,7 +2669,7 @@ export struct SettingsPanel {
             this.popPage();
           }
         },
-        // 1.0.120：「主页设置」右上角 = 自定义网址主页（支持多组网址）。
+        // 「主页设置」右上角 = 自定义网址主页（支持多组网址）。
         // 非该页传 undefined（而非空数组——空数组会被 HDS 当作"有菜单但零项"）。
         menu: name === 'home'
           ? {
@@ -2654,7 +2712,7 @@ export struct SettingsPanel {
     })
   }
 
-  // 1.0.190「已设为桌面版的网站」管理页：列出被强制桌面版的 host，可逐个移除。
+  // 「已设为桌面版的网站」管理页：列出被强制桌面版的 host，可逐个移除。
   @Builder
   private DesktopSitesView() {
     Column() {
@@ -2739,8 +2797,8 @@ export struct SettingsPanel {
   }
 
 build() {
-    // 1.0.159：面板自己持有 HdsNavigation + NavPathStack（与 ExtensionPanel
-    // 1.0.157 同套路）。主面板是 Navigation 内容、常驻挂载 —— 二级页返回时
+    // 面板自己持有 HdsNavigation + NavPathStack（与 ExtensionPanel
+    // 同套路）。主面板是 Navigation 内容、常驻挂载 —— 二级页返回时
     // 主列表滚动位置天然保留；二级页作为 NavDestination 推入，系统默认走
     // 原生鸿蒙层级转场（干净减速、零过冲、无回弹），无需任何转场配置。
     HdsNavigation(this.pathStack) {
@@ -2804,11 +2862,6 @@ build() {
   }
 }
 
-// 设置导航行。value 必须是 @Prop，不能用 @Builder 按值传参：ArkUI 里 @Builder
-// 的参数变化不会触发其内部 UI 刷新（既定语义），此前"改完设置返回主页，摘要
-// 仍是旧值"就是这个原因 —— 静态 value 的行看不出问题，而动态 value 的三行
-// （搜索引擎 / 深色模式 / 网页缩放）正是被报的三项。改成自定义组件后，@Prop
-// 会随父组件状态同步刷新。
 @Component
 struct SettingsNavRow {
   icon: Resource = $r('app.media.aura_info');
