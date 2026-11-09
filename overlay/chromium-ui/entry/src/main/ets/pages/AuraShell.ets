@@ -112,10 +112,9 @@ const CONTROLS_RATIO_EPS: number = 0.02;
 // 完整但离键盘还差半个表情（搜狐、贴吧同一量级，约 15vp）。取 85。
 // ⚠️ 这是按实测标定的常数：各站页面自身底部留白不同，个别站点仍可能差几 vp。
 const KEYBOARD_INSET_EXTRA_VP: number = 85;
-// 前进/后退都铺同色遮盖，但分两档：落点是主页时铺较长的一层（引擎先画原生
 // 前进/后退的同色遮盖只在「落点是主页」时铺：那一次引擎会先画原生 NTP 磁贴，
 // 而壳层主页层要等 url 变成 newtab 才挂。网页↔网页交给引擎硬切——换页空档
-// 由引擎侧 gutter 色兜底，深色下与页面底色一致，观感等价硬切（22.18/22.19）。
+// 由引擎侧 gutter 色兜底，深色下与页面底色一致，观感等价硬切。
 const HISTORY_NAV_COVER_HOME_ONLY: boolean = true;
 
 // 引擎原生新标签页的几种 URL 形态。引擎自己 newTab 用的是 chrome://newtab/
@@ -235,8 +234,8 @@ struct AuraShell {
     if (this.extensionJumpCover <= 0) {
       return;
     }
-    // 无 popup（扩展页跳转）现在点击当帧就收面板页，转场 ~220ms 内设置页
-    // 已 commit（实测 154ms），兜底留 450ms 足够；有 popup 仍等 300ms 让位。
+    // 无 popup（扩展页跳转）点击当帧就收面板页，转场期间设置页已完成 commit，
+    // 兜底留 450ms 足够；有 popup 仍等 300ms 让位。
     const fallback: number = this.extensionJumpPopup ? 360 : 450;
     this.extensionJumpTimer = setTimeout((): void => {
       this.extensionJumpTimer = -1;
@@ -447,7 +446,7 @@ struct AuraShell {
 
   // 前进/后退的遮盖只顶「落点是主页」那一次：引擎会先画自己的原生 NTP
   //（满屏磁贴），而壳层主页层要等 url 变成 newtab 才挂，中间会露磁贴。
-  // 网页 ↔ 网页不需要盖：白闪已由引擎侧 gutter 色根治（22.18）。
+  // 网页 ↔ 网页不需要盖：换页空档由引擎侧 gutter 色与 paint-hold 处理。
   // 遮盖必须短：不按 loading 续命，固定硬上限 + 短淡出。
   private armNavCoverForHistoryNav(targetUrl: string): void {
     if (!HISTORY_NAV_COVER_HOME_ONLY || !isNewTabUrl(targetUrl)) {
@@ -1777,20 +1776,17 @@ struct AuraShell {
         if (this.auxiliaryWindows.length > 0) {
           this.AuxiliaryWindowLayer()
         }
-        // 点扩展后的跳转同色底：点击当帧铺上，护住 router 转场期间
-        // 露出的主页 / 当前网页 / 扩展页首帧前的空白。用外壳底色。
-        // 撤底必须淡出而不是直接移除：面板页的 pop 转场只有 ~130ms，
-        // 而设置页在 ~154ms 就绪，直接撤会让新页在旧页右滑未完成时
-        //「整块」跳出来（录屏实测：左 80% 已是设置页、右侧仍残留旧页边条）。
-        // 常驻 + opacity 过渡后，旧页滑出的同时新页渐显，衔接自然；
-        // 不显示时 opacity=0 且不接收触摸，对其余路径零影响。
-        Column()
-          .width('100%')
-          .height('100%')
-          .backgroundColor($r('app.color.browser_canvas'))
-          .opacity(this.extensionJumpCover > 0 ? 1 : 0)
-          .animation({ duration: 200, curve: Curve.Friction })
-          .hitTestBehavior(HitTestMode.None)
+        // 点扩展后的跳转同色底：点击当帧铺上，护住 router 转场期间露出的
+        // 主页 / 当前网页 / 扩展页首帧前的空白。撤底走 200ms 淡出而不是直接
+        // 移除，否则新页会在旧页滑出未完成时整块跳出；不铺时组件不存在，
+        // 不占合成层，对其余路径零开销。
+        if (this.extensionJumpCover > 0) {
+          Column()
+            .width('100%')
+            .height('100%')
+            .backgroundColor($r('app.color.browser_canvas'))
+            .transition(TransitionEffect.opacity(0).animation({ duration: 200, curve: Curve.Friction }))
+        }
       }
     }
     .width('100%')

@@ -486,11 +486,10 @@ export struct ExtensionPanel {
       item.id, String(item.hasPopup), String(needsPopupHold), this.currentUrl);
     if (!item.hasPopup) {
       // 无 popup 扩展（调姬助手）：点击当帧就收面板页，转场立刻开始 ——
-      // 不再等引擎把 chrome-extension:// 页 commit 完（真机实测那要 154ms，
-      // 加首帧宽限共 214ms，期间画面完全静止，就是「不跟手」）。
-      // 起点不是扩展页时铺一层同色底，护住 router 转场期露出的主页 /
-      // 当前网页 / 扩展页首帧前的空白；设置页就绪由 AuraShell 撤底。
-      // 转场约 220ms > commit 约 154ms，转场结束时设置页已准备好。
+      // 不再等引擎把 chrome-extension:// 页 commit 完（那会让画面静止百余
+      // 毫秒，点击显得迟滞）。起点不是扩展页时铺一层同色底，护住 router
+      // 转场期露出的主页 / 当前网页 / 扩展页首帧前的空白；设置页就绪由
+      // AuraShell 撤底。转场通常长于 commit，转场结束时设置页已准备好。
       const alreadyOnExtension: boolean =
         (this.currentUrl ?? '').startsWith('chrome-extension://');
       // 顺序不能反：jumpCover 置位会立刻触发 AuraShell 的 @Watch，
@@ -517,9 +516,9 @@ export struct ExtensionPanel {
     this.onClose();
     this.onCommand({ command: 'runExtensionAction', id: item.id });
     if (needsPopupHold) {
-      // 让位必须等页面转场走完再放：转场这 300ms 里 AuraShell 页是透明的，
-      // HomeSurface 一撤就露出引擎原生 NTP 磁贴，而 popup 要等转场结束才上屏
-      // （真机录屏 253~384ms 的磁贴窗口）。主页层顶到这一刻，popup 落地即接管。
+      // 让位必须等页面转场走完再放：转场期间 AuraShell 页是透明的，
+      // HomeSurface 一撤就露出引擎原生 NTP 磁贴，而 popup 要等转场结束才上屏。
+      // 主页层顶到这一刻，popup 落地即接管。
       const holdToken: number = Date.now();
       setTimeout((): void => {
         const closedAt: number = (AppStorage.get('auraPopupClosedAt') as number) ?? 0;
@@ -834,7 +833,7 @@ export struct ExtensionPanel {
   @Builder
   private DeveloperModeToggle() {
     // Blank 在前 + width('100%')：HDS 的 stackBuilder 是标题行上的覆盖槽，
-    // 容器默认 left-aligned，开关会紧贴标题文字（真机反馈"和标题重叠"）。
+    // 容器默认 left-aligned，开关会紧贴标题文字而重叠。
     // 占满槽宽再用弹性空位把开关推到最右，才是桌面 chrome://extensions
     // 的同款位置。
     Row({ space: 8 }) {
