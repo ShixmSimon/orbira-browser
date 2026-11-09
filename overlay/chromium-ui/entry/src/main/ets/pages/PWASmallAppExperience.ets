@@ -52,6 +52,8 @@ struct PWASmallAppExperience {
   @State private browserState: BrowserStateSnapshot = EMPTY_PWA_STATE;
   @State private browserCommandText: string = '';
   @State private browserCommandRevision: number = 0;
+  @StorageLink('auraColorSchemeCommandText') colorSchemeCmdText: string = '';
+  @StorageLink('auraColorSchemeCommandRevision') colorSchemeCmdRev: number = 0;
   @State private windowStatus: number = 0;
   @State private menuSheetVisible: boolean = false;
   @State private menuSessionId: number = 0;
@@ -96,6 +98,8 @@ struct PWASmallAppExperience {
         themeFontRevision: this.pwaThemeFontRevision,
         browserCommandText: this.browserCommandText,
         browserCommandRevision: this.browserCommandRevision,
+        colorSchemeCmdText: this.colorSchemeCmdText,
+        colorSchemeCmdRev: this.colorSchemeCmdRev,
         onBrowserState: (state: BrowserStateSnapshot): void => {
           this.browserState = state;
           if (!this.systemPermissionReported) {

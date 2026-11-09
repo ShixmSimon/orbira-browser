@@ -3536,6 +3536,24 @@ std::string BuildBrowserStateJson(std::string_view ui_family,
                   web_app::CanCreateWebApp(browser));
     state.Set("canGoBack", active->GetController().CanGoBack());
     state.Set("canGoForward", active->GetController().CanGoForward());
+    // 相邻历史条目的 URL：壳层靠它判断这次后退/前进的落点是不是主页，
+    // 只有落点是主页才铺同色遮盖（那一次引擎会先画原生 NTP 磁贴，壳层主页层
+    // 要等 url 变成 newtab 才挂）；网页↔网页交给 paint-hold 硬切即可。
+    {
+      // NavigationController 的这几个存取器都不是 const 成员，引用不能加 const。
+      content::NavigationController& controller = active->GetController();
+      const int here = controller.GetLastCommittedEntryIndex();
+      auto entry_url = [&controller](int entry_index) -> std::string {
+        if (entry_index < 0 || entry_index >= controller.GetEntryCount()) {
+          return std::string();
+        }
+        const content::NavigationEntry* entry =
+            controller.GetEntryAtIndex(entry_index);
+        return entry ? ShellVisibleUrl(entry->GetURL()) : std::string();
+      };
+      state.Set("backUrl", entry_url(here - 1));
+      state.Set("forwardUrl", entry_url(here + 1));
+    }
     if (is_pwa_window) {
       state.Set("pwaStartUrl", url.spec());
       if (const webapps::AppId* app_id =
@@ -5012,6 +5030,20 @@ void ExecuteBrowserCommandOnUiThread(gfx::AcceleratedWidget widget,
     return;
   }
   if (!name) {
+    return;
+  }
+
+  if (*name == "setColorScheme") {
+    // Runtime color-scheme push from the shell (system dark-mode switch or an
+    // in-app appearance change). UpdateAuraShellColorScheme is the only writer
+    // of state.color_scheme and the only thing that re-themes live web
+    // contents via ApplyColorSchemeOnUiThread. The startup entry point calls it
+    // once, but the runtime UpdateConfiguration -> Initialize re-call does not,
+    // so without this command a system theme switch never reaches web pages.
+    if (const std::string* scheme = command.FindString("scheme")) {
+      LOG(WARNING) << "OHOS runtime color scheme push " << *scheme;
+      UpdateAuraShellColorScheme(*scheme);
+    }
     return;
   }
 

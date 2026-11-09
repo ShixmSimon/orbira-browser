@@ -161,6 +161,9 @@ export interface BrowserStateSnapshot {
   loading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
+  // 相邻历史条目的 URL（后退/前进的落点）。壳层只在落点是主页时才铺同色遮盖。
+  backUrl?: string;
+  forwardUrl?: string;
   isPwaWindow: boolean;
   pwaAppId: string;
   pwaStartUrl: string;

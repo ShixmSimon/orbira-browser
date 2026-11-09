@@ -28,9 +28,11 @@ const AURA_APP_VISIBLE_KEY = 'auraAppVisible';
 const AURA_THEME_FONT_ID_KEY = 'auraThemeFontId';
 const AURA_THEME_FONT_REVISION_KEY = 'auraThemeFontRevision';
 const AURA_COLOR_SCHEME_KEY = 'auraColorScheme';
-// 1.0.143「Vulkan 渲染加速」：启动时读取一次的 GPU 后端开关（默认 false=GLES）。
+const AURA_FORCE_DARK_OVERRIDE_KEY = 'auraForceDarkOverride';
+const AURA_FORCE_DARK_REVISION_KEY = 'auraForceDarkRevision';
+// 「Vulkan 渲染加速」：启动时读取一次的 GPU 后端开关（默认 false=GLES）。
 const AURA_VULKAN_ENABLED_KEY = 'auraVulkanEnabled';
-// 1.0.146「WebGPU 加速」：启动时读取一次的开关（默认 false）。
+// 「WebGPU 加速」：启动时读取一次的开关（默认 false）。
 const AURA_WEBGPU_ENABLED_KEY = 'auraWebGpuEnabled';
 const AURA_ONBOARDING_READY_KEY = 'auraOnboardingReady';
 const AURA_ONBOARDING_COMPLETE_KEY = 'auraOnboardingComplete';
@@ -94,10 +96,6 @@ export default class EntryAbility extends UIAbility {
     this.applyIncognitoWant(want);
     const initialThemeFontId = this.context.config.fontId ?? '';
     this.lastThemeFontId = initialThemeFontId;
-    // 外观设置必须在窗口（以及引擎）创建之前生效：首屏用哪套配色，是引擎在
-    // WebView 起来那一刻决定的。此前这里是异步读 preferences，promise 落在
-    // onWindowStageCreate 之后 → 冷启动首个页面按旧配色加载，必须刷新一次才对
-    // （真机实测：百度、必应首开都是旧色，刷新后正常）。改同步读取后当场应用。
     const savedColorMode: ColorModeSetting = AppearanceSettings.loadSync(this.context);
     AppearanceSettings.apply(this.context, savedColorMode);
     this.lastColorScheme = savedColorMode === 'system'
@@ -109,20 +107,28 @@ export default class EntryAbility extends UIAbility {
     ThemeSchemePush.setHandler((scheme: 'light' | 'dark'): void => {
       this.applyColorSchemePush(scheme);
     });
-    // A 修复（2026-11-05）：系统切深色走独立、可靠的 colorModeChange 监听，
-    // 不再依赖 onConfigurationUpdate 对 setColorMode 的不可靠回调（注释铁证：
-    // 真机上壳已变色而引擎纹丝不动）。触发即走与设置面板同一条已验证路径
-    // applyColorSchemePush → refreshRouting('colorModeChange') → bump revision
-    // → 引擎重算配色；天然幂等，与 onConfigurationUpdate 重复触发不会二次 bump。
-    this.context.getApplicationContext().on('colorModeChange', this.onSystemColorModeChange);
+    // 系统切深色由 UIAbility 的 onConfigurationUpdate 覆盖（那里比对
+    // newConfig.colorMode 后走 applyColorSchemePush）；设置面板切外观由
+    // ThemeSchemePush 直接回调覆盖。两条路径都汇到 applyColorSchemePush，
+    // 由它显式下发 setColorScheme 命令让引擎重刷 live 网页配色。
     AppStorage.setOrCreate(AURA_APP_VISIBLE_KEY, true);
     AppStorage.setOrCreate(AURA_THEME_FONT_ID_KEY, initialThemeFontId);
     AppStorage.setOrCreate(AURA_THEME_FONT_REVISION_KEY, 0);
     AppStorage.setOrCreate(AURA_COLOR_SCHEME_KEY, this.lastColorScheme);
-    // 1.0.143：Vulkan 开关默认关（GLES，规避部分机型滑动掉帧）。冷启动真正读到
+    // 网页强制深色的手动覆盖态：冷启动从 preferences 读回，并带上本次生效的配色。
+    // 系统定时自动切主题常发生在后台，配置回调可能丢失，「主题变化就重置覆盖态」
+    // 那条不会执行；带配色校验后，跨主题的残留覆盖态会自动失效，不会在浅色下
+    // 把网页重新拉深。
+    AppStorage.setOrCreate(AURA_FORCE_DARK_OVERRIDE_KEY,
+      AppearanceSettings.loadForceDarkOverrideSync(this.context, this.lastColorScheme));
+    AppStorage.setOrCreate(AURA_FORCE_DARK_REVISION_KEY, 0);
+    // 冷启动也先落一份配色命令文本：WebWindow 在 onLoad 建好 nativeContext 后会
+    // 重放一次，避免命令在组件挂载前写入而无人消费。引擎按值去重，重复下发无害。
+    this.dispatchColorSchemeCommand(this.lastColorScheme);
+    // Vulkan 开关默认关（GLES，规避部分机型滑动掉帧）。冷启动真正读到
     // 的值在 onWindowStageCreate 里从 preferences 读取后再覆盖此默认值。
     AppStorage.setOrCreate(AURA_VULKAN_ENABLED_KEY, false);
-    // 1.0.146：WebGPU 开关默认关。冷启动真正读到的值在 onWindowStageCreate 里覆盖。
+    // WebGPU 开关默认关。冷启动真正读到的值在 onWindowStageCreate 里覆盖。
     AppStorage.setOrCreate(AURA_WEBGPU_ENABLED_KEY, false);
     AppStorage.setOrCreate(AURA_ONBOARDING_READY_KEY, false);
     AppStorage.setOrCreate(AURA_ONBOARDING_COMPLETE_KEY, false);
@@ -171,6 +177,9 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     AppStorage.setOrCreate(AURA_APP_VISIBLE_KEY, true);
+    // 系统定时自动切主题多半发生在后台/锁屏，配置回调不保证到达；回前台必须
+    // 无条件对账一次，否则壳层已变浅、引擎仍按深色的落盘 pref 渲染网页。
+    this.reconcileColorScheme('foreground');
     this.refreshSystemState();
   }
 
@@ -190,9 +199,7 @@ export default class EntryAbility extends UIAbility {
 
     const colorScheme = this.resolveColorScheme(newConfig.colorMode);
     if (colorScheme !== this.lastColorScheme) {
-      this.lastColorScheme = colorScheme;
-      AppStorage.setOrCreate(AURA_COLOR_SCHEME_KEY, colorScheme);
-      this.refreshRouting('colorModeChange', this.lastFoldStatus);
+      this.applyColorSchemePush(colorScheme);
       hilog.info(DOMAIN, 'AuraShell', 'Color scheme changed: %{public}s', colorScheme);
     }
   }
@@ -212,7 +219,7 @@ export default class EntryAbility extends UIAbility {
     }
     this.startupWant = want;
     this.applyIncognitoWant(want);
-    // 1.0.119：无链接的再次拉起按「启动页」设置决定打开网址主页还是内置启动页。
+    // 无链接的再次拉起按「启动页」设置决定打开网址主页还是内置启动页。
     this.resolveStartupUrl(want).then((startUrl: string): void => {
       AppStorage.setOrCreate('auraStartUrl', startUrl);
       if (this.mainWindow) {
@@ -234,11 +241,6 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, 'AuraShell', 'Incognito launch: %{public}s', incognito ? 'true' : 'false');
   }
 
-  // 1.0.119「启动页」：决定本次启动打开的 URL。
-  // - 若启动 want 携带真实网址（分享/点击链接/跨设备续接），一律尊重该网址，不套用启动页设置；
-  // - 否则（普通冷启动 / 无链接的再次拉起），按「启动页」设置决定：
-  //   'homeUrl' 且已设置网址主页 → 打开网址主页；其余 → 内置启动页(CHROMIUM_HOME_URL)。
-  // prefs 为异步读取，故返回 Promise。读取失败时安全回退内置启动页。
   private async resolveStartupUrl(want: Want | undefined): Promise<string> {
     const resolved = CrossDeviceEntryAdapter.resolveLaunchUrl(want);
     if (resolved !== CHROMIUM_HOME_URL) {
@@ -251,7 +253,7 @@ export default class EntryAbility extends UIAbility {
         if (homeUrl && homeUrl.length > 0) {
           return homeUrl;
         }
-        // 1.0.120：单个值缺失时用多组网址列表的第一条兜底（旧版本数据 / 只
+        // 单个值缺失时用多组网址列表的第一条兜底（旧版本数据 / 只
         // 写了列表没写活动项的情况）。
         const list: string[] = await ShellUiPrefs.loadHomeUrls(this.context);
         if (list.length > 0) {
@@ -266,14 +268,14 @@ export default class EntryAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     const uiPath = UIManager.loadUI();
-    // 1.0.119：启动 URL 依赖异步读取「启动页」偏好，先拿到再装载 UI，避免首帧用错 URL。
+    // 启动 URL 依赖异步读取「启动页」偏好，先拿到再装载 UI，避免首帧用错 URL。
     this.resolveStartupUrl(this.startupWant ?? undefined).then((startUrl: string): void => {
       AppStorage.setOrCreate('auraStartUrl', startUrl);
       AppStorage.setOrCreate('auraRoutingRevision', 0);
       AppStorage.setOrCreate('auraRouting', '');
-      // 1.0.143：Vulkan 开关必须在引擎启动配置序列化「之前」读出来——引擎只在启动
+      // Vulkan 开关必须在引擎启动配置序列化「之前」读出来——引擎只在启动
       // 时读一次配置，晚了就得等下次冷启动。这里与 startUrl 一并异步拿到再序列化。
-      // 1.0.146：WebGPU 开关同理，与 Vulkan 一并读取、一并序列化进启动配置。
+      // WebGPU 开关同理，与 Vulkan 一并读取、一并序列化进启动配置。
       ShellUiPrefs.loadVulkanEnabled(this.context).then((vulkanEnabled: boolean): void => {
         ShellUiPrefs.loadWebGpuEnabled(this.context).then((webgpuEnabled: boolean): void => {
           AppStorage.setOrCreate(AURA_VULKAN_ENABLED_KEY, vulkanEnabled);
@@ -429,11 +431,6 @@ export default class EntryAbility extends UIAbility {
     } catch (error) {
     }
 
-    try {
-      this.context.getApplicationContext().off('colorModeChange', this.onSystemColorModeChange);
-    } catch (error) {
-    }
-
     if (this.routingRefreshTimer >= 0) {
       clearTimeout(this.routingRefreshTimer);
       this.routingRefreshTimer = -1;
@@ -502,28 +499,48 @@ export default class EntryAbility extends UIAbility {
   private applyColorSchemePush(scheme: 'light' | 'dark'): void {
     this.lastColorScheme = scheme;
     AppStorage.setOrCreate(AURA_COLOR_SCHEME_KEY, scheme);
+    // 主题变了：把网页强制深色的手动覆盖态清回「跟随」，否则用户手动关过一次
+    // 之后再切主题也不会自动跟随。AuraShell 监听这个键重新下发 setPref。
+    // 同步写盘（带新配色）：只写 AppStorage 的话，磁盘上残留的 'on' 会在下次
+    // 冷启动被读回、在浅色主题下把网页重新拉深。
+    AppStorage.setOrCreate(AURA_FORCE_DARK_OVERRIDE_KEY, 'follow');
+    AppearanceSettings.saveForceDarkOverride(this.context, 'follow', scheme);
+    const forceDarkRevision = Number(AppStorage.get(AURA_FORCE_DARK_REVISION_KEY) ?? 0);
+    AppStorage.setOrCreate(AURA_FORCE_DARK_REVISION_KEY, forceDarkRevision + 1);
     this.refreshRouting('colorModeChange');
+    this.dispatchColorSchemeCommand(scheme);
     hilog.info(DOMAIN, 'AuraShell', 'Color scheme pushed from settings: %{public}s', scheme);
   }
 
-  // A 修复：系统 colorModeChange 监听回调。部分 API 版本回调参数可能为空，
-  // 统一从 this.context.config.colorMode 取当前系统配色决策；与 onConfigurationUpdate
-  // 互为冗余、天然幂等。回调参数 colorMode 优先，undefined 时退化到 context.config。
-  private onSystemColorModeChange = (colorMode?: ConfigurationConstant.ColorMode): void => {
-    const resolved = colorMode !== undefined
-      ? this.resolveColorScheme(colorMode)
-      : this.resolveColorScheme(this.context.config.colorMode);
-    if (resolved !== this.lastColorScheme) {
-      this.applyColorSchemePush(resolved);
-      hilog.info(DOMAIN, 'AuraShell', 'System color mode changed (colorModeChange): %{public}s', resolved);
+  private reconcileColorScheme(reason: string): void {
+    const raw = this.context.config.colorMode;
+    const explicit: boolean =
+      raw === ConfigurationConstant.ColorMode.COLOR_MODE_DARK ||
+      raw === ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
+    if (explicit) {
+      const resolved = this.resolveColorScheme(raw);
+      if (resolved !== this.lastColorScheme) {
+        this.applyColorSchemePush(resolved);
+        hilog.info(DOMAIN, 'AuraShell', 'Color scheme reconciled (%{public}s): %{public}s', reason, resolved);
+        return;
+      }
     }
-  };
+    // 配色没变（或系统给的是 NOT_SET）也要重推：引擎的 auto-dark pref 是持久化的，
+    // 上次切换时若命令被吞就会一直保持旧值。bump revision 触发 AuraShell 的
+    // @Watch 重新下发 setPref；命令通道显式重发 setColorScheme 让 live 网页重算。
+    // 引擎侧 UpdateAuraShellColorScheme 与 PrefWatcher 都按值去重，重复下发幂等。
+    const forceDarkRevision = Number(AppStorage.get(AURA_FORCE_DARK_REVISION_KEY) ?? 0);
+    AppStorage.setOrCreate(AURA_FORCE_DARK_REVISION_KEY, forceDarkRevision + 1);
+    this.dispatchColorSchemeCommand(this.lastColorScheme);
+    hilog.info(DOMAIN, 'AuraShell', 'Color scheme re-pushed (%{public}s): %{public}s',
+      reason, this.lastColorScheme);
+  }
 
   private restoreBrowserProfile(): void {
     BrowserProfileService.load(this.context)
       .then(async (state: BrowserProfileState): Promise<void> => {
         let resolved: BrowserProfileState = state;
-        // 1.0.235：首次安装不再弹「选择浏览器资料的保存方式」——直接默认
+        // 首次安装不再弹「选择浏览器资料的保存方式」——直接默认
         // 本机 Profile（数据只留本机不上传），静默完成 onboarding；账号绑定
         // 留给日后的同步设置入口，不在启动路径上打断用户。
         if (!state.onboardingComplete) {
@@ -576,6 +593,20 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate(AURA_BROWSER_COMMAND_REVISION_KEY, revision + 1);
   }
 
+  // 运行时配色下发：经独立的浏览器命令通道把配色直接递给引擎，避免与 refreshSystemState
+  // 共用通道时相互覆盖丢失。系统切深色 / 设置面板切外观最终都汇聚到 applyColorSchemePush。
+  // 引擎侧 UpdateConfiguration → Initialize 的重调只把 state.color_scheme 原样应用、
+  // 并不会重新写入它（该写入只在启动入口发生过一次），所以必须显式用 setColorScheme
+  // 命令告诉引擎，否则 live 网页永远不跟随变暗。命令写入独立通道
+  // auraColorSchemeCommandText / auraColorSchemeCommandRevision，由 WebWindow 的
+  // colorSchemeCmdRev 监视器转发给引擎。
+  private dispatchColorSchemeCommand(scheme: 'light' | 'dark'): void {
+    AppStorage.setOrCreate('auraColorSchemeCommandText',
+      JSON.stringify({ command: 'setColorScheme', scheme: scheme }));
+    const revision = Number(AppStorage.get('auraColorSchemeCommandRevision') ?? 0);
+    AppStorage.setOrCreate('auraColorSchemeCommandRevision', revision + 1);
+  }
+
   private captureWindowState(win: window.Window): WindowStateSnapshot {
     let inFreeWindowMode = false;
     let windowStatus = 0;
@@ -616,12 +647,6 @@ export default class EntryAbility extends UIAbility {
       hilog.warn(DOMAIN, 'AuraShell', 'Window background color update is unavailable: %{public}s', JSON.stringify(error));
     }
 
-    // 系统状态栏/导航条只保留图标（颜色随主题），**底色必须透明**：这两条区域
-    // 的底色由 shell 自己绘制（网页页 = 顶栏条带 surface_primary；二级页 = 页面
-    // 自己的沉浸玻璃纱幕）。曾经把状态栏底色刷成 #1D1D1F/#FFFFFF —— 等于在应用
-    // 之上盖了一条不透明色带：网页顶栏看似"同色"了，但二级页（设置/关于…）顶部
-    // 的渐变模糊被整条盖死、还和页面底色对不上（真机反馈：状态栏颜色和设置页
-    // 不一样、渐变模糊没了）。透明后两边都自然，各页面自己决定观感。
     try {
       if (this.lastColorScheme === 'dark') {
         win.setWindowSystemBarProperties({
@@ -644,10 +669,6 @@ export default class EntryAbility extends UIAbility {
       hilog.warn(DOMAIN, 'AuraShell', 'System bar properties update is unavailable: %{public}s', JSON.stringify(error));
     }
 
-    // 网页全屏（video / requestFullscreen）期间，系统栏归 AuraShell 的
-    // setPageFullscreen 管：本函数每次旋转、窗口尺寸变化、路由刷新都会再跑
-    // 一遍，若照旧无条件打开状态栏，就会把刚藏起来的那次顶回来 —— 真机实测
-    // 「竖屏进全屏 → 转横屏 → 状态栏又出现了」正是这条。
     const pageFullscreen: boolean = AppStorage.get<boolean>('auraPageFullscreen') === true;
     const systemBarVisible: boolean = !pageFullscreen;
 

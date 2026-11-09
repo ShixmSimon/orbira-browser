@@ -37,7 +37,7 @@ import { normalizeAddress, searchUrlFor } from './ShellUtils';
 import { ShellUiPrefs } from '../../utils/appearance/ShellUiPrefs';
 import { IncognitoSwitch, SavedTab } from '../../utils/IncognitoSwitch';
 
-// 1.0.2：App 内下载通知条（snackbar）的数据契约。AuraShell 在 downloadUpdated
+// App 内下载通知条（snackbar）的数据契约。AuraShell 在 downloadUpdated
 // 事件里把单条下载项转存进 AppStorage（auraDownloadEvent），本组件消费。
 // 与 DownloadItem 同名字段语义一致（见 engine ShellServiceTypes）。
 interface DownloadEventPayload {
@@ -87,21 +87,8 @@ const EMPTY_DOWNLOAD_SNACK: DownloadSnackState = {
 const DOWNLOAD_SNACK_HEIGHT_VP: number = 52;
 const DOWNLOAD_SNACK_GAP_VP: number = 8;
 
-// The floating bars' full vertical extents (top gap + bar height), in vp.
-// AuraShell reports the top bar to the engine through setBrowserControls;
-// the browserControlsRatio event then drives both bars' translation, so the
-// page and both bars move together while scrolling (SHELL_CONTRACT.md,
-// "手机：滚动时收起地址栏和 dock"). The dock is not reported: it reserves
-// no room on the page and floats over it.
-// 顶栏条带总高：安全区之下 8vp 上边距 + 40vp 胶囊 = 48（1.0.69 用户反馈
-// 「地址栏高度有点大」：胶囊 44→40，整条 52→48；扩展圆钮、编辑态输入框
-// 同步收小）。引擎保留高度 = 安全区 + 本值，收起行程同值 —— 改这里即全局。
 export const TOP_BAR_EXTENT_VP: number = 48;
-// 1.0.91 Chrome 风格 dock 的总高（胶囊 40 + 上下各 8 留白），引擎据此预留顶/底 inset。
-// Chrome 风格 dock 内容高度：地址胶囊 40 + 顶部呼吸 8（底部贴齐胶囊下沿，见 1.0.93）。
 export const CHROME_DOCK_EXTENT_VP: number = 48;
-// 底部 dock 悬浮时，相对屏幕边的留白（左右 + 离底）。对齐简约风格 dock 的 16vp 边距，
-// 让 Chrome 底置地址栏与简约 dock 在视觉尺寸/留白上一致（1.0.106）。
 export const CHROME_DOCK_FLOAT_MARGIN_VP: number = 16;
 // Dock height 48 + container top breathing 12: the bar must travel far
 // enough to fully leave the screen when the page scrolls (controlsRatio 0).
@@ -113,22 +100,13 @@ export const BOTTOM_DOCK_EXTENT_VP: number = 60;
 // 167px ≈ 48vp，我们的 62 画出来 218px，并排就是"太粗"。
 const DOCK_BAR_HEIGHT_VP: number = 48;
 const DOCK_BAR_RADIUS_VP: number = 24;
-// 简约 dock 胶囊的左右留白（2026-10-10 用户反馈"dock 太长"，16→36）。
 const DOCK_SIDE_MARGIN_VP: number = 36;
 // HdsTabs 的 barWidth 按 tabs 宽度断点选档（<440 / 440~600 / >840）。手机竖屏
 // ≈386、横屏 ≈849 分居两端，断点切换若沿用旧档，bar 会停在另一方向的宽度上
 // （竖屏下比屏幕宽、圆角被裁 = dock 卡成长条）。故横竖屏各一个分支重建。
 const DOCK_PLATE_WIDE_BREAKPOINT_VP: number = 600;
-// 每个 dock 页签项的固有宽度：HDS 浮动页签在没收到显式 barWidth 时会按
-// 内容测量条形宽度，而内容里再套 100% 宽就成了循环依赖——v9 那版真机上
-// 整个条塌成一个点就是这个原因。给每项一个具体宽度，两条路都能立起来：
-// 显式 barWidth 生效时 Fixed 均分（约 65.4），不生效时 5 × 65 = 325 兜底。
 const DOCK_SLOT_WIDTH_VP: number = 65;
 
-// dock 的底距。v11 曾用钳制算法
-// （min(安全区, PHONE_TOOLBAR_SAFE_MAX=16) + GAP=4，本机
-// 算得 20vp），真机用户反馈"太贴边、调回原来的位置"，已回退为原始安全区
-// 值（本机 28vp）。dock 位置、收起行程、响应区条带三处共用这一个底距。
 function resolveDockBottomMarginVp(safeVp: number): number {
   return Number.isFinite(safeVp) ? Math.max(safeVp, 0) : 0;
 }
@@ -267,9 +245,6 @@ interface PullRefreshPayload {
   at?: number;
 }
 
-// HarmonyOS 7 沉浸光感：设备能不能渲染系统沉浸材质。走 HDS 探测
-// （getSystemMaterialTypes）——同一个入口：全 NONE（材质被系统
-// 关掉）或旧 SDK 抛错都算不可用，dock 回退纯色玻璃。一次探测、进程内缓存。
 let cachedDockMaterialAvailable: boolean | undefined = undefined;
 
 function isDockMaterialAvailable(): boolean {
@@ -292,9 +267,6 @@ export struct MobileBrowserOverlay {
   // Safe-area insets (status bar / navigation pill) in vp, from EntryAbility.
   @StorageProp('auraTopSafeVp') topSafeVp: number = 0;
   @StorageProp('auraBottomSafeVp') bottomSafeVp: number = 0;
-  // 键盘占用高度（vp），由 EntryAbility 从 TYPE_KEYBOARD 避让区写入。
-  // 横屏时键盘能吃掉半屏以上，联想卡的高度上限必须把它刨掉，否则底部几行
-  // 直接落到键盘下面被裁（用户报「横屏联想框被截断」）。
   @StorageProp('auraKeyboardVp') keyboardVp: number = 0;
   // 网页自己进了全屏（video / requestFullscreen），由 AuraShell 写进 AppStorage。
   // 全屏时状态栏已被藏起来，外壳不能再按"有状态栏"垫底（见状态栏垫底层）。
@@ -348,28 +320,23 @@ export struct MobileBrowserOverlay {
   @State @Watch('onMenuCardVisibleChanged') private menuCardVisible: boolean = false;
   // 小锁快捷面板：浏览态点锁图标弹出（当前站点快捷开关）。
   @State private siteQuickVisible: boolean = false;
-  // 1.0.109：「自定义网址」入口菜单（长按 dock 主页图标弹出，自绘卡片）。
+  // 「自定义网址」入口菜单（长按 dock 主页图标弹出，自绘卡片）。
   @State private homeTileMenuVisible: boolean = false;
-  // 1.0.110：刷新键的「停止」变体——延迟 700ms 出现（见 syncStopVariant）。
+  // 刷新键的「停止」变体——延迟 700ms 出现（见 syncStopVariant）。
   @State private showStopVariant: boolean = false;
   private stopVariantTimer: number = -1;
-  // 1.0.111「网址主页」：设置/修改自定义主页网址的表单（自定义网址入口）。
+  // 「网址主页」：设置/修改自定义主页网址的表单（自定义网址入口）。
   @State private homeUrlFormVisible: boolean = false;
-  // 输入框里待添加的那一条（1.0.120 起是「新增」而不是「整体覆盖」）。
   @State private homeUrlDraft: string = '';
-  // 1.0.120「自定义网址」：已保存的多组网址 + 当前勾选（主页键/冷启动用它）。
+  // 「自定义网址」：已保存的多组网址 + 当前勾选（主页键/冷启动用它）。
   // 列表只在这里和 ShellUiPrefs 之间流动，AppStorage 里存一份 \n 分隔串供
   // 设置面板显示条数。
   @State private homeUrlList: string[] = [];
   @State private homeUrlActive: string = '';
-  // 长按网页元素（链接 / 图片 / 选区）：AuraShell 把 buildContextMenuModel
-  // 的结果序列化写进 AppStorage，这里画卡片（v13，取代系统动作面板）。
-  // 空串 = 没有菜单；用户选一项或关掉时回 contextMenuAction /
-  // contextMenuDismissed 并清空。
   @StorageLink('auraContextMenu') contextMenuJson: string = '';
   // 页内查找 (findInPage): a small bar under the top area.
   @State private findVisible: boolean = false;
-  // 1.0.2：App 内下载通知条（见 DownloadSnackState / DownloadSnackLayer）。
+  // App 内下载通知条（见 DownloadSnackState / DownloadSnackLayer）。
   // 数据源 = AuraShell 转存的 auraDownloadEvent；同一下载的连续进度事件不
   // 重复弹（id+kind 去重），状态跃迁（inProgress→completed/failed）更新同一条。
   @State private downloadSnackVisible: boolean = false;
@@ -382,11 +349,6 @@ export struct MobileBrowserOverlay {
   private downloadEventJson: string = '';
   @State private findQuery: string = '';
   @StorageLink('auraFindResult') findResultJson: string = '';
-  // Tab switcher card previews, keyed by tab id.
-  // 【1.0.89 缩略图不显示】两处都在：① 那边没有 @Watch —— 回包落到
-  // 'auraTabThumbnails' 后没人重新解析，thumbnailFor() 一直读的是**发请求那一刻**
-  // 解析出来的旧 map（首次就是空），图永远画不出来；② 这个 map 原本不是
-  // @State —— 就算解析了也触发不了重绘。必须两个都在，缺一个就是"预览不显示"。
   @StorageLink('auraTabThumbnails') @Watch('onTabThumbnailsChanged') tabThumbnailsJson: string = '';
   @State private tabThumbnails: Map<string, string> = new Map();
   // What to ask getTabThumbnails for: the card's width, and the card's width
@@ -411,10 +373,10 @@ export struct MobileBrowserOverlay {
   // （引擎 minTop=topSafe，AuraShell.sendBrowserControls），状态栏那一条由本层
   // 的常驻垫底显示页面底色（见 build() 与 topBarHideProgress）。
   @StorageLink('auraHideStatusBarOnScroll') hideStatusBarOnScroll: boolean = false;
-  // 1.0.91 主页风格（'minimal' | 'chrome'）与 Chrome 风格下 dock 位置（'bottom' | 'top'）。
+  // 主页风格（'minimal' | 'chrome'）与 Chrome 风格下 dock 位置（'bottom' | 'top'）。
   @StorageLink('auraHomeStyle') homeStyle: string = 'minimal';
   @StorageLink('auraDockPosition') dockPosition: string = 'bottom';
-  // 1.0.96：auraRequestMenuOpen 信号随主页右上角菜单按钮一并去除（入口冗余：
+  // auraRequestMenuOpen 信号随主页右上角菜单按钮一并去除（入口冗余：
   // 简约底栏 dock / Chrome 风格 dock 均有 ⋮ 菜单槽位）。
   // “滚动时隐藏地址栏”：dockRatio() 用它判断组合（常驻地址栏时 dock 走触摸）。
   @StorageLink('auraHideTopBarOnScroll') hideTopBarOnScroll: boolean = true;
@@ -429,7 +391,7 @@ export struct MobileBrowserOverlay {
   // A' 面板页化（Phase 3）：路由页（设置页「添加主页网址」）经此信号请求 overlay
   // 弹出网址管理表单——路由页与浏览器壳不在同一组件树，用 AppStorage 计数器桥接。
   @StorageLink('auraRequestAddHomeTile') @Watch('onRequestAddHomeTile') requestAddHomeTileSignal: number = 0;
-  // 1.0.104 下拉刷新：引擎（Chromium）自己判定「页面已到顶 + 不是内层滚动 +
+  // 下拉刷新：引擎（Chromium）自己判定「页面已到顶 + 不是内层滚动 +
   // overscroll-behavior 放行」，也自己 reload，外壳只画指示器 —— 事件由 AuraShell
   // 转存（见 engine ShellServiceTypes.PullToRefreshEvent）。
   // 'idle' 无 / 'pull' 手指还在拉（跟手放大）/ 'refreshing' 松手够远了（转圈等 reset）。
@@ -457,18 +419,10 @@ export struct MobileBrowserOverlay {
   // 断点时销毁重建 HdsTabs，逼它按当前 tabs 宽度重新选 barWidth 档位
   // （见 DOCK_PLATE_WIDE_BREAKPOINT_VP 的说明）。
   @State private dockPlateWide: boolean = false;
-  // 页面切换柔和过渡帘幕（2026-10-10）：URL 变化（地址栏提交搜索 / 点链接 /
-  // 切标签 / 前进后退）时"横向扫过"—— 从右侧扫入盖上、继续向左扫出（新页
-  // 从右侧揭开，方向感对齐二级页滑入）；主页（新标签页）不扫（见 watcher）。
-  // 帘幕压在引擎上方、chrome 之下 —— 顶栏/dock 全程可见。
   @State private navVeilShift: number = 1;
   private lastNavVeilUrl: string = '';
   private navVeilTimer: number = -1;
 
-  // 1.0.72：加载进度条 —— 参数常量（BAR_HEIGHT=2 /
-  // MIN_PROGRESS=0.08 / GROW_MS=200 + EaseOut）。它只有 2vp、不覆盖任何网页
-  // 内容，纯指示，因此**不会延长引擎的绘制空档**；1.0.71 用「帘幕等 loading
-  // 结束再揭开」是覆盖层，盖多久就空白多久（实测把 0.45s 撑成 1.05s），已废弃。
   private loadBarHeight: number = 2;
   private loadBarMin: number = 0.08;
   private loadBarGrowMs: number = 200;
@@ -501,10 +455,6 @@ export struct MobileBrowserOverlay {
   private keyboardRecoveryTimers: number[] = [];
   private readonly addressController: TextInputController = new TextInputController();
   private addressSelectionStart: number = 0;
-  // 「首字符替换整条」的基础串：进入编辑瞬间的原网址。常驻全选（selectAll）会
-  // 让输入框一直停在选中态 —— 系统选中菜单会吞掉第一次点按，表现为「取消」要点
-  // 两次（1.0.110 的老问题，1.0.113 又为了全选把它改回来）。改成：输入框里仍是
-  // 原网址（无选区），敲第一个字符就把整条换掉，效果一样但不再有选中态。
   private addressBase: string = '';
   private addressEdited: boolean = false;
   private addressSelectionEnd: number = 0;
@@ -619,8 +569,6 @@ export struct MobileBrowserOverlay {
       this.issueCommand({ command: 'back' });
       return true;
     }
-    // 非主页、且无可后退历史（外部拉起的网页、或单页浏览到根部）：回到主页而非退出
-    // 应用。原先这里直接 return false 会把浏览器整个关掉，侧滑体验与预期不符。
     this.issueCommand({ command: 'home' });
     return true;
   }
@@ -660,7 +608,6 @@ export struct MobileBrowserOverlay {
     const navUrl: string = this.browserState.url ?? '';
     if (navUrl.length > 0) {
       // 主页（新标签页）不扫帘幕：HomeSurface 有自己的显示/淡入与 homeHold
-      // 机制，再叠一层帘幕就是"回主页闪一下"（真机录屏实测：帘幕盖在主页
       // 淡入上）。离开主页同样跳过 —— 由 homeHold 捂住到新页面画出来。
       const goingHome: boolean = this.isNewTabUrl(navUrl);
       const leavingHome: boolean = this.isNewTabUrl(this.lastNavVeilUrl);
@@ -669,17 +616,10 @@ export struct MobileBrowserOverlay {
         if (this.suggestVisible) {
           this.hideAddressSuggest();
         }
-        // 1.0.78：帘幕停用 —— 白色色块横向扫过在真机/录屏中被用户感知为"每切
-        // 一次出一遍白屏"（逐帧实证：白块从右向左推进、左侧露旧页残边）。改为
-        // "直接切换"体验。playNavVeil 本体与 navVeil 视图保留可随时回
-        // 滚（navVeilShift 恒为 1 = 停在屏外右侧，不可见、不参与命中）。
-        // if (!goingHome && !leavingHome) {
-        //   this.playNavVeil();
-        // }
       }
       this.lastNavVeilUrl = navUrl;
     }
-    // 1.0.72：加载进度条——读取引擎真实 loadProgress。它只是
+    // 加载进度条——读取引擎真实 loadProgress。它只是
     // 指示、不覆盖内容，因此既不延长白屏、也不参与切页过渡。
     this.syncLoadBar();
     // Fix B/E：提交导航后保持编辑态与键盘，等导航 commit（url 变化）并留出
@@ -702,14 +642,10 @@ export struct MobileBrowserOverlay {
     }
     this.currentTabCastSession.update(this.browserState);
     this.maybeActivatePendingNewTab();
-    // 1.0.110：刷新键「停止」变体的延迟切换（见 syncStopVariant）。
+    // 刷新键「停止」变体的延迟切换（见 syncStopVariant）。
     this.syncStopVariant(this.browserState.loading);
   }
 
-  // 1.0.110（用户报「刷新突变变成 X」）：加载一开始就把 ↻ 换成 ✕ 太跳——多数
-  // 页面几百毫秒就加载完，按钮闪一下又变回来。改为：加载持续超过 700ms 才切成
-  // 「停止」，快速加载全程保持 ↻ 不变；慢加载仍可点 ✕ 随时停止。图标变体的读数
-  // 只有这一处（showStopVariant），点击行为始终按真实 loading 判断（见两处刷新钮）。
   private syncStopVariant(loading: boolean): void {
     if (loading) {
       if (this.showStopVariant || this.stopVariantTimer !== -1) {
@@ -810,7 +746,6 @@ export struct MobileBrowserOverlay {
     }, 500);
   }
 
-  // 回包到了就把 JSON 重新解一遍（1.0.89：这一层以前根本没有 —— 见字段注释）。
   private onTabThumbnailsChanged(): void {
     // 面板没开时不必去翻磁盘：这些图只有标签网格/列表要画。开着才补读。
     this.parseThumbnails(this.menuVisible);
@@ -847,6 +782,11 @@ export struct MobileBrowserOverlay {
         continue;
       }
       const url: string = tab.url ?? '';
+      // 主页标签不读缩略图：引擎截的是底层 chrome://newtab 的原生磁贴，
+      // 壳层自绘主页不在 WebContents 里；旧磁盘缓存里也可能存着这张磁贴图。
+      if (this.isNewTabUrl(url)) {
+        continue;
+      }
       let cached: string = this.thumbDiskCache.get(url) ?? '';
       if (cached.length === 0 && withDisk) {
         cached = TabThumbnailStore.load(context, url);
@@ -871,6 +811,11 @@ export struct MobileBrowserOverlay {
   // 新图既落盘也进内存：同一个 URL 之后再显示就不用读盘了。
   private rememberThumb(context: common.Context | undefined, url: string,
     dataUrl: string, pngBase64: string): void {
+    // 主页标签的截图只会是引擎原生 NTP 磁贴（壳层自绘层不在 WebContents 里），
+    // 不落盘也不进内存缓存，否则会话恢复后这张磁贴图会被重新贴回卡片。
+    if (this.isNewTabUrl(url)) {
+      return;
+    }
     // 缓存只服务于打开面板那几屏，条数很小；超了就整体丢弃，不做精细淘汰。
     if (this.thumbDiskCache.size > 32) {
       this.thumbDiskCache.clear();
@@ -880,6 +825,10 @@ export struct MobileBrowserOverlay {
   }
 
   private thumbnailFor(tab: BrowserTabState): string {
+    // 主页标签一律走自绘占位，不用引擎截图（见 rememberThumb 注释）。
+    if (this.isNewTabUrl(tab.url ?? '')) {
+      return '';
+    }
     if (tab.id && tab.id.length > 0) {
       const value = this.tabThumbnails.get(tab.id);
       if (value) {
@@ -887,6 +836,58 @@ export struct MobileBrowserOverlay {
       }
     }
     return '';
+  }
+
+  // 主页标签的自绘缩略图占位。引擎截图截不到壳层 ArkUI 主页，只能给出底层
+  // chrome://newtab 的原生磁贴；这里画一个与真实主页同构的简化版，
+  // 让标签总览里的「新标签页」卡片看起来就是我们的主页。
+  @Builder
+  private HomeTabPlaceholder() {
+    Column({ space: 14 }) {
+      Text('Orbira')
+        .fontSize(19)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary'))
+      Row() {
+        Text('搜索或输入网址')
+          .fontSize(10)
+          .fontColor($r('app.color.text_secondary'))
+      }
+      .width('76%')
+      .height(26)
+      .padding({ left: 12 })
+      .borderRadius(13)
+      .backgroundColor($r('app.color.surface_secondary'))
+      Row({ space: 16 }) {
+        Column().width(20).height(20).borderRadius(10)
+          .backgroundColor($r('app.color.surface_secondary'))
+        Column().width(20).height(20).borderRadius(10)
+          .backgroundColor($r('app.color.surface_secondary'))
+        Column().width(20).height(20).borderRadius(10)
+          .backgroundColor($r('app.color.surface_secondary'))
+        Column().width(20).height(20).borderRadius(10)
+          .backgroundColor($r('app.color.surface_secondary'))
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor($r('app.color.browser_canvas'))
+    .justifyContent(FlexAlign.Center)
+  }
+
+  // 列表视图里的小缩略图只用品牌字标，保持紧凑不挤成一团。
+  @Builder
+  private HomeTabPlaceholderCompact() {
+    Column() {
+      Text('Orbira')
+        .fontSize(11)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary'))
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor($r('app.color.browser_canvas'))
+    .justifyContent(FlexAlign.Center)
   }
 
   private thumbKeepTimer: number = 0;
@@ -907,6 +908,10 @@ export struct MobileBrowserOverlay {
       return;
     }
     const tab: BrowserTabState = tabs[index];
+    // 主页标签没有值得保留的截图，别为它发请求、更别把原生磁贴图落盘。
+    if (this.isNewTabUrl(tab.url ?? '')) {
+      return;
+    }
     const id: string = tab.id ?? '';
     if (id.length === 0) {
       return;
@@ -944,15 +949,19 @@ export struct MobileBrowserOverlay {
 
   private requestTabThumbnails(): void {
     TabThumbnailStore.prune(this.getUIContext().getHostContext() as common.Context | undefined);
-    // 面板正要打开：这一轮把磁盘里存的旧图都读进来。
     this.parseThumbnails(true);
     const ids: string[] = [];
     for (const tab of this.browserState.tabs) {
-      if (tab.id && tab.id.length > 0) {
+      // 主页标签由壳层自绘占位，不向引擎请求截图（省一次无用的 surface 拷贝）。
+      if (tab.id && tab.id.length > 0 && !this.isNewTabUrl(tab.url ?? '')) {
         ids.push(tab.id);
       }
     }
     if (ids.length === 0) {
+      if (this.thumbnailRetryTimer !== 0) {
+        clearTimeout(this.thumbnailRetryTimer);
+        this.thumbnailRetryTimer = 0;
+      }
       return;
     }
     this.requestSeq += 1;
@@ -1020,10 +1029,10 @@ export struct MobileBrowserOverlay {
     this.requestAddHomeTile();
   }
 
-  // 1.0.109：请求「自定义网址」——收起入口菜单、打开网址管理表单。
-  // 1.0.111（用户澄清语义）：「网址主页」= 让某个网址成为主页——按下主页键就
+  // 请求「自定义网址」——收起入口菜单、打开网址管理表单。
+  // （用户澄清语义）：「网址主页」= 让某个网址成为主页——按下主页键就
   // 打开这个页面（不是把网址加进主页磁贴）。
-  // 1.0.120：支持多组网址 —— 表单里可以反复添加，勾选中的那一条才是当前主页。
+  // 支持多组网址 —— 表单里可以反复添加，勾选中的那一条才是当前主页。
   private requestAddHomeTile(): void {
     this.homeTileMenuVisible = false;
     const list: string[] = ShellUiPrefs.parseUrlList(
@@ -1035,7 +1044,7 @@ export struct MobileBrowserOverlay {
     this.homeUrlFormVisible = true;
   }
 
-  // 1.0.120：追加一条网址（自动补 scheme、去重），并把它设为当前主页。
+  // 追加一条网址（自动补 scheme、去重），并把它设为当前主页。
   private addHomeUrlEntry(): void {
     const raw: string = this.homeUrlDraft.trim();
     if (raw.length === 0) {
@@ -1090,18 +1099,10 @@ export struct MobileBrowserOverlay {
     }
   }
 
-  // 关闭表单：只收起浮层，不再像 1.0.111 那样"保存即覆盖"——增删改在点按
-  // 当下就已经落盘了，这里不用再确认一次。
   private closeHomeUrlForm(): void {
     this.homeUrlFormVisible = false;
   }
 
-  // ---- 长按菜单（自绘卡片，2026-10-09 v13）----
-  //
-  // 协议见 docs/SHELL_CONTRACT.md「长按菜单」：每次 contextMenuRequested 都
-  // 要回一条 contextMenuAction（选了某项）或 contextMenuDismissed（没选就
-  // 关），requestId 一一对应；新的一次长按直接替换旧的。卡片锚在按压点
-  // 旁边，位置夹取，绝不出屏。
 
   private contextMenuModelOrDefault(): ContextMenuModel {
     return parseContextMenuModel(this.contextMenuJson) ?? EMPTY_CONTEXT_MENU_MODEL;
@@ -1283,18 +1284,12 @@ export struct MobileBrowserOverlay {
     }
     .width('100%')
     .height('100%')
-    // 退场动效（1.0.68）：挂 if 分支根节点才能播（子节点退场会被整树原子删除）。
     .transition(TransitionEffect.asymmetric(
       TransitionEffect.opacity(1),
       TransitionEffect.opacity(0).animation({ duration: 300, curve: Curve.Friction })
     ))
   }
 
-  // 卡片本体：贴着按压点弹在网页上，用与顶栏/dock 一致的玻璃。
-  // ⚠️ 这里**不能**挂 systemMaterial：本卡片在「页面内容区」，HarmonyOS 7
-  // 收紧生效范围后材质会静默失效、却仍接管 backgroundColor → 卡片整块透明
-  // （2026-10-09 真机现象）。系统菜单 bindMenu 那条路同样会拖死点击（官方
-  // 文档明写「弹簧曲线退出拖尾使其他事件无法响应」），都不要再用。
   @Builder
   private ContextMenuCard(model: ContextMenuModel) {
     Column() {
@@ -1347,9 +1342,6 @@ export struct MobileBrowserOverlay {
     }
     .width(CONTEXT_MENU_CARD_WIDTH_VP)
     .borderRadius(22)
-    // 贴着按压点弹在网页上。底色 menu_glass **全不透明**（用户定案 2026-10-10：
-    // 真玻璃四条路全堵，那就不要透）——浅 #F7F7F8 / 深 #29292C，观感对齐
-    // 系统菜单的实底卡片。契约 §8：网页上方不叠模糊。
     .backgroundColor($r('app.color.menu_glass'))
     .shadow({ radius: 26, color: $r('app.color.shadow'), offsetY: 8 })
     .clip(true)
@@ -1384,10 +1376,6 @@ export struct MobileBrowserOverlay {
     this.issueCommand({ command: 'stopFind' });
   }
 
-  // ---- App 内下载通知条（1.0.2）----
-  // 状态机：inProgress → 首次出现弹「开始下载」（同 id 连续进度事件不重置
-  // 计时）；completed → 同一条更新为「下载完成」+ 动作（.crx=安装 / 其他=
-  // 打开）；failed → 「下载失败」。paused/cancelled 不弹（避免打断）。
   private onDownloadEventChanged(): void {
     if (this.downloadEventJson.length === 0) {
       return;
@@ -1403,10 +1391,6 @@ export struct MobileBrowserOverlay {
       return;
     }
     if (ev.state === 'inProgress') {
-      // 同一次下载只提示一次「开始下载」。
-      // 按 id 记忆、而不是「当前是否还可见」：进度事件每秒多次，4s 自动隐藏后
-      // 下一条进度事件又会把它弹回来 —— 只要下载没结束，通知条就永远挂着
-      // （用户报「下载状态弹窗一直显示」）。点 ✕ 主动关掉后也不再重弹。
       if (this.downloadSnackAnnouncedId === ev.id) {
         return;
       }
@@ -1540,8 +1524,6 @@ export struct MobileBrowserOverlay {
     if (url.length === 0 || this.isNewTabUrl(url)) {
       return;
     }
-    // 不带 parentId：引擎默认落点就是移动设备书签 = 书签页根。**不要**指定成
-    // 「首页」文件夹——只有用户主动送进去的书签才该出现在主页上。
     this.issueCommand({
       command: 'addBookmark',
       url: url,
@@ -1570,12 +1552,10 @@ export struct MobileBrowserOverlay {
     }
   }
 
-  // 1.0.91 Google 风格 dock：主页 / 地址栏胶囊 / 标签页 / 菜单 一行排布，可置于顶或底。
+  // Google 风格 dock：主页 / 地址栏胶囊 / 标签页 / 菜单 一行排布，可置于顶或底。
   // 地址栏胶囊复用顶栏同款编辑/浏览两态（同 id 复用焦点恢复逻辑）；为不与顶栏的
   // 返回/刷新重复，浏览态只显示锁 + 域名，点按进入编辑。
   @Builder
-  // Chrome 风格 dock 分发：地址栏在顶=贴顶通宽条带（底沿贴胶囊下沿，1.0.93）；
-  // 在底=悬浮胶囊（左右留白 + 离底，1.0.93）。
   private GoogleDock() {
     if (this.chromeDockAtTop()) {
       this.GoogleDockTop();
@@ -1587,7 +1567,7 @@ export struct MobileBrowserOverlay {
   // Chrome dock 跟手收起系数（0~1，夹取）。@Builder 体内首行不能写局部变量，
   // 抽到方法里供 translate 内联调用。
   private chromeDockRatio(): number {
-    // 1.0.99：顶置回读引擎 controlsRatio（sendBrowserControls chrome 顶置分支
+    // 顶置回读引擎 controlsRatio（sendBrowserControls chrome 顶置分支
     // 恢复 top 预留 + minTop=0，引擎原产收起比例，网页同步上顶——传统通栏
     // 跟手隐藏）；底置引擎把 top 锁死不产 ratio，仍读触摸驱动键
     // auraChromeBottomRatio（键名带 Bottom 是历史命名，只驱动底置）。
@@ -1597,13 +1577,6 @@ export struct MobileBrowserOverlay {
     return Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 1) : 1;
   }
 
-  // 引擎 ratio 的「收起终点」（收起档的下限）。1.0.128 起随 AuraShell 的 minTop 还原：
-  // 引擎改 shrinkRendererSize=false 后视口恒满高，底部不再因 minTop=topSafe 被扣一截，
-  // 故收起下限回到引擎本意 topSafe/(48+topSafe)（= 引擎 bridge 的收起判据下限，
-  // 见 AuraShell.computeTopBarHiddenForInset）——收起后网页顶边停在状态栏底。
-  // 沉浸档（「上滑时隐藏状态栏」开着，minTop=0）、常显档（锁 1）与无状态栏时仍为 0。
-  // ⚠️ 必须与 AuraShell.sendBrowserControls 的 minTop 成对；不一致 → 条带提前隐入、
-  // 垫层与网页位置错位（topBarHideProgress / dockRatio 都按它归一化）。
   private topBarRatioFloor(): number {
     if (!this.hideTopBarOnScroll || this.hideStatusBarOnScroll || this.topSafeVp <= 0) {
       return 0;
@@ -1611,7 +1584,7 @@ export struct MobileBrowserOverlay {
     return this.topSafeVp / (TOP_BAR_EXTENT_VP + this.topSafeVp);
   }
 
-  // 1.0.102：Chrome 风格 dock 的“有效位置”——主页恒在顶部（且只留主页/标签页/
+  // Chrome 风格 dock 的“有效位置”——主页恒在顶部（且只留主页/标签页/
   // 菜单三个槽位，无地址胶囊）；网页界面才按设置区分顶/底。dock 派发、菜单卡
   // 对齐、触摸响应区三处都用它，避免主页与设置不一致。
   private chromeDockAtTop(): boolean {
@@ -1622,11 +1595,6 @@ export struct MobileBrowserOverlay {
   // [0,1]，顶栏才能在引擎的下限处刚好完全隐入（网页同步停在状态栏底）。
   // floor=0（设置开着 / 不收起）时与按 1-ratio 的旧行为逐值相同。
   private topBarHideProgress(): number {
-    // 1.0.108（真机录屏逐帧实测定位）：主页/新标签页没有可滚动内容，引擎不产
-    // 收起比例；点主页或「后退回主页」时，引擎会把导航途中的中间比例留在 ratio
-    // 上——顶置条带于是向上跳约 45vp 并卡在半隐位置、永不回位（用户报「Chrome
-    // 风格地址栏在上，点主页图标会往上跳」；底置位移挂触摸键，不受影响）。
-    // 主页恒视为全展开：无论引擎报什么，条带都停在展开位。
     if (this.isHomeSurface()) {
       return 0;
     }
@@ -1637,16 +1605,6 @@ export struct MobileBrowserOverlay {
     return span > 0 ? Math.min(Math.max((1 - r) / span, 0), 1) : (1 - r);
   }
 
-  // 引擎顶部预留区高度（vp）。网页 window 是满屏的，引擎把内容按这个高度整体
-  // 下移让出控件区；下移让出来的那一带露的就是引擎自己的 window 底板
-  // （暗色 ≈#3A3A3A）—— 见 build() 里的动态垫底层。必须与 AuraShell.sendBrowserControls
-  // 实际下发的几何逐模式对齐，否则垫底会盖到网页上：
-  //  · 简约 / Chrome 顶置：top = 条高(48) + 状态栏，预留区 =（48 + 状态栏 + 多铺
-  //    3vp）× 引擎 ratio —— ratio=1 时与条带等高（被条带盖住），=0 时铺满物理顶；
-  //  · Chrome 底置：top 只留状态栏、minTop=0（「上滑时隐藏状态栏」开着时引擎
-  //    允许收到 0）—— 预留区 =（状态栏 + 多铺 2vp）× ratio。1.0.107 起这是该
-  //    形态下**唯一**的顶部垫层（常驻垫底只在开关关着时铺，见 build()）：ratio→0
-  //    与网页铺满同步收为 0——既压住滚动途中的底板，又不留常驻遮挡。
   private topBarReserveVp(): number {
     if (this.topSafeVp <= 0) {
       return 0;
@@ -1780,15 +1738,12 @@ export struct MobileBrowserOverlay {
     .onClick((): void => {
       this.pressHome();
     })
-    // 1.0.109（用户定案）：Chrome 风格主页上，长按左上角主页图标 → 弹出
-    // 「自定义网址」选项。与轻点（回主页）在手势层天然互斥——按住 450ms
-    // 出菜单、轻点即触发 onClick。
     .gesture(LongPressGesture({ repeat: false, duration: 450 })
       .onAction((): void => {
         this.homeTileMenuVisible = true;
       }))
 
-    // 1.0.102：主页恒在顶部且不放地址胶囊（主页自带搜索框）——只留 主页/标签页/
+    // 主页恒在顶部且不放地址胶囊（主页自带搜索框）——只留 主页/标签页/
     // 菜单 三个槽位；网页界面才显示胶囊并按设置区分顶/底。
     if (this.isHomeSurface()) {
       Blank()
@@ -1843,18 +1798,6 @@ export struct MobileBrowserOverlay {
     })
   }
 
-  // Chrome 顶置：通宽地址栏条带（1.0.99 回传统几何——用户三图定案「看状态栏、
-  // 网页、地址栏相对位置」：不滚动=状态栏→通宽地址栏→网页；滚动=地址栏整条消失、
-  // 网页顶到状态栏）。构造对齐简约 TopAddressBar：
-  //  · 条带底 = surface_primary 实色（状态栏整条 + 地址栏区连成一条同色带，
-  //    治 1.0.97/1.0.98 反复反馈的「状态栏颜色和页面不一致」）；二级页铺满时
-  //    让位透明（不顶死纱幕）；多铺 3vp 压引擎保留区下沿 ≈9px 缝；
-  //  · 条带内嵌主页/地址胶囊/标签页/菜单四槽位（GoogleDockButtons），地址胶囊
-  //    保持玻璃材质——「Chrome 风格沉浸光感按简约地址栏来」的落点；
-  //  · 整条 Transparent + 按钮 Default：条带区的滑动照常下发到网页。
-  // 1.0.98 曾改成「引擎预留清零 + dock 纯外壳悬浮」的浮胶囊形态，真机反馈否决
-  // （「怎么把悬浮胶囊地址栏还给我改了」）——本条带回退；浮胶囊只留给底置
-  // （1.0.93 定案，见 GoogleDockBottom）。
   @Builder
   private GoogleDockTop() {
     Stack({ alignContent: Alignment.TopStart }) {
@@ -1904,24 +1847,13 @@ export struct MobileBrowserOverlay {
     // 自身透明、子节点（按钮/地址胶囊）照常拦截——条带区的滑动下发到网页。
     .hitTestBehavior(HitTestMode.Transparent)
     // 滚动隐藏：整条上移离屏，行程=整条高（含多铺 3vp）——完全隐入无残留。
-    // 1.0.101：收起进度按引擎下限归一化（见 topBarHideProgress）——「上滑时隐藏
+    // 收起进度按引擎下限归一化（见 topBarHideProgress）——「上滑时隐藏
     // 状态栏」关着时引擎下限=topSafe，直接用 1-ratio 会卡在半隐。
-    // 1.0.102：加 160ms 隐式动画——收起/展开是可见的滑出滑入，不是瞬间跳变。
+    // 加 160ms 隐式动画——收起/展开是可见的滑出滑入，不是瞬间跳变。
     .translate({ y: -(this.topBarHideProgress()) * (this.topSafeVp + CHROME_DOCK_EXTENT_VP + 3) })
     .animation({ duration: 160, curve: Curve.FastOutSlowIn })
   }
 
-  // Chrome 底置（1.0.105 按用户要求重做）：把「现有地址栏的内容」整条搬到
-  // 下面，做成通宽平铺条带 ——
-  //   [← 返回] [⋮ 菜单] [🔒 域名（点按=搜索框）] [↻ 刷新·停止] [标签数]
-  // 与旧版的区别：①URL 不再是套在 dock 胶囊里的第二层胶囊（用户定「不要胶囊套胶囊」），
-  // 就是一个 Button 包着的锁+域名，文字在条带里居中；②返回/刷新/菜单直接搬自顶栏
-  // （TopBarContent 同款图标、同款按压弹簧、同款可用性）；③背景先试系统沉浸光感
-  // （见 ChromeBarMaterialPlate），拿不到材质才回退自绘 glass_tint。
-  // 命中：条带容器 Transparent（空白处的滑动照常下发网页），各控件是真 Button
-  // （Default）——旧版 URL 是「裸 Row + onClick」（与 2026-10-10 联想行同型），
-  // 点击会连穿到网页，这就是用户报的「悬浮地址栏点击命令穿透」。
-  // 编辑态：整条换成搜索框（输入 + 关闭），联想卡浮在条带上方（见 AddressSuggestLayer）。
   @Builder
   private GoogleDockBottom() {
     Stack() {
@@ -1961,7 +1893,7 @@ export struct MobileBrowserOverlay {
             .height('100%')
             .padding({ left: 10, right: 10 })
           } else {
-            // 1.0.107 排布优化（用户：图标和地址排布不均匀）：图标间统一 2vp
+            // 排布优化（用户：图标和地址排布不均匀）：图标间统一 2vp
             // 呼吸、左右留白收窄到 8 且左右对称；地址胶囊在剩余宽度里均分并
             // 自身居中 —— 四个图标视觉等距，域名居中且拿到最大可用宽度。
             Row({ space: 2 }) {
@@ -1970,7 +1902,7 @@ export struct MobileBrowserOverlay {
                   this.pressHome();
                 })
               this.ChromeBarAddress()
-              // 1.0.110：图标变体走 showStopVariant（延迟切换，快速加载不闪 X）；
+              // 图标变体走 showStopVariant（延迟切换，快速加载不闪 X）；
               // 点击行为仍按真实 loading 判断。
               this.ChromeBarIconButton(this.showStopVariant ?
                 $r('app.media.aura_close') : $r('app.media.aura_reload'),
@@ -2126,9 +2058,6 @@ export struct MobileBrowserOverlay {
       .hitTestBehavior(HitTestMode.Default)
       .onClick((): void => this.beginAddressEdit())
     }
-    // 用 layoutWeight(1) 占剩余宽度，绝不能用 width('100%')：它是底栏 Row
-    // 里 home/刷新/标签/菜单的同级兄弟，100% 会把兄弟全挤成 0 宽
-    // （用户报「刷新/设置按钮改没了」的真因）。
     .layoutWeight(1)
     .height(40)
     .padding({ left: 6, right: 6 })
@@ -2183,8 +2112,6 @@ export struct MobileBrowserOverlay {
       .backgroundColor(Color.Transparent)
           .padding({ left: 14, right: 10 })
           .enterKeyType(EnterKeyType.Go)
-          // 不用 selectAll：常驻选区的系统选中菜单会吞掉第一次点按（1.0.110 老
-          // 问题）。改成「首字符替换整条」，见 onAddressInput。
       .onChange((value: string): void => {
         const next: string = this.onAddressInput(value);
         this.addressDraft = next;
@@ -2203,11 +2130,6 @@ export struct MobileBrowserOverlay {
       .onSubmit((): void => {
         this.submitAddress();
       })
-    // 1.0.107：关闭编辑态换成「取消」文字按钮，不再用 36vp 圆叉。
-    // 之前它旁边挂着一个系统 PasteButton（读剪贴板）：点它会走系统授权浮层，
-    // 在全屏自绘外壳上把整屏点击拖死（用户报「卡死」），还把旁边的圆叉挤到
-    // 点不动（用户报「叉无效」）。粘贴能力改走输入框自身的长按系统菜单
-    // （原生「粘贴」，无权限、无额外控件）。见 ref/04。
     Button({ type: ButtonType.Normal, stateEffect: true }) {
       Text('取消')
         .fontSize(16)
@@ -2254,13 +2176,6 @@ export struct MobileBrowserOverlay {
     }
   }
 
-  // 打开菜单 / 菜单卡片前统一收键盘。
-  // 用户实测：「地址栏输入中，点菜单，输入法不消失，直接挡住菜单」。
-  // 用 @Watch 挂在 menuVisible / menuCardVisible 上，一处覆盖全部 9 个入口
-  // （顶栏 ⋮、底栏 ⋮、标签页按钮、Google dock 槽位、边缘手势…），以后新增
-  // 入口也不会再漏一次。
-  // 走 cancelAddressEdit 而不是只 hideTextInput：后者只收键盘，地址栏仍停在
-  // 编辑态（选区、光标、搜索面板都在），菜单关掉后用户看到的是半截编辑态。
   private onMenuVisibleChanged(): void {
     if (this.menuVisible) {
       this.dismissKeyboardForOverlay();
@@ -2286,11 +2201,6 @@ export struct MobileBrowserOverlay {
     }
   }
 
-  // 输入框失焦就退出编辑态。原来只有「取消 / 提交 / 返回」会退出 —— 点一下网页
-  // 只会被系统收走键盘，条带却卡在「输入框 + 取消」形态（用户实拍：Chrome 风格
-  // 底置地址栏点完网页后，主页/标签/菜单都不见了，只剩一个空输入框）。
-  // 延后一拍 + epoch 校验：点「取消」本身也会先触发 blur，别让两条路径互相打断；
-  // 也不能把刚重新进入的编辑态误杀（beginAddressEdit 会 ++epoch）。
   private onAddressInputBlur(): void {
     if (!this.editingAddress) {
       return;
@@ -2341,7 +2251,7 @@ export struct MobileBrowserOverlay {
           .onSubmit((): void => {
             this.submitAddress();
           })
-        // 1.0.107：与另两处编辑态统一为「取消」文字按钮 + cancelAddressEdit()，
+        // 与另两处编辑态统一为「取消」文字按钮 + cancelAddressEdit()，
         // 不再三处各写一份内联取消逻辑（同款「取消」，命中更稳）。
         Button({ type: ButtonType.Normal, stateEffect: true }) {
           Text('取消')
@@ -2412,9 +2322,6 @@ export struct MobileBrowserOverlay {
         }
         .layoutWeight(1)
         .height(40)
-        // 锁到胶囊左沿 = 这个 left padding。16vp 实测观感「锁离左沿很远」
-        // （1.0.211~1.0.216 一直改的是底置 ChromeBarAddress，顶置 dock 实际
-        // 渲染的是本胶囊，用户四次反馈「没起作用」的真因）。
         .padding({ left: 10, right: 12 })
         .borderRadius(20)
         .backgroundColor($r('app.color.glass_tint'))
@@ -2433,18 +2340,6 @@ export struct MobileBrowserOverlay {
         .translate({ x: this.navVeilShift * this.pageWidthVp() })
         .hitTestBehavior(HitTestMode.None)
 
-      // 引擎顶部预留区垫底（1.0.104，用户录屏逐帧实测定位）：网页 window 是满屏的，
-      // 引擎把内容整体下移「控件高度 × ratio」让出控件区，让出来的那一带露的是引擎
-      // 自己的 window 底板（暗色 ≈#3A3A3A）。而外壳条带的位移按**归一下沉进度**跑
-      // （见 topBarHideProgress），比预留区收缩快 —— 两者中途不重合，条带下沿与网页
-      // 顶边之间就露出一条灰带（暗色模式最明显）。这一层按 ratio 原样铺满预留区、
-      // 垫在条带之下：同色（surface_primary），全显时被条带完全盖住，收起途中接管
-      // 那一带，和下面那条固定 0~topSafe 的常驻垫底配合，预留区全程无露底。
-      // 与条带同宽同色、纯装饰 hitTest None：不影响任何命中与手势。
-      // 收起基本完成（≥0.95）就不再画这层垫底：它的高度是 (48+topSafe+3)×ratio，
-      // 收起到底时引擎的 ratio 还剩一点（实测 0.02~0.04，收不到 0），垫层于是残留
-      // 约 3.5 DIP 的纯白带压在深色网页顶端——真机截图实测就是那条 11px 白线
-      // （关掉这层后降到 3px，剩下一截在引擎侧的控件偏移，见《待办清单》第 7 条）。
       if (!this.isHomeSurface() && !this.pageFullscreen &&
         this.topBarReserveVp() > 0.5 && this.topBarHideProgress() < 0.95) {
         Column()
@@ -2457,7 +2352,7 @@ export struct MobileBrowserOverlay {
 
       Column() {
         if (this.homeStyle === 'chrome') {
-          // 1.0.91 Chrome 风格：地址栏融进 dock，单一浮层条带（顶或底）。
+          // Chrome 风格：地址栏融进 dock，单一浮层条带（顶或底）。
           this.GoogleDock()
         } else {
           // The home surface (new tab) already carries a search box; the
@@ -2490,26 +2385,6 @@ export struct MobileBrowserOverlay {
         maskColor: Color.Transparent
       })
 
-      // 状态栏常驻垫底（1.0.101/1.0.102，1.0.103 扩到底置）：独立层、不参与任何
-      // translate；绘制在 bars 之后 = 压在条带之上——地址栏收起时「从垫底层下边
-      // 隐入」（上滑部分被它盖住），纯装饰 hitTest None，条带按钮照常可点。
-      // 覆盖 0~topSafe 并多铺 2vp 压缝：垫底边与网页顶边之间有 ≈1px 圆整缝，会
-      // 露引擎 window 底板成一条灰线（暗色模式下尤其明显）。
-      // 何时铺（1.0.107 回退 1.0.106 的「无条件常铺」）：**仅「上滑时隐藏状态
-      // 栏」关着**——此时不落在哪种形态（简约、Chrome 顶置、Chrome 底置），网页
-      // 都停在 topSafe 之下，这条给它做垫底；开着则网页要铺满物理屏幕（沉浸），
-      // 常铺会永远盖住网页顶部一条（用户实测「垫层遮挡、应该没有垫底层」）——
-      // 那一带交给随 ratio 收缩的动态垫层负责（见 topBarReserveVp，ratio→0 时
-      // 同步收为 0，不留任何遮挡）。主页/面板不铺。
-      // 颜色 = 主表面色（浅=白 / 深=#1D1D1F，随应用主题≈随页面明暗）。
-      // 1.0.116：恢复「全形态」铺法（1.0.115 全局停用属误伤）。用户实测：简约与
-      // Chrome 顶置都丢了状态栏垫层，只有 Chrome 底置还有 → 条件回到 1.0.107 的原式：
-      // 仅「上滑时隐藏状态栏」关着时铺（开着时网页沉浸、常铺会盖住网页顶部，用户曾明确否决）。
-      // 说明：简约分支 minTop 已恒为 0（沉浸），此垫层会盖住沉浸页顶部那一条——
-      // 这正是用户要的「状态栏垫层」观感（表面色垫底），与底部裁切修复互不冲突。
-      // 例外：topSafeVp 为 0（网页全屏把状态栏藏了）时**不铺**——没有状态栏要垫，
-      // 这里再画 topSafeVp + 2 就在视频顶上留一条 2vp 白线（真机实拍：全屏后顶部
-      // 一条 7px 纯白）。全屏标志一并判断，双保险。
       if (!this.hideStatusBarOnScroll && !this.isHomeSurface() &&
         this.topSafeVp > 0 && !this.pageFullscreen) {
         Column()
@@ -2520,8 +2395,6 @@ export struct MobileBrowserOverlay {
           .hitTestBehavior(HitTestMode.None)
       }
 
-      // 下拉刷新指示器（1.0.104）：引擎判定并 reload，外壳只画这个圆 + 转圈。
-      // 画在 bars 之后 = 压在条带之上（与垫底同层），网页区上半部。
       if (this.pullPhase !== 'idle' && !this.isHomeSurface()) {
         this.PullRefreshIndicator()
       }
@@ -2538,14 +2411,6 @@ export struct MobileBrowserOverlay {
         this.FindBar()
       }
 
-      // ⋮ 菜单（1.0.231）：悬浮小卡 →「底部通栏 sheet」。整屏浅遮罩 + 贴底
-      // 上滑面板。无论 ⋮ 在顶/底 dock，sheet 恒从屏幕底部弹出——sheet 属于
-      // 屏幕、不属于按钮；顶置时顶部锚定在状态栏带附近拥挤（有状态栏重叠
-      // 返工史），底部是拇指热区。
-      // 退场动效挂 if 根（铁律：子节点退场会被整树原子删除，只有 if 分支根
-      // 节点的退场能播）；sheet 的上滑是子节点入场动效（入场不受该限制）。
-      // （2026-10-10 两次实测 bindMenu 都把整屏点击拖死，系统菜单这条路
-      // 在本应用封死，别再试。）
       if (this.menuCardVisible) {
         Stack({ alignContent: Alignment.Bottom }) {
           // 浅遮罩：点按收起。18% 黑——页面仍可见，聚焦感比全透明强。
@@ -2610,12 +2475,12 @@ export struct MobileBrowserOverlay {
         ))
       }
 
-      // 1.0.109：「自定义网址」入口菜单（长按 dock 主页图标弹出）。
+      // 「自定义网址」入口菜单（长按 dock 主页图标弹出）。
       if (this.homeTileMenuVisible) {
         this.HomeTileMenu()
       }
 
-      // 1.0.111：「网址主页」设置表单（两个入口共用）。
+      // 「网址主页」设置表单（两个入口共用）。
       if (this.homeUrlFormVisible) {
         this.HomeUrlFormOverlay()
       }
@@ -2626,9 +2491,6 @@ export struct MobileBrowserOverlay {
         this.ContextMenuLayer()
       }
 
-      // App 内下载通知条（1.0.2）：挂最上层——菜单/查找栏在场时也看得见
-      // （菜单全屏遮罩会盖住它，属预期：用户正在操作菜单）。退场动效挂
-      // if 分支根（铁律：子节点退场会被整树原子删除，只有 if 根的退场能播）。
       if (this.downloadSnackVisible) {
         this.DownloadSnackLayer()
       }
@@ -2655,22 +2517,10 @@ export struct MobileBrowserOverlay {
         this.dockPlateWide = measuredWidth >= DOCK_PLATE_WIDE_BREAKPOINT_VP;
       }
     })
-    // 命中契约（2026-10-09，修复「点 dock / 顶栏按钮穿透到网页」）：
-    // 引擎按"命中子节点自身的 hitTestMode"决定是否继续测试下层兄弟
-    // （frame_node.cpp → CheckChildHitTestResult / BUBBLING 分支）。本节点若为
-    // Transparent，命中任何子节点的触摸都会继续下发到 WebWindow（点穿）；
-    // 恒 Default 又会整屏阻断网页。正解 = Default + responseRegion 把根节点
-    // 的响应区收缩为两条 bars 条带（随收起比例收缩）：条带内命中即阻断，
-    // 条带外整棵 overlay 判 OUT_OF_REGION（子树里只有 Transparent 的全屏
-    // 布局容器，消费不会传导上来），触摸正常落到网页。
     .responseRegion(this.buildChromeTouchRegions())
     .hitTestBehavior(this.resolveChromeHitTestMode())
   }
 
-  // 悬浮 chrome 的「可交互条带」（响应区）：只有顶栏 / dock 真正占据的条区
-  // 参与阻断。条带高度随收起比例收缩（与各自 translate 行程一致），完全
-  // 收起时不占区域——收起后那一带照常可点。空数组被引擎回退为"整节点
-  // 矩形"，因此只会与 Transparent 组合出现（行为与旧实现一致）。
   private buildChromeTouchRegions(): Array<Rectangle> {
     const regions: Array<Rectangle> = [];
     // 网页全屏：外壳不画条带，也就没有要拦的条区 —— 整屏交给网页，
@@ -2688,14 +2538,6 @@ export struct MobileBrowserOverlay {
       regions.push(full);
       return regions;
     }
-    // 查找栏（1.0.239）：**根 Default + 单条 region**——命中契约注释里的正解
-    // 形态（「条带内命中即阻断、条带外整棵 overlay 判 OUT_OF_REGION、触摸正常
-    // 落到网页」）。查找期间：chrome + 查找栏这一条带拦点击（含卡片按钮，不
-    // 穿透），**页面其余部分照常可点可滚**（用户要的交互：边看高亮边翻页）。
-    // ⚠️ 1.0.233~1.0.238 七连败复盘：多 region 数组在本引擎不可信（先 push
-    // 的会被丢——234/236/237 的查找窄带都是被丢的那条），所以 chrome 与查找
-    // 栏必须**合并成一条连续 region**；1.0.238 的「全屏 region 全锁页面」
-    // 则是把正解形态做过了头（用户指出查找期间页面应可滚）。
     if (this.findVisible) {
       // 查找栏底沿 = 顶边距 + 卡高 48 + 余量 4。
       const findBottom: number = this.findBarTopMarginVp() + 48 + 4;
@@ -2711,12 +2553,6 @@ export struct MobileBrowserOverlay {
       }
       return regions;
     }
-    // 下载通知条（1.0.2）：snackbar 恒贴 dock 同侧、与 dock 条带相邻 →
-    // 「dock + snackbar」合并为单条连续 region（同查找栏思路；多 region 先
-    // push 的会被引擎丢弃——七连败定论）。放在 findVisible 之后：查找栏在
-    // 场时查找 region 优先，snackbar 可见但点不中（几秒后自消，可接受）。
-    // viewportHeightVp 未测到时退化全屏（onAreaChange 首布局即上报，正常
-    // 不会走到；全屏是最稳兜底）。
     if (this.downloadSnackVisible) {
       if (this.viewportHeightVp <= 0) {
         regions.push({ x: 0, y: 0, width: '100%', height: '100%' });
@@ -2747,8 +2583,6 @@ export struct MobileBrowserOverlay {
           regions.push({ x: 0, y: 0, width: '100%', height: shown });
         }
       } else if (this.viewportHeightVp > 0) {
-        // 底置是悬浮 dock（离底 floatMargin）：响应区须上移同等留白并含留白高度，
-        // 否则点地址胶囊落在响应区外 → 穿透到网页（1.0.95 修复）。
         const chromeH: number = CHROME_DOCK_EXTENT_VP + this.bottomSafeVp;
         regions.push({
           x: 0,
@@ -2761,7 +2595,7 @@ export struct MobileBrowserOverlay {
     }
 
     // 顶栏条带：新标签页没有顶栏，不占（否则首页顶部会出现一条死区）。
-    // 1.0.101：按归一化收起进度（见 topBarHideProgress）——「上滑时隐藏状态栏」
+    // 按归一化收起进度（见 topBarHideProgress）——「上滑时隐藏状态栏」
     // 关着时引擎下限=topSafe，直接用 ratio 响应区会卡在半隐。
     if (!this.isHomeSurface()) {
       const topShown: number = (1 - this.topBarHideProgress()) * (TOP_BAR_EXTENT_VP + this.topSafeVp);
@@ -2790,13 +2624,6 @@ export struct MobileBrowserOverlay {
   // 收起比例（两栏默认跟手同收）。例外：地址栏也设为常驻时引擎比例被锁死
   // （恒 1），dock 改用触摸观察层的位移（AuraShell 维护，1 = 全显）。
   private dockRatio(): number {
-    // 1.0.114（用户实测「简约风格主页，点按主页键，dock 栏闪」）：主页/新标签页
-    // 没有可滚动内容，引擎不产收起比例；点主页（哪怕已经在主页上）都会触发一次
-    // 导航，引擎在导航途中会吐一个「半收起」的中间比例留在 controlsRatioRaw 上
-    // ——与 1.0.108 修顶栏「点主页条带上跳」时是同一个引擎行为。当时只给
-    // topBarHideProgress() 加了主页守卫（见上，主页恒 0），**漏了 dock**：
-    // dock 的 translate 挂在 dockRatio() 上，于是这个中间比例把 dock 往下推一下
-    // 再弹回 = 视觉上的「闪」。主页恒视为 dock 全显（1），与顶栏守卫对称。
     if (this.isHomeSurface()) {
       return 1;
     }
@@ -2810,7 +2637,7 @@ export struct MobileBrowserOverlay {
     }
     const raw: number = Number.isFinite(this.controlsRatioRaw) ? this.controlsRatioRaw : 1;
     const r: number = Math.min(Math.max(raw, 0), 1);
-    // 1.0.101：减去引擎下限（minTop=topSafe 时收起终点是 topSafe/top 而不是 0，
+    // 减去引擎下限（minTop=topSafe 时收起终点是 topSafe/top 而不是 0，
     // 见 topBarRatioFloor），否则 dock 会停在半隐；floor=0 时与旧行为逐值相同。
     const floor: number = this.topBarRatioFloor();
     const span: number = 1 - floor;
@@ -2823,21 +2650,6 @@ export struct MobileBrowserOverlay {
   // 修复"手指滑出一段页面才滚"），dock/顶栏的按钮、地址栏等控件自身是
   // Default 子节点，仍正常拦截点击。
   private resolveChromeHitTestMode(): HitTestMode {
-  // 必须与 buildChromeTouchRegions 的模态条件**保持一致**：模态层（面板 /
-  // ⋮ 菜单卡 / 长按菜单 / 地址栏联想列表 / 查找栏）在场 = Default + 全屏响应区 =
-  // 整屏阻断网页。联想列表此前漏配（region 全屏但模式仍 Transparent），
-  // 真机实测 2026-10-10：点联想行「abcam」，同一触摸又穿到下方网页、点中
-  // Bing 的「学术」标签并跳页——列表点选/点外收起都会透传。补上即与面板
-  // 同款（面板/菜单证明不穿透的组合）。查找栏 1.0.233~1.0.238 七连败后
-  // （包裹层/多 region 窄带/Transparent/position/全锁页面逐一试过）定案：
-  // 根保持 Default（与 region 模态条件一致），但 region 收窄为「chrome +
-  // 查找栏」单条连续带（见 buildChromeTouchRegions 1.0.239 分支）——条带内
-  // 阻断且卡片按钮不穿透，条带外 OUT_OF_REGION 落网页，查找期间页面照常
-  // 可点可滚。
-  // 1.0.2：下载通知条同样要根 Default —— 但它**不是**全屏锁：响应区是
-  // 「dock + snackbar」单条连续带（见 buildChromeTouchRegions 1.0.2 分支），
-  // 条带外照常落网页。若沿用 Transparent，命中 snackbar 的触摸会继续下发
-  // WebWindow（点穿到网页——七连败第②败同款）。
   const modal: boolean = this.menuCardVisible || this.contextMenuJson.length > 0 ||
     this.siteQuickVisible || this.suggestListActive() || this.findVisible ||
     this.downloadSnackVisible;
@@ -2872,16 +2684,6 @@ export struct MobileBrowserOverlay {
   @Builder
   private TopAddressBar() {
     Stack({ alignContent: Alignment.TopStart }) {
-      // 条带底：不透明主表面色（深 #1D1D1F / 浅 #FFFFFF）。系统状态栏/导航条
-      // 底色已设为透明（EntryAbility），所以状态栏整条 + 地址栏区显示的就是
-      // 这条带子 —— 一条同色带（此前这里露出的是引擎 top controls 保留区的
-      // 网页底板色 ≈#3C3C3C，与状态栏有色差 —— 就是"胶囊四周一圈灰"）。
-      // 高度比「安全区 + 条高」**多铺 3vp**：引擎保留区的下沿比我们条带底边还要
-      // 低 ≈9px（实测），不补这一段就会在「网页与地址栏交界处」露出网页底色的
-      // 一条亮线。多铺的 3vp 只在顶栏展开时压住页面顶部约 10px；收起时整条随
-      // translate 移出屏幕，无影响。
-      // 必须不透明实色：半透明叠在网页底板上仍偏灰；网页走 SURFACE 独立图层，
-      // 模糊采不到内容（契约 §8），此处要的是"与状态栏同色"而非玻璃。
       Column()
         .width('100%')
         .height(this.topSafeVp + TOP_BAR_EXTENT_VP + 3)
@@ -2904,21 +2706,9 @@ export struct MobileBrowserOverlay {
         .border({ width: 0.5, color: $r('app.color.divider') })
         .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
 
-        // 顶栏不再放圆钮：地址栏胶囊独占整行（1.0.87 起「扩展」入口移到 ⋮ 菜单，
-        // 与书签/历史/下载/设置同一排 —— 用户定案：顶栏只留地址栏，功能入口收进菜单）。
       }
       .width('100%')
       .padding({ top: this.topSafeVp + 8, left: 16, right: 16 })
-      // 1.0.72 加载进度条：贴在地址栏条带的**下边沿**（chrome 与网页交界的
-      // 那条线），满宽容器 + 自左向右生长的 2vp 细条 —— 形状与位置取
-      // BAR_HEIGHT=2 / MIN_PROGRESS=0.08 / 200ms EaseOut。
-      // 为什么不放在胶囊内部：胶囊高 40、自带 20 圆角，2vp 会被背景吃掉看不见。
-      // 为什么不学 1.0.71 用帘幕：帘幕是**覆盖层**，盖多久就空白多久（实测把
-      // ≈0.45s 的绘制空档撑成 ≈1.05s）。这条 2vp 细条不覆盖任何内容，只指示，
-      // 不改变白屏时长 —— 白屏只由引擎网络/渲染决定。
-      // 顶栏收起过半就卸载进度条：它的容器随顶栏整体上移，收到底时这条 2vp
-      // 细条会被顶到屏幕 y≈1，在深色网页上就是页面顶端的一条亮线（用户实测）。
-      // 卸载走已有的淡出过渡；仍在加载时，顶栏展开后它会自己回来。
       if (this.loadBarShown && this.topBarHideProgress() < 0.5) {
         Stack({ alignContent: Alignment.Start }) {
           Row()
@@ -2950,13 +2740,6 @@ export struct MobileBrowserOverlay {
     // 自身响应 + 不阻塞兄弟/下层（与原来的全宽 Row 同一命中语义），
     // 保证顶部条区的滑动仍能下发到网页。
     .hitTestBehavior(HitTestMode.Transparent)
-    // 行程必须覆盖"顶部安全区内边距 + 条高"，否则 ratio 到下限时条底仍卡在安全
-    // 区高度处，露出一条缝（用户看到的"贴边还看得见"）。1.0.101：进度按引擎
-    // 下限归一化（见 topBarHideProgress）——「上滑时隐藏状态栏」关着时引擎
-    // 下限=topSafe，直接用 1-ratio 会卡在半隐。
-    // 1.0.102：加 160ms 隐式动画——收起/展开是可见的滑出滑入，不是瞬间跳变。
-    // 多推 2vp：收到底时条带下沿正好落在屏幕 y=0，圆整会留 1px 缝；浅色主题下
-    // 条带底色是纯白，压在深色网页上就是页面顶端的一条白线（用户实测）。
     .translate({ y: -(this.topBarHideProgress()) * (TOP_BAR_EXTENT_VP + this.topSafeVp + 2) })
     .animation({ duration: 160, curve: Curve.FastOutSlowIn })
   }
@@ -2997,7 +2780,7 @@ export struct MobileBrowserOverlay {
           .onSubmit(() => {
             this.submitAddress();
           })
-        // 1.0.107：与底置编辑态统一——去掉系统 PasteButton（授权浮层拖死整屏
+        // 与底置编辑态统一——去掉系统 PasteButton（授权浮层拖死整屏
         // 点击），圆叉换成「取消」文字按钮（命中稳定）；取消逻辑
         // 汇流到 cancelAddressEdit()（含键盘收回与异常隔离）。
         Button({ type: ButtonType.Normal, stateEffect: true }) {
@@ -3016,7 +2799,7 @@ export struct MobileBrowserOverlay {
           this.cancelAddressEdit();
         })
       } else {
-        // 1.0.242：地址栏不再放返回键 —— 与底栏「返回」重复，且鸿蒙/华为浏览器
+        // 地址栏不再放返回键 —— 与底栏「返回」重复，且鸿蒙/华为浏览器
         // 地址栏本无后退键。底栏保留 返回+前进（统一为系统 chevron 符号）。
         Row({ space: 6 }) {
           // 锁图标：点按打开"网站设置"（方案A），不再进入编辑态。
@@ -3097,10 +2880,6 @@ export struct MobileBrowserOverlay {
 
   // ---- 地址栏联想列表 ----
 
-  // 全屏捕获层（点列表外收起联想、保持编辑态与键盘）+ 紧贴胶囊下沿的建议
-  // 卡。卡片走 menu_glass 实底（网页 SURFACE 上方模糊采不到，契约 §8），
-  // 与 ⋮ 卡/长按卡同一家族。挂在 build() 主 Stack、bars 之后（绘制在其上）。
-  // 联想列表是浮在「条带」旁边还是上方，由 dock 位置决定（1.0.105）。
   private suggestAboveBottomBar(): boolean {
     return this.homeStyle === 'chrome' && !this.chromeDockAtTop() && !this.isHomeSurface();
   }
@@ -3172,9 +2951,6 @@ export struct MobileBrowserOverlay {
   private AddressSuggestLayer() {
     Stack({ alignContent: Alignment.TopStart }) {
       if (this.suggestAboveBottomBar() && this.suggestBarTopVp() > 0) {
-        // 地址栏在下：列表浮在**条带上方**。此前它固定贴在顶栏下沿 —— 底置时
-        // 卡片跑到屏幕最上边（还常被状态栏/溢出屏幕裁掉），就是用户报的
-        // 「联想在最上边还溢出屏幕」。捕获层只盖到条带上沿：条带本体仍可点。
         Column()
           .width('100%')
           .height(this.suggestBarTopVp())
@@ -3288,7 +3064,7 @@ export struct MobileBrowserOverlay {
       .onClick((): void => {
         this.applyAddressSuggestion(item);
       })
-      // 1.0.107：长按联想项 = 复制该条网址（写剪贴板无需权限）+ toast。补上
+      // 长按联想项 = 复制该条网址（写剪贴板无需权限）+ toast。补上
       // 用户要的「带出来的网址按压激活复制」；「粘贴」走输入框自身的长按
       // 系统菜单。手势与 onClick 并存：轻点跳转、长按复制，互不干扰。
       .gesture(LongPressGesture({ repeat: false, duration: 450 })
@@ -3331,16 +3107,6 @@ export struct MobileBrowserOverlay {
     })
   }
 
-  // 底部 dock：一块悬浮玻璃横条——左右各留 16vp、完整圆角，网页从它后面
-  // 穿过，跟手收起。玻璃走 HDS（HDS 没有 uiMaterial 的 Navigation/TabBar
-  // 作用域限制，同一条路，详见 DockMaterialPlate）；
-  // 拿不到材质时回退半透明纯色玻璃（契约 §8：网页上方不用模糊）。引擎不给
-  // dock 保留网页空间（setBrowserControls bottom = 0），网页一直画到窗口底。
-  //
-  // 布局（v9）：材质板铺满整层（含顶部 12vp 呼吸位与底部
-  // 安全区），五个按钮作为 HdsTabs 的真实 tabBar 项渲染在浮动胶囊里——
-  // 材质、按钮、触摸同在一棵子树内，材质几何随内容收敛、触摸也能被材质
-  // 感知。无材质设备走同一胶囊几何的自绘玻璃。
   @Builder
   private BottomDock() {
     Stack() {
@@ -3464,7 +3230,6 @@ export struct MobileBrowserOverlay {
   @Builder
   private DockButton(icon: Resource, label: string, usable: boolean, action: () => void) {
     Button({ type: ButtonType.Normal, stateEffect: true }) {
-      // 图标即内容（2026-10-09：dock 去字）；label 只留作无障碍名和按压键。
       Image(icon)
         .width(22)
         .height(22)
@@ -3665,8 +3430,6 @@ export struct MobileBrowserOverlay {
     return id.length > 0 ? id : `idx-${tab.index}`;
   }
 
-  // 按稳定 id 关闭：引擎的 closeTab 在 index 解析不到时会回退到活动标签，
-  // 表现就是「点哪张都删最近的」。有 id 一律走 closeTabById。
   private closeTabOf(tab: BrowserTabState): void {
     const id: string = this.stableTabId(tab);
     if (id.length > 0) {
@@ -3713,13 +3476,16 @@ export struct MobileBrowserOverlay {
             Stack() {
               if (this.thumbnailFor(tab).length > 0) {
                 Image(this.thumbnailFor(tab))
-                  // 1.0.89：以前没有尺寸，Image 按图片固有像素大小画（在
+                  // 以前没有尺寸，Image 按图片固有像素大小画（在
                   // Stack 里既不对齐也可能画成 0），显式铺满卡片 + Cover。
                   .width('100%')
                   .height('100%')
                   .objectFit(ImageFit.Cover)
                   // 已休眠的标签留着上一次的缩略图，稍微压暗表示页面已不在内存里。
                   .opacity(tab.discarded === true ? 0.8 : 1)
+              } else if (this.isNewTabUrl(tab.url ?? '')) {
+                // 主页标签画自绘占位，不用引擎那张原生 NTP 磁贴截图。
+                this.HomeTabPlaceholder()
               } else {
                 // 没抓到快照（后台标签被回收等）：别把整条 URL 糊上来，
                 // 用页面标题占位更可读。
@@ -3824,6 +3590,8 @@ export struct MobileBrowserOverlay {
             // 已休眠的标签留着上一次的缩略图，稍微压暗表示页面已不在内存里。
             .opacity(tab.discarded === true ? 0.8 : 1)
             .draggable(false)
+        } else if (this.isNewTabUrl(tab.url ?? '')) {
+          this.HomeTabPlaceholderCompact()
         } else {
           Text(tab.title.length > 0 ? tab.title.substring(0, 1).toUpperCase() : '?')
             .fontSize(15)
@@ -3945,15 +3713,6 @@ export struct MobileBrowserOverlay {
     this.closeMenuSheet();
   }
 
-  // ⋮ 菜单：一块悬浮卡片的样子。不铺遮罩（只留一层透明点击层收卡片），
-  // 卡片贴在 dock 上方、靠右；第一行是"域名 · 连接安全"，然后是页面操作，
-  // 再一组是无痕与桌面版，最后一行四个入口。**主页上没有页面可操作，页面类
-  // 的项一律不出现**，只剩无痕与入口行。每一项点完立即关卡片。
-  // 1.0.111：「网址主页」设置表单——填一个网址，此后按主页键就打开这个页面
-  // （用户定案的语义；不是"加书签到主页磁贴"）。骨架抄 BookmarkFormOverlay
-  // （menu_glass 卡片 + 遮罩 + 弹层动画）；留空保存 = 恢复内置主页。
-  // 1.0.120「自定义网址」：多组网址管理表单（设置-主页设置右上角 / 长按 dock
-  // 主页图标两个入口共用）。增删改在点按当下即落盘，不再有「保存」这一步。
   @Builder
   private HomeUrlFormOverlay() {
     Stack({ alignContent: Alignment.Center }) {
@@ -4027,8 +3786,6 @@ export struct MobileBrowserOverlay {
                 ForEach(this.homeUrlList, (item: string): void => {
                   this.HomeUrlEntryRow(item, item === this.homeUrlActive);
                 }, (item: string): string => {
-                  // 键里并入勾选态：ForEach 键不变会复用旧组件，只改 active
-                  // 时对勾不会跟着走（1.0.104 的同一个坑）。
                   return `${item}|${item === this.homeUrlActive ? '1' : '0'}`;
                 })
               }
@@ -4129,7 +3886,7 @@ export struct MobileBrowserOverlay {
     .backgroundColor($r('app.color.surface_secondary'))
   }
 
-  // 1.0.109：「自定义网址」入口菜单——长按 dock 主页图标弹出的小卡片。
+  // 「自定义网址」入口菜单——长按 dock 主页图标弹出的小卡片。
   // 自绘（menu_glass，与 ⋮ 卡同一家族：系统 bindMenu 会拖死整屏点击，本应用
   // 封死）；点卡片外任意处收起。模态在场时整屏归 overlay（见
   // buildChromeTouchRegions 的模态分支），点外不误触网页。
@@ -4171,21 +3928,8 @@ export struct MobileBrowserOverlay {
   }
 
   @Builder
-  // ⋮ 菜单（1.0.231）：底部通栏 sheet。自绘（menu_glass 全不透明底色 +
-  // 顶部圆角 + 阴影），内容从上到下：
-  //   把手（点按收起）→ 域名/连接安全/刷新行 → 5列×2行功能网格 →
-  //   分隔线 → 按页状态列表（加入书签 / 阅读模式 / 无痕）。
-  // 布局原则：页面级动作（书签/历史/下载/扩展/设置/主页/分享/查找/打印/
-  // 桌面版）进网格——通栏后每格 ≈66vp（原悬浮卡 43vp）；只对当前页有意义
-  // 的项（加入书签/阅读模式/无痕）留下方列表。主页界面隐藏页级项
-  // （与原悬浮卡一致）。所有点击行为与原卡相同。
-  // 命名避坑：MenuSheet 一名已被标签页切换的 bindSheet 占用（见 2057 行），
-  // 本 builder 必须叫 MenuBottomSheet。
   private MenuBottomSheet() {
     Column({ space: 0 }) {
-      // 把手：点按收起（与点遮罩等价）。必须显式居中——Row 主轴默认 Start，
-      // 把手丸会贴在左上角（用户两轮截图的「左上角黑条」真身，此前误删阴影
-      // 没打中）。
       Row() {
         Column()
           .width(36)
@@ -4300,11 +4044,6 @@ export struct MobileBrowserOverlay {
     .backgroundColor($r('app.color.menu_glass'))
     // 底部安全区：贴屏幕底沿（含底部横条），盖住 chrome-bottom 悬浮 dock。
     .padding({ bottom: this.bottomSafeVp })
-    // 不加阴影：sheet 贴屏幕底只露顶边，shadow（暗色主题 #66000000）会在
-    // 顶边糊成一条黑带（1.0.231 真机截图：左上角黑条真身）。底部通栏面板
-    // 靠自身底色与遮罩的对比分层，不需要投影。
-    // 入场：从屏幕外下方滑上（子节点入场动效，不受 if 根退场规则限制）；
-    // 退场由外层 if 根的整体淡出承担（铁律：子节点退场会被原子删除）。
     .transition(TransitionEffect.asymmetric(
       TransitionEffect.translate({ y: 420 }).animation({ duration: 300, curve: Curve.FastOutSlowIn }),
       TransitionEffect.opacity(1)
@@ -4452,10 +4191,6 @@ export struct MobileBrowserOverlay {
       return;
     }
     const enabled = !(this.browserState.requestDesktopSite === true);
-    // 顺序要紧：先把名单（含「移动版例外」）送到引擎，再发 setRequestDesktopSite。
-    // 后者会触发重载，而重载时的导航观察者按**新**名单决定 UA —— 反过来发的话，
-    // 重载瞬间名单还是旧的，桌面 UA 会被重新装上，用户看到「点了没反应」。
-    // 1.0.190：把当前站点写进/移出「桌面版网站」持久化名单，重开该站仍用桌面 UA。
     this.persistDesktopSite(enabled);
     this.issueCommand({ command: 'setRequestDesktopSite', enabled: enabled });
     this.getUIContext().getPromptAction().showToast({
@@ -4570,11 +4305,6 @@ export struct MobileBrowserOverlay {
     return this.topSafeVp + topChromeH + 8;
   }
 
-  // App 内下载通知条（1.0.2）：Chrome Android 同款 snackbar——「开始下载」
-  // →「下载完成」（.crx=安装 / 其他=打开）/「下载失败」，贴 dock 同侧。
-  // 命中：自身 Default；根响应区已收缩为「dock + snackbar」单条连续带
-  // （buildChromeTouchRegions 1.0.2 分支），条带内拦点击、条带外落网页。
-  // 动效：if 分支根节点上的非对称转场（入场=下方 24vp 滑入，退场=淡出）。
   @Builder
   private DownloadSnackLayer() {
     Column() {
@@ -4693,17 +4423,6 @@ export struct MobileBrowserOverlay {
     .onClick(action)
   }
 
-  // 查找栏（1.0.237）：回到 ≤1.0.231 验证过的「直挂根 Stack + 自身 Default」
-  // 结构——那个结构从未有穿透报告；1.0.233 引入包裹层后穿透出现，1.0.234 补
-  // 响应区窄带、1.0.236 换 Transparent 都没断掉（包裹层即真凶，删除）。
-  // 位置：根 Stack 未给 alignContent（默认 Center），直接子组件会被垂直居中
-  // （1.0.232「查找框在中间位置」真因）→ 用 position() 绝对定位贴 chrome
-  // 下沿，不靠包裹层 padding。命中（1.0.239 定案）：findVisible → 根
-  // Default + 「chrome + 查找栏」单条连续 region（1.0.233~238 七连败证明
-  // 多 region 数组不可信、全屏 region 又锁死过头）——条带内卡片按钮消费
-  // 不穿透，条带外 OUT_OF_REGION 落网页，查找期间页面照常可点可滚。
-  // 退场动效挂 if 根（铁律：子节点退场会被整树原子删除）；卡片 -24 下滑是
-  // 自身入场动效（入场不受该限制）。
   @Builder
   private FindBar() {
     Row({ space: 6 }) {
@@ -4782,8 +4501,6 @@ export struct MobileBrowserOverlay {
     // 与 buildChromeTouchRegions 的 findVisible 窄带同一 y。
     .position({ x: 0, y: this.findBarTopMarginVp() })
     .padding({ left: 12, right: 8 })
-    // 四角全圆 12：查找条与 chrome 之间有 8vp 间隙，顶角直角会显得像一块
-    // 贴错的板子（1.0.239 真机截图反馈「上边没有圆角」）。
     .borderRadius(12)
     .backgroundColor($r('app.color.surface_floating'))
     .shadow({ radius: 16, color: $r('app.color.shadow'), offsetY: 4 })
@@ -4944,19 +4661,6 @@ export struct MobileBrowserOverlay {
     return this.viewportWidthVp > 0 ? this.viewportWidthVp : 360;
   }
 
-  // 打开扩展面板。
-  //
-  // 1.0.124：**这里不再拦网页上下文** —— 打开列表只是查看/管理已装扩展
-  // （启停、详情、卸载、从文件安装），不依赖当前标签页是不是网页。
-  // 「先打开一个网页」那条提示属于**点开某个具体扩展、它要弹 popup 时**
-  // （脚本猫这类），已挪到 ExtensionPanel.runExtension() 里。
-  //
-  // 历史（别再退回去）：1.0.123 曾把守卫放在这里，只放行设置入口、仍拦 dock
-  // 入口 —— 但 dock 入口打开的也是同一块列表面板，同样不需要网页上下文，
-  // 于是出现「点 dock 扩展提示先开网页、点设置扩展却能开」的分裂。守卫的
-  // 位置错了，不是守卫的松紧错了。
-  // A' 面板页化（Phase 3）：扩展程序改为独立路由页（系统栈自动区分来源：
-  // 菜单进入返回回浏览器、设置进入返回回设置页）。
   private openExtensionPanelPage(): void {
     this.menuVisible = false;
     this.menuCardVisible = false;
@@ -5039,15 +4743,6 @@ export struct MobileBrowserOverlay {
     });
   }
 
-  // 页面切换："横向扫过"帘幕（1.0.67，替代纯淡入淡出）—— 从右侧扫入盖上、
-  // 立即继续向左扫出（新页从右侧揭开），一次 ≈430ms；in-flight 内不重复触发。
-  // 起始值 1（屏外右）在上一轮收尾时已复位并渲染，animateTo 从已渲染值出发。
-  // 页面切换帘幕（1.0.67 起）：地址栏提交搜索 / 点链接 / 切标签 / 前进后退都会
-  // 触发。
-  // 1.0.72：恢复「固定时长扫过」。1.0.71 曾改成「等本次导航 loading 结束再揭
-  // 开」，真机实测反而更差 —— 帘幕是**覆盖层**，盖多久就空白多久，把原本
-  // ≈0.45s 的引擎绘制空档撑成 ≈1.05s（6 次采样均值）。加载提示改由
-  // LoadingBar 承担：它不覆盖内容，只指示，不延长任何东西。
   private playNavVeil(): void {
     if (this.navVeilTimer !== -1) {
       return;
@@ -5067,7 +4762,7 @@ export struct MobileBrowserOverlay {
     }, 160);
   }
 
-  // 1.0.72：根据引擎 loading / loadProgress 驱动 2vp 加载细条。
+  // 根据引擎 loading / loadProgress 驱动 2vp 加载细条。
   // 引擎契约（NativeContext）：loadProgress 为 0..1，空闲时恒为 1。
   private syncLoadBar(): void {
     const loading: boolean = this.browserState.loading === true;
@@ -5118,9 +4813,6 @@ export struct MobileBrowserOverlay {
     return url.replace(/^https?:\/\//, '');
   }
 
-  // 注：「当前标签页是不是真网页」的判据 1.0.124 已挪到
-  // ExtensionPanel.isWebPageUrl() —— 那里才是需要它的地方（点开某个扩展要弹
-  // popup 时）。打开扩展列表面板本身不需要网页上下文，这里不再判。
 
   private isNewTabUrl(url: string): boolean {
     // 空 URL 按主页处理（与 ExtensionPanel.isNewTabUrl 同一份判据）。
@@ -5151,8 +4843,6 @@ export struct MobileBrowserOverlay {
     // Pin both bars while the keyboard is up (SHELL_CONTRACT.md, "手机：滚动
     // 时收起地址栏和 dock", step 5).
     this.issueCommand({ command: 'setBrowserControlsState', state: 'shown', animate: true });
-    // 首帧聚焦（键盘弹出）。不再用常驻 .selectAll(true)（1.0.110/1.0.113 反复：
-    // 常驻选区会吞掉第一次点按），改「首字符替换整条」—— 见 onAddressInput。
     this.keyboardRecoveryTimers.push(setTimeout((): void => {
       if (!this.editingAddress) {
         return;
@@ -5176,10 +4866,6 @@ export struct MobileBrowserOverlay {
           this.getUIContext().getFocusController().requestFocus('mobile_address_input');
         } catch (error) {
         }
-        // 80ms 这一档（首帧聚焦基本已生效）把整条网址选中，点中地址栏即处于
-        // 「全选待替换」状态，和 Chrome 一致。只做一次：addressEdited 之后
-        // 用户已经在输入，不能再抢选区（1.0.110 常驻 selectAll 吞第一次点按的
-        // 老坑就是这么来的）。
         if (delay === 80 && !this.addressEdited) {
           this.selectAllAddressText();
         }
@@ -5260,14 +4946,7 @@ export struct MobileBrowserOverlay {
       return;
     }
     this.addressSuggestText = query;
-    // 在线词属于**上一次查询**，query 一变就必须清掉：suggestRows() 直接把
-    // 这个数组拼进结果、不校验 query，不清会看到上一轮的搜索词混在这次的
-    // 列表里。suggestItems 反而要保留（见下），两者语义不同。
     this.onlineSuggestWords = [];
-    // 1.0.4：**不清空**上一份列表。清空后卡里只剩我们自己造的那条兜底行
-    // （搜索“xxx”），在真结果回来之前看起来就是「没展开」—— 录屏实测
-    // 「石家庄1」那次塌着一行停了 0.6s 才长出来。Chrome 的做法是保留旧列表，
-    // 新结果到了整份替换；只有最后一包确实为空时才真的收掉。
     this.autocompletePending = -1;
     // 新的一轮输入：恢复到「还没上屏」，让引擎第一包立刻替换掉旧列表。
     this.suggestShownFor = -1;
@@ -5330,18 +5009,6 @@ export struct MobileBrowserOverlay {
           description: typeof parsed.description === 'string' ? parsed.description : ''
         } as AutocompleteItem);
       }
-      // 引擎的一次输入会推 2~5 包（每个 provider 完成各推一次，done 标最后那包）。
-      // 之前为了不「一顿一顿」改成只认最后一包，结果**弹窗要等最慢的 provider**
-      // （搜索建议走网络，几百 ms），用户感知变成「弹出来慢」。
-      // 现在：首包立刻上屏（本地 provider 最快，先把卡弹出来），后续包攒最新
-      // 一份、120ms 合并刷一次；done 到了立即刷。
-      // 空包一律不落 UI —— 包括「done=true 但结果为空」那种。
-      // 原因（引擎 shell_omnibox_ohos.cc）：AutocompleteController::Start() 会先把
-      // 上一次请求 Stop 掉，Stop 同步触发一次 OnResultChanged，此时 result() 是空的、
-      // done() 为 true，而 request_id_ 已经换成**新**的 id。也就是说每次输入的头一个
-      // 包是这个「空 + done」，照单清空就会把卡片刷成只剩一行兜底行 —— 观感就是
-      // 「偶尔一行不展开」。真正的「这个查询没有建议」也走这条，保留上一份列表即可
-      // （顶行永远是当前输入，不会认错）。
       if (normalized.length === 0) {
         return;
       }
@@ -5435,10 +5102,6 @@ export struct MobileBrowserOverlay {
       seen.add(query);
     }
     if (searchLike) {
-      // 引擎自带的搜索建议（ShellMatchType 把所有 SEARCH_* 都映射成 'search'，
-      // 含 SEARCH_SUGGEST）走浏览器自己的网络栈，连接是热的；而我们下面那条
-      // 在线接口每次 createHttp 都要重新握手。以前这里把引擎的 search 行全部
-      // 丢掉、只等自己那趟 HTTP —— 录屏里「输入后要等 0.6~0.8s 才展开」就是它。
       for (const item of this.suggestItems) {
         if (item.type !== 'search') {
           continue;
@@ -5588,10 +5251,6 @@ export struct MobileBrowserOverlay {
     this.keyboardRecoveryTimers = [];
   }
 
-  // 退出地址栏编辑时，把输入法交还系统。编辑期间外壳会主动 requestFocus +
-  // showTextInput（beginAddressEdit 里的键盘恢复），若退出时不主动收起，输入法
-  // 客户端会停在外壳的地址栏输入框上，之后点网页内的输入框可能弹不出键盘
-  // （真机反馈：Bing 里第一次能弹出，用过一次地址栏之后就弹不出）。
   private onEditingAddressChanged(): void {
     // 同步给外壳：编辑态下浏览器控件是被钉住的（beginAddressEdit 发 shown），
     // AuraShell 的「上滑兜底收顶栏」必须让位，否则会把正在输入的地址栏收掉。
@@ -5626,7 +5285,7 @@ export struct MobileBrowserOverlay {
   }
 
   private issueCommand(command: BrowserCommandPayload): void {
-    // 1.0.220 取证：reload/home/navigate 会杀掉进行中的导航（磁贴弹回家族），
+    // 取证：reload/home/navigate 会杀掉进行中的导航（磁贴弹回家族），
     this.onCommand(command);
   }
 
@@ -5745,16 +5404,6 @@ struct DockMaterialPlate {
     .clip(true)
   }
 
-  // 一个 tabBar 项 = 一个 dock 按钮。结构刻意与 dock 页签项同构
-  // （Column + width('100%') + height('100%') + justifyContent
-  // Center），两个真机教训是这么修的：
-  // ① "胶囊内图标不居中"：固定高 62 的 Button 在 HdsTabs 的槽位里会落在
-  //    偏下 ~4vp 处（像素实测），修正 = 填满槽位再居中。
-  // ② "点按白框"：Button 的默认按压蒙层（stateEffect）在深色下是一块
-  //    浅色矩形（按压缩小后 ≈51×50vp，与截图逐像素吻合）；正确做法
-  //    是普通 Column，全程没有 Button/stateEffect。
-  // 点光源也不要：v9 的 BORDER_CONTENT 把每个按钮点亮成一圈白色描边
-  // 方框、还把整条胶囊洗白。按压反馈 = 弹簧缩放 + 材质原生触摸光感。
   @Builder
   private DockSlotBar(slot: string) {
     Column() {
@@ -5867,24 +5516,6 @@ struct DockMaterialPlate {
   }
 }
 
-// Chrome 底置条带的系统沉浸光感底板（1.0.105）。
-//
-// 为什么还要一个 HdsTabs：HarmonyOS 7 收紧了第三方调用沉浸光感的范围，普通
-// Column/Row 挂材质是「静默失效」（材质接管了 backgroundColor 却不画 → 整块
-// 透明）。系统真正会渲染材质的容器只有几类，我们能用的是「横向 Tabs +
-// barPosition = End 的底部浮动 TabBar」——简约 dock 走的就是这条（见
-// DockMaterialPlate）。
-//
-// 与 DockMaterialPlate 的区别：本组件**只做底板**，五个页签项是空的（内容为
-// 透明占位），真正的按钮/地址栏由 Chrome 底置条带自己叠在上面 —— 因为目标
-// 布局是「左右各两枚小钮 + 中间域名」的不对称排布，Tabs 的固定均分排不下。
-// 两条必须守住的实测教训（见上方 DockMaterialPlate 注释）：
-//   ① barWidth 必须显式给，且每个页签项要有固有宽度，否则两条测量路径都会塌；
-//   ② 三个开关同时给（barOverlap true + vertical false + barPosition End）
-//      材质才会出现；gradientMask 必须显式设，否则遮罩按「组件高 + 32vp」
-//      往上溢出一大块。
-// hitTest None：纯底板，命中一律穿透（按压光效由我们自己的按钮负责，见
-// ChromeBarIconButton 的手写弹簧）。
 @Component
 struct ChromeBarMaterialPlate {
   @Prop barWidthVp: number = 328;

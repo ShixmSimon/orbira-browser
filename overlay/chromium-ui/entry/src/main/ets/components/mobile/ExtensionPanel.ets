@@ -77,7 +77,6 @@ export struct ExtensionPanel {
   // the shell's home surface -- the tab must be parked elsewhere first.
   // A' 面板页化（Phase 3）：改由 AppStorage 读取（overlay onBrowserStateChanged 已同步）。
   @StorageLink('auraCurrentUrl') currentUrl: string = '';
-
   @State private items: ExtensionActionItem[] = [];
   @State private page: string = 'list';
   @State private detailId: string = '';
@@ -478,23 +477,60 @@ export struct ExtensionPanel {
     // （新标签页）请求 HomeSurface 让位（auraPopupHomeHold），返回键、离开
     // 主页或兜底超时（AuraShell 的 onPopupHomeHoldChanged，10 分钟，只在
     // popup 关闭事件丢失时才轮到它）时恢复；其余场景一律放行。
-    // 1.0.148 起守卫只管真有 popup 的扩展（item.hasPopup，引擎按
-    // action.default_popup 下发）；没有 popup 的（调姬助手这类）一直放行。
-    if (item.hasPopup && this.isNewTabUrl(this.currentUrl)) {
-      AppStorage.setOrCreate('auraPopupHomeHold', Date.now());
-    }
-    // 偶发「点扩展没反应」诊断：记下当时的 hasPopup / URL / 是否让位。复现时
-    // hilog 一抓即可区分「没让位（主页盖住了 popup）」还是「让位了但 popup
-    // 没创建（引擎侧早退）」。只在点扩展时打一条，量极低。
+    // 守卫只管真有 popup 的扩展（item.hasPopup，引擎按 action.default_popup
+    // 下发）；没有 popup 的（调姬助手这类）一直放行。
+    const fromHome: boolean = this.isNewTabUrl(this.currentUrl);
+    const needsPopupHold: boolean = item.hasPopup && fromHome;
     hilog.info(0x0000, 'ExtPanel',
       'runExtension id=%{public}s popup=%{public}s hold=%{public}s url=%{public}s',
-      item.id, String(item.hasPopup),
-      String(item.hasPopup && this.isNewTabUrl(this.currentUrl)), this.currentUrl);
+      item.id, String(item.hasPopup), String(needsPopupHold), this.currentUrl);
+    if (!item.hasPopup) {
+      // 无 popup 扩展（调姬助手）：点击当帧就收面板页，转场立刻开始 ——
+      // 不再等引擎把 chrome-extension:// 页 commit 完（真机实测那要 154ms，
+      // 加首帧宽限共 214ms，期间画面完全静止，就是「不跟手」）。
+      // 起点不是扩展页时铺一层同色底，护住 router 转场期露出的主页 /
+      // 当前网页 / 扩展页首帧前的空白；设置页就绪由 AuraShell 撤底。
+      // 转场约 220ms > commit 约 154ms，转场结束时设置页已准备好。
+      const alreadyOnExtension: boolean =
+        (this.currentUrl ?? '').startsWith('chrome-extension://');
+      // 顺序不能反：jumpCover 置位会立刻触发 AuraShell 的 @Watch，
+      // 那时必须已读到本次的 popup 标志。
+      AppStorage.setOrCreate('auraExtensionJumpPopup', false);
+      AppStorage.setOrCreate('auraExtensionJumpCover',
+        alreadyOnExtension ? 0 : Date.now());
+      // 命令必须先下发：收面板页后组件销毁，之后就调不到 onCommand 了。
+      this.onCommand({ command: 'runExtensionAction', id: item.id });
+      hilog.info(0x0000, 'ExtPanel', 'jump immediate cover=%{public}s',
+        String(!alreadyOnExtension));
+      this.onClose();
+      return;
+    }
+    // 其余路径（有 popup / 在网页上点扩展）保持原逻辑：
+    // 只有从主页发起的 popup 才铺跳转遮盖，盖住回主页那一帧。
+    // 顺序不能反：jumpCover 置位会立刻触发 AuraShell 的 @Watch，
+    // 那时必须已经读到本次点击的 jumpPopup，否则兜底时长按上次的值算。
+    AppStorage.setOrCreate('auraExtensionJumpPopup', item.hasPopup);
+    AppStorage.setOrCreate('auraExtensionJumpCover', fromHome ? Date.now() : 0);
     // The extension's popup panel is drawn by native above the web layer --
     // under this full-screen page. Dismiss the page so the popup is
     // visible; reopen the extensions page to see list changes.
     this.onClose();
     this.onCommand({ command: 'runExtensionAction', id: item.id });
+    if (needsPopupHold) {
+      // 让位必须等页面转场走完再放：转场这 300ms 里 AuraShell 页是透明的，
+      // HomeSurface 一撤就露出引擎原生 NTP 磁贴，而 popup 要等转场结束才上屏
+      // （真机录屏 253~384ms 的磁贴窗口）。主页层顶到这一刻，popup 落地即接管。
+      const holdToken: number = Date.now();
+      setTimeout((): void => {
+        const closedAt: number = (AppStorage.get('auraPopupClosedAt') as number) ?? 0;
+        if (closedAt >= holdToken) {
+          // popup 已关过，别再让位（会让主页层挂满 10 分钟兜底）。
+          AppStorage.setOrCreate('auraExtensionJumpCover', 0);
+          return;
+        }
+        AppStorage.setOrCreate('auraPopupHomeHold', holdToken);
+      }, 300);
+    }
   }
 
   // 与 MobileBrowserOverlay.isNewTabUrl 同一份判据（引擎换 URL 写法时一起改）。
