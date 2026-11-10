@@ -590,7 +590,11 @@ export struct HomeSurface {
       const view = new Uint8Array(buffer);
       let sum: number = 0;
       let count: number = 0;
-      for (let i = 0; i < view.length; i += 4) {
+      // 只统计壁纸顶部 25%：状态栏、Logo、地址栏都落在这一带。整图平均会被
+      // 中下部的亮区拉高，出现「深色树冠配黑图标」；按顶部取样才能对齐视觉。
+      const sampleRows: number = Math.max(1, Math.floor(h * 0.25));
+      const sampleEnd: number = Math.min(view.length, sampleRows * w * 4);
+      for (let i = 0; i < sampleEnd; i += 4) {
         // 感知亮度（Rec.709）
         sum += (0.2126 * view[i] + 0.7152 * view[i + 1] + 0.0722 * view[i + 2]) / 255;
         count++;
@@ -602,6 +606,9 @@ export struct HomeSurface {
         this.wallpaperLum = avg;
         this.wallpaperIsLight = avg > 0.6;
         AppStorage.setOrCreate('auraWallpaperIsLight', this.wallpaperIsLight);
+        hilog.info(0x0000, 'AuraShell',
+          'wallpaper tone avg=%{public}s rows=%{public}d light=%{public}s',
+          avg.toFixed(3), sampleRows, this.wallpaperIsLight ? 'true' : 'false');
         this.syncStatusBarIcons();
       }
       try {
@@ -645,6 +652,8 @@ export struct HomeSurface {
           navigationBarColor: '#00000000',
           navigationBarContentColor: schemeDark ? '#FFFFFF' : '#000000',
         });
+        hilog.info(0x0000, 'AuraShell', 'status bar icon target=%{public}s',
+          lightIcon ? 'white' : 'black');
       } catch (error) {
         hilog.warn(0x0000, 'AuraShell', 'status bar icon color failed: %{public}s',
           JSON.stringify(error));
