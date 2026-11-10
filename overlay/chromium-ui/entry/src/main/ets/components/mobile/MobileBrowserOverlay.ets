@@ -366,7 +366,7 @@ export struct MobileBrowserOverlay {
   // 0..1, from the engine: how much of the top bar the page is showing.
   // 1 keeps both bars in place; 0 has scrolled both fully away. Applied
   // straight from the storage link so one engine update is one render pass.
-  @StorageLink('auraBrowserControlsRatio') controlsRatioRaw: number = 1;
+  @StorageLink('auraBrowserControlsRatio') @Watch('onControlsRatioRawChanged') controlsRatioRaw: number = 1;
   // “滚动时隐藏底部栏”（设置-外观）：默认开；关掉后 dock 常驻不随滚动收起。
   @StorageLink('auraHideDockOnScroll') hideDockOnScroll: boolean = true;
   // 「上滑时隐藏状态栏」（设置-外观）：关着时顶栏收起后网页停在状态栏底
@@ -435,6 +435,13 @@ export struct MobileBrowserOverlay {
   @State private loadBarWidth: number = 0.08;
   // 收尾定时器：灌满 100% 停留一小会儿再淡出卸载（Chrome 同款收尾观感）。
   private loadBarFadeTimer: number = 0;
+
+  // A 式「及时滑出」：导航开始的那一帧就把顶栏按显示态渲染（纯壳层外观覆盖，
+  // 不发 setBrowserControlsState、不改几何下发），靠现有 translate 动画平滑滑入。
+  // 等引擎把 controlsRatio 推回 1 后撤防，避免加载一结束顶栏又突兀滑回去。
+  @State private navReveal: boolean = false;
+  private navRevealTimer: number = -1;
+  private prevLoading: boolean = false;
 
   // 地址栏联想（引擎 autocomplete 命令）：编辑地址栏、输入非空文本时，在
   // 胶囊下方弹建议列表（历史 / 书签 / 搜索 / 打开的标签 / 网址，全部本地
@@ -625,6 +632,25 @@ export struct MobileBrowserOverlay {
     // 加载进度条——读取引擎真实 loadProgress。它只是
     // 指示、不覆盖内容，因此既不延长白屏、也不参与切页过渡。
     this.syncLoadBar();
+    // 导航开始（loading false→true）且顶栏正隐藏时，立刻按显示态渲染顶栏：
+    // 壳层最早能拿到的就是这个 state 回包帧，比等引擎 commit 后推 ratio=1 早。
+    // 只改外观判定，不调用 setBrowserControlsState，规避同值重发→页面瞬移。
+    const loadingNow: boolean = this.browserState.loading === true;
+    if (loadingNow && !this.prevLoading && !this.isHomeSurface() &&
+      !this.pageFullscreen && this.topBarHideProgress() > 0.5) {
+      this.navReveal = true;
+      if (this.navRevealTimer !== -1) {
+        clearTimeout(this.navRevealTimer);
+        this.navRevealTimer = -1;
+      }
+    }
+    if (this.navReveal && !loadingNow && this.controlsRatioRaw >= 0.99) {
+      this.releaseNavReveal();
+    }
+    if (!loadingNow && this.prevLoading && this.navReveal) {
+      this.scheduleNavRevealFallback();
+    }
+    this.prevLoading = loadingNow;
     // Fix B/E：提交导航后保持编辑态与键盘，等导航 commit（url 变化）并留出
     // 首帧余量（250ms）再收起；loading true→false 与 1.5s 兜底为保险。
     if (this.pendingControlsRebound) {
@@ -669,6 +695,32 @@ export struct MobileBrowserOverlay {
         this.showStopVariant = false;
       }
     }
+  }
+
+  // 引擎已把浏览器控件推回显示态 → 撤掉本地覆盖，交回 controlsRatioRaw 驱动。
+  private onControlsRatioRawChanged(): void {
+    if (this.navReveal && !this.browserState.loading && this.controlsRatioRaw >= 0.99) {
+      this.releaseNavReveal();
+    }
+  }
+
+  private releaseNavReveal(): void {
+    this.navReveal = false;
+    if (this.navRevealTimer !== -1) {
+      clearTimeout(this.navRevealTimer);
+      this.navRevealTimer = -1;
+    }
+  }
+
+  // 兜底：引擎若始终没把 ratio 推回 1，1.5s 后交还控制权，避免顶栏被永久钉住。
+  private scheduleNavRevealFallback(): void {
+    if (this.navRevealTimer !== -1) {
+      return;
+    }
+    this.navRevealTimer = setTimeout((): void => {
+      this.navRevealTimer = -1;
+      this.navReveal = false;
+    }, 1500);
   }
 
   // Fix B/E：提交导航后延迟收起编辑态/键盘并回弹顶栏。理想路径由
@@ -1598,7 +1650,9 @@ export struct MobileBrowserOverlay {
   // [0,1]，顶栏才能在引擎的下限处刚好完全隐入（网页同步停在状态栏底）。
   // floor=0（设置开着 / 不收起）时与按 1-ratio 的旧行为逐值相同。
   private topBarHideProgress(): number {
-    if (this.isHomeSurface()) {
+    // 导航刚开始、顶栏仍处于收起态时，让顶栏与加载进度条同一拍滑出。
+    // 只影响外壳自绘层的外观/命中判定，引擎控件几何仍由 sendBrowserControls 管。
+    if (this.isHomeSurface() || this.navReveal) {
       return 0;
     }
     const raw: number = Number.isFinite(this.controlsRatioRaw) ? this.controlsRatioRaw : 1;
@@ -2391,8 +2445,9 @@ export struct MobileBrowserOverlay {
           .hitTestBehavior(HitTestMode.None)
       }
 
-      // 加载细条：独立于顶栏、固定在状态栏下沿常驻。顶栏上滑隐藏时依然可见，
-      // 点链接当帧就有反馈，不必等引擎把顶栏推回来才「连着整条一起冒出来」。
+      // 加载细条：独立于顶栏，固定在「地址栏下沿」的绝对位置常驻。
+      // 顶栏隐藏时仍可见（浮在网页上），顶栏滑出后正好落在地址胶囊下方；
+      // 位置不随 translate 变化，不会再「整条顶栏连着进度条一起弹出」。
       // 画在状态栏实色垫底之上，保证浅色壁纸/深色下都压得住。
       // 退场动画挂在 if 分支根节点，避免收尾时整子树原子删除「瞬间闪一下」。
       if (this.loadBarShown && !this.isHomeSurface() && !this.pageFullscreen) {
@@ -2409,7 +2464,7 @@ export struct MobileBrowserOverlay {
         .width('100%')
         .height(this.loadBarHeight)
         .clip(true)
-        .position({ x: 0, y: this.topSafeVp })
+        .position({ x: 0, y: this.topSafeVp + TOP_BAR_EXTENT_VP + 3 - this.loadBarHeight })
         .transition(TransitionEffect.asymmetric(
           TransitionEffect.IDENTITY,
           TransitionEffect.OPACITY.animation({ duration: this.loadBarGrowMs, curve: Curve.EaseOut })
