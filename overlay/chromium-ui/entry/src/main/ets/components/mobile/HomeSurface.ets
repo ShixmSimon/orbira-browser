@@ -17,6 +17,7 @@ import { common } from '@kit.AbilityKit';
 import { promptAction, display, curves } from '@kit.ArkUI';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { fileIo as fs, fileUri } from '@kit.CoreFileKit';
+import { image } from '@kit.ImageKit';
 import { normalizeAddress } from './ShellUtils';
 // 底部 dock 的占位高度（单一真源在 MobileBrowserOverlay，避免两处各写一份常量）。
 import { dockCoveredHeightVp } from './MobileBrowserOverlay';
@@ -62,11 +63,12 @@ const TILE_ICON_RADIUS: number = 13;
 // 引擎按 sizeVp×deviceScaleFactor 生成 PNG（overlay/chrome/browser/ui/ohos/
 // shell_favicons_ohos.cc: size_px = clamp(sizeVp) × PrimaryDisplayScale()），
 // 站点只给 16/32px 的 favicon 时会被拉大 —— 画得越大越糊（46vp 满铺 =
-// 138px，实测发虚）。24vp 又太小：磁贴里只剩中间一小块，和「没有图标时
-// 铺满底板的字母」完全不是一个观感（用户实拍对比）。
+// 138px，实测发虚）。24vp 又太小：磁贴里只剩中间一小块，和首字母占位块
+// 比例失衡（用户实拍对比）。
 // 1.0.4：36 → 30（用户定稿，磁贴里更收敛一点，仍远低于 46 的糊边门槛）。
 const TILE_FAVICON_VP: number = 30;
-// 底板里 favicon 的圆角（按边长约 25% 收）。
+// 底板里 favicon 的圆角（按边长约 25% 收）；首字母占位色块沿用同一圆角，
+// 保证「有图标 / 无图标」内部轮廓一致。
 const TILE_FAVICON_RADIUS: number = 8;
 // 向引擎请求的尺寸（vp）= 绘制尺寸 × 2：站点声明了 touch / web-manifest 大图
 // 时能拿到真像素再**缩着画**（Interpolation.High），比放大清楚；没有大图的
@@ -80,8 +82,8 @@ const MAX_CACHE_FAVICONS_CHARS: number = 262144;
 const FAVICON_BATCH_MS: number = 60;
 // 引擎一次 getFavicons 的上限；超过就分片（分片回包会累积进同一个 map）。
 const FAVICON_BATCH_MAX: number = 100;
-// 无 favicon 时的占位底板配色（Chrome 的 fake favicon 做法：按主机名稳定取色
-// + 白字首字母）。比一片灰底字母可分辨得多。
+// 无 favicon 时的占位图标色：按主机名稳定取色 + 白字首字母。色块只占
+// TILE_FAVICON_VP，外层托盘仍与其余磁贴共用毛玻璃，外边缘完全一致。
 const PLACEHOLDER_TINTS: string[] = [
   '#4285F4', '#0F9D58', '#DB4437', '#F4B400',
   '#7B61FF', '#00897B', '#E8710A', '#546E7A'
@@ -158,7 +160,7 @@ function hostOf(node: BookmarkNode): string {
   return host.toLowerCase();
 }
 
-// 无 favicon 的占位底板色：主机名哈希 → 稳定落在 PLACEHOLDER_TINTS 上。
+// 无 favicon 的占位图标色：主机名哈希 → 稳定落在 PLACEHOLDER_TINTS 上。
 function placeholderTint(node: BookmarkNode): string {
   const host = hostOf(node);
   let hash = 0;
@@ -284,6 +286,8 @@ export struct HomeSurface {
 
   // -- 磁贴数据（书签「首页」文件夹） ------------------------------------------
   @State private tiles: BookmarkNode[] = [];
+  // 当前配色（'light'/'dark'），接 AppStorage：浅色模式不铺壁纸薄纱、深色模式保留暗纱。
+  @StorageLink('auraColorScheme') colorScheme: string = 'light';
   // 文件夹**全量**子节点（含子文件夹）——引擎 moveBookmarks 的 index 是全量
   // 位次，排序换算要用它；磁贴渲染只取其中的 url 节点。
   private fullNodes: BookmarkNode[] = [];
@@ -309,6 +313,9 @@ export struct HomeSurface {
   // -- 主页布局 ----------------------------------------------------------------
   @State private custom: HomeCustom = defaultHomeCustom();
   @State private bgUri: string = '';
+  // 壁纸平均亮度（[-1 表示未分析]）与「壁纸是否偏亮」判定，驱动前景文字/玻璃反色。
+  @State private wallpaperLum: number = -1;
+  @State private wallpaperIsLight: boolean = true;
   @State private showSettings: boolean = false;
   // 1.0.97：仅拖动位置滑块时弹窗才转高透（松手恢复近实底）——拖的时候要能
   // 看见后边主页的实时位置变化，静止时保持可读性。
@@ -476,17 +483,22 @@ export struct HomeSurface {
   private applyBackgroundPath(path: string): void {
     if (path.length === 0) {
       this.bgUri = '';
+      this.resetWallpaperTone();
       return;
     }
     try {
       if (!fs.accessSync(path)) {
         this.bgUri = '';
+        this.resetWallpaperTone();
         return;
       }
       this.bgUri = fileUri.getUriFromPath(path);
     } catch (error) {
       this.bgUri = '';
+      this.resetWallpaperTone();
+      return;
     }
+    this.analyzeWallpaperTone();
   }
 
   private async pickBackground(): Promise<void> {
@@ -534,7 +546,79 @@ export struct HomeSurface {
     }
     this.custom.bgPath = '';
     this.bgUri = '';
+    this.resetWallpaperTone();
     HomePrefs.saveCustom(context, this.custom);
+  }
+
+  // 壁纸亮度判定：取整图平均亮度，决定前景文字/玻璃深浅（仿华为按图反色）。
+  // 任何失败都回落到系统深浅色，保证永不崩、不会白屏。
+  private resetWallpaperTone(): void {
+    this.wallpaperLum = -1;
+    this.wallpaperIsLight = (this.colorScheme === 'light');
+    AppStorage.set('auraWallpaperIsLight', this.wallpaperIsLight);
+  }
+
+  private async analyzeWallpaperTone(): Promise<void> {
+    if (this.bgUri.length === 0) {
+      this.resetWallpaperTone();
+      return;
+    }
+    try {
+      const source = image.createImageSource(this.bgUri);
+      // 缩到 64x64 即可代表整图亮度，避免大图一次性读满内存。
+      const pixel = await source.createPixelMap({
+        desiredPixelFormat: image.PixelMapFormat.RGBA_8888,
+        desiredSize: { width: 64, height: 64 }
+      });
+      const info = pixel.getImageInfoSync();
+      const w: number = info.size.width;
+      const h: number = info.size.height;
+      const buffer = new ArrayBuffer(w * h * 4);
+      await pixel.readPixelsToBuffer(buffer);
+      const view = new Uint8Array(buffer);
+      let sum: number = 0;
+      let count: number = 0;
+      for (let i = 0; i < view.length; i += 4) {
+        const r = view[i];
+        const g = view[i + 1];
+        const b = view[i + 2];
+        // 感知亮度（Rec.709）
+        sum += (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+        count++;
+      }
+      const avg: number = count > 0 ? sum / count : 0.5;
+      pixel.release();
+      source.release();
+      this.wallpaperLum = avg;
+      // 阈值 0.6：高于此判定为亮壁纸，用深色前景保证对比；低于则用白色前景。
+      this.wallpaperIsLight = avg > 0.6;
+      AppStorage.set('auraWallpaperIsLight', this.wallpaperIsLight);
+    } catch (error) {
+      this.resetWallpaperTone();
+    }
+  }
+
+  // 有壁纸时前景文字随壁纸亮度反色；无壁纸（或隐身）回落系统深浅色。
+  private homeFgText(): ResourceColor {
+    if (this.bgUri.length > 0 && !this.incognito) {
+      return this.wallpaperIsLight ? '#202124' : '#F5F5F5';
+    }
+    return $r('app.color.text_primary');
+  }
+
+  private homeFgTextSecondary(): ResourceColor {
+    if (this.bgUri.length > 0 && !this.incognito) {
+      return this.wallpaperIsLight ? '#5F6368' : '#B7BAC0';
+    }
+    return $r('app.color.text_secondary');
+  }
+
+  // 有壁纸时用低不透明度+高模糊的真磨砂玻璃；无壁纸回落系统 glass_tint。
+  private homeGlass(): ResourceColor {
+    if (this.bgUri.length > 0 && !this.incognito) {
+      return this.wallpaperIsLight ? '#73F7F7F8' : '#7329292C';
+    }
+    return $r('app.color.glass_tint');
   }
 
   private persistCustom(): void {
@@ -1059,15 +1143,6 @@ export struct HomeSurface {
     return '';
   }
 
-  // 底板色：有图标用中性托盘（透明底 logo 也看得清），没图标用按站点哈希出的
-  // 稳定色 + 白字首字母（Chrome 的 fake favicon 做法）。
-  private plateColor(node: BookmarkNode): ResourceColor {
-    if (this.faviconFor(node).length > 0) {
-      return $r('app.color.surface_secondary');
-    }
-    return placeholderTint(node);
-  }
-
   // -- 行为 --------------------------------------------------------------------
 
   private submitQuery(): void {
@@ -1384,13 +1459,13 @@ export struct HomeSurface {
       .showToast({ message: editing ? '已保存' : '已添加到主页', duration: 1500 });
   }
 
-  // 一个书签磁贴：圆角底板 + favicon（缺失时首字母占位）+ 标题。
+  // 一个书签磁贴：圆角毛玻璃托盘 + favicon（缺失时同尺寸首字母色块）+ 标题。
   // 单击 = 打开；长按 = 编辑/删除菜单。
   //
-  // 【1.0.88 图标清晰度】底板仍是 46vp，但图标只画 TILE_FAVICON_VP=24vp：
-  // 引擎按 sizeVp×density 把站点图标缩放到请求尺寸（shell_favicons_ohos.cc），
-  // 站点只声明 16/32px 时**填满 46vp 就是硬放大 4 倍 → 糊**。小图标落在大
-  // 托盘里（磁贴比例），既清晰又不头重脚轻。
+  // 【图标清晰度】托盘 46vp，favicon 只画 TILE_FAVICON_VP（30vp）：站点只
+  // 声明 16/32px 时填满 46vp 就是硬放大 → 糊。小图标落在大托盘里，既清晰
+  // 又不头重脚轻。占位色块与 favicon 同尺寸同圆角，托盘色统一由 homeGlass()
+  // 给出，所有磁贴外边缘一致，不会因缺图标变成一整块实心硬方块。
   @Builder
   private BookmarkTile(node: BookmarkNode) {
     Column({ space: 7 }) {
@@ -1409,26 +1484,37 @@ export struct HomeSurface {
             // LongPressGesture（长按文字正常、长按图标无反应的根因）。
             .draggable(false)
         } else {
-          Text(initialOf(node))
-            .fontSize(20)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(Color.White)
-            .textAlign(TextAlign.Center)
-            .width(TILE_FAVICON_VP)
-            .height(TILE_FAVICON_VP)
+          // 占位图标与 favicon 同几何（30vp / 8vp 圆角）：按站点哈希出的稳定色
+          // 只染内部小色块，托盘保持和所有磁贴一致的毛玻璃，外边缘不再是
+          // 一整块实心硬方块。
+          Column() {
+            Text(initialOf(node))
+              .fontSize(16)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(Color.White)
+              .textAlign(TextAlign.Center)
+              .width('100%')
+          }
+          .width(TILE_FAVICON_VP)
+          .height(TILE_FAVICON_VP)
+          .borderRadius(TILE_FAVICON_RADIUS)
+          .backgroundColor(placeholderTint(node))
+          .justifyContent(FlexAlign.Center)
+          .alignItems(HorizontalAlign.Center)
         }
       }
       .width(TILE_ICON_VP)
       .height(TILE_ICON_VP)
       .borderRadius(TILE_ICON_RADIUS)
-      .backgroundColor(this.plateColor(node))
+      .backgroundColor(this.homeGlass())
+      .backdropBlur(20)
 
-      Text(node.title.length > 0 ? node.title : (node.url ?? ''))
-        .fontSize(12)
-        .fontColor($r('app.color.text_secondary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .textAlign(TextAlign.Center)
+              Text(node.title.length > 0 ? node.title : (node.url ?? ''))
+                .fontSize(12)
+                .fontColor(this.homeFgTextSecondary())
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .textAlign(TextAlign.Center)
         .width('100%')
     }
     .width('25%')
@@ -1474,12 +1560,13 @@ export struct HomeSurface {
         .width(TILE_ICON_VP)
         .height(TILE_ICON_VP)
         .borderRadius(TILE_ICON_RADIUS)
-        .backgroundColor($r('app.color.surface_secondary'))
+        .backgroundColor(this.homeGlass())
+        .backdropBlur(20)
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
         Text('添加')
           .fontSize(12)
-          .fontColor($r('app.color.text_secondary'))
+          .fontColor(this.homeFgTextSecondary())
           .textAlign(TextAlign.Center)
           .width('100%')
       }
@@ -1745,6 +1832,7 @@ export struct HomeSurface {
                     .height(46)
                     .borderRadius(10)
                     .objectFit(ImageFit.Cover)
+                    .interpolation(ImageInterpolation.High)
                 } else {
                   Column() {
                     Text('默认')
@@ -1967,14 +2055,19 @@ export struct HomeSurface {
           .width('100%')
           .height('100%')
           .objectFit(ImageFit.Cover)
+          .interpolation(ImageInterpolation.High)
           .hitTestBehavior(HitTestMode.None)
-        // 主题色薄纱：亮色提亮 / 暗色压暗，保证文字对比度。
-        Column()
-          .width('100%')
-          .height('100%')
-          .backgroundColor($r('app.color.surface_primary'))
-          .opacity(0.30)
-          .hitTestBehavior(HitTestMode.None)
+        // 主题色薄纱：仅深色模式保留——暗纱压暗亮壁纸、保证白字可读（用户实测浅色
+        // 模式这层=30% 白纱会把壁纸洗白发雾，故浅色不盖，壁纸保持清晰；文字可读性
+        // 交给毛玻璃控件 + 文字阴影兜底，仿华为沉浸式）。
+        if (this.colorScheme === 'dark') {
+          Column()
+            .width('100%')
+            .height('100%')
+            .backgroundColor($r('app.color.surface_primary'))
+            .opacity(0.30)
+            .hitTestBehavior(HitTestMode.None)
+        }
       }
 
       Column() {
@@ -2011,7 +2104,7 @@ export struct HomeSurface {
                 Text(this.incognito ? '无痕浏览' : 'Orbira')
                   .fontSize(34)
                   .fontWeight(FontWeight.Bold)
-                  .fontColor($r('app.color.text_primary'))
+                  .fontColor(this.homeFgText())
               }
             }
 
@@ -2026,13 +2119,13 @@ export struct HomeSurface {
                 Image($r('app.media.chromium_search'))
                   .width(20)
                   .height(20)
-                  .fillColor($r('app.color.text_secondary'))
+                  .fillColor(this.homeFgTextSecondary())
                 TextInput({ text: this.query, placeholder: '搜索或输入网址', controller: this.homeInputController })
                   .layoutWeight(1)
                   .height(48)
                   .fontSize(15)
-                  .fontColor($r('app.color.text_primary'))
-                  .placeholderColor($r('app.color.text_secondary'))
+                  .fontColor(this.homeFgText())
+                  .placeholderColor(this.homeFgTextSecondary())
                   .backgroundColor(Color.Transparent)
                   .enterKeyType(EnterKeyType.Go)
                   .onChange((value: string) => {
@@ -2047,7 +2140,7 @@ export struct HomeSurface {
                   Image($r('app.media.chromium_scan'))
                     .width(20)
                     .height(20)
-                    .fillColor($r('app.color.text_secondary'))
+                    .fillColor(this.homeFgTextSecondary())
                 }
                 .width(36)
                 .height(36)
@@ -2060,7 +2153,8 @@ export struct HomeSurface {
               .width('100%')
               .height(48)
               .borderRadius(24)
-              .backgroundColor($r('app.color.surface_secondary'))
+              .backgroundColor(this.homeGlass())
+              .backdropBlur(20)
               .padding({ left: 16, right: 10 })
               .margin({ top: 0 })
             }
@@ -2136,33 +2230,33 @@ export struct HomeSurface {
       .backgroundColor(this.bgUri.length > 0 && !this.incognito
         ? Color.Transparent : $r('app.color.surface_primary'))
 
-      // 顶部「渐变模糊」纱幕（1.0.4）：主页能滚动之后，内容会滑到状态栏底下，
-      // Logo 被切掉一半很难看（用户实拍）。面板页用的是 HDS 标题栏的官方渐变
-      // 模糊；主页没有标题栏，这里自绘同一套观感 —— 状态栏那一条做实底 + 背景
-      // 模糊（backdropBlur），再往下渐隐到透明：内容滑进来先糊掉、再淡出。
-      // 画在滚动内容之上、弹层之下（弹层在后面继续叠）。
-      Column()
-        .width('100%')
-        .height(this.topSafeVp + 8)
-        // 背景模糊要按帧重采样背后内容：主页一滚动，这条带子底下就一直在动，
-        // 半径越大采样越贵。24 → 12 后滚动开销明显下降，糊掉 Logo 的观感仍在。
-        // 还想再省就把这行去掉、只留下面的渐变（视觉差别不大，最省）。
-        .backdropBlur(12)
-        .hitTestBehavior(HitTestMode.None)
-      Column()
-        .width('100%')
-        .height(this.topSafeVp + 48)
-        .linearGradient({
-          angle: 180,
-          colors: [
-            [$r('app.color.home_scrim'), 0.0],
-            // 模糊带的下沿（topSafe + 8）处仍是实底，模糊边缘不会露出硬线。
-            [$r('app.color.home_scrim'),
-              Math.max(0.02, (this.topSafeVp + 8) / (this.topSafeVp + 48))],
-            [$r('app.color.home_scrim_fade'), 1.0]
-          ]
-        })
-        .hitTestBehavior(HitTestMode.None)
+      // 顶部「渐变模糊」纱幕（1.0.4）：仅在没有自定义壁纸（纯色背景）时保留——
+      // 主页滚动后内容会滑到状态栏底下，Logo 被切一半难看，用实色渐变兜底。
+      // 有壁纸时完全透明，让壁纸直接透出状态栏（仿华为沉浸式），不盖任何纱幕。
+      if (!(this.bgUri.length > 0 && !this.incognito)) {
+        Column()
+          .width('100%')
+          .height(this.topSafeVp + 8)
+          // 背景模糊要按帧重采样背后内容：主页一滚动，这条带子底下就一直在动，
+          // 半径越大采样越贵。24 → 12 后滚动开销明显下降，糊掉 Logo 的观感仍在。
+          // 还想再省就把这行去掉、只留下面的渐变（视觉差别不大，最省）。
+          .backdropBlur(12)
+          .hitTestBehavior(HitTestMode.None)
+        Column()
+          .width('100%')
+          .height(this.topSafeVp + 48)
+          .linearGradient({
+            angle: 180,
+            colors: [
+              [$r('app.color.home_scrim'), 0.0],
+              // 模糊带的下沿（topSafe + 8）处仍是实底，模糊边缘不会露出硬线。
+              [$r('app.color.home_scrim'),
+                Math.max(0.02, (this.topSafeVp + 8) / (this.topSafeVp + 48))],
+              [$r('app.color.home_scrim_fade'), 1.0]
+            ]
+          })
+          .hitTestBehavior(HitTestMode.None)
+      }
 
       // 1.0.96：主页右上角菜单按钮已去掉——简约风格底栏 dock 自带 ⋮ 菜单
       // （返回/前进/主页/标签页/菜单），Chrome 风格 dock 也有菜单槽位，主页
