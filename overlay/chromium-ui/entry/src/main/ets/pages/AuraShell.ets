@@ -519,7 +519,9 @@ struct AuraShell {
   }
 
   // 打开「已休眠」标签专用遮盖：与 homeTransition 物理隔离，不影响前进/后退。
-  private discardedCover: boolean = false;
+  // 参与 build() 的渲染条件（DiscardedCoverView），必须是响应式状态：
+  // 普通字段变化不触发重渲染，release 后全屏遮盖会残留到下一次状态刷新。
+  @State private discardedCover: boolean = false;
   private discardedCoverIndex: number = -1;
   private discardedCoverSawLoading: boolean = false;
   private discardedCoverTimer: number = -1;

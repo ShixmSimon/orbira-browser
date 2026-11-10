@@ -1507,7 +1507,10 @@ export struct HomeSurface {
       .height(TILE_ICON_VP)
       .borderRadius(TILE_ICON_RADIUS)
       .backgroundColor(this.homeGlass())
-      .backdropBlur(20)
+      // 磁贴不叠 backdropBlur：ForEach 会为每个磁贴建一层模糊，N 个磁贴每帧
+      // 重采样壁纸，主页滚动/淡出时开销随数量线性增长。玻璃底色本身是 45%
+      // 半透明，去掉模糊仍透出壁纸且更清晰；磨砂质感由搜索框、添加卡、
+      // 顶部纱幕这 3 个固定层保留。
 
               Text(node.title.length > 0 ? node.title : (node.url ?? ''))
                 .fontSize(12)
