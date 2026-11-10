@@ -518,6 +518,58 @@ struct AuraShell {
     }
   }
 
+  // 打开「已休眠」标签专用遮盖：与 homeTransition 物理隔离，不影响前进/后退。
+  private discardedCover: boolean = false;
+  private discardedCoverIndex: number = -1;
+  private discardedCoverSawLoading: boolean = false;
+  private discardedCoverTimer: number = -1;
+  private discardedCoverGraceTimer: number = -1;
+
+  private beginDiscardedCover(command: BrowserCommandPayload, discarded: boolean): void {
+    if (!this.isMobilePhoneUi() || this.discardedCover || !discarded) {
+      return;
+    }
+    this.discardedCover = true;
+    this.discardedCoverIndex = command.index ?? -1;
+    this.discardedCoverSawLoading = false;
+    if (this.discardedCoverGraceTimer >= 0) {
+      clearTimeout(this.discardedCoverGraceTimer);
+      this.discardedCoverGraceTimer = -1;
+    }
+    if (this.discardedCoverTimer >= 0) {
+      clearTimeout(this.discardedCoverTimer);
+    }
+    this.discardedCoverTimer = setTimeout((): void => {
+      this.discardedCoverTimer = -1;
+      this.releaseDiscardedCover();
+    }, 13000);
+  }
+
+  private releaseDiscardedCover(): void {
+    this.discardedCover = false;
+    this.discardedCoverIndex = -1;
+    this.discardedCoverSawLoading = false;
+    if (this.discardedCoverTimer >= 0) {
+      clearTimeout(this.discardedCoverTimer);
+      this.discardedCoverTimer = -1;
+    }
+    if (this.discardedCoverGraceTimer >= 0) {
+      clearTimeout(this.discardedCoverGraceTimer);
+      this.discardedCoverGraceTimer = -1;
+    }
+  }
+
+  // 冷重载网络慢、首帧更晚，给足宽限；见 loading 结束后才撤，正好遮住深色空窗。
+  private scheduleDiscardedCoverRelease(): void {
+    if (!this.discardedCover || this.discardedCoverGraceTimer >= 0) {
+      return;
+    }
+    this.discardedCoverGraceTimer = setTimeout((): void => {
+      this.discardedCoverGraceTimer = -1;
+      this.releaseDiscardedCover();
+    }, 300);
+  }
+
   // 只在两类命令下起过渡态：当前在主页且要离开主页、或切到已休眠标签。
   // 普通标签切换是瞬时切帧，不铺底。
   // home 不在此列：引擎对已在 newtab 的标签是空操作，url 不变会让
@@ -550,7 +602,11 @@ struct AuraShell {
       // 快照没找到目标标签时无法判断是否要重载，按需要遮盖处理。
       const needCover: boolean = discarded || fromHome || !hit;
       if (needCover) {
-        this.beginHomeTransition(discarded);
+        if (discarded) {
+          this.beginDiscardedCover(command, discarded);
+        } else {
+          this.beginHomeTransition(discarded);
+        }
       }
       hilog.info(0x0000, 'NtpCover',
         'activateTab id=%{public}s idx=%{public}d hit=%{public}s discarded=%{public}s fromHome=%{public}s tabs=%{public}d from=%{public}s',
@@ -1586,6 +1642,16 @@ struct AuraShell {
               this.scheduleHomeTransitionRelease();
             }
           }
+          // 打开已休眠标签的遮盖：独立状态机，与 homeTransition / 前进后退互不干扰。
+          if (this.discardedCover &&
+            (state.activeTabIndex ?? -1) === this.discardedCoverIndex) {
+            if (state.loading) {
+              this.discardedCoverSawLoading = true;
+            }
+            if (!state.loading) {
+              this.scheduleDiscardedCoverRelease();
+            }
+          }
           const wasNewTab: boolean = this.isNewTabPage();
           const prevUrl: string = this.browserState.url;
           this.browserState = state;
@@ -1689,6 +1755,20 @@ struct AuraShell {
         })
           .width('100%')
           .height('100%')
+        // 主页退场交叉淡出：点击书签 / 搜索框提交时 homeHold 当帧起防，
+        // HomeSurface 立即淡出（而不是把壁纸硬捂到引擎首帧才一次性撤），
+        // 下方铺同色底盖住引擎清屏到首帧的空窗。顶栏仍按 URL 即时翻网页态，
+        // 于是「地址栏立刻出现 + 主页渐隐 + 进度条走」同一拍发生 —— 既跟手，
+        // 也不会出现「实色地址栏配花壁纸」的割裂中间帧。
+        // 用现成的 homeHold 驱动，不新增状态、不改撤防时机（深色残留修复不受影响）。
+        // ⚠️ 顺序固定：垫底先画（下层），HomeSurface 后画（上层）淡出才露得出它。
+        if (this.isMobilePhoneUi() && this.homeHold && this.homeSurfaceVisible()) {
+          Column()
+            .width('100%')
+            .height('100%')
+            .backgroundColor($r('app.color.browser_canvas'))
+            .hitTestBehavior(HitTestMode.None)
+        }
         if (this.isMobilePhoneUi() && this.homeSurfaceVisible()) {
           HomeSurface({
             incognito: this.incognito,
@@ -1701,6 +1781,10 @@ struct AuraShell {
           })
             .width('100%')
             .height('100%')
+            .opacity(this.homeHold ? 0 : 1)
+            .animation({ duration: 180, curve: Curve.EaseOut })
+            // 淡出期间主页层不再吃触摸，避免转场那 180ms 里点击落到旧主页。
+            .hitTestBehavior(this.homeHold ? HitTestMode.None : HitTestMode.Default)
         }
         if (this.isMobilePhoneUi() && this.needsHomeBackdrop() &&
           !(this.homeSurfaceVisible() && (this.homeHold || this.homeReturnCover))) {
@@ -1708,6 +1792,9 @@ struct AuraShell {
           // 避免起防那一帧两层皆空露出原生 NTP；但主页层被 homeHold /
           // homeReturnCover 显式保持时不叠，否则会出现「淡出→恢复→再切页」双跳。
           this.NavCoverView()
+        }
+        if (this.discardedCover) {
+          this.DiscardedCoverView()
         }
         // 触摸观察层：Transparent 全屏节点——自己收得到页面区触摸，又不阻塞
         // 下面的网页（与 bars 包裹容器同一机制）；overlay 在其上先处理，
@@ -3203,6 +3290,17 @@ struct AuraShell {
       // 历史导航用短淡出：切换不该因为过渡动画再等 200ms。值在起防时定，
       // releaseNavCover 不清它，这样淡出这一帧读到的仍是本次起防设定的时长。
       .transition(TransitionEffect.opacity(0).animation({ duration: this.navCoverFadeMs, curve: Curve.Friction }))
+  }
+
+  // 打开已休眠标签的遮盖：复用 browser_canvas 同色底，与 NavCoverView 画法一致，
+  // 但由独立的 discardedCover 状态驱动，和 homeTransition / navCover 互不干扰。
+  @Builder
+  private DiscardedCoverView() {
+    Column()
+      .width('100%')
+      .height('100%')
+      .backgroundColor($r('app.color.browser_canvas'))
+      .transition(TransitionEffect.opacity(0).animation({ duration: 100, curve: Curve.Friction }))
   }
 
   private engineHomeCovered(): boolean {
