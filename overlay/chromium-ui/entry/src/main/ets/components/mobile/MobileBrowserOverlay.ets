@@ -438,7 +438,7 @@ export struct MobileBrowserOverlay {
 
   // A 式「及时滑出」：导航开始的那一帧就把顶栏按显示态渲染（纯壳层外观覆盖，
   // 不发 setBrowserControlsState、不改几何下发），靠现有 translate 动画平滑滑入。
-  // 等引擎把 controlsRatio 推回 1 后撤防，避免加载一结束顶栏又突兀滑回去。
+  // 覆盖保持到进度条卸载（含 180ms 收尾）才撤防，蓝条在屏期间顶栏恒定显示。
   @State private navReveal: boolean = false;
   private navRevealTimer: number = -1;
   private prevLoading: boolean = false;
@@ -635,20 +635,26 @@ export struct MobileBrowserOverlay {
     // 导航开始（loading false→true）且顶栏正隐藏时，立刻按显示态渲染顶栏：
     // 壳层最早能拿到的就是这个 state 回包帧，比等引擎 commit 后推 ratio=1 早。
     // 只改外观判定，不调用 setBrowserControlsState，规避同值重发→页面瞬移。
+    // 覆盖一直保持到进度条真正卸载（见 syncLoadBar 收尾），蓝条在屏期间
+    // 顶栏恒定显示，不会再出现「进度条还在走、地址栏已滑回隐藏」。
     const loadingNow: boolean = this.browserState.loading === true;
     if (loadingNow && !this.prevLoading && !this.isHomeSurface() &&
       !this.pageFullscreen && this.topBarHideProgress() > 0.5) {
       this.navReveal = true;
-      if (this.navRevealTimer !== -1) {
-        clearTimeout(this.navRevealTimer);
-        this.navRevealTimer = -1;
+      if (this.navRevealTimer === -1) {
+        // 兜底：引擎 loading 卡死不落 false 时不能把顶栏永久钉住；
+        // 收栏时把蓝条一起收掉，保证两者状态一致。
+        this.navRevealTimer = setTimeout((): void => {
+          this.navRevealTimer = -1;
+          if (this.loadBarFadeTimer !== 0) {
+            clearTimeout(this.loadBarFadeTimer);
+            this.loadBarFadeTimer = 0;
+          }
+          this.loadBarShown = false;
+          this.loadBarWidth = this.loadBarMin;
+          this.releaseNavReveal();
+        }, 6000);
       }
-    }
-    if (this.navReveal && !loadingNow && this.controlsRatioRaw >= 0.99) {
-      this.releaseNavReveal();
-    }
-    if (!loadingNow && this.prevLoading && this.navReveal) {
-      this.scheduleNavRevealFallback();
     }
     this.prevLoading = loadingNow;
     // Fix B/E：提交导航后保持编辑态与键盘，等导航 commit（url 变化）并留出
@@ -697,9 +703,9 @@ export struct MobileBrowserOverlay {
     }
   }
 
-  // 引擎已把浏览器控件推回显示态 → 撤掉本地覆盖，交回 controlsRatioRaw 驱动。
+  // 进度条已卸载、引擎也不在加载 → 撤掉本地覆盖，交回 controlsRatioRaw 驱动。
   private onControlsRatioRawChanged(): void {
-    if (this.navReveal && !this.browserState.loading && this.controlsRatioRaw >= 0.99) {
+    if (this.navReveal && !this.loadBarShown && !this.browserState.loading) {
       this.releaseNavReveal();
     }
   }
@@ -710,17 +716,6 @@ export struct MobileBrowserOverlay {
       clearTimeout(this.navRevealTimer);
       this.navRevealTimer = -1;
     }
-  }
-
-  // 兜底：引擎若始终没把 ratio 推回 1，1.5s 后交还控制权，避免顶栏被永久钉住。
-  private scheduleNavRevealFallback(): void {
-    if (this.navRevealTimer !== -1) {
-      return;
-    }
-    this.navRevealTimer = setTimeout((): void => {
-      this.navRevealTimer = -1;
-      this.navReveal = false;
-    }, 1500);
   }
 
   // Fix B/E：提交导航后延迟收起编辑态/键盘并回弹顶栏。理想路径由
@@ -4836,6 +4831,8 @@ export struct MobileBrowserOverlay {
       return;
     }
     if (!this.loadBarShown) {
+      // 没挂过蓝条（极快加载）也要把顶栏交回引擎，避免覆盖残留。
+      this.releaseNavReveal();
       return;
     }
     // 加载结束：灌满 → 稍作停留 → 卸载（淡出由 if 根节点 transition 负责）。
@@ -4845,6 +4842,9 @@ export struct MobileBrowserOverlay {
         this.loadBarFadeTimer = 0;
         this.loadBarShown = false;
         this.loadBarWidth = this.loadBarMin;
+        // 蓝条真正卸载的这一刻才撤防：收尾的 180ms 内顶栏仍显示，
+        // 之后按 ratio 用现有 160ms translate 动画平滑滑回，不会硬跳。
+        this.releaseNavReveal();
       }, 180);
     }
   }
