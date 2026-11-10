@@ -14,7 +14,7 @@
  */
 import { AutocompleteItem, BookmarkNode, BrowserCommandPayload, FaviconImage } from 'engine';
 import { common } from '@kit.AbilityKit';
-import { promptAction, display, curves } from '@kit.ArkUI';
+import { promptAction, display, curves, window } from '@kit.ArkUI';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { fileIo as fs, fileUri } from '@kit.CoreFileKit';
 import { image } from '@kit.ImageKit';
@@ -287,7 +287,7 @@ export struct HomeSurface {
   // -- 磁贴数据（书签「首页」文件夹） ------------------------------------------
   @State private tiles: BookmarkNode[] = [];
   // 当前配色（'light'/'dark'），接 AppStorage：浅色模式不铺壁纸薄纱、深色模式保留暗纱。
-  @StorageLink('auraColorScheme') colorScheme: string = 'light';
+  @StorageLink('auraColorScheme') @Watch('onColorSchemeChanged') colorScheme: string = 'light';
   // 文件夹**全量**子节点（含子文件夹）——引擎 moveBookmarks 的 index 是全量
   // 位次，排序换算要用它；磁贴渲染只取其中的 url 节点。
   private fullNodes: BookmarkNode[] = [];
@@ -316,6 +316,10 @@ export struct HomeSurface {
   // 壁纸平均亮度（[-1 表示未分析]）与「壁纸是否偏亮」判定，驱动前景文字/玻璃反色。
   @State private wallpaperLum: number = -1;
   @State private wallpaperIsLight: boolean = true;
+  // 亮度分析序号：快速连换壁纸时只让最后一次结果落状态。
+  private wallpaperToneSeq: number = 0;
+  // 系统状态栏图标色去重（-1 未设 / 0 黑图标 / 1 白图标），避免重复下发窗口属性。
+  private lastStatusBarLightIcon: number = -1;
   @State private showSettings: boolean = false;
   // 1.0.97：仅拖动位置滑块时弹窗才转高透（松手恢复近实底）——拖的时候要能
   // 看见后边主页的实时位置变化，静止时保持可读性。
@@ -423,6 +427,9 @@ export struct HomeSurface {
       this.showSettings = true;
     }
     AppStorage.set('auraOpenHomeLayout', 0);
+    // 冷启动补吃一次：@StorageProp 初值不触发 @Watch。壁纸是异步加载的，
+    // analyze 完成后还会再刷新一次。
+    this.syncStatusBarIcons(true);
   }
 
   aboutToDisappear(): void {
@@ -435,6 +442,9 @@ export struct HomeSurface {
       clearTimeout(this.faviconBatchTimer);
       this.faviconBatchTimer = -1;
     }
+    // 离开主页：状态栏图标色交回系统深浅色（网页顶栏是实色，白图标会看不见）。
+    this.setStatusBarLightIcon(this.colorScheme === 'dark', true);
+    this.lastStatusBarLightIcon = -1;
   }
 
   // -- 冷启动缓存（HomeCache）---------------------------------------------------
@@ -555,7 +565,8 @@ export struct HomeSurface {
   private resetWallpaperTone(): void {
     this.wallpaperLum = -1;
     this.wallpaperIsLight = (this.colorScheme === 'light');
-    AppStorage.set('auraWallpaperIsLight', this.wallpaperIsLight);
+    AppStorage.setOrCreate('auraWallpaperIsLight', this.wallpaperIsLight);
+    this.syncStatusBarIcons();
   }
 
   private async analyzeWallpaperTone(): Promise<void> {
@@ -563,6 +574,7 @@ export struct HomeSurface {
       this.resetWallpaperTone();
       return;
     }
+    const seq: number = ++this.wallpaperToneSeq;
     try {
       const source = image.createImageSource(this.bgUri);
       // 缩到 64x64 即可代表整图亮度，避免大图一次性读满内存。
@@ -579,23 +591,78 @@ export struct HomeSurface {
       let sum: number = 0;
       let count: number = 0;
       for (let i = 0; i < view.length; i += 4) {
-        const r = view[i];
-        const g = view[i + 1];
-        const b = view[i + 2];
         // 感知亮度（Rec.709）
-        sum += (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+        sum += (0.2126 * view[i] + 0.7152 * view[i + 1] + 0.0722 * view[i + 2]) / 255;
         count++;
       }
       const avg: number = count > 0 ? sum / count : 0.5;
-      pixel.release();
-      source.release();
-      this.wallpaperLum = avg;
-      // 阈值 0.6：高于此判定为亮壁纸，用深色前景保证对比；低于则用白色前景。
-      this.wallpaperIsLight = avg > 0.6;
-      AppStorage.set('auraWallpaperIsLight', this.wallpaperIsLight);
+      // 先落状态再释放图像资源：release 在部分版本会抛异常，不能让它把
+      // 亮度结果带进 catch（否则按图反色会静默回落到系统深浅色）。
+      if (seq === this.wallpaperToneSeq) {
+        this.wallpaperLum = avg;
+        this.wallpaperIsLight = avg > 0.6;
+        AppStorage.setOrCreate('auraWallpaperIsLight', this.wallpaperIsLight);
+        this.syncStatusBarIcons();
+      }
+      try {
+        pixel.release();
+      } catch (error) {
+      }
+      try {
+        source.release();
+      } catch (error) {
+      }
     } catch (error) {
-      this.resetWallpaperTone();
+      hilog.warn(0x0000, 'AuraShell', 'wallpaper tone analyze failed: %{public}s',
+        JSON.stringify(error));
+      if (seq === this.wallpaperToneSeq) {
+        this.resetWallpaperTone();
+      }
     }
+  }
+
+  // 系统状态栏图标（时间/信号/电量）由 HarmonyOS 绘制，颜色由应用通过窗口属性指定。
+  // EntryAbility 只按系统深浅色下发；主页有壁纸时必须按壁纸亮度反色，否则
+  // 深色壁纸配黑图标看不清。生命周期内聚在 HomeSurface：挂载=主页显示、
+  // 卸载=离开主页并恢复系统色，不需要跨组件信号。
+  private setStatusBarLightIcon(lightIcon: boolean, force: boolean = false): void {
+    const target: number = lightIcon ? 1 : 0;
+    if (!force && target === this.lastStatusBarLightIcon) {
+      return;
+    }
+    this.lastStatusBarLightIcon = target;
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (!context) {
+      return;
+    }
+    const schemeDark: boolean = this.colorScheme === 'dark';
+    window.getLastWindow(context).then((win: window.Window): void => {
+      try {
+        win.setWindowSystemBarProperties({
+          statusBarColor: '#00000000',
+          statusBarContentColor: lightIcon ? '#FFFFFF' : '#000000',
+          isStatusBarLightIcon: lightIcon,
+          navigationBarColor: '#00000000',
+          navigationBarContentColor: schemeDark ? '#FFFFFF' : '#000000',
+        });
+      } catch (error) {
+        hilog.warn(0x0000, 'AuraShell', 'status bar icon color failed: %{public}s',
+          JSON.stringify(error));
+      }
+    }).catch((error: Error): void => {
+      hilog.warn(0x0000, 'AuraShell', 'status bar window lookup failed: %{public}s',
+        JSON.stringify(error));
+    });
+  }
+
+  private syncStatusBarIcons(force: boolean = false): void {
+    const useWallpaper: boolean = this.bgUri.length > 0 && !this.incognito;
+    this.setStatusBarLightIcon(useWallpaper ? !this.wallpaperIsLight : (this.colorScheme === 'dark'),
+      force);
+  }
+
+  private onColorSchemeChanged(): void {
+    this.syncStatusBarIcons(true);
   }
 
   // 有壁纸时前景文字随壁纸亮度反色；无壁纸（或隐身）回落系统深浅色。

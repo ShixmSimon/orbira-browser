@@ -1817,7 +1817,8 @@ export struct MobileBrowserOverlay {
     })
   }
 
-  // Chrome 顶栏 home 态图标/标签色：随壁纸亮度反色；非 home 态回落系统 icon_primary。
+  // 主页态 dock 图标/标签色（Chrome 顶栏与简约风格底栏共用）：随壁纸亮度反色；
+  // 非主页态回落系统 icon_primary，网页界面行为不变。
   private chromeDockIconColor(): ResourceColor {
     if (this.isHomeSurface()) {
       return this.wallpaperIsLight ? '#202124' : '#F5F5F5';
@@ -3219,12 +3220,12 @@ export struct MobileBrowserOverlay {
         Text(this.tabBadgeText())
           .fontSize(10)
           .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.icon_primary'))
+          .fontColor(this.chromeDockIconColor())
           .textAlign(TextAlign.Center)
           .width(22)
           .height(20)
           .borderRadius(6)
-          .border({ width: 1.8, color: $r('app.color.icon_primary') })
+          .border({ width: 1.8, color: this.chromeDockIconColor() })
       }
       .layoutWeight(1)
       .height(DOCK_BAR_HEIGHT_VP)
@@ -3251,7 +3252,7 @@ export struct MobileBrowserOverlay {
       Image(icon)
         .width(22)
         .height(22)
-        .fillColor($r('app.color.icon_primary'))
+        .fillColor(this.chromeDockIconColor())
     }
     .layoutWeight(1)
     .height(DOCK_BAR_HEIGHT_VP)
@@ -3272,7 +3273,7 @@ export struct MobileBrowserOverlay {
     Button({ type: ButtonType.Normal, stateEffect: true }) {
       SymbolGlyph(symbol)
         .fontSize(22)
-        .fontColor([ $r('app.color.icon_primary') ])
+        .fontColor([ this.chromeDockIconColor() ])
     }
     .layoutWeight(1)
     .height(DOCK_BAR_HEIGHT_VP)
