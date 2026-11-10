@@ -376,6 +376,9 @@ export struct MobileBrowserOverlay {
   // 主页风格（'minimal' | 'chrome'）与 Chrome 风格下 dock 位置（'bottom' | 'top'）。
   @StorageLink('auraHomeStyle') homeStyle: string = 'minimal';
   @StorageLink('auraDockPosition') dockPosition: string = 'bottom';
+  // 壁纸亮度判定（由 HomeSurface 算好后透出）：Chrome 顶栏 home 态不铺底色、
+  // 只靠它给图标/标签反色保证可读，与主页搜索框、磁贴一致。
+  @StorageProp('auraWallpaperIsLight') wallpaperIsLight: boolean = true;
   // auraRequestMenuOpen 信号随主页右上角菜单按钮一并去除（入口冗余：
   // 简约底栏 dock / Chrome 风格 dock 均有 ⋮ 菜单槽位）。
   // “滚动时隐藏地址栏”：dockRatio() 用它判断组合（常驻地址栏时 dock 走触摸）。
@@ -1725,7 +1728,7 @@ export struct MobileBrowserOverlay {
       Image($r('app.media.aura_home'))
         .width(22)
         .height(22)
-        .fillColor($r('app.color.icon_primary'))
+        .fillColor(this.chromeDockIconColor())
     }
     .width(40)
     .height(40)
@@ -1758,12 +1761,12 @@ export struct MobileBrowserOverlay {
       Text(this.tabBadgeText())
         .fontSize(10)
         .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.icon_primary'))
+        .fontColor(this.chromeDockIconColor())
         .textAlign(TextAlign.Center)
         .width(22)
         .height(20)
         .borderRadius(6)
-        .border({ width: 1.8, color: $r('app.color.icon_primary') })
+        .border({ width: 1.8, color: this.chromeDockIconColor() })
     }
     .width(40)
     .height(40)
@@ -1783,7 +1786,7 @@ export struct MobileBrowserOverlay {
       Image($r('app.media.aura_more'))
         .width(22)
         .height(22)
-        .fillColor($r('app.color.icon_primary'))
+        .fillColor(this.chromeDockIconColor())
     }
     .width(40)
     .height(40)
@@ -1798,37 +1801,28 @@ export struct MobileBrowserOverlay {
     })
   }
 
+  // Chrome 顶栏 home 态图标/标签色：随壁纸亮度反色；非 home 态回落系统 icon_primary。
+  private chromeDockIconColor(): ResourceColor {
+    if (this.isHomeSurface()) {
+      return this.wallpaperIsLight ? '#202124' : '#F5F5F5';
+    }
+    return $r('app.color.icon_primary');
+  }
+
   @Builder
   private GoogleDockTop() {
     Stack({ alignContent: Alignment.TopStart }) {
-      // 条带底：不透明主表面色（深 #1D1D1F / 浅 #FFFFFF）。纯装饰、不参与命中。
-      Column()
-        .width('100%')
-        .height(this.topSafeVp + CHROME_DOCK_EXTENT_VP + 3)
-        .backgroundColor($r('app.color.surface_primary'))
-        .hitTestBehavior(HitTestMode.None)
-
-      // 条带下沿渐隐：**仅主页**需要。主页内容是外壳自绘的 ArkUI（logo /
-      // 搜索框 / 磁贴），滑到不透明条带下沿会被**硬切一半**（用户实测
-      // 「Chrome 风格主页滑动顶部没有渐变」）—— 遮挡边界本身是硬的，所以
-      // 要在条带下方接一条「同色 → 全透明」的渐变带，等于让条带渐变收边。
-      // ⚠️ 网页上绝不能加：引擎渲染的页面本来就该被顶栏遮住（Chrome 同款），
-      // 在它上面多压一条暗带就是「网页顶部有黑影」（用户实测立刻反馈）。
-      // home_scrim_fade 是 surface_primary 的 0 透明度版本（#001D1D1F），起点
-      // 与条带底同色、无接缝；高度 20vp 不会压暗静止状态下的主页 logo；
-      // 溢出 Stack 底边靠 .clip(false)，且随整条 dock 的 translate 一起收起。
-      if (this.isHomeSurface()) {
+      // 主页态：完全不铺条带底、不加 backdropBlur —— 壁纸直接铺到状态栏，
+      // 与简约风格主页 / 华为浏览器一致（此前那层 45% 白磨砂带就是用户反馈的
+      // 「Chrome 风格顶部不是透明的」）。图标靠 chromeDockIconColor() 反色。
+      // 网页态（dock 置顶）才铺实色主表面色遮住网页内容。纯装饰、不参与命中。
+      // 下沿渐隐带随之取消：它原本只是为了给不透明条带收边，条带没了就不存在
+      // 硬切边界；⚠️ 网页上更不能加（会压出「网页顶部黑影」）。
+      if (!this.isHomeSurface()) {
         Column()
           .width('100%')
-          .height(20)
-          .linearGradient({
-            angle: 180,
-            colors: [
-              [$r('app.color.surface_primary'), 0.0],
-              [$r('app.color.home_scrim_fade'), 1.0]
-            ]
-          })
-          .position({ x: 0, y: this.topSafeVp + CHROME_DOCK_EXTENT_VP + 3 })
+          .height(this.topSafeVp + CHROME_DOCK_EXTENT_VP + 3)
+          .backgroundColor($r('app.color.surface_primary'))
           .hitTestBehavior(HitTestMode.None)
       }
 
@@ -1842,7 +1836,7 @@ export struct MobileBrowserOverlay {
     }
     .width('100%')
     .height(this.topSafeVp + CHROME_DOCK_EXTENT_VP)
-    // 下沿渐隐条故意溢出本 Stack 底边（见上一段注释），显式关掉裁剪。
+    // 关掉裁剪：滚动隐藏时整条 translate 上移，子节点不被本 Stack 边界裁切。
     .clip(false)
     // 自身透明、子节点（按钮/地址胶囊）照常拦截——条带区的滑动下发到网页。
     .hitTestBehavior(HitTestMode.Transparent)
@@ -2072,12 +2066,12 @@ export struct MobileBrowserOverlay {
       Text(this.tabBadgeText())
         .fontSize(10)
         .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.icon_primary'))
+        .fontColor(this.chromeDockIconColor())
         .textAlign(TextAlign.Center)
         .width(22)
         .height(20)
         .borderRadius(6)
-        .border({ width: 1.8, color: $r('app.color.icon_primary') })
+        .border({ width: 1.8, color: this.chromeDockIconColor() })
     }
     .width(36)
     .height(36)
@@ -2385,6 +2379,8 @@ export struct MobileBrowserOverlay {
         maskColor: Color.Transparent
       })
 
+      // 状态栏实色垫底：主页图层仍在时同样不画。这是割裂最显眼的一处——
+      // 若主页图层还盖着就先铺一条白色状态栏带，视觉上会「上面白、下面壁纸」。
       if (!this.hideStatusBarOnScroll && !this.isHomeSurface() &&
         this.topSafeVp > 0 && !this.pageFullscreen) {
         Column()
@@ -2393,6 +2389,33 @@ export struct MobileBrowserOverlay {
           .backgroundColor($r('app.color.surface_primary'))
           .position({ x: 0, y: 0 })
           .hitTestBehavior(HitTestMode.None)
+      }
+
+      // 加载细条：独立于顶栏、固定在状态栏下沿常驻。顶栏上滑隐藏时依然可见，
+      // 点链接当帧就有反馈，不必等引擎把顶栏推回来才「连着整条一起冒出来」。
+      // 画在状态栏实色垫底之上，保证浅色壁纸/深色下都压得住。
+      // 退场动画挂在 if 分支根节点，避免收尾时整子树原子删除「瞬间闪一下」。
+      if (this.loadBarShown && !this.isHomeSurface() && !this.pageFullscreen) {
+        Stack({ alignContent: Alignment.Start }) {
+          Row()
+            .width(`${Math.min(Math.max(this.loadBarWidth, this.loadBarMin), 1) * 100}%`)
+            .height(this.loadBarHeight)
+            // 只圆右端：自左向右生长的细条；左端贴着屏幕边。
+            .borderRadius({ topRight: this.loadBarHeight, bottomRight: this.loadBarHeight })
+            .backgroundColor($r('app.color.accent_primary'))
+            // 宽度变化由属性动画接管（同步 200ms / EaseOut）。
+            .animation({ duration: this.loadBarGrowMs, curve: Curve.EaseOut })
+        }
+        .width('100%')
+        .height(this.loadBarHeight)
+        .clip(true)
+        .position({ x: 0, y: this.topSafeVp })
+        .transition(TransitionEffect.asymmetric(
+          TransitionEffect.IDENTITY,
+          TransitionEffect.OPACITY.animation({ duration: this.loadBarGrowMs, curve: Curve.EaseOut })
+        ))
+        // 纯指示：不参与命中，顶部滑动照常下发到网页。
+        .hitTestBehavior(HitTestMode.None)
       }
 
       if (this.pullPhase !== 'idle' && !this.isHomeSurface()) {
@@ -2684,15 +2707,16 @@ export struct MobileBrowserOverlay {
   @Builder
   private TopAddressBar() {
     Stack({ alignContent: Alignment.TopStart }) {
-      Column()
-        .width('100%')
-        .height(this.topSafeVp + TOP_BAR_EXTENT_VP + 3)
-        // 恒为不透明实色：面板已全部改为独立路由页（A' 面板页化），本层不会画在
-        // 面板之下，因此不再需要「有面板时让位成透明」。保证网页页的状态栏条 +
-        // 地址栏区连成一条同色带。
-        .backgroundColor($r('app.color.surface_primary'))
-        // 纯装饰层：完全不参与命中，滑动照常下发到网页。
-        .hitTestBehavior(HitTestMode.None)
+      if (!this.isHomeSurface()) {
+        // 网页：保持不透明同色带（Chrome 同款，遮住网页顶部）。
+        // 主页/背景图不铺任何色带：状态栏 OS 层已透明(#00000000)，让壁纸直接透出，
+        // 地址胶囊自带 glass_tint 底色，无需额外遮挡（仿 Chrome NTP 主页）。
+        Column()
+          .width('100%')
+          .height(this.topSafeVp + TOP_BAR_EXTENT_VP + 3)
+          .backgroundColor($r('app.color.surface_primary'))
+          .hitTestBehavior(HitTestMode.None)
+      }
 
       Row({ space: 8 }) {
         // Main pill: back chevron + lock + URL + reload, all in one capsule.
@@ -2709,31 +2733,6 @@ export struct MobileBrowserOverlay {
       }
       .width('100%')
       .padding({ top: this.topSafeVp + 8, left: 16, right: 16 })
-      if (this.loadBarShown && this.topBarHideProgress() < 0.5) {
-        Stack({ alignContent: Alignment.Start }) {
-          Row()
-            .width(`${Math.min(Math.max(this.loadBarWidth, this.loadBarMin), 1) * 100}%`)
-            .height(this.loadBarHeight)
-            // 只圆右端：自左向右生长的细条；左端贴着屏幕边。
-            .borderRadius({ topRight: this.loadBarHeight, bottomRight: this.loadBarHeight })
-            .backgroundColor($r('app.color.accent_primary'))
-            // 宽度变化由属性动画接管（同步 200ms / EaseOut）。
-            .animation({ duration: this.loadBarGrowMs, curve: Curve.EaseOut })
-        }
-        .width('100%')
-        .height(this.loadBarHeight)
-        .clip(true)
-        // 落在「条带 + 多铺 3vp」的真正下沿之上，高度的最后 2vp 就是进度条。
-        .margin({ top: this.topSafeVp + TOP_BAR_EXTENT_VP + 3 - this.loadBarHeight })
-        // 退场动画必须挂在 if 分支根节点：挂子节点会被整子树原子删除，收尾时
-        // 会「瞬间消失闪一下」（血泪 §4）。
-        .transition(TransitionEffect.asymmetric(
-          TransitionEffect.IDENTITY,
-          TransitionEffect.OPACITY.animation({ duration: this.loadBarGrowMs, curve: Curve.EaseOut })
-        ))
-        // 纯指示：不参与命中，顶部滑动照常下发到网页。
-        .hitTestBehavior(HitTestMode.None)
-      }
     }
     .width('100%')
     .height(this.topSafeVp + TOP_BAR_EXTENT_VP)
