@@ -1613,8 +1613,13 @@ export struct MobileBrowserOverlay {
   // 一起收起/滑出，不会孤零零悬在网页内容上；顶栏本身完全交回引擎 ratio
   // 驱动，滚动隐藏照常跟手（用覆盖值钉住顶栏会让上滑失灵，已废弃）。
   private loadBarY(): number {
-    const bottomY: number = this.topSafeVp + TOP_BAR_EXTENT_VP + 3 - this.loadBarHeight;
     const topY: number = this.topSafeVp;
+    // Chrome 风格 dock 置底时顶部没有地址栏（引擎只留状态栏那一条），
+    // 若按地址栏下沿定位，蓝条会悬在网页中间 —— 直接贴状态栏下沿。
+    if (this.homeStyle === 'chrome' && !this.chromeDockAtTop()) {
+      return topY;
+    }
+    const bottomY: number = this.topSafeVp + TOP_BAR_EXTENT_VP + 3 - this.loadBarHeight;
     const hidden: number = this.topBarHideProgress();
     return bottomY - (bottomY - topY) * hidden;
   }
@@ -2422,9 +2427,8 @@ export struct MobileBrowserOverlay {
         .height(this.loadBarHeight)
         .clip(true)
         .position({ x: 0, y: this.loadBarY() })
-        // 与顶栏 translate 同参数：引擎一次性把 ratio 拉回 1 时蓝条也平滑下移，
-        // 不会先跳到位、顶栏再慢慢滑入。
-        .animation({ duration: 160, curve: Curve.FastOutSlowIn })
+        // 不加属性动画：滚动时 y 逐帧变化，动画会被反复重启导致蓝条滞后；
+        // 直接取当帧值，与顶栏同源跟手。
         .transition(TransitionEffect.asymmetric(
           TransitionEffect.IDENTITY,
           TransitionEffect.OPACITY.animation({ duration: this.loadBarGrowMs, curve: Curve.EaseOut })
