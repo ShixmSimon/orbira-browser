@@ -376,9 +376,13 @@ export struct MobileBrowserOverlay {
   // 主页风格（'minimal' | 'chrome'）与 Chrome 风格下 dock 位置（'bottom' | 'top'）。
   @StorageLink('auraHomeStyle') homeStyle: string = 'minimal';
   @StorageLink('auraDockPosition') dockPosition: string = 'bottom';
-  // 壁纸亮度判定（由 HomeSurface 算好后透出）：Chrome 顶栏 home 态不铺底色、
+  // 壁纸亮度判定（由 HomeSurface 分区取样后透出）：Chrome 顶栏 home 态不铺底色、
   // 只靠它给图标/标签反色保证可读，与主页搜索框、磁贴一致。
-  @StorageProp('auraWallpaperIsLight') wallpaperIsLight: boolean = true;
+  // 三带各管一头：顶带=状态栏/顶栏那一条，底带=底部 dock 那一条，中带只给
+  // 主页内容（HomeSurface 自己用）。两张实测壁纸的顶/底结论正好相反，用同一个
+  // 信号必然错一头（顶部亮配了白图标 / dock 亮配了黑图标）。
+  @StorageProp('auraWallpaperTopIsLight') wallpaperTopIsLight: boolean = true;
+  @StorageProp('auraWallpaperBottomIsLight') wallpaperBottomIsLight: boolean = true;
   // auraRequestMenuOpen 信号随主页右上角菜单按钮一并去除（入口冗余：
   // 简约底栏 dock / Chrome 风格 dock 均有 ⋮ 菜单槽位）。
   // “滚动时隐藏地址栏”：dockRatio() 用它判断组合（常驻地址栏时 dock 走触摸）。
@@ -1817,11 +1821,19 @@ export struct MobileBrowserOverlay {
     })
   }
 
-  // 主页态 dock 图标/标签色（Chrome 顶栏与简约风格底栏共用）：随壁纸亮度反色；
-  // 非主页态回落系统 icon_primary，网页界面行为不变。
+  // 主页态顶栏（Chrome 顶栏 / 简约风格顶部那条）图标色：压在壁纸**顶带**上，
+  // 认顶带判据。非主页态回落系统 icon_primary，网页界面行为不变。
   private chromeDockIconColor(): ResourceColor {
     if (this.isHomeSurface()) {
-      return this.wallpaperIsLight ? '#202124' : '#F5F5F5';
+      return this.wallpaperTopIsLight ? '#202124' : '#F5F5F5';
+    }
+    return $r('app.color.icon_primary');
+  }
+
+  // 主页态**底部** dock 图标色：压壁纸底带，认底带判据。顶置 dock 用上面那个。
+  private bottomDockIconColor(): ResourceColor {
+    if (this.isHomeSurface()) {
+      return this.wallpaperBottomIsLight ? '#202124' : '#F5F5F5';
     }
     return $r('app.color.icon_primary');
   }
@@ -3220,12 +3232,12 @@ export struct MobileBrowserOverlay {
         Text(this.tabBadgeText())
           .fontSize(10)
           .fontWeight(FontWeight.Medium)
-          .fontColor(this.chromeDockIconColor())
+          .fontColor(this.bottomDockIconColor())
           .textAlign(TextAlign.Center)
           .width(22)
           .height(20)
           .borderRadius(6)
-          .border({ width: 1.8, color: this.chromeDockIconColor() })
+          .border({ width: 1.8, color: this.bottomDockIconColor() })
       }
       .layoutWeight(1)
       .height(DOCK_BAR_HEIGHT_VP)
@@ -3252,7 +3264,7 @@ export struct MobileBrowserOverlay {
       Image(icon)
         .width(22)
         .height(22)
-        .fillColor(this.chromeDockIconColor())
+        .fillColor(this.bottomDockIconColor())
     }
     .layoutWeight(1)
     .height(DOCK_BAR_HEIGHT_VP)
@@ -3273,7 +3285,7 @@ export struct MobileBrowserOverlay {
     Button({ type: ButtonType.Normal, stateEffect: true }) {
       SymbolGlyph(symbol)
         .fontSize(22)
-        .fontColor([ this.chromeDockIconColor() ])
+        .fontColor([ this.bottomDockIconColor() ])
     }
     .layoutWeight(1)
     .height(DOCK_BAR_HEIGHT_VP)
