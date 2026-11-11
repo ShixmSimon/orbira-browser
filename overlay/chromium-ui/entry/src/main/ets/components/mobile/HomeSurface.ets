@@ -363,6 +363,12 @@ export struct HomeSurface {
   // 已在主页时按主页键：overlay 这里自增，主页收到后清空搜索框 + 收起联想
   // （Chrome 里在新建标签页按主页键就是重开一个新标签页）。
   @StorageLink('auraHomeReset') @Watch('onHomeResetRequest') homeResetSignal: number = 0;
+  // 整页隐藏/显示（AuraShell 的 onPageHide/onPageShow 写）。用途有二：
+  // ① 卸载时判断"是整页被藏起来还是被网页顶掉"（见 aboutToDisappear）；
+  // ② 从后台回来时强制重下发状态栏图标色 —— 系统在后台会把状态栏还原成桌面
+  //    那一套（黑图标），而 setStatusBarLightIcon 的去重还记着"上次发的白色"，
+  //    不会再发一次，表现就是「回到浏览器，状态栏不反色」。
+  @StorageLink('auraShellPageHidden') @Watch('onShellPageShown') shellPageHidden: boolean = false;
   // 主页搜索框的输入控制器：清空时要连系统键盘一起收掉（stopEditing）。
   private homeInputController: TextInputController = new TextInputController();
   // （1.0.111 移除 auraOpenHomeTile 信号：「网址主页」语义纠正为"设置自定义主页
@@ -632,20 +638,22 @@ export struct HomeSurface {
     AppStorage.setOrCreate('auraWallpaperBottomIsLight', this.wallpaperBottomIsLight);
   }
 
-  // 把落盘的判色结论套到当前状态（同一张壁纸才认）。只用于挂载初期兜底：
-  // 解码完成后 analyzeWallpaperTone 会再用真值覆盖一次。
-  private applyCachedTone(): void {
+  // 把落盘的判色结论套到当前状态（同一张壁纸才认）。返回是否真的套上了。
+  // 两个用途：①挂载初期兜底（解码完成后 analyze 会再用真值覆盖）；
+  // ②解码彻底失败时兜底 —— 宁可沿用上次结论，也不要回落主题色。
+  private applyCachedTone(): boolean {
     if (!this.cachedToneReady || this.cachedTonePath.length === 0) {
-      return;
+      return false;
     }
     if (this.incognito || this.custom.bgPath !== this.cachedTonePath) {
-      return;
+      return false;
     }
     this.wallpaperTopIsLight = this.cachedToneTop;
     this.wallpaperIsLight = this.cachedToneMid;
     this.wallpaperBottomIsLight = this.cachedToneBottom;
     this.publishWallpaperTone();
     this.syncStatusBarIcons();
+    return true;
   }
 
   // 黑字/白字择优：按 W3C 相对亮度算「黑字对比度」与「白字对比度」，取大的那个。
@@ -686,56 +694,33 @@ export struct HomeSurface {
     return vals[Math.floor(vals.length / 2)];
   }
 
-  private async analyzeWallpaperTone(): Promise<void> {
-    if (this.bgUri.length === 0) {
-      this.resetWallpaperTone();
-      return;
-    }
-    const seq: number = ++this.wallpaperToneSeq;
+  // 解码一张小缩略图并量出三带亮度。返回 [top, mid, bottom]；任何一步失败都抛出，
+  // 由调用方决定「换一条通道重试」还是「沿用上次结论」——绝不能一失败就回落主题色
+  // （那样深壁纸会配黑图标，用户看到的就是「状态栏不反色」）。
+  private async measureBands(source: image.ImageSource): Promise<number[]> {
+    // 原图像素尺寸：壁纸按 Cover 铺满全屏，可见区是原图**居中裁出来**的一块。
+    // 分区必须按可见区算 —— 9:16 的竖图铺 9:19.5 的屏时上下各被裁掉约 9%，
+    // 直接按原图比例取顶部会把状态栏那一条取到画面更上面的内容。
+    let srcW: number = 0;
+    let srcH: number = 0;
     try {
-      // ImageKit 的 createImageSource 对 fileUri('file://...') 的支持随版本不同：
-      // 壁纸显示用 URI 没问题，但解码取像素会抛异常被 catch 吞掉，导致按图反色
-      // 静默回落到系统主题色。改用项目内已验证的写法（ExtensionPanel.decodeOne）
-      // —— 读文件字节再 createImageSource(buffer)；读失败才回退 URI 并打日志。
-      const path: string = this.custom.bgPath;
-      let raw: ArrayBuffer | undefined = undefined;
-      try {
-        const file = fs.openSync(path, fs.OpenMode.READ_ONLY);
-        const size: number = fs.statSync(path).size;
-        raw = new ArrayBuffer(size);
-        fs.readSync(file.fd, raw);
-        fs.closeSync(file);
-      } catch (error) {
-        hilog.warn(0x0000, 'AuraShell', 'wallpaper read bytes failed: %{public}s',
-          JSON.stringify(error));
-      }
-      const source: image.ImageSource = (raw !== undefined && raw.byteLength > 0) ?
-        image.createImageSource(raw) : image.createImageSource(this.bgUri);
-      hilog.info(0x0000, 'AuraShell', 'wallpaper tone decode=%{public}s bytes=%{public}d',
-        (raw !== undefined && raw.byteLength > 0) ? 'bytes' : 'uri',
-        raw !== undefined ? raw.byteLength : 0);
-      // 原图像素尺寸：壁纸按 Cover 铺满全屏，可见区是原图**居中裁出来**的一块。
-      // 分区必须按可见区算 —— 9:16 的竖图铺 9:19.5 的屏时上下各被裁掉约 9%，
-      // 直接按原图比例取顶部会把状态栏那一条取到画面更上面的内容。
-      let srcW: number = 0;
-      let srcH: number = 0;
-      try {
-        const meta: image.ImageInfo = await source.getImageInfo();
-        srcW = meta.size.width;
-        srcH = meta.size.height;
-      } catch (error) {
-        hilog.warn(0x0000, 'AuraShell', 'wallpaper meta failed: %{public}s',
-          JSON.stringify(error));
-      }
-      // 按原图比例缩略（不压成正方形）：行号直接对应原图行，分区换算不用再纠偏。
-      let thumbH: number = TONE_THUMB_W;
-      if (srcW > 0 && srcH > 0) {
-        thumbH = Math.max(8, Math.min(256, Math.round(TONE_THUMB_W * srcH / srcW)));
-      }
-      const pixel = await source.createPixelMap({
-        desiredPixelFormat: image.PixelMapFormat.RGBA_8888,
-        desiredSize: { width: TONE_THUMB_W, height: thumbH }
-      });
+      const meta: image.ImageInfo = await source.getImageInfo();
+      srcW = meta.size.width;
+      srcH = meta.size.height;
+    } catch (error) {
+      hilog.warn(0x0000, 'AuraShell', 'wallpaper meta failed: %{public}s', JSON.stringify(error));
+    }
+    // 按原图比例缩略（不压成正方形）：行号直接对应原图行，分区换算不用再纠偏。
+    let thumbH: number = TONE_THUMB_W;
+    if (srcW > 0 && srcH > 0) {
+      thumbH = Math.max(8, Math.min(256, Math.round(TONE_THUMB_W * srcH / srcW)));
+    }
+    const pixel = await source.createPixelMap({
+      desiredPixelFormat: image.PixelMapFormat.RGBA_8888,
+      desiredSize: { width: TONE_THUMB_W, height: thumbH }
+    });
+    const out: number[] = [];
+    try {
       const info = pixel.getImageInfoSync();
       const w: number = info.size.width;
       const h: number = info.size.height;
@@ -743,65 +728,122 @@ export struct HomeSurface {
       await pixel.readPixelsToBuffer(buffer);
       const view = new Uint8Array(buffer);
       // Cover 裁切后的可见行区间：图比屏更「瘦高」时上下裁，按屏宽/屏高换算。
-      const screenAspect: number = (this.windowW > 0 && this.windowH > 0) ? this.windowW / this.windowH : w / h;
+      const screenAspect: number =
+        (this.windowW > 0 && this.windowH > 0) ? this.windowW / this.windowH : w / h;
       let visRows: number = h;
       let row0: number = 0;
       if (w / h < screenAspect) {
         visRows = Math.max(1, Math.min(h, Math.round(w / screenAspect)));
         row0 = Math.floor((h - visRows) / 2);
       }
-      const topLum: number = this.bandMedianLum(view, w, row0,
-        row0 + Math.max(1, Math.ceil(visRows * TONE_TOP_END)));
-      const midLum: number = this.bandMedianLum(view, w,
+      out.push(this.bandMedianLum(view, w, row0,
+        row0 + Math.max(1, Math.ceil(visRows * TONE_TOP_END))));
+      out.push(this.bandMedianLum(view, w,
         row0 + Math.floor(visRows * TONE_MID_START),
-        row0 + Math.max(1, Math.ceil(visRows * TONE_MID_END)));
-      const bottomLum: number = this.bandMedianLum(view, w,
-        row0 + Math.floor(visRows * TONE_BOTTOM_START), row0 + visRows);
-      // 先落状态再释放图像资源：release 在部分版本会抛异常，不能让它把
-      // 亮度结果带进 catch（否则按图反色会静默回落到系统深浅色）。
-      if (seq === this.wallpaperToneSeq) {
-        this.wallpaperTopLum = topLum;
-        this.wallpaperLum = midLum;
-        this.wallpaperBottomLum = bottomLum;
-        this.wallpaperTopIsLight = this.prefersDarkInk(topLum);
-        this.wallpaperIsLight = this.prefersDarkInk(midLum);
-        this.wallpaperBottomIsLight = this.prefersDarkInk(bottomLum);
-        this.publishWallpaperTone();
-        // 落盘给下次挂载兜底（换壁纸后 path 不匹配自动失效）。
-        this.cachedTonePath = this.custom.bgPath;
-        this.cachedToneTop = this.wallpaperTopIsLight;
-        this.cachedToneMid = this.wallpaperIsLight;
-        this.cachedToneBottom = this.wallpaperBottomIsLight;
-        this.cachedToneReady = true;
-        const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
-        HomePrefs.saveTone(ctx, {
-          path: this.cachedTonePath,
-          top: this.cachedToneTop,
-          mid: this.cachedToneMid,
-          bottom: this.cachedToneBottom
-        } as HomeToneCache);
-        hilog.info(0x0000, 'AuraShell',
-          'wallpaper tone top=%{public}s mid=%{public}s bottom=%{public}s vis=%{public}d/%{public}d light=%{public}s/%{public}s/%{public}s',
-          topLum.toFixed(3), midLum.toFixed(3), bottomLum.toFixed(3), visRows, h,
-          this.wallpaperTopIsLight ? 'T' : 'F',
-          this.wallpaperIsLight ? 'T' : 'F',
-          this.wallpaperBottomIsLight ? 'T' : 'F');
-        this.syncStatusBarIcons();
-      }
+        row0 + Math.max(1, Math.ceil(visRows * TONE_MID_END))));
+      out.push(this.bandMedianLum(view, w,
+        row0 + Math.floor(visRows * TONE_BOTTOM_START), row0 + visRows));
+      hilog.info(0x0000, 'AuraShell', 'wallpaper thumb %{public}dx%{public}d src=%{public}dx%{public}d vis=%{public}d',
+        w, h, srcW, srcH, visRows);
+    } finally {
       try {
         pixel.release();
       } catch (error) {
       }
-      try {
-        source.release();
-      } catch (error) {
-      }
+    }
+    return out;
+  }
+
+  private async analyzeWallpaperTone(): Promise<void> {
+    if (this.bgUri.length === 0) {
+      this.resetWallpaperTone();
+      return;
+    }
+    const seq: number = ++this.wallpaperToneSeq;
+    let bands: number[] = [];
+    // 第一条通道：读文件字节再 createImageSource(buffer)。ImageKit 对 fileUri
+    // 的支持随版本不同（URI 能显示、解码却抛），字节通道最稳，优先走它。
+    const path: string = this.custom.bgPath;
+    let raw: ArrayBuffer | undefined = undefined;
+    try {
+      const file = fs.openSync(path, fs.OpenMode.READ_ONLY);
+      const size: number = fs.statSync(path).size;
+      raw = new ArrayBuffer(size);
+      fs.readSync(file.fd, raw);
+      fs.closeSync(file);
     } catch (error) {
-      hilog.warn(0x0000, 'AuraShell', 'wallpaper tone analyze failed: %{public}s',
-        JSON.stringify(error));
-      if (seq === this.wallpaperToneSeq) {
-        this.resetWallpaperTone();
+      hilog.warn(0x0000, 'AuraShell', 'wallpaper read bytes failed: %{public}s', JSON.stringify(error));
+    }
+    if (raw !== undefined && raw.byteLength > 0) {
+      try {
+        const bs: image.ImageSource = image.createImageSource(raw);
+        bands = await this.measureBands(bs);
+        try {
+          bs.release();
+        } catch (error) {
+        }
+        hilog.info(0x0000, 'AuraShell', 'wallpaper tone decode=bytes bytes=%{public}d', raw.byteLength);
+      } catch (error) {
+        hilog.warn(0x0000, 'AuraShell', 'wallpaper tone bytes decode failed: %{public}s',
+          JSON.stringify(error));
       }
+    }
+    // 第二条通道：URI 直接解（某些 HEIF/超大图字节通道会失败，URI 却能出缩略图）。
+    if (bands.length < 3 && seq === this.wallpaperToneSeq) {
+      try {
+        const us: image.ImageSource = image.createImageSource(this.bgUri);
+        bands = await this.measureBands(us);
+        try {
+          us.release();
+        } catch (error) {
+        }
+        hilog.info(0x0000, 'AuraShell', 'wallpaper tone decode=uri');
+      } catch (error) {
+        hilog.warn(0x0000, 'AuraShell', 'wallpaper tone uri decode failed: %{public}s',
+          JSON.stringify(error));
+      }
+    }
+    if (seq !== this.wallpaperToneSeq) {
+      return;
+    }
+    if (bands.length >= 3) {
+      const topLum: number = bands[0];
+      const midLum: number = bands[1];
+      const bottomLum: number = bands[2];
+      this.wallpaperTopLum = topLum;
+      this.wallpaperLum = midLum;
+      this.wallpaperBottomLum = bottomLum;
+      this.wallpaperTopIsLight = this.prefersDarkInk(topLum);
+      this.wallpaperIsLight = this.prefersDarkInk(midLum);
+      this.wallpaperBottomIsLight = this.prefersDarkInk(bottomLum);
+      this.publishWallpaperTone();
+      // 落盘给下次挂载兜底（换壁纸后 path 不匹配自动失效）。
+      this.cachedTonePath = this.custom.bgPath;
+      this.cachedToneTop = this.wallpaperTopIsLight;
+      this.cachedToneMid = this.wallpaperIsLight;
+      this.cachedToneBottom = this.wallpaperBottomIsLight;
+      this.cachedToneReady = true;
+      const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+      HomePrefs.saveTone(ctx, {
+        path: this.cachedTonePath,
+        top: this.cachedToneTop,
+        mid: this.cachedToneMid,
+        bottom: this.cachedToneBottom
+      } as HomeToneCache);
+      hilog.info(0x0000, 'AuraShell',
+        'wallpaper tone top=%{public}s mid=%{public}s bottom=%{public}s light=%{public}s/%{public}s/%{public}s',
+        topLum.toFixed(3), midLum.toFixed(3), bottomLum.toFixed(3),
+        this.wallpaperTopIsLight ? 'T' : 'F',
+        this.wallpaperIsLight ? 'T' : 'F',
+        this.wallpaperBottomIsLight ? 'T' : 'F');
+      this.syncStatusBarIcons(true);
+      return;
+    }
+    // 两条通道都失败：宁可沿用上次结论，也不要回落主题色（回落就是「不反色」）。
+    hilog.warn(0x0000, 'AuraShell', 'wallpaper tone unavailable, cached=%{public}s',
+      this.cachedToneReady ? 'yes' : 'no');
+    if (!this.applyCachedTone()) {
+      this.resetWallpaperTone();
     }
   }
 
@@ -850,6 +892,15 @@ export struct HomeSurface {
   }
 
   private onColorSchemeChanged(): void {
+    this.syncStatusBarIcons(true);
+  }
+
+  // 页面重新可见：状态栏可能已被系统按桌面重设过，无条件重下一次（force 绕过去重）。
+  private onShellPageShown(): void {
+    if (this.shellPageHidden) {
+      return;
+    }
+    this.lastStatusBarLightIcon = -1;
     this.syncStatusBarIcons(true);
   }
 
