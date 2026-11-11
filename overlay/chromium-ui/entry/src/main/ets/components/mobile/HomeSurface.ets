@@ -2266,7 +2266,11 @@ export struct HomeSurface {
               .fontWeight(FontWeight.Medium)
               .fontColor($r('app.color.text_primary'))
             Blank()
-            Text('背景与布局只影响主页')
+            // 副标题兼入口提示：Logo 显隐决定"长按 Logo"这条快捷入口还在不在，
+            // 所以两种状态各说各的（隐藏时指路设置页，避免用户以为功能丢了）。
+            Text(this.custom.showLogo
+              ? '长按主页 Logo 可再开此面板'
+              : 'Logo 已隐藏，可从 设置 › 主页设置 进入')
               .fontSize(12)
               .fontColor($r('app.color.text_secondary'))
           }
@@ -2337,6 +2341,14 @@ export struct HomeSurface {
                 onToggle: (on: boolean): void => {
                   this.custom.showLogo = on;
                   this.persistCustom();
+                  // 关掉 Logo 会把「长按 Logo 进布局」这条快捷入口一起关掉（自锁），
+                  // 当场告诉用户还有设置页那条路，免得下次找不到入口。
+                  if (!on) {
+                    this.getUIContext().getPromptAction().showToast({
+                      message: 'Logo 已隐藏；以后可从 设置 › 主页设置 进入布局',
+                      duration: 2200
+                    });
+                  }
                 }
               })
               HomeSettingToggleRow({
@@ -2464,6 +2476,16 @@ export struct HomeSurface {
     AppStorage.set('auraOpenHomeLayout', 0);
   }
 
+  // 长按 Logo 打开主页布局（快捷入口）。无痕不打开：无痕主页不带自定义布局。
+  // 注意这是**便捷入口**，不是唯一入口 —— Logo 可以在布局面板里关掉，关掉后
+  // 这一行连渲染都没有，长按自然失效（见 Logo 开关处的提示与设置页入口）。
+  private openHomeLayoutPanel(): void {
+    if (this.incognito) {
+      return;
+    }
+    this.showSettings = true;
+  }
+
   // （1.0.111：onOpenHomeTile 随信号一并移除。）
 
   // 已在主页时按了主页键：清空搜索框、收起联想、收掉系统键盘（缺这三步就是
@@ -2550,24 +2572,38 @@ export struct HomeSurface {
               .height(this.homeTopBlankVp())
 
             if (this.custom.showLogo || this.incognito) {
-              Row({ space: 8 }) {
-                if (this.incognito) {
-                  Image($r('app.media.aura_incognito'))
-                    .width(26)
-                    .height(26)
-                    .fillColor($r('app.color.text_primary'))
-                } else {
-                  // 浏览器 logo（颜色按壁纸中带选版，见 homeLogoRes）。
-                  Image(this.homeLogoRes())
-                    .width(42)
-                    .height(30)
-                    .draggable(false)
+              // 外层 Row 撑满整行宽度：长按的命中区从"Logo+文字"扩到整行（左右空白
+              // 也能按），但视觉不变（内容居中、宽度由文字决定）。手势挂在 Row 上，
+              // 不是单个 Image —— 42vp 的图太窄，长按容易按空。
+              Row() {
+                Row({ space: 8 }) {
+                  if (this.incognito) {
+                    Image($r('app.media.aura_incognito'))
+                      .width(26)
+                      .height(26)
+                      .fillColor($r('app.color.text_primary'))
+                  } else {
+                    // 浏览器 logo（颜色按壁纸中带选版，见 homeLogoRes）。
+                    Image(this.homeLogoRes())
+                      .width(42)
+                      .height(30)
+                      .draggable(false)
+                  }
+                  Text(this.incognito ? '无痕浏览' : 'Orbira')
+                    .fontSize(34)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor(this.homeFgText())
                 }
-                Text(this.incognito ? '无痕浏览' : 'Orbira')
-                  .fontSize(34)
-                  .fontWeight(FontWeight.Bold)
-                  .fontColor(this.homeFgText())
+                // 长按进主页布局（快捷入口，无痕内为空操作）。
+                // 只绑长按、不绑点击：点 Logo 没有任何副作用，误触也安全；
+                // 500ms 与磁贴/菜单的既有长按节奏保持一致。
+                .gesture(LongPressGesture({ repeat: false, duration: 500 })
+                  .onAction((): void => {
+                    this.openHomeLayoutPanel();
+                  }))
               }
+              .width('100%')
+              .justifyContent(FlexAlign.Center)
             }
 
             // Logo 行中心 ↔ 搜索框中心的锚点差 = 11.5% 窗高（设计稿 22% → 33.5%
