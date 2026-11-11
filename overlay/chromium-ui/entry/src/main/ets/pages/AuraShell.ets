@@ -1485,6 +1485,9 @@ struct AuraShell {
   }
 
   onPageShow(): void {
+    // 页面重新可见：主页卸载时据此判断"是不是整页被藏起来了"（见 HomeSurface
+    // aboutToDisappear —— 切后台/退出应用时不要抢着改状态栏图标色）。
+    AppStorage.setOrCreate('auraShellPageHidden', false);
     this.startKnockShare();
     // 不能在这里清 popup 让位态：点扩展时先设让位、再收起面板页回到本页，
     // 最后才由引擎弹 popup；清掉会让主页层盖住 popup。只记录状态供排查。
@@ -1493,6 +1496,7 @@ struct AuraShell {
   }
 
   onPageHide(): void {
+    AppStorage.setOrCreate('auraShellPageHidden', true);
     this.knockShareSession.stop();
   }
 
