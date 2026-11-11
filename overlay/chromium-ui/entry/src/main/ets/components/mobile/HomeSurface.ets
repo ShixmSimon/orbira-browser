@@ -463,21 +463,21 @@ export struct HomeSurface {
     this.applyCache(context);
     // 种子解析：@StorageLink 初值不触发 @Watch（血泪：只靠 @Watch 会等不到）。
     this.onFaviconsChanged();
-    HomePrefs.loadCustom(context).then((value: HomeCustom): void => {
-      this.custom = value;
-      this.customLoaded = true;
-      // 先吃上次的判色结论（同一张壁纸才算数），再进解码：状态栏/顶栏图标
-      // 从第一帧起就是对的，不会先黑后白地翻一次。
-      this.applyCachedTone();
-      this.applyBackgroundPath(value.bgPath);
-    });
+    // 判色缓存与偏好**串行**读。顺序很重要：先拿到缓存，才知道「这张壁纸已经
+    // 判过」，从而在 applyBackgroundPath 里跳过读文件 + 解码 —— 那一步原来每次
+    // 挂载都跑在主线程上（读几百 KB 字节 + createPixelMap），正是「有壁纸时从
+    // 设置切回主页 / 弹出布局面板会掉帧、清掉背景图就恢复」的来源。
     HomePrefs.loadTone(context).then((tone: HomeToneCache): void => {
       this.cachedTonePath = tone.path;
       this.cachedToneTop = tone.top;
       this.cachedToneMid = tone.mid;
       this.cachedToneBottom = tone.bottom;
       this.cachedToneReady = true;
-      this.applyCachedTone();
+      HomePrefs.loadCustom(context).then((value: HomeCustom): void => {
+        this.custom = value;
+        this.customLoaded = true;
+        this.applyBackgroundPath(value.bgPath);
+      });
     });
     // 兜底：偏好读不回来时也不能让主页整层一直不显示（bgLayerReady 第一道门）。
     if (this.customLoadTimer !== -1) {
@@ -621,6 +621,12 @@ export struct HomeSurface {
       this.bgPaintTimer = -1;
       this.openHomeLayer();
     }, 400);
+    // 这张图已经判过（缓存里记的就是它）：直接沿用结论，**不读文件、不解码**。
+    // 壁纸内容只会在换图时变，路径变了缓存自然失效。
+    if (this.cachedToneReady && this.cachedTonePath === path) {
+      this.applyCachedTone();
+      return;
+    }
     this.analyzeWallpaperTone();
   }
 
