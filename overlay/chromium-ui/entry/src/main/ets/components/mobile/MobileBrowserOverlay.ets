@@ -286,6 +286,10 @@ export struct MobileBrowserOverlay {
   // 一条 `www.bing.com` 挂了约 0.5s）。只看 url 就会出现「主页 + 一条地址栏」，
   // 所以顶栏/进度条/dock 的「是否主页」判定必须把意图也算进去。
   @Prop homeIntent: boolean = false;
+  // 刚离开主页的 120ms 内为 true（见 AuraShell.armHomeExitHold）：顶栏延后一拍
+  // 再切网页态，与主页 180ms 淡出对齐。不加这条时顶部会比网页区早 119ms
+  //（录屏分区实测），看着像「地址栏先冒出来、内容后到」。
+  @Prop homeExitHold: boolean = false;
   // 无痕会话（重启进来的那一种，见 utils/IncognitoSwitch.ets）。
   @Prop incognito: boolean = false;
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
@@ -4165,7 +4169,9 @@ export struct MobileBrowserOverlay {
   private isHomeSurface(): boolean {
     // homeIntent 优先：用户已经按了主页键，画面正被主页层盖住，此时即使引擎
     // 还把 url 报成上一页（NTP 重载期间就是这样），顶栏也不该画地址栏。
-    return this.homeIntent || this.engineHomeCover || this.isNewTabUrl(this.browserState.url);
+    // homeExitHold：刚离开主页的 120ms，顶部跟着主页淡出一起走，别抢在前面变网页态。
+    return this.homeIntent || this.homeExitHold || this.engineHomeCover ||
+      this.isNewTabUrl(this.browserState.url);
   }
 
   // 主页键统一入口。**已经在主页时**先让主页自己复位（清空搜索框 + 收起联想 +
