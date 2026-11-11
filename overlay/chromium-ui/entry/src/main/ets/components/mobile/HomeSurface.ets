@@ -576,7 +576,27 @@ export struct HomeSurface {
     }
     const seq: number = ++this.wallpaperToneSeq;
     try {
-      const source = image.createImageSource(this.bgUri);
+      // ImageKit 的 createImageSource 对 fileUri('file://...') 的支持随版本不同：
+      // 壁纸显示用 URI 没问题，但解码取像素会抛异常被 catch 吞掉，导致按图反色
+      // 静默回落到系统主题色。改用项目内已验证的写法（ExtensionPanel.decodeOne）
+      // —— 读文件字节再 createImageSource(buffer)；读失败才回退 URI 并打日志。
+      const path: string = this.custom.bgPath;
+      let raw: ArrayBuffer | undefined = undefined;
+      try {
+        const file = fs.openSync(path, fs.OpenMode.READ_ONLY);
+        const size: number = fs.statSync(path).size;
+        raw = new ArrayBuffer(size);
+        fs.readSync(file.fd, raw);
+        fs.closeSync(file);
+      } catch (error) {
+        hilog.warn(0x0000, 'AuraShell', 'wallpaper read bytes failed: %{public}s',
+          JSON.stringify(error));
+      }
+      const source: image.ImageSource = (raw !== undefined && raw.byteLength > 0) ?
+        image.createImageSource(raw) : image.createImageSource(this.bgUri);
+      hilog.info(0x0000, 'AuraShell', 'wallpaper tone decode=%{public}s bytes=%{public}d',
+        (raw !== undefined && raw.byteLength > 0) ? 'bytes' : 'uri',
+        raw !== undefined ? raw.byteLength : 0);
       // 缩到 64x64 即可代表整图亮度，避免大图一次性读满内存。
       const pixel = await source.createPixelMap({
         desiredPixelFormat: image.PixelMapFormat.RGBA_8888,
