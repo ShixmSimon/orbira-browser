@@ -1791,7 +1791,14 @@ struct AuraShell {
             .backgroundColor($r('app.color.browser_canvas'))
             .hitTestBehavior(HitTestMode.None)
         }
-        if (this.isMobilePhoneUi() && this.homeSurfaceVisible()) {
+        // 主页层**常驻**：以前外层是 `if (homeSurfaceVisible())`，网页态整个移除，
+        // 回主页要重新 aboutToAppear（读偏好 ~10ms）+ 壁纸重新解码（35~100ms），
+        // 而顶栏在同一帧就把地址栏收了 —— 中间那 1 帧（录屏实测 25ms，第 166 帧
+        // 露出 bing 的绿色河流照片）就是「顶栏和状态栏闪一下」。
+        // 常驻后 Image 一直持有已解码的壁纸，回主页当帧即可上屏。
+        // 网页态用 Visibility.None 藏起来：不占位、不参与命中；homeHold 的 180ms
+        // 淡出仍由下面的 opacity 负责（离场时 homeSurfaceVisible 还是 true）。
+        if (this.isMobilePhoneUi()) {
           HomeSurface({
             incognito: this.incognito,
             onCommand: (command: BrowserCommandPayload): void => {
@@ -1803,6 +1810,7 @@ struct AuraShell {
           })
             .width('100%')
             .height('100%')
+            .visibility(this.homeSurfaceVisible() ? Visibility.Visible : Visibility.None)
             .opacity(this.homeHold ? 0 : 1)
             // 这里不能用 .animation() 修饰符：它对「按住」和「放开」一视同仁，
             // 回主页时会白白做 180ms 淡入（录屏实测 2~3 帧半透明主页叠在白底上）。
