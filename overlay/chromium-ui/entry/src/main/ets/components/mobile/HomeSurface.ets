@@ -76,6 +76,23 @@ const TILE_FAVICON_RADIUS: number = 8;
 const TILE_FAVICON_REQUEST_VP: number = TILE_FAVICON_VP * 2;
 // 冷启动缓存里 favicon base64 的字符上限（≈192KB）。超了就不缓存图标，只留磁贴。
 const MAX_CACHE_FAVICONS_CHARS: number = 262144;
+// 壁纸分区取样（占**可见**壁纸高度的比例）。分区依据是消费者落点：
+//   顶带 0~14%   → 状态栏（~0-5%）+ Chrome 风格顶栏（~5-13%）那一条
+//   中带 18~68%  → Logo 22%、搜索框 33.5%、书签磁贴 42~65%
+//   底带 84~100% → 底部 dock（~86-96%）
+// 三带刻意留缝：单带取样必错一区 —— 实测壁纸 A 顶部 0.380 暗 / dock 0.600 亮，
+// 壁纸 B 正好相反（0.667 亮 / 0.474 暗），一个信号永远有一头看不清。
+const TONE_TOP_END: number = 0.14;
+const TONE_MID_START: number = 0.18;
+const TONE_MID_END: number = 0.68;
+const TONE_BOTTOM_START: number = 0.84;
+// 统计用的缩略图宽度（px）。几十列足够取中位数，解码与遍历都便宜。
+const TONE_THUMB_W: number = 40;
+// 深色模式在壁纸上压一层 30% surface_primary(#1D1D1F) 暗纱（见 build 里的纱幕），
+// 前景实际压的是**叠完纱**的颜色，判色必须按合成后的亮度算，否则深色模式偏亮。
+const TONE_DARK_SCRIM_ALPHA: number = 0.30;
+const TONE_DARK_SCRIM_LUM: number = 0.114;
+
 // favicon 请求合批窗口（ms）。同一帧里几十个磁贴
 // 各自 want() → 攒一拍合成**一次** getFavicons（引擎一次最多 100 个 url，
 // 见 shell_favicons_ohos.cc kMaxUrlsPerRequest）。
@@ -313,9 +330,19 @@ export struct HomeSurface {
   // -- 主页布局 ----------------------------------------------------------------
   @State private custom: HomeCustom = defaultHomeCustom();
   @State private bgUri: string = '';
-  // 壁纸平均亮度（[-1 表示未分析]）与「壁纸是否偏亮」判定，驱动前景文字/玻璃反色。
+  // 壁纸三带亮度（[-1 表示未分析]）与「该带是否偏亮」判定。单带取样必错一区：
+  // 实测同一张壁纸上「顶部 0.380 暗 / dock 0.600 亮」，另一张正好相反，所以
+  // 状态栏、Logo/书签、底部 dock 各认自己那一条带：
+  //   · wallpaperTopIsLight    → 状态栏图标（顶带亮配黑图标）
+  //   · wallpaperIsLight       → 中带（Logo/搜索框/书签文字/毛玻璃，沿用旧名）
+  //   · wallpaperBottomIsLight → 底部 dock 图标
   @State private wallpaperLum: number = -1;
   @State private wallpaperIsLight: boolean = true;
+  @State private wallpaperTopIsLight: boolean = true;
+  @State private wallpaperBottomIsLight: boolean = true;
+  // 顶/底带原始亮度：只进日志和调阈值用，不必参与刷新（不放 @State）。
+  private wallpaperTopLum: number = -1;
+  private wallpaperBottomLum: number = -1;
   // 亮度分析序号：快速连换壁纸时只让最后一次结果落状态。
   private wallpaperToneSeq: number = 0;
   // 系统状态栏图标色去重（-1 未设 / 0 黑图标 / 1 白图标），避免重复下发窗口属性。
@@ -560,13 +587,64 @@ export struct HomeSurface {
     HomePrefs.saveCustom(context, this.custom);
   }
 
-  // 壁纸亮度判定：取整图平均亮度，决定前景文字/玻璃深浅（仿华为按图反色）。
+  // 壁纸亮度判定：分区取样后按三带各自决定前景深浅（仿华为按图反色）。
   // 任何失败都回落到系统深浅色，保证永不崩、不会白屏。
   private resetWallpaperTone(): void {
     this.wallpaperLum = -1;
-    this.wallpaperIsLight = (this.colorScheme === 'light');
-    AppStorage.setOrCreate('auraWallpaperIsLight', this.wallpaperIsLight);
+    this.wallpaperTopLum = -1;
+    this.wallpaperBottomLum = -1;
+    const themeLight: boolean = this.colorScheme === 'light';
+    this.wallpaperIsLight = themeLight;
+    this.wallpaperTopIsLight = themeLight;
+    this.wallpaperBottomIsLight = themeLight;
+    this.publishWallpaperTone();
     this.syncStatusBarIcons();
+  }
+
+  // 三带结论一次性广播。状态栏由 HomeSurface 自己消费；顶栏/dock 图标在
+  // overlay 层，只能走 AppStorage（跨 struct 调方法会 10505001）。
+  private publishWallpaperTone(): void {
+    AppStorage.setOrCreate('auraWallpaperIsLight', this.wallpaperIsLight);
+    AppStorage.setOrCreate('auraWallpaperTopIsLight', this.wallpaperTopIsLight);
+    AppStorage.setOrCreate('auraWallpaperBottomIsLight', this.wallpaperBottomIsLight);
+  }
+
+  // 黑字/白字择优：按 W3C 相对亮度算「黑字对比度」与「白字对比度」，取大的那个。
+  // 不用固定 0.6 经验阈值 —— 两者的交叉点其实在 luma≈0.46（各 4.6 : 1），
+  // 中灰壁纸本该配黑字，固定阈值会判成白字（白字只有 3.9 : 1，发灰看不清）。
+  private prefersDarkInk(lum: number): boolean {
+    if (lum < 0) {
+      return this.colorScheme === 'light';
+    }
+    // 深色模式的暗纱会压暗壁纸：按合成后的底色判定。
+    const base: number = this.colorScheme === 'dark'
+      ? lum * (1 - TONE_DARK_SCRIM_ALPHA) + TONE_DARK_SCRIM_ALPHA * TONE_DARK_SCRIM_LUM
+      : lum;
+    const linear: number = base <= 0.03928 ? base / 12.92 : Math.pow((base + 0.055) / 1.055, 2.4);
+    const contrastBlack: number = (linear + 0.05) / 0.05;
+    const contrastWhite: number = 1.05 / (linear + 0.05);
+    return contrastBlack >= contrastWhite;
+  }
+
+  // 一条横向带的中位亮度（Rec.709 luma，0~1）。用中位数而不是均值：壁纸常有
+  // 灯串/天空高光，一小块极亮区就能把均值整体抬起，出现「夜景配黑图标」。
+  private bandMedianLum(view: Uint8Array, width: number, y0: number, y1: number): number {
+    const rows: number = Math.floor(view.length / (width * 4));
+    const start: number = Math.max(0, Math.min(y0, rows));
+    const end: number = Math.max(start, Math.min(y1, rows));
+    const vals: number[] = [];
+    for (let y = start; y < end; y++) {
+      const base: number = y * width * 4;
+      for (let x = 0; x < width; x++) {
+        const i: number = base + x * 4;
+        vals.push((0.2126 * view[i] + 0.7152 * view[i + 1] + 0.0722 * view[i + 2]) / 255);
+      }
+    }
+    if (vals.length === 0) {
+      return -1;
+    }
+    vals.sort((a: number, b: number): number => a - b);
+    return vals[Math.floor(vals.length / 2)];
   }
 
   private async analyzeWallpaperTone(): Promise<void> {
@@ -597,10 +675,27 @@ export struct HomeSurface {
       hilog.info(0x0000, 'AuraShell', 'wallpaper tone decode=%{public}s bytes=%{public}d',
         (raw !== undefined && raw.byteLength > 0) ? 'bytes' : 'uri',
         raw !== undefined ? raw.byteLength : 0);
-      // 缩到 64x64 即可代表整图亮度，避免大图一次性读满内存。
+      // 原图像素尺寸：壁纸按 Cover 铺满全屏，可见区是原图**居中裁出来**的一块。
+      // 分区必须按可见区算 —— 9:16 的竖图铺 9:19.5 的屏时上下各被裁掉约 9%，
+      // 直接按原图比例取顶部会把状态栏那一条取到画面更上面的内容。
+      let srcW: number = 0;
+      let srcH: number = 0;
+      try {
+        const meta: image.ImageInfo = await source.getImageInfo();
+        srcW = meta.size.width;
+        srcH = meta.size.height;
+      } catch (error) {
+        hilog.warn(0x0000, 'AuraShell', 'wallpaper meta failed: %{public}s',
+          JSON.stringify(error));
+      }
+      // 按原图比例缩略（不压成正方形）：行号直接对应原图行，分区换算不用再纠偏。
+      let thumbH: number = TONE_THUMB_W;
+      if (srcW > 0 && srcH > 0) {
+        thumbH = Math.max(8, Math.min(256, Math.round(TONE_THUMB_W * srcH / srcW)));
+      }
       const pixel = await source.createPixelMap({
         desiredPixelFormat: image.PixelMapFormat.RGBA_8888,
-        desiredSize: { width: 64, height: 64 }
+        desiredSize: { width: TONE_THUMB_W, height: thumbH }
       });
       const info = pixel.getImageInfoSync();
       const w: number = info.size.width;
@@ -608,27 +703,37 @@ export struct HomeSurface {
       const buffer = new ArrayBuffer(w * h * 4);
       await pixel.readPixelsToBuffer(buffer);
       const view = new Uint8Array(buffer);
-      let sum: number = 0;
-      let count: number = 0;
-      // 只统计壁纸顶部 25%：状态栏、Logo、地址栏都落在这一带。整图平均会被
-      // 中下部的亮区拉高，出现「深色树冠配黑图标」；按顶部取样才能对齐视觉。
-      const sampleRows: number = Math.max(1, Math.floor(h * 0.25));
-      const sampleEnd: number = Math.min(view.length, sampleRows * w * 4);
-      for (let i = 0; i < sampleEnd; i += 4) {
-        // 感知亮度（Rec.709）
-        sum += (0.2126 * view[i] + 0.7152 * view[i + 1] + 0.0722 * view[i + 2]) / 255;
-        count++;
+      // Cover 裁切后的可见行区间：图比屏更「瘦高」时上下裁，按屏宽/屏高换算。
+      const screenAspect: number = (this.windowW > 0 && this.windowH > 0) ? this.windowW / this.windowH : w / h;
+      let visRows: number = h;
+      let row0: number = 0;
+      if (w / h < screenAspect) {
+        visRows = Math.max(1, Math.min(h, Math.round(w / screenAspect)));
+        row0 = Math.floor((h - visRows) / 2);
       }
-      const avg: number = count > 0 ? sum / count : 0.5;
+      const topLum: number = this.bandMedianLum(view, w, row0,
+        row0 + Math.max(1, Math.ceil(visRows * TONE_TOP_END)));
+      const midLum: number = this.bandMedianLum(view, w,
+        row0 + Math.floor(visRows * TONE_MID_START),
+        row0 + Math.max(1, Math.ceil(visRows * TONE_MID_END)));
+      const bottomLum: number = this.bandMedianLum(view, w,
+        row0 + Math.floor(visRows * TONE_BOTTOM_START), row0 + visRows);
       // 先落状态再释放图像资源：release 在部分版本会抛异常，不能让它把
       // 亮度结果带进 catch（否则按图反色会静默回落到系统深浅色）。
       if (seq === this.wallpaperToneSeq) {
-        this.wallpaperLum = avg;
-        this.wallpaperIsLight = avg > 0.6;
-        AppStorage.setOrCreate('auraWallpaperIsLight', this.wallpaperIsLight);
+        this.wallpaperTopLum = topLum;
+        this.wallpaperLum = midLum;
+        this.wallpaperBottomLum = bottomLum;
+        this.wallpaperTopIsLight = this.prefersDarkInk(topLum);
+        this.wallpaperIsLight = this.prefersDarkInk(midLum);
+        this.wallpaperBottomIsLight = this.prefersDarkInk(bottomLum);
+        this.publishWallpaperTone();
         hilog.info(0x0000, 'AuraShell',
-          'wallpaper tone avg=%{public}s rows=%{public}d light=%{public}s',
-          avg.toFixed(3), sampleRows, this.wallpaperIsLight ? 'true' : 'false');
+          'wallpaper tone top=%{public}s mid=%{public}s bottom=%{public}s vis=%{public}d/%{public}d light=%{public}s/%{public}s/%{public}s',
+          topLum.toFixed(3), midLum.toFixed(3), bottomLum.toFixed(3), visRows, h,
+          this.wallpaperTopIsLight ? 'T' : 'F',
+          this.wallpaperIsLight ? 'T' : 'F',
+          this.wallpaperBottomIsLight ? 'T' : 'F');
         this.syncStatusBarIcons();
       }
       try {
@@ -686,7 +791,9 @@ export struct HomeSurface {
 
   private syncStatusBarIcons(force: boolean = false): void {
     const useWallpaper: boolean = this.bgUri.length > 0 && !this.incognito;
-    this.setStatusBarLightIcon(useWallpaper ? !this.wallpaperIsLight : (this.colorScheme === 'dark'),
+    // 状态栏（时间/信号/电量）只压在壁纸**顶带**上：中带再亮也管不到那一行，
+    // 底带更无关 —— 所以这里认 wallpaperTopIsLight 而不是中带的 wallpaperIsLight。
+    this.setStatusBarLightIcon(useWallpaper ? !this.wallpaperTopIsLight : (this.colorScheme === 'dark'),
       force);
   }
 
@@ -695,6 +802,8 @@ export struct HomeSurface {
   }
 
   // 有壁纸时前景文字随壁纸亮度反色；无壁纸（或隐身）回落系统深浅色。
+  // 主页文字/图标全落在壁纸**中带**（Logo 22%、搜索框 33.5%、磁贴 42~65%），
+  // 所以认中带判据 wallpaperIsLight；顶带/底带各有自己的消费者。
   private homeFgText(): ResourceColor {
     if (this.bgUri.length > 0 && !this.incognito) {
       return this.wallpaperIsLight ? '#202124' : '#F5F5F5';
