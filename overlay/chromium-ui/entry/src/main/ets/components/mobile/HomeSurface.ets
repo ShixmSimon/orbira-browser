@@ -338,6 +338,11 @@ export struct HomeSurface {
   // 原网页上，解码完一次性替换，没有半透明过渡帧。
   @State private bgPainted: boolean = false;
   private bgPaintTimer: number = -1;
+  // 偏好（含壁纸路径）是否读回来了。挂载第一帧 custom 还是默认值（bgPath=''），
+  // 这时 bgLayerReady() 会误判成"没有壁纸"而放行，露出一帧**白底主页**再换壁纸
+  // —— 真机逐帧复核（44fps）抓到的就是这一帧。等偏好到位再决定显不显示。
+  @State private customLoaded: boolean = false;
+  private customLoadTimer: number = -1;
   // 是否已有判色结论（缓存命中或解码完成，含"确认没有壁纸/判定失败回落主题"）。
   // 壁纸画出来但还没判色时不下发状态栏，否则会先按默认黑、再翻白地闪一次。
   private toneApplied: boolean = false;
@@ -451,6 +456,7 @@ export struct HomeSurface {
     this.onFaviconsChanged();
     HomePrefs.loadCustom(context).then((value: HomeCustom): void => {
       this.custom = value;
+      this.customLoaded = true;
       // 先吃上次的判色结论（同一张壁纸才算数），再进解码：状态栏/顶栏图标
       // 从第一帧起就是对的，不会先黑后白地翻一次。
       this.applyCachedTone();
@@ -464,6 +470,14 @@ export struct HomeSurface {
       this.cachedToneReady = true;
       this.applyCachedTone();
     });
+    // 兜底：偏好读不回来时也不能让主页整层一直不显示（bgLayerReady 第一道门）。
+    if (this.customLoadTimer !== -1) {
+      clearTimeout(this.customLoadTimer);
+    }
+    this.customLoadTimer = setTimeout((): void => {
+      this.customLoadTimer = -1;
+      this.customLoaded = true;
+    }, 600);
     // 冷启动快速路径：上次已定位到「首页」文件夹，直接取它一层子节点（**一次
     // 往返**），不必再走 根→手机书签→首页 的三次往返（用户报「冷启动书签加载
     // 慢」）。id 失效时链式超时会回退完整发现（见 armChainTimer）。
@@ -508,6 +522,10 @@ export struct HomeSurface {
     if (this.bgPaintTimer !== -1) {
       clearTimeout(this.bgPaintTimer);
       this.bgPaintTimer = -1;
+    }
+    if (this.customLoadTimer !== -1) {
+      clearTimeout(this.customLoadTimer);
+      this.customLoadTimer = -1;
     }
     // 离开主页：状态栏图标色交回系统深浅色（网页顶栏是实色，白图标会看不见）。
     // 但**整页被藏起来**时不要抢着改（切后台 / 退出应用）：窗口马上消失，系统会
@@ -594,9 +612,14 @@ export struct HomeSurface {
     this.analyzeWallpaperTone();
   }
 
-  // 主页整层能不能显示：没设壁纸（纯色底由主题铺，本来就是不透明的）直接显示；
-  // 有壁纸则等它真正画出来。返回值只影响「挂载/换图后的那几十毫秒」，稳态恒 true。
+  // 主页整层能不能显示。三个门：
+  // ① 偏好读回来（否则 bgUri 还是空，会被误判成"没壁纸"）；
+  // ② 没壁纸/无痕 → 直接显示（纯色底由主题铺，本来就不透明）；
+  // ③ 有壁纸 → 等 Image 真正画出首帧（onComplete 后再等一帧，见下）。
   private bgLayerReady(): boolean {
+    if (!this.customLoaded) {
+      return false;
+    }
     if (this.incognito || this.bgUri.length === 0) {
       return true;
     }
@@ -2453,11 +2476,15 @@ export struct HomeSurface {
           .objectFit(ImageFit.Cover)
           .interpolation(ImageInterpolation.High)
           .hitTestBehavior(HitTestMode.None)
-          // 首帧落下才放开整层（见 bgLayerReady）。onError 也要放开：图坏了宁可
-          // 露出透明底，也不能让主页永远不显示。
+          // 首帧落下才放开整层（见 bgLayerReady）。onComplete 只代表**解码**完成，
+          // 那一帧的合成里图片往往还没画上去（实测会露出 1 帧白底主页，44fps 抓到），
+          // 所以再等一帧（16ms）才放行。onError 也要放开：图坏了宁可露透明底，
+          // 也不能让主页永远不显示。
           .onComplete((): void => {
-            this.bgPainted = true;
-            this.syncStatusBarIcons(true);
+            setTimeout((): void => {
+              this.bgPainted = true;
+              this.syncStatusBarIcons(true);
+            }, 16);
           })
           .onError((): void => {
             this.bgPainted = true;
