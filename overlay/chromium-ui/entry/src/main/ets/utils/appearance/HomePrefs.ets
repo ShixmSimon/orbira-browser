@@ -15,10 +15,8 @@ const KEY_MIGRATED = 'homeFolderMigrated';
 const KEY_SEEDED = 'homeBookmarksSeeded';
 const KEY_TONE = 'homeWallpaperTone';
 
-// 壁纸三带判色结果的缓存：path 用于换壁纸后自动失效。
-// 为什么要落盘：壁纸解码是异步的（读 300KB 字节 + createPixelMap，几十到上百毫秒），
-// 挂载时若只能先用主题色，状态栏/顶栏图标会先出一次「黑图标压在深壁纸上」，
-// 解码完再翻成白色 —— 冷启动肉眼可见地闪一下。挂载即读回上次结论就没有这一跳。
+// 壁纸三带判色结果缓存，path 用于换图后自动失效。
+// 落盘是为了冷启动挂载期就能吃到上次结论，避免解码完成前图标色反一次。
 export interface HomeToneCache {
   path: string;
   top: boolean;

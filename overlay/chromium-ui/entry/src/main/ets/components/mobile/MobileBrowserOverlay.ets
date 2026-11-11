@@ -280,15 +280,10 @@ export struct MobileBrowserOverlay {
   // 由 AuraShell 判定后传下来（见 AuraShell.isNewTabPage）；这里据此把顶栏、
   // 命中区、菜单文案都按「主页」处理，否则会出现「主页 + 一条 github.com 地址栏」。
   @Prop engineHomeCover: boolean = false;
-  // 「用户已经按了主页键/返回回主页」的意图标志（= AuraShell.homeReturnCover）。
-  // 回主页时 url 要等引擎导航提交（实测 65~107ms）才变 newtab；在主页上再按
-  // 主页键更糟：引擎重载 NTP 的过程中会把 url 短暂报成上一页（录屏里地址栏冒出
-  // 一条 `www.bing.com` 挂了约 0.5s）。只看 url 就会出现「主页 + 一条地址栏」，
-  // 所以顶栏/进度条/dock 的「是否主页」判定必须把意图也算进去。
+  // 用户按了主页键/返回回主页的意图（= AuraShell.homeReturnCover）。
+  // url 要等引擎导航提交才变 newtab，只看 url 会在转场里错画成网页态。
   @Prop homeIntent: boolean = false;
-  // 刚离开主页的 120ms 内为 true（见 AuraShell.armHomeExitHold）：顶栏延后一拍
-  // 再切网页态，与主页 180ms 淡出对齐。不加这条时顶部会比网页区早 119ms
-  //（录屏分区实测），看着像「地址栏先冒出来、内容后到」。
+  // 离开主页后的 120ms 内顶栏延后切网页态，与主页 180ms 淡出对齐。
   @Prop homeExitHold: boolean = false;
   // 无痕会话（重启进来的那一种，见 utils/IncognitoSwitch.ets）。
   @Prop incognito: boolean = false;
@@ -386,11 +381,8 @@ export struct MobileBrowserOverlay {
   // 主页风格（'minimal' | 'chrome'）与 Chrome 风格下 dock 位置（'bottom' | 'top'）。
   @StorageLink('auraHomeStyle') homeStyle: string = 'minimal';
   @StorageLink('auraDockPosition') dockPosition: string = 'bottom';
-  // 壁纸亮度判定（由 HomeSurface 分区取样后透出）：Chrome 顶栏 home 态不铺底色、
-  // 只靠它给图标/标签反色保证可读，与主页搜索框、磁贴一致。
-  // 三带各管一头：顶带=状态栏/顶栏那一条，底带=底部 dock 那一条，中带只给
-  // 主页内容（HomeSurface 自己用）。两张实测壁纸的顶/底结论正好相反，用同一个
-  // 信号必然错一头（顶部亮配了白图标 / dock 亮配了黑图标）。
+  // 壁纸三带判色由 HomeSurface 透出：顶带给状态栏/顶栏，底带给底部 dock。
+  // 顶/底亮度常相反，不能用同一个信号。
   @StorageProp('auraWallpaperTopIsLight') wallpaperTopIsLight: boolean = true;
   @StorageProp('auraWallpaperBottomIsLight') wallpaperBottomIsLight: boolean = true;
   // auraRequestMenuOpen 信号随主页右上角菜单按钮一并去除（入口冗余：
@@ -447,7 +439,7 @@ export struct MobileBrowserOverlay {
   @State private loadBarShown: boolean = false;
   // 当前目标进度 0..1（恒 >= loadBarMin，卸载后复位）。
   @State private loadBarWidth: number = 0.08;
-  // 收尾定时器：灌满 100% 停留一小会儿再淡出卸载（Chrome 同款收尾观感）。
+  // 收尾定时器：灌满 100% 停留一小会儿再收掉。
   private loadBarFadeTimer: number = 0;
 
   // 地址栏联想（引擎 autocomplete 命令）：编辑地址栏、输入非空文本时，在
@@ -1355,7 +1347,7 @@ export struct MobileBrowserOverlay {
       }
       .width('100%')
       .constraintSize({ maxHeight: this.contextMenuListMaxHeightVp(model) })
-      // 血泪：Scroll 默认垂直居中，内容不满时必须显式 TopStart。
+      // Scroll 默认垂直居中，内容不满时必须显式 TopStart。
       .align(Alignment.TopStart)
       .scrollBar(BarState.Off)
     }
@@ -1624,10 +1616,8 @@ export struct MobileBrowserOverlay {
     return span > 0 ? Math.min(Math.max((1 - r) / span, 0), 1) : (1 - r);
   }
 
-  // 加载细条的 y 与顶栏收起进度同源：顶栏全显时落在地址栏下沿，
-  // 顶栏全隐时上移到状态栏下沿，中间线性插值。这样蓝条始终贴着「顶栏下沿」
-  // 一起收起/滑出，不会孤零零悬在网页内容上；顶栏本身完全交回引擎 ratio
-  // 驱动，滚动隐藏照常跟手（用覆盖值钉住顶栏会让上滑失灵，已废弃）。
+  // 进度条 y 与顶栏收起进度同源：全显贴地址栏下沿，全隐贴状态栏下沿，中间插值。
+  // 顶栏位置仍完全由引擎 ratio 驱动，不用覆盖值钉住（会让上滑隐藏失灵）。
   private loadBarY(): number {
     const topY: number = this.topSafeVp;
     // Chrome 风格 dock 置底时顶部没有地址栏（引擎只留状态栏那一条），
@@ -1862,12 +1852,8 @@ export struct MobileBrowserOverlay {
   @Builder
   private GoogleDockTop() {
     Stack({ alignContent: Alignment.TopStart }) {
-      // 主页态：完全不铺条带底、不加 backdropBlur —— 壁纸直接铺到状态栏，
-      // 与简约风格主页 / 华为浏览器一致（此前那层 45% 白磨砂带就是用户反馈的
-      // 「Chrome 风格顶部不是透明的」）。图标靠 chromeDockIconColor() 反色。
-      // 网页态（dock 置顶）才铺实色主表面色遮住网页内容。纯装饰、不参与命中。
-      // 下沿渐隐带随之取消：它原本只是为了给不透明条带收边，条带没了就不存在
-      // 硬切边界；⚠️ 网页上更不能加（会压出「网页顶部黑影」）。
+      // 主页态不铺条带底，让壁纸直接铺到状态栏，图标靠 chromeDockIconColor() 反色。
+      // 网页态（dock 置顶）才铺实色主表面色遮住网页内容；纯装饰、不参与命中。
       if (!this.isHomeSurface()) {
         Column()
           .width('100%')
@@ -1998,7 +1984,7 @@ export struct MobileBrowserOverlay {
     })
   }
 
-  // 材质板宽度（vp）= 视口宽 - 左右留白。⚠️ 必须用 viewportWidthVp（onAreaChange
+  // 材质板宽度（vp）= 视口宽 - 左右留白。必须用 viewportWidthVp（onAreaChange
   // 量到的布局宽），display 只作首帧兜底 —— 转屏瞬间 display 与布局有时序差，
   // 以它为准会让 bar 停在旧方向的宽度上。
   private dockBarWidthVp(sideMarginVp: number): number {
@@ -2429,8 +2415,7 @@ export struct MobileBrowserOverlay {
         maskColor: Color.Transparent
       })
 
-      // 状态栏实色垫底：主页图层仍在时同样不画。这是割裂最显眼的一处——
-      // 若主页图层还盖着就先铺一条白色状态栏带，视觉上会「上面白、下面壁纸」。
+      // 状态栏实色垫底：主页图层在场时不画，否则会「上面白、下面壁纸」。
       if (!this.hideStatusBarOnScroll && !this.isHomeSurface() &&
         this.topSafeVp > 0 && !this.pageFullscreen) {
         Column()
@@ -2441,10 +2426,7 @@ export struct MobileBrowserOverlay {
           .hitTestBehavior(HitTestMode.None)
       }
 
-      // 加载细条：独立于顶栏绘制，但 y 由 loadBarY() 跟随顶栏收起进度。
-      // 顶栏显示时落在地址胶囊下沿，顶栏隐藏时贴状态栏下沿，不会悬在网页文字上；
-      // 顶栏本身不锁、滚动隐藏完全跟手。
-      // 画在状态栏实色垫底之上，保证浅色壁纸/深色下都压得住。
+      // 进度条独立于顶栏绘制，y 跟随顶栏收起进度；画在状态栏垫底之上。
       if (this.loadBarShown && !this.isHomeSurface() && !this.pageFullscreen) {
         Stack({ alignContent: Alignment.Start }) {
           Row()
@@ -2460,15 +2442,9 @@ export struct MobileBrowserOverlay {
         .height(this.loadBarHeight)
         .clip(true)
         .position({ x: 0, y: this.loadBarY() })
-        // 不加属性动画：滚动时 y 逐帧变化，动画会被反复重启导致蓝条滞后；
-        // 直接取当帧值，与顶栏同源跟手。
-        // 退场**硬切、不加 transition**：transition 的时长在节点创建时求值一次、
-        // 之后不会重算，所以「按 isHomeSurface() 决定 0 还是 200ms」这种写法在真正
-        // 的转场里拿到的永远是旧值 —— 蓝条照样淡出 200ms，正好压在已经上屏的
-        // 主页上（录屏逐帧：主页已全白，蓝条还在 59%→70% 地长，6 帧≈130ms 才淡完）。
-        // 现在由 hideLoadBarNow() 在按下主页键那一刻直接卸载；正常加载完成的
-        // 「收尾感」改由 syncLoadBar 的 180ms 停留提供（跑满 → 停 → 消失）。
-        // 纯指示：不参与命中，顶部滑动照常下发到网页。
+        // 不加 transition：其时长在节点创建时求值一次，之后不重算，
+        // 无法按 isHomeSurface() 动态改成 0。退场由 hideLoadBarNow() 直接卸载；
+        // y 不加属性动画，避免滚动时反复重启导致滞后。纯指示、不参与命中。
         .hitTestBehavior(HitTestMode.None)
       }
 
@@ -2762,9 +2738,8 @@ export struct MobileBrowserOverlay {
   private TopAddressBar() {
     Stack({ alignContent: Alignment.TopStart }) {
       if (!this.isHomeSurface()) {
-        // 网页：保持不透明同色带（Chrome 同款，遮住网页顶部）。
-        // 主页/背景图不铺任何色带：状态栏 OS 层已透明(#00000000)，让壁纸直接透出，
-        // 地址胶囊自带 glass_tint 底色，无需额外遮挡（仿 Chrome NTP 主页）。
+        // 网页态铺不透明同色带遮住网页顶部；主页态让壁纸直接透出状态栏，
+        // 地址胶囊自带底色，无需额外遮挡。
         Column()
           .width('100%')
           .height(this.topSafeVp + TOP_BAR_EXTENT_VP + 3)
@@ -2852,8 +2827,7 @@ export struct MobileBrowserOverlay {
           this.cancelAddressEdit();
         })
       } else {
-        // 地址栏不再放返回键 —— 与底栏「返回」重复，且鸿蒙/华为浏览器
-        // 地址栏本无后退键。底栏保留 返回+前进（统一为系统 chevron 符号）。
+        // 地址栏不再放返回键（与底栏「返回」重复）。底栏保留 返回+前进。
         Row({ space: 6 }) {
           // 锁图标：点按打开"网站设置"（方案A），不再进入编辑态。
           Button({ type: ButtonType.Normal, stateEffect: false }) {
@@ -3154,9 +3128,8 @@ export struct MobileBrowserOverlay {
       barHeightVp: DOCK_BAR_HEIGHT_VP,
       sideMarginVp: DOCK_SIDE_MARGIN_VP,
       bottomMarginVp: resolveDockBottomMarginVp(this.bottomSafeVp),
-      // 材质板是独立 struct（拿不到 isHomeSurface / 壁纸判据，跨组件调方法会
-      // 10505001），只能把颜色当字符串传进去：有壁纸时给反色结果，否则空串
-      // 由它回落系统 icon_primary（网页态行为不变）。
+      // 材质板是独立 struct，跨 struct 调方法会 10505001；颜色以字符串传入，
+      // 空串表示回落系统 icon_primary。
       dockInkHex: this.bottomDockInkHex(),
       onDockSlot: (slot: string): void => {
         this.handleDockSlot(slot);
@@ -4167,9 +4140,7 @@ export struct MobileBrowserOverlay {
   }
 
   private isHomeSurface(): boolean {
-    // homeIntent 优先：用户已经按了主页键，画面正被主页层盖住，此时即使引擎
-    // 还把 url 报成上一页（NTP 重载期间就是这样），顶栏也不该画地址栏。
-    // homeExitHold：刚离开主页的 120ms，顶部跟着主页淡出一起走，别抢在前面变网页态。
+    // homeIntent 兜住 url 未提交的窗口；homeExitHold 让顶部跟主页淡出同拍切换。
     return this.homeIntent || this.homeExitHold || this.engineHomeCover ||
       this.isNewTabUrl(this.browserState.url);
   }
@@ -4181,27 +4152,18 @@ export struct MobileBrowserOverlay {
     if (this.isHomeSurface()) {
       const seq: number = Number(AppStorage.get('auraHomeReset') ?? 0);
       AppStorage.setOrCreate('auraHomeReset', seq + 1);
-      // 引擎**确实**已经停在 newtab 时，到这儿就结束，不再发 home 命令。
-      // 注释里"对已经在 newtab 的标签是空操作"与实际不符：实测会重新载入一遍
-      // NTP —— 画面先白 ~400ms，期间 url 还会短暂报成上一页，顶栏据此冒出一条
-      // `www.bing.com` 地址栏（录屏：主页按主页键 → 地址栏挂 0.5s 才消退）。
-      // 只把它当"没在主页"的兜底（比如失败导航残留在 url 上）时才继续下发。
+      // 已停在 newtab 时不再发 home：引擎会重载 NTP 并把 url 短暂报成上一页。
       if (this.isNewTabUrl(this.browserState.url)) {
         return;
       }
     } else {
-      // 回主页这一瞬必须立刻收掉进度条。isHomeSurface() 看的是 browserState.url，
-      // 而 url 要等引擎导航提交（实测 65~107ms）才变成 newtab；在这段窗口里
-      // loading 已经转 false，syncLoadBar 会走「灌满 → 停留 180ms → 淡出」，
-      // 蓝条就压在已经上屏的主页上（录屏逐帧：主页已全白，蓝条还在 59%→70% 地长，
-      // 约 6 帧≈130ms 才淡完）。这里按"用户意图"直接收，不等 url。
+      // 按用户意图立刻收进度条，不等 url 提交（否则会走满格停留淡出，压在主页上）。
       this.hideLoadBarNow();
     }
     this.issueCommand({ command: 'home' });
   }
 
-  // 立刻卸载加载细条：清掉收尾计时器（否则它稍后会把 loadBarShown 再置 false，
-  // 那一次会连带把新一次加载的细条一起收掉），并复位宽度供下次以最小宽度挂载。
+  // 立刻卸载进度条：清掉收尾计时器，避免它稍后误收下一次加载；并复位宽度。
   private hideLoadBarNow(): void {
     if (this.loadBarFadeTimer !== 0) {
       clearTimeout(this.loadBarFadeTimer);
@@ -4455,7 +4417,7 @@ export struct MobileBrowserOverlay {
             })
         }
 
-        // ✕：只关通知条，不动下载本身（Chrome 同款语义）。
+        // ✕：只关通知条，不动下载本身。
         Button({ type: ButtonType.Circle, stateEffect: true }) {
           Image($r('app.media.aura_close'))
             .width(16)
@@ -4876,8 +4838,7 @@ export struct MobileBrowserOverlay {
     if (!this.loadBarShown) {
       return;
     }
-    // 已经在主页：不灌满、也不停留 180ms，直接收。满格蓝条压在白底主页上最显眼
-    //（主页键这条路径已在 pressHome 里提前收掉，这里兜住关标签页/新建标签页等）。
+    // 已在主页直接收，不灌满也不停留（兜住关标签页/新建标签页等路径）。
     if (this.isHomeSurface()) {
       this.hideLoadBarNow();
       return;

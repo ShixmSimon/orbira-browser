@@ -428,7 +428,7 @@ export struct HistoryPanel {
     this.filteredGroups = out;
   }
 
-  // 悬浮批量操作条：绝对定位于 body Stack 底部，自绘仿玻璃药丸（float_bar_bg +
+  // 悬浮批量操作条：绝对定位于 body Stack 底部，自绘玻璃药丸（float_bar_bg +
   // 细描边 + 投影）。**宽度随内容走**：外层全宽 Row 只负责底部定位与水平居中，
   // 自身透明且透传点击；内层 Scroll 不设 minWidth，只约束 maxWidth 100%，
   // 只有一个「全选」时就是一小颗药丸，四周/下方露出列表与页面底色，不会被拉成

@@ -63,9 +63,7 @@ const TILE_ICON_RADIUS: number = 13;
 // 引擎按 sizeVp×deviceScaleFactor 生成 PNG（overlay/chrome/browser/ui/ohos/
 // shell_favicons_ohos.cc: size_px = clamp(sizeVp) × PrimaryDisplayScale()），
 // 站点只给 16/32px 的 favicon 时会被拉大 —— 画得越大越糊（46vp 满铺 =
-// 138px，实测发虚）。24vp 又太小：磁贴里只剩中间一小块，和首字母占位块
-// 比例失衡（用户实拍对比）。
-// 1.0.4：36 → 30（用户定稿，磁贴里更收敛一点，仍远低于 46 的糊边门槛）。
+// 138px，会发虚）；24vp 又与首字母占位块比例失衡。取 30vp 兼顾清晰度与磁贴比例。
 const TILE_FAVICON_VP: number = 30;
 // 底板里 favicon 的圆角（按边长约 25% 收）；首字母占位色块沿用同一圆角，
 // 保证「有图标 / 无图标」内部轮廓一致。
@@ -76,12 +74,11 @@ const TILE_FAVICON_RADIUS: number = 8;
 const TILE_FAVICON_REQUEST_VP: number = TILE_FAVICON_VP * 2;
 // 冷启动缓存里 favicon base64 的字符上限（≈192KB）。超了就不缓存图标，只留磁贴。
 const MAX_CACHE_FAVICONS_CHARS: number = 262144;
-// 壁纸分区取样（占**可见**壁纸高度的比例）。分区依据是消费者落点：
-//   顶带 0~14%   → 状态栏（~0-5%）+ Chrome 风格顶栏（~5-13%）那一条
-//   中带 18~68%  → Logo 22%、搜索框 33.5%、书签磁贴 42~65%
-//   底带 84~100% → 底部 dock（~86-96%）
-// 三带刻意留缝：单带取样必错一区 —— 实测壁纸 A 顶部 0.380 暗 / dock 0.600 亮，
-// 壁纸 B 正好相反（0.667 亮 / 0.474 暗），一个信号永远有一头看不清。
+// 壁纸分区取样（占可见壁纸高度的比例），按消费者落点划分：
+//   顶带 0~14%   → 状态栏 + Chrome 风格顶栏
+//   中带 18~68%  → Logo、搜索框、书签磁贴
+//   底带 84~100% → 底部 dock
+// 顶/底亮度常相反，单一信号必错一区。
 const TONE_TOP_END: number = 0.14;
 const TONE_MID_START: number = 0.18;
 const TONE_MID_END: number = 0.68;
@@ -92,9 +89,8 @@ const TONE_THUMB_W: number = 40;
 // 前景实际压的是**叠完纱**的颜色，判色必须按合成后的亮度算，否则深色模式偏亮。
 const TONE_DARK_SCRIM_ALPHA: number = 0.30;
 const TONE_DARK_SCRIM_LUM: number = 0.114;
-// 回主页的进场缩放：从 1.035 回到 1（约 190ms）。
-// 为什么用"放大回落"而不是淡入：整层是不透明的，放大起步**永远盖满屏**，
-// 不会像淡入那样把下面的旧网页 / 引擎白 NTP 透出来（那正是之前闪烁的来源）。
+// 回主页的进场缩放。用不透明的放大回落而非淡入，避免任何透明帧
+// 把下层网页或引擎白 NTP 透出来。
 const HOME_ENTER_SCALE: number = 1.05;
 
 // favicon 请求合批窗口（ms）。同一帧里几十个磁贴
@@ -214,8 +210,8 @@ function normUrl(url: string): string {
   return s;
 }
 
-// 主页布局弹层的两类行必须走 @Component + @Prop（血泪红线：@Builder 按值传参
-// 的动态内容不会刷新 UI —— 1.0.76「设置改完返回主页摘要仍是旧值」的根因）。
+// 主页布局弹层的两类行必须走 @Component + @Prop：@Builder 按值传参时
+// 动态内容不会刷新 UI。
 @Component
 struct HomeSettingToggleRow {
   icon: Resource = $r('app.media.aura_display');
@@ -258,9 +254,7 @@ struct HomePositionSliderRow {
         .fontSize(15)
         .fontColor($r('app.color.text_primary'))
         .width(58)
-      // step 用 1 而不是 4：值域 -120~260 共 380，step 4 只有 95 档，拖动时位置
-      // 按 4vp 阶梯跳，肉眼就是「一格一格」。hitrace 实测 UI 线程全程 120fps 满帧、
-      // 每帧 FlushTask 仅 0.68ms，所以卡的不是帧率，是这个阶梯采样。
+      // step 必须为 1：值域 380，step 4 会让位置按 4vp 阶梯跳，拖动时肉眼可见跳格。
       Slider({ value: this.posOffset, min: this.min, max: this.max, step: 1 })
         .layoutWeight(1)
         .selectedColor($r('app.color.accent_primary'))
@@ -337,30 +331,24 @@ export struct HomeSurface {
   // -- 主页布局 ----------------------------------------------------------------
   @State private custom: HomeCustom = defaultHomeCustom();
   @State private bgUri: string = '';
-  // 壁纸是否已经真正画出来（Image 的 onComplete）。见 bgLayerReady()：
-  // 挂载时 custom 常常先到、壁纸图还在解码，此时底色已是 Transparent（有壁纸就
-  // 不铺主题底），**旧网页会从这一层透出来** —— 真机录屏逐帧抓到的正是
-  // 「主页的 Logo / 搜索胶囊 / 磁贴半透明浮在网页上」再跳到完整主页
-  // （用户报的「点主页按钮回主页有闪烁」）。解码完成前整层不显示，画面留在
-  // 原网页上，解码完一次性替换，没有半透明过渡帧。
+  // 壁纸首帧是否已画出（Image.onComplete）。有壁纸时底色透明，
+  // 图未解码就显示会透出下层网页；等首帧到位后整层一次性硬切上屏。
   @State private bgPainted: boolean = false;
   private bgPaintTimer: number = -1;
-  // 偏好（含壁纸路径）是否读回来了。挂载第一帧 custom 还是默认值（bgPath=''），
-  // 这时 bgLayerReady() 会误判成"没有壁纸"而放行，露出一帧**白底主页**再换壁纸
-  // —— 真机逐帧复核（44fps）抓到的就是这一帧。等偏好到位再决定显不显示。
+  private bgPaintDelayTimer: number = -1;
+  private enterScaleTimer: number = -1;
+  // 偏好（含壁纸路径）是否读回。挂载首帧 custom 仍是默认值，
+  // 此时放行会误判成「无壁纸」而露出一帧白底主页。
   @State private customLoaded: boolean = false;
   private customLoadTimer: number = -1;
-  // 进场缩放（见 HOME_ENTER_SCALE）。稳态恒 1；只有"壁纸刚画出来"那一拍从
-  // 1.035 回落 —— 给回主页一个轻微动效，同时不引入任何透明帧。
+  // 进场缩放，稳态恒 1；壁纸首帧到位后由 HOME_ENTER_SCALE 回落到 1。
   @State private enterScale: number = 1;
   // 是否已有判色结论（缓存命中或解码完成，含"确认没有壁纸/判定失败回落主题"）。
   // 壁纸画出来但还没判色时不下发状态栏，否则会先按默认黑、再翻白地闪一次。
   private toneApplied: boolean = false;
-  // 壁纸三带亮度（[-1 表示未分析]）与「该带是否偏亮」判定。单带取样必错一区：
-  // 实测同一张壁纸上「顶部 0.380 暗 / dock 0.600 亮」，另一张正好相反，所以
-  // 状态栏、Logo/书签、底部 dock 各认自己那一条带：
-  //   · wallpaperTopIsLight    → 状态栏图标（顶带亮配黑图标）
-  //   · wallpaperIsLight       → 中带（Logo/搜索框/书签文字/毛玻璃，沿用旧名）
+  // 壁纸三带亮度（-1 表示未分析）与各自的「是否偏亮」判定：
+  //   · wallpaperTopIsLight    → 状态栏 + 顶栏图标
+  //   · wallpaperIsLight       → 中带（Logo/搜索框/书签文字/毛玻璃）
   //   · wallpaperBottomIsLight → 底部 dock 图标
   @State private wallpaperLum: number = -1;
   @State private wallpaperIsLight: boolean = true;
@@ -369,8 +357,7 @@ export struct HomeSurface {
   // 顶/底带原始亮度：只进日志和调阈值用，不必参与刷新（不放 @State）。
   private wallpaperTopLum: number = -1;
   private wallpaperBottomLum: number = -1;
-  // 上次的判色结论（落盘）。壁纸解码是异步的，挂载瞬间还没有结论时先吃缓存，
-  // 免得状态栏/顶栏图标先出一次「白/黑颠倒」再翻过来（冷启动肉眼可见）。
+  // 上次的判色结论（落盘）。解码异步，挂载期先吃缓存，避免图标色先反再翻正。
   private cachedTonePath: string = '';
   private cachedToneTop: boolean = true;
   private cachedToneMid: boolean = true;
@@ -389,11 +376,9 @@ export struct HomeSurface {
   // 已在主页时按主页键：overlay 这里自增，主页收到后清空搜索框 + 收起联想
   // （Chrome 里在新建标签页按主页键就是重开一个新标签页）。
   @StorageLink('auraHomeReset') @Watch('onHomeResetRequest') homeResetSignal: number = 0;
-  // 整页隐藏/显示（AuraShell 的 onPageHide/onPageShow 写）。用途有二：
-  // ① 卸载时判断"是整页被藏起来还是被网页顶掉"（见 aboutToDisappear）；
-  // ② 从后台回来时强制重下发状态栏图标色 —— 系统在后台会把状态栏还原成桌面
-  //    那一套（黑图标），而 setStatusBarLightIcon 的去重还记着"上次发的白色"，
-  //    不会再发一次，表现就是「回到浏览器，状态栏不反色」。
+  // 整页隐藏/显示（AuraShell 的 onPageHide/onPageShow 写）。
+  // 卸载时区分「整页被藏」与「被网页顶掉」；页面重新可见时强制重下发状态栏色，
+  // 因为系统可能已还原成桌面配色，而本地去重仍记着上次的值。
   @StorageLink('auraShellPageHidden') @Watch('onShellPageShown') shellPageHidden: boolean = false;
   // 主页正在被网页顶掉（AuraShell 在淡出过半时发）：把状态栏交回主题色。
   @StorageLink('auraHomeExitInk') @Watch('onHomeExitInk') homeExitInk: number = 0;
@@ -421,10 +406,9 @@ export struct HomeSurface {
   @State private pressedGear: boolean = false;
 
   @State private query: string = '';
-  // 窗宽/窗高（vp）：主页所有锚点（Logo 22% / 搜索框 33.5% 窗高等）都基于它们。
-  // 必须是 @State + 跟根节点 onAreaChange 更新：只在 aboutToAppear 读一次
-  // display 尺寸的话，横竖屏切换后仍按旧值排版 —— 用户实拍「退出全屏转回竖屏后
-  // 主页整体位移、logo 显示不全」就是这个（display 尺寸在挂载时是竖屏值）。
+  // 窗宽/窗高（vp）：主页所有锚点都基于它们。
+  // 必须是 @State + 跟根节点 onAreaChange 更新；只在 aboutToAppear 读一次
+  // display 尺寸，横竖屏切换后会仍按旧值排版。
   @State private windowW: number = 360;
   @State private windowH: number = 780;
 
@@ -464,12 +448,10 @@ export struct HomeSurface {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
     // 第一件事：把上次的磁贴与图标画出来（同步读文件，不等引擎回包）。
     this.applyCache(context);
-    // 种子解析：@StorageLink 初值不触发 @Watch（血泪：只靠 @Watch 会等不到）。
+    // 种子解析：@StorageLink 初值不触发 @Watch，挂载时需手动补吃一次。
     this.onFaviconsChanged();
-    // 判色缓存与偏好**串行**读。顺序很重要：先拿到缓存，才知道「这张壁纸已经
-    // 判过」，从而在 applyBackgroundPath 里跳过读文件 + 解码 —— 那一步原来每次
-    // 挂载都跑在主线程上（读几百 KB 字节 + createPixelMap），正是「有壁纸时从
-    // 设置切回主页 / 弹出布局面板会掉帧、清掉背景图就恢复」的来源。
+    // 判色缓存与偏好串行读：先拿到缓存，applyBackgroundPath 才能命中它并
+    // 跳过主线程上的读文件 + 解码（有壁纸时每次挂载重解码会掉帧）。
     HomePrefs.loadTone(context).then((tone: HomeToneCache): void => {
       this.cachedTonePath = tone.path;
       this.cachedToneTop = tone.top;
@@ -515,10 +497,8 @@ export struct HomeSurface {
       this.showSettings = true;
     }
     AppStorage.set('auraOpenHomeLayout', 0);
-    // 挂载时不再先按主题色强发一次状态栏：壁纸解码是异步的，那一次会在仍可见的
-    // 旧网页上闪一下图标色（录屏实测），真正该发的是壁纸画出来那一刻（见
-    // wallpaper Image 的 onComplete 与 syncStatusBarIcons 的门禁）。
-    // 无壁纸时状态栏本来就是 EntryAbility 按主题下发的值，不需要重发。
+    // 挂载时不按主题色抢发状态栏：壁纸解码异步，会先在旧网页上闪一下图标色。
+    // 下发时机交给壁纸首帧（onComplete）+ syncStatusBarIcons 的门禁。
   }
 
   aboutToDisappear(): void {
@@ -535,14 +515,20 @@ export struct HomeSurface {
       clearTimeout(this.bgPaintTimer);
       this.bgPaintTimer = -1;
     }
+    if (this.bgPaintDelayTimer !== -1) {
+      clearTimeout(this.bgPaintDelayTimer);
+      this.bgPaintDelayTimer = -1;
+    }
+    if (this.enterScaleTimer !== -1) {
+      clearTimeout(this.enterScaleTimer);
+      this.enterScaleTimer = -1;
+    }
     if (this.customLoadTimer !== -1) {
       clearTimeout(this.customLoadTimer);
       this.customLoadTimer = -1;
     }
-    // 离开主页：状态栏图标色交回系统深浅色（网页顶栏是实色，白图标会看不见）。
-    // 但**整页被藏起来**时不要抢着改（切后台 / 退出应用）：窗口马上消失，系统会
-    // 按桌面重新下发，改早了只是在退场动画里闪一下（用户反馈「关闭浏览器状态栏
-    // 取色会变化」）。只保留「主页被网页顶掉」这条真正需要交还的路径。
+    // 离开主页时把状态栏图标色交回主题色（网页顶栏是实色）。
+    // 整页被藏（切后台/退出）时不改，避免退场动画里闪一下。
     if (AppStorage.get<boolean>('auraShellPageHidden') !== true) {
       this.setStatusBarLightIcon(this.colorScheme === 'dark', true);
     }
@@ -593,6 +579,16 @@ export struct HomeSurface {
   // -- 背景图 ------------------------------------------------------------------
 
   private applyBackgroundPath(path: string): void {
+    // 路径一变化就作废旧分析，避免上一张图的异步结果覆盖新图的结论。
+    this.wallpaperToneSeq++;
+    if (this.bgPaintDelayTimer !== -1) {
+      clearTimeout(this.bgPaintDelayTimer);
+      this.bgPaintDelayTimer = -1;
+    }
+    if (this.enterScaleTimer !== -1) {
+      clearTimeout(this.enterScaleTimer);
+      this.enterScaleTimer = -1;
+    }
     if (path.length === 0) {
       this.bgUri = '';
       this.enterScale = 1;
@@ -624,8 +620,7 @@ export struct HomeSurface {
       this.bgPaintTimer = -1;
       this.openHomeLayer();
     }, 400);
-    // 这张图已经判过（缓存里记的就是它）：直接沿用结论，**不读文件、不解码**。
-    // 壁纸内容只会在换图时变，路径变了缓存自然失效。
+    // 这张图已判过：沿用缓存结论，不读文件、不解码。换图后路径不匹配自动失效。
     if (this.cachedToneReady && this.cachedTonePath === path) {
       this.applyCachedTone();
       return;
@@ -633,19 +628,21 @@ export struct HomeSurface {
     this.analyzeWallpaperTone();
   }
 
-  // 壁纸画好了：整层上屏 + 状态栏一次性跟上 + 轻微放大回落。
-  // 缩放走 animateTo（只有 scale 有动画），透明度直接切 1 —— 保证第一帧就不透明，
-  // 不会把下面的网页/白 NTP 透出来。
+  // 壁纸首帧到位：整层硬切上屏 + 状态栏一次性跟上 + 放大回落。
+  // 只有 scale 走 animateTo，透明度不参与动画，避免透明帧。
   private openHomeLayer(): void {
     if (this.bgPainted) {
       return;
     }
-    // 先把 1.05 这一帧**真正画出来**，下一拍再动：节点刚从 opacity 0 变可见时
-    // ArkUI 没有可插值的上一帧，同一帧里改 scale 会直接落到终值（实测看不到动画，
-    // 用户反馈「按主页键还是没有动画」）。
+    // 先让放大态真正画出一帧再回落：节点刚变可见时没有可插值的上一帧，
+    // 同一帧改 scale 会直接落到终值（动画看不到）。
     this.bgPainted = true;
     this.syncStatusBarIcons(true);
-    setTimeout((): void => {
+    if (this.enterScaleTimer !== -1) {
+      clearTimeout(this.enterScaleTimer);
+    }
+    this.enterScaleTimer = setTimeout((): void => {
+      this.enterScaleTimer = -1;
       animateTo({ duration: 200, curve: Curve.EaseOut }, (): void => {
         this.enterScale = 1;
       });
@@ -711,12 +708,26 @@ export struct HomeSurface {
     }
     this.custom.bgPath = '';
     this.bgUri = '';
+    // 作废旧分析并收掉尚未结束的进场动画，避免清图后停留在缩放态。
+    this.wallpaperToneSeq++;
+    this.enterScale = 1;
+    if (this.bgPaintTimer !== -1) {
+      clearTimeout(this.bgPaintTimer);
+      this.bgPaintTimer = -1;
+    }
+    if (this.bgPaintDelayTimer !== -1) {
+      clearTimeout(this.bgPaintDelayTimer);
+      this.bgPaintDelayTimer = -1;
+    }
+    if (this.enterScaleTimer !== -1) {
+      clearTimeout(this.enterScaleTimer);
+      this.enterScaleTimer = -1;
+    }
     this.resetWallpaperTone();
     HomePrefs.saveCustom(context, this.custom);
   }
 
-  // 壁纸亮度判定：分区取样后按三带各自决定前景深浅（仿华为按图反色）。
-  // 任何失败都回落到系统深浅色，保证永不崩、不会白屏。
+  // 清除判色结论，前景回落系统深浅色。
   private resetWallpaperTone(): void {
     this.wallpaperLum = -1;
     this.wallpaperTopLum = -1;
@@ -728,8 +739,7 @@ export struct HomeSurface {
     // 这是"明确没有判色结论、就用主题色"的收口，标记为已决，允许下发。
     this.toneApplied = true;
     this.publishWallpaperTone();
-    // 绕过 syncStatusBarIcons 的"壁纸未就绪"门：reset 本身就是结论（没壁纸 /
-    // 图不可用），再等下去状态栏会停在旧颜色上。
+    // reset 本身就是结论，直接下发，不再过「壁纸未就绪」门禁。
     this.setStatusBarLightIcon(this.colorScheme === 'dark', true);
   }
 
@@ -741,9 +751,7 @@ export struct HomeSurface {
     AppStorage.setOrCreate('auraWallpaperBottomIsLight', this.wallpaperBottomIsLight);
   }
 
-  // 把落盘的判色结论套到当前状态（同一张壁纸才认）。返回是否真的套上了。
-  // 两个用途：①挂载初期兜底（解码完成后 analyze 会再用真值覆盖）；
-  // ②解码彻底失败时兜底 —— 宁可沿用上次结论，也不要回落主题色。
+  // 把落盘结论套到当前状态（同一张壁纸才认），供挂载期与解码失败时兜底。
   private applyCachedTone(): boolean {
     if (!this.cachedToneReady || this.cachedTonePath.length === 0) {
       return false;
@@ -756,16 +764,12 @@ export struct HomeSurface {
     this.wallpaperBottomIsLight = this.cachedToneBottom;
     this.toneApplied = true;
     this.publishWallpaperTone();
-    // 这里**不**下发状态栏：套缓存的时机可能在 bgUri 还没设好之前（loadTone 先于
-    // loadCustom 返回），那一刻 useWallpaper 还是 false，会按主题色发一次黑 ——
-    // 真机日志抓到回主页 +19ms 一条 black、+43ms 又 white，等于闪一下。
-    // 下发的唯一时机交给「壁纸画出来 + 有结论」（openHomeLayer / analyze）。
+    // 这里不下发状态栏：套缓存可能早于 bgUri 赋值，按主题色发一次会闪。
+    // 统一下发时机是「壁纸首帧 + 已有结论」。
     return true;
   }
 
-  // 黑字/白字择优：按 W3C 相对亮度算「黑字对比度」与「白字对比度」，取大的那个。
-  // 不用固定 0.6 经验阈值 —— 两者的交叉点其实在 luma≈0.46（各 4.6 : 1），
-  // 中灰壁纸本该配黑字，固定阈值会判成白字（白字只有 3.9 : 1，发灰看不清）。
+  // 按 W3C 相对亮度比较黑字/白字对比度，取大者；固定阈值会把中灰壁纸判错。
   private prefersDarkInk(lum: number): boolean {
     if (lum < 0) {
       return this.colorScheme === 'light';
@@ -780,8 +784,7 @@ export struct HomeSurface {
     return contrastBlack >= contrastWhite;
   }
 
-  // 一条横向带的中位亮度（Rec.709 luma，0~1）。用中位数而不是均值：壁纸常有
-  // 灯串/天空高光，一小块极亮区就能把均值整体抬起，出现「夜景配黑图标」。
+  // 一条横向带的中位亮度（Rec.709 luma，0~1）。中位数可避免小面积高光抬升均值。
   private bandMedianLum(view: Uint8Array, width: number, y0: number, y1: number): number {
     const rows: number = Math.floor(view.length / (width * 4));
     const start: number = Math.max(0, Math.min(y0, rows));
@@ -801,13 +804,9 @@ export struct HomeSurface {
     return vals[Math.floor(vals.length / 2)];
   }
 
-  // 解码一张小缩略图并量出三带亮度。返回 [top, mid, bottom]；任何一步失败都抛出，
-  // 由调用方决定「换一条通道重试」还是「沿用上次结论」——绝不能一失败就回落主题色
-  // （那样深壁纸会配黑图标，用户看到的就是「状态栏不反色」）。
+  // 解码小缩略图并返回 [top, mid, bottom] 亮度；失败抛出，由调用方换通道或沿用缓存。
   private async measureBands(source: image.ImageSource): Promise<number[]> {
-    // 原图像素尺寸：壁纸按 Cover 铺满全屏，可见区是原图**居中裁出来**的一块。
-    // 分区必须按可见区算 —— 9:16 的竖图铺 9:19.5 的屏时上下各被裁掉约 9%，
-    // 直接按原图比例取顶部会把状态栏那一条取到画面更上面的内容。
+    // 壁纸按 Cover 铺满，可见区是原图居中裁出的一块；分区必须按可见区换算。
     let srcW: number = 0;
     let srcH: number = 0;
     try {
@@ -866,48 +865,62 @@ export struct HomeSurface {
       this.resetWallpaperTone();
       return;
     }
-    const seq: number = ++this.wallpaperToneSeq;
+    const seq: number = this.wallpaperToneSeq;
     let bands: number[] = [];
-    // 第一条通道：读文件字节再 createImageSource(buffer)。ImageKit 对 fileUri
-    // 的支持随版本不同（URI 能显示、解码却抛），字节通道最稳，优先走它。
+    // 优先读文件字节解码；URI 作为第二条通道（部分 HEIF/超大图只能走 URI）。
     const path: string = this.custom.bgPath;
     let raw: ArrayBuffer | undefined = undefined;
+    let fd: number = -1;
     try {
-      const file = fs.openSync(path, fs.OpenMode.READ_ONLY);
+      fd = fs.openSync(path, fs.OpenMode.READ_ONLY).fd;
       const size: number = fs.statSync(path).size;
       raw = new ArrayBuffer(size);
-      fs.readSync(file.fd, raw);
-      fs.closeSync(file);
+      fs.readSync(fd, raw);
     } catch (error) {
+      raw = undefined;
       hilog.warn(0x0000, 'AuraShell', 'wallpaper read bytes failed: %{public}s', JSON.stringify(error));
-    }
-    if (raw !== undefined && raw.byteLength > 0) {
-      try {
-        const bs: image.ImageSource = image.createImageSource(raw);
-        bands = await this.measureBands(bs);
+    } finally {
+      if (fd >= 0) {
         try {
-          bs.release();
+          fs.closeSync(fd);
         } catch (error) {
         }
+      }
+    }
+    if (raw !== undefined && raw.byteLength > 0) {
+      let source: image.ImageSource | undefined = undefined;
+      try {
+        source = image.createImageSource(raw);
+        bands = await this.measureBands(source);
         hilog.info(0x0000, 'AuraShell', 'wallpaper tone decode=bytes bytes=%{public}d', raw.byteLength);
       } catch (error) {
         hilog.warn(0x0000, 'AuraShell', 'wallpaper tone bytes decode failed: %{public}s',
           JSON.stringify(error));
+      } finally {
+        if (source !== undefined) {
+          try {
+            source.release();
+          } catch (error) {
+          }
+        }
       }
     }
-    // 第二条通道：URI 直接解（某些 HEIF/超大图字节通道会失败，URI 却能出缩略图）。
     if (bands.length < 3 && seq === this.wallpaperToneSeq) {
+      let source: image.ImageSource | undefined = undefined;
       try {
-        const us: image.ImageSource = image.createImageSource(this.bgUri);
-        bands = await this.measureBands(us);
-        try {
-          us.release();
-        } catch (error) {
-        }
+        source = image.createImageSource(this.bgUri);
+        bands = await this.measureBands(source);
         hilog.info(0x0000, 'AuraShell', 'wallpaper tone decode=uri');
       } catch (error) {
         hilog.warn(0x0000, 'AuraShell', 'wallpaper tone uri decode failed: %{public}s',
           JSON.stringify(error));
+      } finally {
+        if (source !== undefined) {
+          try {
+            source.release();
+          } catch (error) {
+          }
+        }
       }
     }
     if (seq !== this.wallpaperToneSeq) {
@@ -947,7 +960,7 @@ export struct HomeSurface {
       this.syncStatusBarIcons(true);
       return;
     }
-    // 两条通道都失败：宁可沿用上次结论，也不要回落主题色（回落就是「不反色」）。
+    // 两条通道都失败时沿用上次结论，不回落主题色。
     hilog.warn(0x0000, 'AuraShell', 'wallpaper tone unavailable, cached=%{public}s',
       this.cachedToneReady ? 'yes' : 'no');
     if (this.applyCachedTone()) {
@@ -958,10 +971,8 @@ export struct HomeSurface {
     }
   }
 
-  // 系统状态栏图标（时间/信号/电量）由 HarmonyOS 绘制，颜色由应用通过窗口属性指定。
-  // EntryAbility 只按系统深浅色下发；主页有壁纸时必须按壁纸亮度反色，否则
-  // 深色壁纸配黑图标看不清。生命周期内聚在 HomeSurface：挂载=主页显示、
-  // 卸载=离开主页并恢复系统色，不需要跨组件信号。
+  // 状态栏图标色由窗口属性指定。EntryAbility 按系统深浅色下发；
+  // 主页有壁纸时由这里按顶带亮度反色。
   private setStatusBarLightIcon(lightIcon: boolean, force: boolean = false): void {
     const target: number = lightIcon ? 1 : 0;
     if (!force && target === this.lastStatusBarLightIcon) {
@@ -996,17 +1007,14 @@ export struct HomeSurface {
 
   private syncStatusBarIcons(force: boolean = false): void {
     const useWallpaper: boolean = this.bgUri.length > 0 && !this.incognito;
-    // 壁纸还没画出来 / 还没判色时先别动状态栏：这一刻画面还停在旧网页上
-    // （homeReturnCover 让主页提前挂载，引擎 ~80ms 后才提交新标签页），改了会先在
-    // 网页上闪一下图标色。`custom.bgPath` 也算"有壁纸"——bgUri 要等偏好读回来才设，
-    // 两者之间那一拍若按主题色下发，就会在主页上先黑后白（实测 24ms 的黑）。
+    // 壁纸未画出/未判色时不下发：此刻画面可能仍是旧网页或偏好还没读回。
+    // custom.bgPath 也算「有壁纸」，避免 bgUri 尚未赋值时按主题色抢发。
     const wallpaperPending: boolean = !this.incognito &&
       (this.bgUri.length > 0 || this.custom.bgPath.length > 0);
     if (wallpaperPending && (!this.bgPainted || !this.toneApplied)) {
       return;
     }
-    // 状态栏（时间/信号/电量）只压在壁纸**顶带**上：中带再亮也管不到那一行，
-    // 底带更无关 —— 所以这里认 wallpaperTopIsLight 而不是中带的 wallpaperIsLight。
+    // 状态栏只压在壁纸顶带上，认 wallpaperTopIsLight。
     this.setStatusBarLightIcon(useWallpaper ? !this.wallpaperTopIsLight : (this.colorScheme === 'dark'),
       force);
   }
@@ -1024,9 +1032,8 @@ export struct HomeSurface {
     this.syncStatusBarIcons(true);
   }
 
-  // 主页被网页顶掉（AuraShell 在淡出过半 ~120ms 时发）：状态栏交回主题色。
-  // 以前挂在 aboutToDisappear 上，实测要等 426ms（homeHold 淡出 + 卸载），
-  // 这期间网页顶栏已经上屏、白图标在浅色顶栏上等于消失。
+  // 主页被网页顶掉时把状态栏交回主题色，必须在网页顶栏上屏前完成，
+  // 否则白图标在浅色顶栏上会消失。
   private onHomeExitInk(): void {
     if (this.incognito) {
       return;
@@ -1034,9 +1041,7 @@ export struct HomeSurface {
     this.setStatusBarLightIcon(this.colorScheme === 'dark', true);
   }
 
-  // 有壁纸时前景文字随壁纸亮度反色；无壁纸（或隐身）回落系统深浅色。
-  // 主页文字/图标全落在壁纸**中带**（Logo 22%、搜索框 33.5%、磁贴 42~65%），
-  // 所以认中带判据 wallpaperIsLight；顶带/底带各有自己的消费者。
+  // 有壁纸时按中带亮度反色，无壁纸/无痕回落系统色；顶带、底带另有消费者。
   private homeFgText(): ResourceColor {
     if (this.bgUri.length > 0 && !this.incognito) {
       return this.wallpaperIsLight ? '#202124' : '#F5F5F5';
@@ -1051,10 +1056,7 @@ export struct HomeSurface {
     return $r('app.color.text_secondary');
   }
 
-  // 书签名字（12sp 小字）单独一档：它**直接压在壁纸上**、底下没有托盘，沿用
-  // secondary 那档灰在真机上明显发淡（用户反馈「书签文字反色很淡」——暗底
-  // #B7BAC0 只有约 4:1，小字看不清）。这里给足对比：亮底近黑、暗底纯白，
-  // 再叠一层反向描边阴影，压得住花壁纸（华为 NTP 也是这么做）。
+  // 书签小字直接压在壁纸上、底下没有托盘：给足黑白对比，并叠反向描边阴影抗花壁纸。
   private homeTileLabel(): ResourceColor {
     if (this.bgUri.length > 0 && !this.incognito) {
       return this.wallpaperIsLight ? '#2B2F33' : '#FFFFFF';
@@ -1072,11 +1074,8 @@ export struct HomeSurface {
     return { radius: 0, color: '#00000000', offsetX: 0, offsetY: 0 };
   }
 
-  // Logo 是双色图：深/浅两版**只差星球本体**（青色环两版都在），原来靠
-  // resources/dark 目录跟系统深浅色自动切换。但有壁纸时"该用哪版"取决于
-  // **壁纸中带**，不是主题 —— 深色壁纸配浅色主题会拿到深蓝星球，直接糊进背景
-  // （用户反馈「logo 图标还是跟随主题」）。这里按中带判据显式选资源；两份固定名
-  // 资源都放在 base/media（不带 dark 变体），避免再被主题二次切换。
+  // Logo 深/浅两版只差星球本体。有壁纸时按中带亮度显式选版，
+  // 不走 resources/dark 的主题自动切换（深壁纸配浅主题会糊进背景）。
   private homeLogoRes(): Resource {
     if (this.bgUri.length > 0 && !this.incognito) {
       return this.wallpaperIsLight
@@ -1932,13 +1931,9 @@ export struct HomeSurface {
       .showToast({ message: editing ? '已保存' : '已添加到主页', duration: 1500 });
   }
 
-  // 一个书签磁贴：圆角毛玻璃托盘 + favicon（缺失时同尺寸首字母色块）+ 标题。
-  // 单击 = 打开；长按 = 编辑/删除菜单。
-  //
-  // 【图标清晰度】托盘 46vp，favicon 只画 TILE_FAVICON_VP（30vp）：站点只
-  // 声明 16/32px 时填满 46vp 就是硬放大 → 糊。小图标落在大托盘里，既清晰
-  // 又不头重脚轻。占位色块与 favicon 同尺寸同圆角，托盘色统一由 homeGlass()
-  // 给出，所有磁贴外边缘一致，不会因缺图标变成一整块实心硬方块。
+  // 书签磁贴：圆角毛玻璃托盘 + favicon（缺失时同尺寸首字母色块）+ 标题。
+  // 单击打开，长按编辑/删除。站点图标常只有 16/32px，画满 46vp 会糊，
+  // 故只画 TILE_FAVICON_VP；占位色块同几何，保证外边缘一致。
   @Builder
   private BookmarkTile(node: BookmarkNode) {
     Column({ space: 7 }) {
@@ -1957,9 +1952,7 @@ export struct HomeSurface {
             // LongPressGesture（长按文字正常、长按图标无反应的根因）。
             .draggable(false)
         } else {
-          // 占位图标与 favicon 同几何（30vp / 8vp 圆角）：按站点哈希出的稳定色
-          // 只染内部小色块，托盘保持和所有磁贴一致的毛玻璃，外边缘不再是
-          // 一整块实心硬方块。
+          // 占位色块与 favicon 同几何，只染内部小色块，托盘保持一致。
           Column() {
             Text(initialOf(node))
               .fontSize(16)
@@ -1980,10 +1973,8 @@ export struct HomeSurface {
       .height(TILE_ICON_VP)
       .borderRadius(TILE_ICON_RADIUS)
       .backgroundColor(this.homeGlass())
-      // 磁贴不叠 backdropBlur：ForEach 会为每个磁贴建一层模糊，N 个磁贴每帧
-      // 重采样壁纸，主页滚动/淡出时开销随数量线性增长。玻璃底色本身是 45%
-      // 半透明，去掉模糊仍透出壁纸且更清晰；磨砂质感由搜索框、添加卡、
-      // 顶部纱幕这 3 个固定层保留。
+      // 磁贴不叠 backdropBlur：每个磁贴一层模糊会让滚动/转场开销随数量线性增长。
+      // 半透明底色已能透出壁纸，磨砂质感由搜索框等固定层提供。
 
               Text(node.title.length > 0 ? node.title : (node.url ?? ''))
                 .fontSize(12)
@@ -2002,8 +1993,7 @@ export struct HomeSurface {
         this.menuPressY = event.touches[0].windowY;
       }
     })
-    // GestureGroup 显式声明"单击=打开 / 长按=菜单"，避免隐式 onClick 的 tap
-    // 手势抢占长按（血泪：长按无反应）。
+    // GestureGroup 显式声明「单击=打开 / 长按=菜单」，避免 tap 手势抢占长按。
     .gesture(GestureGroup(GestureMode.Exclusive,
       LongPressGesture({ repeat: false })
         .onAction((): void => {
@@ -2032,17 +2022,14 @@ export struct HomeSurface {
           Image($r('app.media.aura_plus'))
             .width(22)
             .height(22)
-            // 跟壁纸判色走，别跟主题：深色主题 + 亮壁纸时 icon_secondary 是浅灰，
-            // 而托盘 homeGlass() 在亮壁纸上也是浅色 → 加号糊成一片（用户实拍）。
+            // 跟壁纸判色走：深色主题 + 亮壁纸时主题浅灰会糊进浅色托盘。
             .fillColor(this.homeFgTextSecondary())
         }
         .width(TILE_ICON_VP)
         .height(TILE_ICON_VP)
         .borderRadius(TILE_ICON_RADIUS)
         .backgroundColor(this.homeGlass())
-        // 和其它磁贴保持一致：**不叠 backdropBlur**。之前这里单独留了 20，
-        // 结果「添加」格比旁边书签明显更磨砂（用户实拍对比），而且 ForEach 里
-        // 每个磁贴各建一层模糊，多一个就多一份采样开销。
+        // 与其它磁贴一致不叠 backdropBlur，避免观感不一致与额外采样开销。
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
         Text('添加')
@@ -2121,8 +2108,8 @@ export struct HomeSurface {
     }
     .width('100%')
     .height('100%')
-    // 退场动效（1.0.68）：必须挂在 if 分支根节点上（挂子节点时退场被整子树
-    // "原子删除"——真机"背景缓慢变暗、取消瞬间变亮闪一下"）。
+    // 退场动效必须挂在 if 分支根节点上：挂子节点会随整子树被原子删除，
+    // 退场动画播不出来。
     .transition(TransitionEffect.asymmetric(
       TransitionEffect.opacity(1),
       TransitionEffect.opacity(0).animation({ duration: 300, curve: Curve.Friction })
@@ -2299,8 +2286,7 @@ export struct HomeSurface {
               .fontWeight(FontWeight.Medium)
               .fontColor($r('app.color.text_primary'))
             Blank()
-            // 副标题兼入口提示：Logo 显隐决定"长按 Logo"这条快捷入口还在不在，
-            // 所以两种状态各说各的（隐藏时指路设置页，避免用户以为功能丢了）。
+            // Logo 显隐决定长按入口是否可用，隐藏时指路设置页。
             Text(this.custom.showLogo
               ? '长按主页 Logo 可再开此面板'
               : 'Logo 已隐藏，可从 设置 › 主页设置 进入')
@@ -2374,8 +2360,7 @@ export struct HomeSurface {
                 onToggle: (on: boolean): void => {
                   this.custom.showLogo = on;
                   this.persistCustom();
-                  // 关掉 Logo 会把「长按 Logo 进布局」这条快捷入口一起关掉（自锁），
-                  // 当场告诉用户还有设置页那条路，免得下次找不到入口。
+                  // 关掉 Logo 会自锁长按入口，提示设置页那条路。
                   if (!on) {
                     this.getUIContext().getPromptAction().showToast({
                       message: 'Logo 已隐藏；以后可从 设置 › 主页设置 进入布局',
@@ -2509,9 +2494,7 @@ export struct HomeSurface {
     AppStorage.set('auraOpenHomeLayout', 0);
   }
 
-  // 长按 Logo 打开主页布局（快捷入口）。无痕不打开：无痕主页不带自定义布局。
-  // 注意这是**便捷入口**，不是唯一入口 —— Logo 可以在布局面板里关掉，关掉后
-  // 这一行连渲染都没有，长按自然失效（见 Logo 开关处的提示与设置页入口）。
+  // 长按 Logo 打开主页布局；Logo 被隐藏时该入口失效，仍可从设置页进入。
   private openHomeLayoutPanel(): void {
     if (this.incognito) {
       return;
@@ -2562,21 +2545,22 @@ export struct HomeSurface {
           .objectFit(ImageFit.Cover)
           .interpolation(ImageInterpolation.High)
           .hitTestBehavior(HitTestMode.None)
-          // 首帧落下才放开整层（见 bgLayerReady）。onComplete 只代表**解码**完成，
-          // 那一帧的合成里图片往往还没画上去（实测会露出 1 帧白底主页，44fps 抓到），
-          // 所以再等一帧（16ms）才放行。onError 也要放开：图坏了宁可露透明底，
-          // 也不能让主页永远不显示。
+          // onComplete 只代表解码完成，再等一帧让首帧真正落下才放开整层；
+          // onError 也必须放开，避免图坏时主页一直不显示。
           .onComplete((): void => {
-            setTimeout((): void => {
+            if (this.bgPaintDelayTimer !== -1) {
+              clearTimeout(this.bgPaintDelayTimer);
+            }
+            this.bgPaintDelayTimer = setTimeout((): void => {
+              this.bgPaintDelayTimer = -1;
               this.openHomeLayer();
             }, 16);
           })
           .onError((): void => {
             this.openHomeLayer();
           })
-        // 主题色薄纱：仅深色模式保留——暗纱压暗亮壁纸、保证白字可读（用户实测浅色
-        // 模式这层=30% 白纱会把壁纸洗白发雾，故浅色不盖，壁纸保持清晰；文字可读性
-        // 交给毛玻璃控件 + 文字阴影兜底，仿华为沉浸式）。
+        // 暗纱只在深色模式保留（压暗亮壁纸保证白字可读）；
+        // 浅色模式不铺，避免洗白壁纸，文字靠控件底色与阴影兜底。
         if (this.colorScheme === 'dark') {
           Column()
             .width('100%')
@@ -2588,11 +2572,9 @@ export struct HomeSurface {
       }
 
       Column() {
-        // 主页内容进 Scroll：横屏可用高只有 ~377vp（419 窗高 − 42 状态栏），
-        // Logo 46 + 搜索框 48 + 磁贴两行几乎占满，再多一个书签就完全看不到、
-        // 也没法挪 —— 原来是固定布局 + 弹性占位，超出视口的部分直接被裁掉
-        // （用户实拍横屏问「是不是该能上下滚动」）。
-        // 锚点不变：Blank 仍是滚动内容的第一段，未滚动时位置和以前一模一样。
+        // 主页内容进 Scroll：横屏可用高有限，Logo + 搜索框 + 两行磁贴几乎占满，
+        // 固定布局会把超出的书签裁掉。
+        // 锚点不变：Blank 仍是滚动内容的第一段，未滚动时位置不变。
         Scroll() {
           Column() {
             // 1.0.180：内容组按设计稿锚定——顶部是**按窗高算出的固定占位**
@@ -2605,9 +2587,7 @@ export struct HomeSurface {
               .height(this.homeTopBlankVp())
 
             if (this.custom.showLogo || this.incognito) {
-              // 外层 Row 撑满整行宽度：长按的命中区从"Logo+文字"扩到整行（左右空白
-              // 也能按），但视觉不变（内容居中、宽度由文字决定）。手势挂在 Row 上，
-              // 不是单个 Image —— 42vp 的图太窄，长按容易按空。
+              // 外层 Row 撑满整行以扩大长按命中区，视觉仍居中不变。
               Row() {
                 Row({ space: 8 }) {
                   if (this.incognito) {
@@ -2627,9 +2607,7 @@ export struct HomeSurface {
                     .fontWeight(FontWeight.Bold)
                     .fontColor(this.homeFgText())
                 }
-                // 长按进主页布局（快捷入口，无痕内为空操作）。
-                // 只绑长按、不绑点击：点 Logo 没有任何副作用，误触也安全；
-                // 500ms 与磁贴/菜单的既有长按节奏保持一致。
+                // 只绑长按、不绑点击：点 Logo 无副作用，误触也安全。
                 .gesture(LongPressGesture({ repeat: false, duration: 500 })
                   .onAction((): void => {
                     this.openHomeLayoutPanel();
@@ -2685,10 +2663,8 @@ export struct HomeSurface {
               .height(48)
               .borderRadius(24)
               .backgroundColor(this.homeGlass())
-              // 拖位置滑块时关掉模糊：搜索框会跟着 offset 每帧移动，而 backdropBlur
-              // 是**按节点背后的实际像素**重采样的 —— 节点一动，每帧都要重做一次
-              // 20vp 半径的模糊，这是最典型的掉帧源（用户反馈「开布局面板拖滑块卡」）。
-              // 松手恢复模糊；静止时模糊结果可缓存，不产生逐帧开销。
+              // 拖动滑块时搜索框每帧移动，backdropBlur 会逐帧重采样背后像素；
+              // 拖动期间关掉，静止时恢复（结果可缓存，无逐帧开销）。
               .backdropBlur(this.layoutDragging ? 0 : 20)
               .padding({ left: 16, right: 10 })
               .margin({ top: 0 })
@@ -2765,16 +2741,13 @@ export struct HomeSurface {
       .backgroundColor(this.bgUri.length > 0 && !this.incognito
         ? Color.Transparent : $r('app.color.surface_primary'))
 
-      // 顶部「渐变模糊」纱幕（1.0.4）：仅在没有自定义壁纸（纯色背景）时保留——
-      // 主页滚动后内容会滑到状态栏底下，Logo 被切一半难看，用实色渐变兜底。
-      // 有壁纸时完全透明，让壁纸直接透出状态栏（仿华为沉浸式），不盖任何纱幕。
+      // 顶部渐变纱幕只在无自定义壁纸时保留：纯色背景滚动时兜住状态栏下的内容。
+      // 有壁纸时让壁纸直接透出状态栏。
       if (!(this.bgUri.length > 0 && !this.incognito)) {
         Column()
           .width('100%')
           .height(this.topSafeVp + 8)
-          // 背景模糊要按帧重采样背后内容：主页一滚动，这条带子底下就一直在动，
-          // 半径越大采样越贵。24 → 12 后滚动开销明显下降，糊掉 Logo 的观感仍在。
-          // 还想再省就把这行去掉、只留下面的渐变（视觉差别不大，最省）。
+          // 模糊半径越大滚动采样越贵，取 12 兼顾观感与开销。
           .backdropBlur(12)
           .hitTestBehavior(HitTestMode.None)
         Column()
@@ -2815,11 +2788,9 @@ export struct HomeSurface {
     }
     .width('100%')
     .height('100%')
-    // 壁纸没画出来之前整层不显示（见 bgLayerReady）：否则「有壁纸 → 底色透明 +
-    // 图未解码」会露出下层网页，出现半透明主页叠在网页上的过渡帧。不加动画：
-    // 要的就是一帧硬切，加淡入等于把闪烁换个样子。
+    // 壁纸首帧前整层不显示，避免透明底透出下层网页；硬切上屏，不加淡入。
     .opacity(this.bgLayerReady() ? 1 : 0)
-    // 进场缩放：起点 1.035 永远盖满屏，**不产生任何透明帧**。
+    // 放大进场永远盖满屏，不产生透明帧。
     .scale({ x: this.enterScale, y: this.enterScale })
     // 旋转/分屏/窗口尺寸变化都从这里重算锚点，但**不能直接用这一帧的 area**。
     // 实测（2026-10-27 横屏 logo 只剩一条弧线）：转屏时 onAreaChange 先以
