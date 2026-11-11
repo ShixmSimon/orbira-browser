@@ -1802,11 +1802,14 @@ struct AuraShell {
             // 淡出期间主页层不再吃触摸，避免转场那 180ms 里点击落到旧主页。
             .hitTestBehavior(this.homeHold ? HitTestMode.None : HitTestMode.Default)
         }
-        if (this.isMobilePhoneUi() && this.needsHomeBackdrop() &&
-          !(this.homeSurfaceVisible() && (this.homeHold || this.homeReturnCover))) {
+        if (this.isMobilePhoneUi() && this.needsHomeBackdrop() && !this.homeSurfaceVisible()) {
           // 预热层盖住引擎清屏到新页首帧之间的底板。与主页层用独立 if，
-          // 避免起防那一帧两层皆空露出原生 NTP；但主页层被 homeHold /
-          // homeReturnCover 显式保持时不叠，否则会出现「淡出→恢复→再切页」双跳。
+          // 避免起防那一帧两层皆空露出原生 NTP。
+          // ⚠️ 主页层在场时一律不叠：这块盖在**主页之上**（build 顺序在后），
+          // 主页已经画好还叠一层 browser_canvas，就会在回主页那一帧看到"整屏蒙白"
+          // （录屏逐帧抓到的 214→127→112 中间帧）。以前只在 homeHold /
+          // homeReturnCover 期间排除，漏了"homeReturnCover 已撤、navCover 还没撤"
+          // 这一拍。
           this.NavCoverView()
         }
         if (this.discardedCover) {
