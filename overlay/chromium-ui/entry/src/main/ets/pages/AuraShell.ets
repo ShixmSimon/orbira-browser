@@ -283,6 +283,12 @@ struct AuraShell {
   // 「秒开页」的快速撤防确认（见 onBrowserState 的 homeHold 分支）。
   private homeHoldQuickTimer: number = -1;
   // 离开主页后「状态栏交回主题色」的延时器（见 holdHomeForPaint）。
+  // 离开主页后的 120ms 内，顶栏暂时仍按「主页态」画（见 overlay 的 homeExitHold）。
+  // 原因：顶栏在 url 变化那一刻瞬时切到网页态（点击后约 60ms），而主页要 180ms
+  // 淡出才让出网页区 —— 录屏分区实测顶部比网页区快 **119ms**，看着就是「地址栏
+  // 先冒出来、内容后到」。两边对齐后差值降到约 60ms。
+  @State private homeExitHold: boolean = false;
+  private homeExitHoldTimer: number = -1;
   private homeExitInkTimer: number = -1;
   @State private homeReturnCover: boolean = false;
   // 「回主页又弹回原网页」的自愈重试：兜底撤防时若引擎还没把 tab 带回新标签
@@ -1540,6 +1546,10 @@ struct AuraShell {
       clearTimeout(this.homeExitInkTimer);
       this.homeExitInkTimer = -1;
     }
+    if (this.homeExitHoldTimer !== -1) {
+      clearTimeout(this.homeExitHoldTimer);
+      this.homeExitHoldTimer = -1;
+    }
     this.clearImeHideTimers();
     this.clearForceDarkStartupRetryTimers();
     this.currentTabCastSession.stop().catch((error: Error): void => {
@@ -1858,6 +1868,8 @@ struct AuraShell {
             // 回主页的意图（按主页键/返回）。顶栏只有把它算进「是否主页」才
             // 不会在转场里冒出一条上一页的地址栏（见 overlay 里的注释）。
             homeIntent: this.homeReturnCover,
+            // 离开主页后的 120ms 内顶栏仍按主页态画，跟着 180ms 淡出走。
+            homeExitHold: this.homeExitHold,
             incognito: this.incognito,
             onCommand: (command: BrowserCommandPayload): void => {
               // Back is asked of the page before it is asked of the tab. A
@@ -3225,6 +3237,9 @@ struct AuraShell {
       this.homeHoldQuickTimer = -1;
     }
     this.armHomeHoldTimer(8000);
+    // 顶部装饰（状态栏/地址栏）跟着主页淡出一起走：延迟 120ms 再切成网页态，
+    // 与 180ms 淡出重合，避免「地址栏先出来、网页区后到」的割裂。
+    this.armHomeExitHold();
     // 状态栏图标色交回主题色：主页淡出用 180ms，取过半（120ms）那一刻交。
     // 太早 → 壁纸还看得见就闪一下黑图标；太晚（原来挂在 HomeSurface 卸载上）
     // → 网页顶栏已经上屏 400ms 了，白图标在浅色顶栏上等于消失。
@@ -3256,6 +3271,28 @@ struct AuraShell {
     }, ms);
   }
 
+  // 顶部装饰随主页淡出一起切：120ms 后放开，顶栏才按网页态画地址栏。
+  private armHomeExitHold(): void {
+    this.homeExitHold = true;
+    if (this.homeExitHoldTimer !== -1) {
+      clearTimeout(this.homeExitHoldTimer);
+    }
+    this.homeExitHoldTimer = setTimeout((): void => {
+      this.homeExitHoldTimer = -1;
+      this.homeExitHold = false;
+    }, 120);
+  }
+
+  // 取消「顶栏延迟切网页态」（回主页时用）。注意不能在 releaseHomeHold 里调：
+  // 那个方法在**导航完成**时也会跑，会把延迟提前取消掉，等于没延迟。
+  private cancelHomeExitHold(): void {
+    if (this.homeExitHoldTimer !== -1) {
+      clearTimeout(this.homeExitHoldTimer);
+      this.homeExitHoldTimer = -1;
+    }
+    this.homeExitHold = false;
+  }
+
   private releaseHomeHold(): void {
     this.homeHold = false;
     // 又回主页了/导航被撤：这次"交还主题色"不该发生（122ms 后主页还在的话，
@@ -3284,6 +3321,8 @@ struct AuraShell {
     // 一大段，等它自己释放出来又是一次半透明淡入。录屏逐帧：白 ≈200ms →
     // 黑 1~2 帧 → 主页半透明 2~3 帧 → 完整主页。
     this.releaseHomeHold();
+    // 已经在回主页的路上了：顶栏的「延迟切网页态」立刻取消，别让它再晚 120ms。
+    this.cancelHomeExitHold();
     this.homeReturnCover = true;
     if (this.homeReturnTimer !== -1) {
       clearTimeout(this.homeReturnTimer);
