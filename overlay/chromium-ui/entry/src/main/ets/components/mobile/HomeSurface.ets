@@ -1996,7 +1996,9 @@ export struct HomeSurface {
           Image($r('app.media.aura_plus'))
             .width(22)
             .height(22)
-            .fillColor($r('app.color.icon_secondary'))
+            // 跟壁纸判色走，别跟主题：深色主题 + 亮壁纸时 icon_secondary 是浅灰，
+            // 而托盘 homeGlass() 在亮壁纸上也是浅色 → 加号糊成一片（用户实拍）。
+            .fillColor(this.homeFgTextSecondary())
         }
         .width(TILE_ICON_VP)
         .height(TILE_ICON_VP)
