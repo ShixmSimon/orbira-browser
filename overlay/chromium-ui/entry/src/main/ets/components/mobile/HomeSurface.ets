@@ -292,6 +292,9 @@ export struct HomeSurface {
   private suggestQueued: AutocompleteItem[] = [];
   // 无痕会话：主页换成无痕的标题与说明，书签磁贴与主页布局入口都不出现。
   @Prop incognito: boolean = false;
+  // 主页层此刻是否在屏上。状态栏只在壁纸可见时按顶带反色；网页态顶栏是实色，
+  // 必须走主题色。与 AuraShell 的 .visibility(homeSurfaceVisible()) 同源同帧。
+  @Prop @Watch('onHomeVisibleChanged') homeVisible: boolean = true;
   // 状态栏避让由本组件内部承担：surface_primary 背景能铺满状态栏条带。
   @StorageProp('auraTopSafeVp') topSafeVp: number = 0;
   // 底部安全区与风格：简约风格的 dock 悬浮在主页底部、会盖住滚动内容的下沿
@@ -1006,7 +1009,8 @@ export struct HomeSurface {
   }
 
   private syncStatusBarIcons(force: boolean = false): void {
-    const useWallpaper: boolean = this.bgUri.length > 0 && !this.incognito;
+    // 网页态（主页层不可见）一律按主题色：顶栏是实色，不跟壁纸走。
+    const useWallpaper: boolean = this.homeVisible && this.bgUri.length > 0 && !this.incognito;
     // 壁纸未画出/未判色时不下发：此刻画面可能仍是旧网页或偏好还没读回。
     // custom.bgPath 也算「有壁纸」，避免 bgUri 尚未赋值时按主题色抢发。
     const wallpaperPending: boolean = !this.incognito &&
@@ -1024,12 +1028,22 @@ export struct HomeSurface {
   }
 
   // 页面重新可见：状态栏可能已被系统按桌面重设过，无条件重下一次（force 绕过去重）。
+  // 重下发的取值仍由 syncStatusBarIcons 按主页是否可见决定。
   private onShellPageShown(): void {
     if (this.shellPageHidden) {
       return;
     }
     this.lastStatusBarLightIcon = -1;
     this.syncStatusBarIcons(true);
+  }
+
+  // 回到主页补一次反色：主页层常驻后壁纸首帧不再触发 openHomeLayer，
+  // 而离场时状态栏已交还主题色。离场方向不在这里处理，仍由 auraHomeExitInk
+  // 的 120ms 交还时序负责，避免壁纸上提前闪黑图标。
+  private onHomeVisibleChanged(): void {
+    if (this.homeVisible) {
+      this.syncStatusBarIcons(true);
+    }
   }
 
   // 主页被网页顶掉时把状态栏交回主题色，必须在网页顶栏上屏前完成，
