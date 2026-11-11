@@ -258,7 +258,10 @@ struct HomePositionSliderRow {
         .fontSize(15)
         .fontColor($r('app.color.text_primary'))
         .width(58)
-      Slider({ value: this.posOffset, min: this.min, max: this.max, step: 4 })
+      // step 用 1 而不是 4：值域 -120~260 共 380，step 4 只有 95 档，拖动时位置
+      // 按 4vp 阶梯跳，肉眼就是「一格一格」。hitrace 实测 UI 线程全程 120fps 满帧、
+      // 每帧 FlushTask 仅 0.68ms，所以卡的不是帧率，是这个阶梯采样。
+      Slider({ value: this.posOffset, min: this.min, max: this.max, step: 1 })
         .layoutWeight(1)
         .selectedColor($r('app.color.accent_primary'))
         .onChange((value: number, mode: SliderChangeMode): void => {
