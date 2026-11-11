@@ -107,10 +107,8 @@ interface ExtensionNoticePayload {
 const SWIPE_TRIGGER_VP: number = 28;
 // 判据：引擎是否在本次手势里自己动过顶栏比例（动过说明页面真的在滚 → 让位）。
 const CONTROLS_RATIO_EPS: number = 0.02;
-// 键盘避让区报的 bottomRect 比「页面该留出的高度」小一截。实测标定（同一键盘、
-// 同一页面尺寸）：补 44 → 页内固定底栏第一行表情完整、第二行被挡；补 70 → 两行
-// 完整但离键盘还差半个表情（搜狐、贴吧同一量级，约 15vp）。取 85。
-// ⚠️ 这是按实测标定的常数：各站页面自身底部留白不同，个别站点仍可能差几 vp。
+// 键盘避让区报的 bottomRect 比页面实际该留出的高度小一截，需要额外补偿。
+// 该常数为实测标定值；各站页面底部留白不同，个别站点仍可能差几 vp。
 const KEYBOARD_INSET_EXTRA_VP: number = 85;
 // 前进/后退的同色遮盖只在「落点是主页」时铺：那一次引擎会先画原生 NTP 磁贴，
 // 而壳层主页层要等 url 变成 newtab 才挂。网页↔网页交给引擎硬切——换页空档
@@ -282,11 +280,8 @@ struct AuraShell {
   private homeHoldExtensions: number = 0;
   // 「秒开页」的快速撤防确认（见 onBrowserState 的 homeHold 分支）。
   private homeHoldQuickTimer: number = -1;
-  // 离开主页后「状态栏交回主题色」的延时器（见 holdHomeForPaint）。
-  // 离开主页后的 120ms 内，顶栏暂时仍按「主页态」画（见 overlay 的 homeExitHold）。
-  // 原因：顶栏在 url 变化那一刻瞬时切到网页态（点击后约 60ms），而主页要 180ms
-  // 淡出才让出网页区 —— 录屏分区实测顶部比网页区快 **119ms**，看着就是「地址栏
-  // 先冒出来、内容后到」。两边对齐后差值降到约 60ms。
+  // 离开主页后的 120ms 内顶栏仍按主页态画，与主页 180ms 淡出对齐。
+  // homeExitInkTimer 负责同一时刻把状态栏图标色交回主题色。
   @State private homeExitHold: boolean = false;
   private homeExitHoldTimer: number = -1;
   private homeExitInkTimer: number = -1;
@@ -662,9 +657,8 @@ struct AuraShell {
     if (!this.navCover) {
       return;
     }
-    // 落到**主页**时不铺"白纱淡出"：主页自己带 1.035→1 的轻微放大进场，两条
-    // 返回路径（返回键/主页键）观感才一致；网页之间的过渡仍保留淡出。
-    // 用户实测：从 Google 按返回回主页有一条白纱动画，从别的网页按主页键是硬切。
+    // 落到主页时不铺白纱淡出（主页自带放大进场），两条返回路径观感才一致；
+    // 网页之间的过渡仍保留淡出。
     if (this.isNewTabPage()) {
       this.navCoverFadeMs = 0;
     }
@@ -1503,8 +1497,7 @@ struct AuraShell {
   }
 
   onPageShow(): void {
-    // 页面重新可见：主页卸载时据此判断"是不是整页被藏起来了"（见 HomeSurface
-    // aboutToDisappear —— 切后台/退出应用时不要抢着改状态栏图标色）。
+    // 页面重新可见；HomeSurface 据此区分「整页被藏」与「被网页顶掉」。
     AppStorage.setOrCreate('auraShellPageHidden', false);
     this.startKnockShare();
     // 不能在这里清 popup 让位态：点扩展时先设让位、再收起面板页回到本页，
@@ -1549,6 +1542,14 @@ struct AuraShell {
     if (this.homeExitHoldTimer !== -1) {
       clearTimeout(this.homeExitHoldTimer);
       this.homeExitHoldTimer = -1;
+    }
+    if (this.discardedCoverTimer >= 0) {
+      clearTimeout(this.discardedCoverTimer);
+      this.discardedCoverTimer = -1;
+    }
+    if (this.discardedCoverGraceTimer >= 0) {
+      clearTimeout(this.discardedCoverGraceTimer);
+      this.discardedCoverGraceTimer = -1;
     }
     this.clearImeHideTimers();
     this.clearForceDarkStartupRetryTimers();
@@ -1787,13 +1788,8 @@ struct AuraShell {
         })
           .width('100%')
           .height('100%')
-        // 主页退场交叉淡出：点击书签 / 搜索框提交时 homeHold 当帧起防，
-        // HomeSurface 立即淡出（而不是把壁纸硬捂到引擎首帧才一次性撤），
-        // 下方铺同色底盖住引擎清屏到首帧的空窗。顶栏仍按 URL 即时翻网页态，
-        // 于是「地址栏立刻出现 + 主页渐隐 + 进度条走」同一拍发生 —— 既跟手，
-        // 也不会出现「实色地址栏配花壁纸」的割裂中间帧。
-        // 用现成的 homeHold 驱动，不新增状态、不改撤防时机（深色残留修复不受影响）。
-        // ⚠️ 顺序固定：垫底先画（下层），HomeSurface 后画（上层）淡出才露得出它。
+        // 主页退场时先铺同色垫底盖住引擎清屏到首帧的空窗，再让主页淡出。
+        // 顺序固定：垫底在下、HomeSurface 在上，否则淡出露不出垫底。
         if (this.isMobilePhoneUi() && this.homeHold && this.homeSurfaceVisible()) {
           Column()
             .width('100%')
@@ -1801,13 +1797,9 @@ struct AuraShell {
             .backgroundColor($r('app.color.browser_canvas'))
             .hitTestBehavior(HitTestMode.None)
         }
-        // 主页层**常驻**：以前外层是 `if (homeSurfaceVisible())`，网页态整个移除，
-        // 回主页要重新 aboutToAppear（读偏好 ~10ms）+ 壁纸重新解码（35~100ms），
-        // 而顶栏在同一帧就把地址栏收了 —— 中间那 1 帧（录屏实测 25ms，第 166 帧
-        // 露出 bing 的绿色河流照片）就是「顶栏和状态栏闪一下」。
-        // 常驻后 Image 一直持有已解码的壁纸，回主页当帧即可上屏。
-        // 网页态用 Visibility.None 藏起来：不占位、不参与命中；homeHold 的 180ms
-        // 淡出仍由下面的 opacity 负责（离场时 homeSurfaceVisible 还是 true）。
+        // 主页层常驻：网页态用 Visibility.None 藏起，避免回主页时重建 +
+        // 重新解码壁纸造成中间空帧；Image 一直持有已解码壁纸，当帧即可上屏。
+        // homeHold 的 180ms 淡出仍由 opacity 负责。
         if (this.isMobilePhoneUi()) {
           HomeSurface({
             incognito: this.incognito,
@@ -1822,20 +1814,15 @@ struct AuraShell {
             .height('100%')
             .visibility(this.homeSurfaceVisible() ? Visibility.Visible : Visibility.None)
             .opacity(this.homeHold ? 0 : 1)
-            // 这里不能用 .animation() 修饰符：它对「按住」和「放开」一视同仁，
-            // 回主页时会白白做 180ms 淡入（录屏实测 2~3 帧半透明主页叠在白底上）。
-            // 淡出改由 holdHomeForPaint() 里的 animateTo 显式驱动，放开瞬时生效。
-            // 淡出期间主页层不再吃触摸，避免转场那 180ms 里点击落到旧主页。
+            // 不能用 .animation()：它对按住/放开一视同仁，回主页会多一次淡入。
+            // 淡出由 holdHomeForPaint() 的 animateTo 显式驱动，放开瞬时生效。
+            // 淡出期间不吃触摸，避免点击落到旧主页。
             .hitTestBehavior(this.homeHold ? HitTestMode.None : HitTestMode.Default)
         }
         if (this.isMobilePhoneUi() && this.needsHomeBackdrop() && !this.homeSurfaceVisible()) {
           // 预热层盖住引擎清屏到新页首帧之间的底板。与主页层用独立 if，
           // 避免起防那一帧两层皆空露出原生 NTP。
-          // ⚠️ 主页层在场时一律不叠：这块盖在**主页之上**（build 顺序在后），
-          // 主页已经画好还叠一层 browser_canvas，就会在回主页那一帧看到"整屏蒙白"
-          // （录屏逐帧抓到的 214→127→112 中间帧）。以前只在 homeHold /
-          // homeReturnCover 期间排除，漏了"homeReturnCover 已撤、navCover 还没撤"
-          // 这一拍。
+          // 主页层在场时一律不叠：这块盖在主页之上，会叠出整屏蒙白。
           this.NavCoverView()
         }
         if (this.discardedCover) {
@@ -3225,8 +3212,7 @@ struct AuraShell {
   }
 
   private holdHomeForPaint(): void {
-    // 淡出（主页让位给网页）用显式 animateTo：节点上原来挂的 .animation() 对
-    // 「释放」也生效，回主页时会多出 180ms 半透明淡入，已移除。
+    // 淡出用显式 animateTo，避免 .animation() 在释放时也做淡入。
     animateTo({ duration: 180, curve: Curve.EaseOut }, (): void => {
       this.homeHold = true;
     });
@@ -3240,9 +3226,8 @@ struct AuraShell {
     // 顶部装饰（状态栏/地址栏）跟着主页淡出一起走：延迟 120ms 再切成网页态，
     // 与 180ms 淡出重合，避免「地址栏先出来、网页区后到」的割裂。
     this.armHomeExitHold();
-    // 状态栏图标色交回主题色：主页淡出用 180ms，取过半（120ms）那一刻交。
-    // 太早 → 壁纸还看得见就闪一下黑图标；太晚（原来挂在 HomeSurface 卸载上）
-    // → 网页顶栏已经上屏 400ms 了，白图标在浅色顶栏上等于消失。
+    // 状态栏图标色在淡出过半（120ms）时交回主题色：太早会在壁纸上闪黑图标，
+    // 太晚白图标会在浅色网页顶栏上消失。
     if (this.homeExitInkTimer !== -1) {
       clearTimeout(this.homeExitInkTimer);
     }
@@ -3283,8 +3268,8 @@ struct AuraShell {
     }, 120);
   }
 
-  // 取消「顶栏延迟切网页态」（回主页时用）。注意不能在 releaseHomeHold 里调：
-  // 那个方法在**导航完成**时也会跑，会把延迟提前取消掉，等于没延迟。
+  // 取消顶栏延迟切态。只能在回主页时调：releaseHomeHold 在导航完成时也会跑，
+  // 放那里会提前取消掉延迟。
   private cancelHomeExitHold(): void {
     if (this.homeExitHoldTimer !== -1) {
       clearTimeout(this.homeExitHoldTimer);
@@ -3295,8 +3280,7 @@ struct AuraShell {
 
   private releaseHomeHold(): void {
     this.homeHold = false;
-    // 又回主页了/导航被撤：这次"交还主题色"不该发生（122ms 后主页还在的话，
-    // 交还就会让壁纸配黑图标）。
+    // 回主页/导航撤销时取消交还，否则壁纸会配到主题色图标。
     if (this.homeExitInkTimer !== -1) {
       clearTimeout(this.homeExitInkTimer);
       this.homeExitInkTimer = -1;
@@ -3314,12 +3298,8 @@ struct AuraShell {
   // 主页键：立即铺主页层（见 homeReturnCover 注释）。1.2s 兜底撤防，防止
   // 引擎没响应 home 命令时主页层一直盖着。
   private beginHomeReturnCover(): void {
-    // 回主页 = 主页层必须**立刻**可见，先把 homeHold 撤掉。
-    // homeHold 是「离开主页时按住主页层做 180ms 淡出」的开关；如果在网页
-    // **还没加载完**（蓝条还在走）就按主页键，它还停在 true —— 此时主页层
-    // opacity 0、下面垫着一层 browser_canvas（浅色主题=纯白），于是先白屏
-    // 一大段，等它自己释放出来又是一次半透明淡入。录屏逐帧：白 ≈200ms →
-    // 黑 1~2 帧 → 主页半透明 2~3 帧 → 完整主页。
+    // 回主页必须立刻可见：网页未加载完就按主页键时 homeHold 可能仍为 true，
+    // 不撤会露出下面的白底垫层，并多一次半透明淡入。
     this.releaseHomeHold();
     // 已经在回主页的路上了：顶栏的「延迟切网页态」立刻取消，别让它再晚 120ms。
     this.cancelHomeExitHold();
