@@ -330,6 +330,17 @@ export struct HomeSurface {
   // -- 主页布局 ----------------------------------------------------------------
   @State private custom: HomeCustom = defaultHomeCustom();
   @State private bgUri: string = '';
+  // 壁纸是否已经真正画出来（Image 的 onComplete）。见 bgLayerReady()：
+  // 挂载时 custom 常常先到、壁纸图还在解码，此时底色已是 Transparent（有壁纸就
+  // 不铺主题底），**旧网页会从这一层透出来** —— 真机录屏逐帧抓到的正是
+  // 「主页的 Logo / 搜索胶囊 / 磁贴半透明浮在网页上」再跳到完整主页
+  // （用户报的「点主页按钮回主页有闪烁」）。解码完成前整层不显示，画面留在
+  // 原网页上，解码完一次性替换，没有半透明过渡帧。
+  @State private bgPainted: boolean = false;
+  private bgPaintTimer: number = -1;
+  // 是否已有判色结论（缓存命中或解码完成，含"确认没有壁纸/判定失败回落主题"）。
+  // 壁纸画出来但还没判色时不下发状态栏，否则会先按默认黑、再翻白地闪一次。
+  private toneApplied: boolean = false;
   // 壁纸三带亮度（[-1 表示未分析]）与「该带是否偏亮」判定。单带取样必错一区：
   // 实测同一张壁纸上「顶部 0.380 暗 / dock 0.600 亮」，另一张正好相反，所以
   // 状态栏、Logo/书签、底部 dock 各认自己那一条带：
@@ -478,9 +489,10 @@ export struct HomeSurface {
       this.showSettings = true;
     }
     AppStorage.set('auraOpenHomeLayout', 0);
-    // 冷启动补吃一次：@StorageProp 初值不触发 @Watch。壁纸是异步加载的，
-    // analyze 完成后还会再刷新一次。
-    this.syncStatusBarIcons(true);
+    // 挂载时不再先按主题色强发一次状态栏：壁纸解码是异步的，那一次会在仍可见的
+    // 旧网页上闪一下图标色（录屏实测），真正该发的是壁纸画出来那一刻（见
+    // wallpaper Image 的 onComplete 与 syncStatusBarIcons 的门禁）。
+    // 无壁纸时状态栏本来就是 EntryAbility 按主题下发的值，不需要重发。
   }
 
   aboutToDisappear(): void {
@@ -492,6 +504,10 @@ export struct HomeSurface {
     if (this.faviconBatchTimer !== -1) {
       clearTimeout(this.faviconBatchTimer);
       this.faviconBatchTimer = -1;
+    }
+    if (this.bgPaintTimer !== -1) {
+      clearTimeout(this.bgPaintTimer);
+      this.bgPaintTimer = -1;
     }
     // 离开主页：状态栏图标色交回系统深浅色（网页顶栏是实色，白图标会看不见）。
     // 但**整页被藏起来**时不要抢着改（切后台 / 退出应用）：窗口马上消失，系统会
@@ -564,7 +580,27 @@ export struct HomeSurface {
       this.resetWallpaperTone();
       return;
     }
+    // 新壁纸还没画出来：关闭整层显示，等 Image 的 onComplete 再打开（见 bgLayerReady）。
+    this.bgPainted = false;
+    if (this.bgPaintTimer !== -1) {
+      clearTimeout(this.bgPaintTimer);
+    }
+    // 兜底：图坏了/onComplete 不来，也不能让主页永远不显示。
+    this.bgPaintTimer = setTimeout((): void => {
+      this.bgPaintTimer = -1;
+      this.bgPainted = true;
+      this.syncStatusBarIcons(true);
+    }, 400);
     this.analyzeWallpaperTone();
+  }
+
+  // 主页整层能不能显示：没设壁纸（纯色底由主题铺，本来就是不透明的）直接显示；
+  // 有壁纸则等它真正画出来。返回值只影响「挂载/换图后的那几十毫秒」，稳态恒 true。
+  private bgLayerReady(): boolean {
+    if (this.incognito || this.bgUri.length === 0) {
+      return true;
+    }
+    return this.bgPainted;
   }
 
   private async pickBackground(): Promise<void> {
@@ -626,6 +662,8 @@ export struct HomeSurface {
     this.wallpaperIsLight = themeLight;
     this.wallpaperTopIsLight = themeLight;
     this.wallpaperBottomIsLight = themeLight;
+    // 这是"明确没有判色结论、就用主题色"的收口，标记为已决，允许下发。
+    this.toneApplied = true;
     this.publishWallpaperTone();
     this.syncStatusBarIcons();
   }
@@ -651,6 +689,7 @@ export struct HomeSurface {
     this.wallpaperTopIsLight = this.cachedToneTop;
     this.wallpaperIsLight = this.cachedToneMid;
     this.wallpaperBottomIsLight = this.cachedToneBottom;
+    this.toneApplied = true;
     this.publishWallpaperTone();
     this.syncStatusBarIcons();
     return true;
@@ -816,6 +855,7 @@ export struct HomeSurface {
       this.wallpaperTopIsLight = this.prefersDarkInk(topLum);
       this.wallpaperIsLight = this.prefersDarkInk(midLum);
       this.wallpaperBottomIsLight = this.prefersDarkInk(bottomLum);
+      this.toneApplied = true;
       this.publishWallpaperTone();
       // 落盘给下次挂载兜底（换壁纸后 path 不匹配自动失效）。
       this.cachedTonePath = this.custom.bgPath;
@@ -885,6 +925,13 @@ export struct HomeSurface {
 
   private syncStatusBarIcons(force: boolean = false): void {
     const useWallpaper: boolean = this.bgUri.length > 0 && !this.incognito;
+    // 壁纸还没画出来时先别动状态栏：这一刻画面还停在旧网页上（homeReturnCover
+    // 让主页提前挂载，引擎 ~80ms 后才提交新标签页），改了会先在网页上闪一下图标色
+    // —— 录屏实测 07.483 下发黑、07.494 又下发白，而主页 07.5x 才真正上屏。
+    // 等壁纸画出来（onComplete → syncStatusBarIcons(true)）一次性跟着主页切。
+    if (useWallpaper && (!this.bgPainted || !this.toneApplied)) {
+      return;
+    }
     // 状态栏（时间/信号/电量）只压在壁纸**顶带**上：中带再亮也管不到那一行，
     // 底带更无关 —— 所以这里认 wallpaperTopIsLight 而不是中带的 wallpaperIsLight。
     this.setStatusBarLightIcon(useWallpaper ? !this.wallpaperTopIsLight : (this.colorScheme === 'dark'),
@@ -2406,6 +2453,16 @@ export struct HomeSurface {
           .objectFit(ImageFit.Cover)
           .interpolation(ImageInterpolation.High)
           .hitTestBehavior(HitTestMode.None)
+          // 首帧落下才放开整层（见 bgLayerReady）。onError 也要放开：图坏了宁可
+          // 露出透明底，也不能让主页永远不显示。
+          .onComplete((): void => {
+            this.bgPainted = true;
+            this.syncStatusBarIcons(true);
+          })
+          .onError((): void => {
+            this.bgPainted = true;
+            this.syncStatusBarIcons(true);
+          })
         // 主题色薄纱：仅深色模式保留——暗纱压暗亮壁纸、保证白字可读（用户实测浅色
         // 模式这层=30% 白纱会把壁纸洗白发雾，故浅色不盖，壁纸保持清晰；文字可读性
         // 交给毛玻璃控件 + 文字阴影兜底，仿华为沉浸式）。
@@ -2629,6 +2686,10 @@ export struct HomeSurface {
     }
     .width('100%')
     .height('100%')
+    // 壁纸没画出来之前整层不显示（见 bgLayerReady）：否则「有壁纸 → 底色透明 +
+    // 图未解码」会露出下层网页，出现半透明主页叠在网页上的过渡帧。不加动画：
+    // 要的就是一帧硬切，加淡入等于把闪烁换个样子。
+    .opacity(this.bgLayerReady() ? 1 : 0)
     // 旋转/分屏/窗口尺寸变化都从这里重算锚点，但**不能直接用这一帧的 area**。
     // 实测（2026-10-27 横屏 logo 只剩一条弧线）：转屏时 onAreaChange 先以
     // 「宽度已变、高度还是键盘压矮后的值」的中间帧回调一次 —— 竖屏 419×920、
