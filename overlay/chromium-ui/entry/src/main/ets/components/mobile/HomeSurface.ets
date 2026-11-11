@@ -2031,7 +2031,9 @@ export struct HomeSurface {
         .height(TILE_ICON_VP)
         .borderRadius(TILE_ICON_RADIUS)
         .backgroundColor(this.homeGlass())
-        .backdropBlur(20)
+        // 和其它磁贴保持一致：**不叠 backdropBlur**。之前这里单独留了 20，
+        // 结果「添加」格比旁边书签明显更磨砂（用户实拍对比），而且 ForEach 里
+        // 每个磁贴各建一层模糊，多一个就多一份采样开销。
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
         Text('添加')
