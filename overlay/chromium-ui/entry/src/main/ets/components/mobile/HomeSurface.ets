@@ -719,7 +719,9 @@ export struct HomeSurface {
     // 这是"明确没有判色结论、就用主题色"的收口，标记为已决，允许下发。
     this.toneApplied = true;
     this.publishWallpaperTone();
-    this.syncStatusBarIcons();
+    // 绕过 syncStatusBarIcons 的"壁纸未就绪"门：reset 本身就是结论（没壁纸 /
+    // 图不可用），再等下去状态栏会停在旧颜色上。
+    this.setStatusBarLightIcon(this.colorScheme === 'dark', true);
   }
 
   // 三带结论一次性广播。状态栏由 HomeSurface 自己消费；顶栏/dock 图标在
@@ -745,7 +747,10 @@ export struct HomeSurface {
     this.wallpaperBottomIsLight = this.cachedToneBottom;
     this.toneApplied = true;
     this.publishWallpaperTone();
-    this.syncStatusBarIcons();
+    // 这里**不**下发状态栏：套缓存的时机可能在 bgUri 还没设好之前（loadTone 先于
+    // loadCustom 返回），那一刻 useWallpaper 还是 false，会按主题色发一次黑 ——
+    // 真机日志抓到回主页 +19ms 一条 black、+43ms 又 white，等于闪一下。
+    // 下发的唯一时机交给「壁纸画出来 + 有结论」（openHomeLayer / analyze）。
     return true;
   }
 
@@ -936,7 +941,10 @@ export struct HomeSurface {
     // 两条通道都失败：宁可沿用上次结论，也不要回落主题色（回落就是「不反色」）。
     hilog.warn(0x0000, 'AuraShell', 'wallpaper tone unavailable, cached=%{public}s',
       this.cachedToneReady ? 'yes' : 'no');
-    if (!this.applyCachedTone()) {
+    if (this.applyCachedTone()) {
+      // 沿用上次结论也算"有结论"：这里补一次下发（applyCachedTone 自己不再发）。
+      this.syncStatusBarIcons(true);
+    } else {
       this.resetWallpaperTone();
     }
   }
@@ -979,11 +987,13 @@ export struct HomeSurface {
 
   private syncStatusBarIcons(force: boolean = false): void {
     const useWallpaper: boolean = this.bgUri.length > 0 && !this.incognito;
-    // 壁纸还没画出来时先别动状态栏：这一刻画面还停在旧网页上（homeReturnCover
-    // 让主页提前挂载，引擎 ~80ms 后才提交新标签页），改了会先在网页上闪一下图标色
-    // —— 录屏实测 07.483 下发黑、07.494 又下发白，而主页 07.5x 才真正上屏。
-    // 等壁纸画出来（onComplete → syncStatusBarIcons(true)）一次性跟着主页切。
-    if (useWallpaper && (!this.bgPainted || !this.toneApplied)) {
+    // 壁纸还没画出来 / 还没判色时先别动状态栏：这一刻画面还停在旧网页上
+    // （homeReturnCover 让主页提前挂载，引擎 ~80ms 后才提交新标签页），改了会先在
+    // 网页上闪一下图标色。`custom.bgPath` 也算"有壁纸"——bgUri 要等偏好读回来才设，
+    // 两者之间那一拍若按主题色下发，就会在主页上先黑后白（实测 24ms 的黑）。
+    const wallpaperPending: boolean = !this.incognito &&
+      (this.bgUri.length > 0 || this.custom.bgPath.length > 0);
+    if (wallpaperPending && (!this.bgPainted || !this.toneApplied)) {
       return;
     }
     // 状态栏（时间/信号/电量）只压在壁纸**顶带**上：中带再亮也管不到那一行，
