@@ -818,6 +818,41 @@ export struct HomeSurface {
     return $r('app.color.text_secondary');
   }
 
+  // 书签名字（12sp 小字）单独一档：它**直接压在壁纸上**、底下没有托盘，沿用
+  // secondary 那档灰在真机上明显发淡（用户反馈「书签文字反色很淡」——暗底
+  // #B7BAC0 只有约 4:1，小字看不清）。这里给足对比：亮底近黑、暗底纯白，
+  // 再叠一层反向描边阴影，压得住花壁纸（华为 NTP 也是这么做）。
+  private homeTileLabel(): ResourceColor {
+    if (this.bgUri.length > 0 && !this.incognito) {
+      return this.wallpaperIsLight ? '#2B2F33' : '#FFFFFF';
+    }
+    return $r('app.color.text_secondary');
+  }
+
+  private homeTileLabelShadow(): ShadowOptions {
+    if (this.bgUri.length > 0 && !this.incognito) {
+      // 亮底给浅色描边（防深色笔画糊进暗部），暗底给深色投影（防亮部吃字）。
+      return this.wallpaperIsLight
+        ? { radius: 6, color: '#66FFFFFF', offsetX: 0, offsetY: 1 }
+        : { radius: 6, color: '#73000000', offsetX: 0, offsetY: 1 };
+    }
+    return { radius: 0, color: '#00000000', offsetX: 0, offsetY: 0 };
+  }
+
+  // Logo 是双色图：深/浅两版**只差星球本体**（青色环两版都在），原来靠
+  // resources/dark 目录跟系统深浅色自动切换。但有壁纸时"该用哪版"取决于
+  // **壁纸中带**，不是主题 —— 深色壁纸配浅色主题会拿到深蓝星球，直接糊进背景
+  // （用户反馈「logo 图标还是跟随主题」）。这里按中带判据显式选资源；两份固定名
+  // 资源都放在 base/media（不带 dark 变体），避免再被主题二次切换。
+  private homeLogoRes(): Resource {
+    if (this.bgUri.length > 0 && !this.incognito) {
+      return this.wallpaperIsLight
+        ? $r('app.media.orbira_logo_onlight')
+        : $r('app.media.orbira_logo_ondark');
+    }
+    return $r('app.media.orbira_logo');
+  }
+
   // 有壁纸时用低不透明度+高模糊的真磨砂玻璃；无壁纸回落系统 glass_tint。
   private homeGlass(): ResourceColor {
     if (this.bgUri.length > 0 && !this.incognito) {
@@ -1719,7 +1754,8 @@ export struct HomeSurface {
 
               Text(node.title.length > 0 ? node.title : (node.url ?? ''))
                 .fontSize(12)
-                .fontColor(this.homeFgTextSecondary())
+                .fontColor(this.homeTileLabel())
+                .textShadow(this.homeTileLabelShadow())
                 .maxLines(1)
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
                 .textAlign(TextAlign.Center)
@@ -1774,7 +1810,8 @@ export struct HomeSurface {
         .alignItems(HorizontalAlign.Center)
         Text('添加')
           .fontSize(12)
-          .fontColor(this.homeFgTextSecondary())
+          .fontColor(this.homeTileLabel())
+          .textShadow(this.homeTileLabelShadow())
           .textAlign(TextAlign.Center)
           .width('100%')
       }
@@ -1792,7 +1829,8 @@ export struct HomeSurface {
     if (this.tiles.length === 0) {
       Text('书签「首页」文件夹还是空的\n在「书签」中进入「首页」文件夹，或点「+」添加')
         .fontSize(12)
-        .fontColor($r('app.color.text_secondary'))
+        .fontColor(this.homeTileLabel())
+        .textShadow(this.homeTileLabelShadow())
         .textAlign(TextAlign.Center)
         .width('100%')
         .margin({ top: 10 })
@@ -2303,8 +2341,8 @@ export struct HomeSurface {
                     .height(26)
                     .fillColor($r('app.color.text_primary'))
                 } else {
-                  // 浏览器 logo（深浅色自适应：浅色 navy / 深色白）在文字前。
-                  Image($r('app.media.orbira_logo'))
+                  // 浏览器 logo（颜色按壁纸中带选版，见 homeLogoRes）。
+                  Image(this.homeLogoRes())
                     .width(42)
                     .height(30)
                     .draggable(false)

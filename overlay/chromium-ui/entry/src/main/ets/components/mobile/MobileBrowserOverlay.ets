@@ -1838,6 +1838,15 @@ export struct MobileBrowserOverlay {
     return $r('app.color.icon_primary');
   }
 
+  // 同上，但给「经典风格」的材质 dock 用：那个 dock 是独立 struct，
+  // 颜色只能以字符串 @Prop 传进去（空串 = 让它回落 icon_primary）。
+  private bottomDockInkHex(): string {
+    if (this.isHomeSurface()) {
+      return this.wallpaperBottomIsLight ? '#202124' : '#F5F5F5';
+    }
+    return '';
+  }
+
   @Builder
   private GoogleDockTop() {
     Stack({ alignContent: Alignment.TopStart }) {
@@ -3132,6 +3141,10 @@ export struct MobileBrowserOverlay {
       barHeightVp: DOCK_BAR_HEIGHT_VP,
       sideMarginVp: DOCK_SIDE_MARGIN_VP,
       bottomMarginVp: resolveDockBottomMarginVp(this.bottomSafeVp),
+      // 材质板是独立 struct（拿不到 isHomeSurface / 壁纸判据，跨组件调方法会
+      // 10505001），只能把颜色当字符串传进去：有壁纸时给反色结果，否则空串
+      // 由它回落系统 icon_primary（网页态行为不变）。
+      dockInkHex: this.bottomDockInkHex(),
       onDockSlot: (slot: string): void => {
         this.handleDockSlot(slot);
       }
@@ -5392,6 +5405,10 @@ struct DockMaterialPlate {
   @Prop barHeightVp: number = 48;
   @Prop sideMarginVp: number = 16;
   @Prop bottomMarginVp: number = 0;
+  // 图标/徽标颜色（主页态按壁纸底带反色）。空串 = 回落系统 icon_primary：
+  // 网页态的 dock 与壁纸无关，必须保持主题色。用字符串而不是 ResourceColor
+  // 联合类型，是为了 @Prop 跨组件传递稳（联合类型在 @Prop 里易踩类型收窄）。
+  @Prop dockInkHex: string = '';
   onDockSlot: (slot: string) => void = (_slot: string): void => {};
   // 按压中的按钮（弹簧缩放用）；只在本子树内使用，无需跨组件共享。
   @State private pressedSlot: string = '';
@@ -5442,23 +5459,23 @@ struct DockMaterialPlate {
         Text(this.tabCount > 99 ? '99+' : this.tabCount.toString())
           .fontSize(10)
           .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.icon_primary'))
+          .fontColor(this.slotInk())
           .textAlign(TextAlign.Center)
           .width(22)
           .height(20)
           .borderRadius(6)
-          .border({ width: 1.8, color: $r('app.color.icon_primary') })
+          .border({ width: 1.8, color: this.slotInk() })
       } else {
         if (slot === '返回' || slot === '前进') {
           SymbolGlyph(slot === '返回' ?
             $r('sys.symbol.chevron_backward') : $r('sys.symbol.chevron_forward'))
             .fontSize(22)
-            .fontColor([ $r('app.color.icon_primary') ])
+            .fontColor([ this.slotInk() ])
         } else {
           Image(this.slotIcon(slot))
             .width(22)
             .height(22)
-            .fillColor($r('app.color.icon_primary'))
+            .fillColor(this.slotInk())
         }
       }
     }
@@ -5475,6 +5492,12 @@ struct DockMaterialPlate {
     .onTouch((event: TouchEvent): void => {
       this.handleSlotTouch(event, slot);
     })
+  }
+
+  // dock 图标的实际颜色：主页有壁纸时用父组件传进来的底带反色结果，
+  // 其余情况（网页态 / 无壁纸）回落系统 icon_primary。
+  private slotInk(): ResourceColor {
+    return this.dockInkHex.length > 0 ? this.dockInkHex : $r('app.color.icon_primary');
   }
 
   private slotUsable(slot: string): boolean {
