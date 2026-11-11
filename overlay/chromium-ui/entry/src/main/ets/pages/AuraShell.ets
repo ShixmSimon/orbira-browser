@@ -1804,7 +1804,9 @@ struct AuraShell {
             .width('100%')
             .height('100%')
             .opacity(this.homeHold ? 0 : 1)
-            .animation({ duration: 180, curve: Curve.EaseOut })
+            // 这里不能用 .animation() 修饰符：它对「按住」和「放开」一视同仁，
+            // 回主页时会白白做 180ms 淡入（录屏实测 2~3 帧半透明主页叠在白底上）。
+            // 淡出改由 holdHomeForPaint() 里的 animateTo 显式驱动，放开瞬时生效。
             // 淡出期间主页层不再吃触摸，避免转场那 180ms 里点击落到旧主页。
             .hitTestBehavior(this.homeHold ? HitTestMode.None : HitTestMode.Default)
         }
@@ -3200,7 +3202,11 @@ struct AuraShell {
   }
 
   private holdHomeForPaint(): void {
-    this.homeHold = true;
+    // 淡出（主页让位给网页）用显式 animateTo：节点上原来挂的 .animation() 对
+    // 「释放」也生效，回主页时会多出 180ms 半透明淡入，已移除。
+    animateTo({ duration: 180, curve: Curve.EaseOut }, (): void => {
+      this.homeHold = true;
+    });
     this.homeHoldSawLoading = false;
     this.homeHoldExtensions = 0;
     if (this.homeHoldQuickTimer !== -1) {
@@ -3260,6 +3266,13 @@ struct AuraShell {
   // 主页键：立即铺主页层（见 homeReturnCover 注释）。1.2s 兜底撤防，防止
   // 引擎没响应 home 命令时主页层一直盖着。
   private beginHomeReturnCover(): void {
+    // 回主页 = 主页层必须**立刻**可见，先把 homeHold 撤掉。
+    // homeHold 是「离开主页时按住主页层做 180ms 淡出」的开关；如果在网页
+    // **还没加载完**（蓝条还在走）就按主页键，它还停在 true —— 此时主页层
+    // opacity 0、下面垫着一层 browser_canvas（浅色主题=纯白），于是先白屏
+    // 一大段，等它自己释放出来又是一次半透明淡入。录屏逐帧：白 ≈200ms →
+    // 黑 1~2 帧 → 主页半透明 2~3 帧 → 完整主页。
+    this.releaseHomeHold();
     this.homeReturnCover = true;
     if (this.homeReturnTimer !== -1) {
       clearTimeout(this.homeReturnTimer);
