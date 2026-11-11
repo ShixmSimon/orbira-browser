@@ -576,6 +576,8 @@ export struct MobileBrowserOverlay {
       this.issueCommand({ command: 'back' });
       return true;
     }
+    // 再按一次返回 = 回主页，进度条同样立刻收（理由见 pressHome）。
+    this.hideLoadBarNow();
     this.issueCommand({ command: 'home' });
     return true;
   }
@@ -2433,7 +2435,6 @@ export struct MobileBrowserOverlay {
       // 顶栏显示时落在地址胶囊下沿，顶栏隐藏时贴状态栏下沿，不会悬在网页文字上；
       // 顶栏本身不锁、滚动隐藏完全跟手。
       // 画在状态栏实色垫底之上，保证浅色壁纸/深色下都压得住。
-      // 退场动画挂在 if 分支根节点，避免收尾时整子树原子删除「瞬间闪一下」。
       if (this.loadBarShown && !this.isHomeSurface() && !this.pageFullscreen) {
         Stack({ alignContent: Alignment.Start }) {
           Row()
@@ -2451,16 +2452,12 @@ export struct MobileBrowserOverlay {
         .position({ x: 0, y: this.loadBarY() })
         // 不加属性动画：滚动时 y 逐帧变化，动画会被反复重启导致蓝条滞后；
         // 直接取当帧值，与顶栏同源跟手。
-        // 退场：回到主页时**立刻消失**（duration 0）—— 页面已经被主页顶掉，
-        // 蓝条还在淡出会显得"消失了半天"（用户反馈：按主页键回主页进度条走得很慢）。
-        // 正常加载完成仍保留 200ms 淡出。
-        .transition(TransitionEffect.asymmetric(
-          TransitionEffect.IDENTITY,
-          TransitionEffect.OPACITY.animation({
-            duration: this.isHomeSurface() ? 0 : this.loadBarGrowMs,
-            curve: Curve.EaseOut
-          })
-        ))
+        // 退场**硬切、不加 transition**：transition 的时长在节点创建时求值一次、
+        // 之后不会重算，所以「按 isHomeSurface() 决定 0 还是 200ms」这种写法在真正
+        // 的转场里拿到的永远是旧值 —— 蓝条照样淡出 200ms，正好压在已经上屏的
+        // 主页上（录屏逐帧：主页已全白，蓝条还在 59%→70% 地长，6 帧≈130ms 才淡完）。
+        // 现在由 hideLoadBarNow() 在按下主页键那一刻直接卸载；正常加载完成的
+        // 「收尾感」改由 syncLoadBar 的 180ms 停留提供（跑满 → 停 → 消失）。
         // 纯指示：不参与命中，顶部滑动照常下发到网页。
         .hitTestBehavior(HitTestMode.None)
       }
@@ -3755,6 +3752,8 @@ export struct MobileBrowserOverlay {
   }
 
   private closeAllTabs(count: number): void {
+    // 关完所有标签页会落回主页，进度条一并收掉，别让它挂在新出现的白底主页上。
+    this.hideLoadBarNow();
     this.issueCommand({ command: 'activateTab', index: 0 });
     this.issueCommand({ command: 'home' });
     for (let index: number = count - 1; index >= 1; index -= 1) {
@@ -4168,8 +4167,29 @@ export struct MobileBrowserOverlay {
     if (this.isHomeSurface()) {
       const seq: number = Number(AppStorage.get('auraHomeReset') ?? 0);
       AppStorage.setOrCreate('auraHomeReset', seq + 1);
+    } else {
+      // 回主页这一瞬必须立刻收掉进度条。isHomeSurface() 看的是 browserState.url，
+      // 而 url 要等引擎导航提交（实测 65~107ms）才变成 newtab；在这段窗口里
+      // loading 已经转 false，syncLoadBar 会走「灌满 → 停留 180ms → 淡出」，
+      // 蓝条就压在已经上屏的主页上（录屏逐帧：主页已全白，蓝条还在 59%→70% 地长，
+      // 约 6 帧≈130ms 才淡完）。这里按"用户意图"直接收，不等 url。
+      this.hideLoadBarNow();
     }
     this.issueCommand({ command: 'home' });
+  }
+
+  // 立刻卸载加载细条：清掉收尾计时器（否则它稍后会把 loadBarShown 再置 false，
+  // 那一次会连带把新一次加载的细条一起收掉），并复位宽度供下次以最小宽度挂载。
+  private hideLoadBarNow(): void {
+    if (this.loadBarFadeTimer !== 0) {
+      clearTimeout(this.loadBarFadeTimer);
+      this.loadBarFadeTimer = 0;
+    }
+    if (!this.loadBarShown) {
+      return;
+    }
+    this.loadBarShown = false;
+    this.loadBarWidth = this.loadBarMin;
   }
 
   private menuDomainText(): string {
@@ -4832,6 +4852,12 @@ export struct MobileBrowserOverlay {
       return;
     }
     if (!this.loadBarShown) {
+      return;
+    }
+    // 已经在主页：不灌满、也不停留 180ms，直接收。满格蓝条压在白底主页上最显眼
+    //（主页键这条路径已在 pressHome 里提前收掉，这里兜住关标签页/新建标签页等）。
+    if (this.isHomeSurface()) {
+      this.hideLoadBarNow();
       return;
     }
     // 加载结束：灌满 → 稍作停留 → 卸载（淡出由 if 根节点 transition 负责）。
