@@ -13,6 +13,22 @@ const KEY_CUSTOM = 'homeCustom';
 const KEY_FOLDER_ID = 'homeFolderId';
 const KEY_MIGRATED = 'homeFolderMigrated';
 const KEY_SEEDED = 'homeBookmarksSeeded';
+const KEY_TONE = 'homeWallpaperTone';
+
+// 壁纸三带判色结果的缓存：path 用于换壁纸后自动失效。
+// 为什么要落盘：壁纸解码是异步的（读 300KB 字节 + createPixelMap，几十到上百毫秒），
+// 挂载时若只能先用主题色，状态栏/顶栏图标会先出一次「黑图标压在深壁纸上」，
+// 解码完再翻成白色 —— 冷启动肉眼可见地闪一下。挂载即读回上次结论就没有这一跳。
+export interface HomeToneCache {
+  path: string;
+  top: boolean;
+  mid: boolean;
+  bottom: boolean;
+}
+
+export function emptyToneCache(): HomeToneCache {
+  return { path: '', top: true, mid: true, bottom: true } as HomeToneCache;
+}
 
 export interface HomeCustom {
   // 背景图沙箱绝对路径（'' = 无背景，用主题底色）。
@@ -159,6 +175,41 @@ export class HomePrefs {
     try {
       const store = await preferences.getPreferences(context, STORE_NAME);
       await store.put(KEY_SEEDED, value);
+      await store.flush();
+    } catch (error) {
+    }
+  }
+
+  // 壁纸上一次的三带判色结果（含壁纸路径，换了图自动不认）。
+  static async loadTone(context: common.Context | undefined): Promise<HomeToneCache> {
+    const out = emptyToneCache();
+    if (!context) {
+      return out;
+    }
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      const raw = String(await store.get(KEY_TONE, ''));
+      if (raw.length === 0) {
+        return out;
+      }
+      const parsed = JSON.parse(raw) as HomeToneCache;
+      out.path = typeof parsed.path === 'string' ? parsed.path : '';
+      out.top = boolOr(parsed.top, true);
+      out.mid = boolOr(parsed.mid, true);
+      out.bottom = boolOr(parsed.bottom, true);
+      return out;
+    } catch (error) {
+      return out;
+    }
+  }
+
+  static async saveTone(context: common.Context | undefined, value: HomeToneCache): Promise<void> {
+    if (!context) {
+      return;
+    }
+    try {
+      const store = await preferences.getPreferences(context, STORE_NAME);
+      await store.put(KEY_TONE, JSON.stringify(value));
       await store.flush();
     } catch (error) {
     }

@@ -23,7 +23,7 @@ import { normalizeAddress } from './ShellUtils';
 import { dockCoveredHeightVp } from './MobileBrowserOverlay';
 import { ScanService } from './ScanService';
 import { HomeShortcut, HomeShortcuts } from '../../utils/appearance/HomeShortcuts';
-import { HomeCustom, HomePrefs, defaultHomeCustom } from '../../utils/appearance/HomePrefs';
+import { HomeCustom, HomePrefs, HomeToneCache, defaultHomeCustom } from '../../utils/appearance/HomePrefs';
 import { HomeCache, HomeCacheData } from '../../utils/appearance/HomeCache';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
@@ -343,6 +343,13 @@ export struct HomeSurface {
   // 顶/底带原始亮度：只进日志和调阈值用，不必参与刷新（不放 @State）。
   private wallpaperTopLum: number = -1;
   private wallpaperBottomLum: number = -1;
+  // 上次的判色结论（落盘）。壁纸解码是异步的，挂载瞬间还没有结论时先吃缓存，
+  // 免得状态栏/顶栏图标先出一次「白/黑颠倒」再翻过来（冷启动肉眼可见）。
+  private cachedTonePath: string = '';
+  private cachedToneTop: boolean = true;
+  private cachedToneMid: boolean = true;
+  private cachedToneBottom: boolean = true;
+  private cachedToneReady: boolean = false;
   // 亮度分析序号：快速连换壁纸时只让最后一次结果落状态。
   private wallpaperToneSeq: number = 0;
   // 系统状态栏图标色去重（-1 未设 / 0 黑图标 / 1 白图标），避免重复下发窗口属性。
@@ -427,7 +434,18 @@ export struct HomeSurface {
     this.onFaviconsChanged();
     HomePrefs.loadCustom(context).then((value: HomeCustom): void => {
       this.custom = value;
+      // 先吃上次的判色结论（同一张壁纸才算数），再进解码：状态栏/顶栏图标
+      // 从第一帧起就是对的，不会先黑后白地翻一次。
+      this.applyCachedTone();
       this.applyBackgroundPath(value.bgPath);
+    });
+    HomePrefs.loadTone(context).then((tone: HomeToneCache): void => {
+      this.cachedTonePath = tone.path;
+      this.cachedToneTop = tone.top;
+      this.cachedToneMid = tone.mid;
+      this.cachedToneBottom = tone.bottom;
+      this.cachedToneReady = true;
+      this.applyCachedTone();
     });
     // 冷启动快速路径：上次已定位到「首页」文件夹，直接取它一层子节点（**一次
     // 往返**），不必再走 根→手机书签→首页 的三次往返（用户报「冷启动书签加载
@@ -470,7 +488,12 @@ export struct HomeSurface {
       this.faviconBatchTimer = -1;
     }
     // 离开主页：状态栏图标色交回系统深浅色（网页顶栏是实色，白图标会看不见）。
-    this.setStatusBarLightIcon(this.colorScheme === 'dark', true);
+    // 但**整页被藏起来**时不要抢着改（切后台 / 退出应用）：窗口马上消失，系统会
+    // 按桌面重新下发，改早了只是在退场动画里闪一下（用户反馈「关闭浏览器状态栏
+    // 取色会变化」）。只保留「主页被网页顶掉」这条真正需要交还的路径。
+    if (AppStorage.get<boolean>('auraShellPageHidden') !== true) {
+      this.setStatusBarLightIcon(this.colorScheme === 'dark', true);
+    }
     this.lastStatusBarLightIcon = -1;
   }
 
@@ -609,6 +632,22 @@ export struct HomeSurface {
     AppStorage.setOrCreate('auraWallpaperBottomIsLight', this.wallpaperBottomIsLight);
   }
 
+  // 把落盘的判色结论套到当前状态（同一张壁纸才认）。只用于挂载初期兜底：
+  // 解码完成后 analyzeWallpaperTone 会再用真值覆盖一次。
+  private applyCachedTone(): void {
+    if (!this.cachedToneReady || this.cachedTonePath.length === 0) {
+      return;
+    }
+    if (this.incognito || this.custom.bgPath !== this.cachedTonePath) {
+      return;
+    }
+    this.wallpaperTopIsLight = this.cachedToneTop;
+    this.wallpaperIsLight = this.cachedToneMid;
+    this.wallpaperBottomIsLight = this.cachedToneBottom;
+    this.publishWallpaperTone();
+    this.syncStatusBarIcons();
+  }
+
   // 黑字/白字择优：按 W3C 相对亮度算「黑字对比度」与「白字对比度」，取大的那个。
   // 不用固定 0.6 经验阈值 —— 两者的交叉点其实在 luma≈0.46（各 4.6 : 1），
   // 中灰壁纸本该配黑字，固定阈值会判成白字（白字只有 3.9 : 1，发灰看不清）。
@@ -728,6 +767,19 @@ export struct HomeSurface {
         this.wallpaperIsLight = this.prefersDarkInk(midLum);
         this.wallpaperBottomIsLight = this.prefersDarkInk(bottomLum);
         this.publishWallpaperTone();
+        // 落盘给下次挂载兜底（换壁纸后 path 不匹配自动失效）。
+        this.cachedTonePath = this.custom.bgPath;
+        this.cachedToneTop = this.wallpaperTopIsLight;
+        this.cachedToneMid = this.wallpaperIsLight;
+        this.cachedToneBottom = this.wallpaperBottomIsLight;
+        this.cachedToneReady = true;
+        const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+        HomePrefs.saveTone(ctx, {
+          path: this.cachedTonePath,
+          top: this.cachedToneTop,
+          mid: this.cachedToneMid,
+          bottom: this.cachedToneBottom
+        } as HomeToneCache);
         hilog.info(0x0000, 'AuraShell',
           'wallpaper tone top=%{public}s mid=%{public}s bottom=%{public}s vis=%{public}d/%{public}d light=%{public}s/%{public}s/%{public}s',
           topLum.toFixed(3), midLum.toFixed(3), bottomLum.toFixed(3), visRows, h,
