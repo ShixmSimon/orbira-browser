@@ -2451,9 +2451,15 @@ export struct MobileBrowserOverlay {
         .position({ x: 0, y: this.loadBarY() })
         // 不加属性动画：滚动时 y 逐帧变化，动画会被反复重启导致蓝条滞后；
         // 直接取当帧值，与顶栏同源跟手。
+        // 退场：回到主页时**立刻消失**（duration 0）—— 页面已经被主页顶掉，
+        // 蓝条还在淡出会显得"消失了半天"（用户反馈：按主页键回主页进度条走得很慢）。
+        // 正常加载完成仍保留 200ms 淡出。
         .transition(TransitionEffect.asymmetric(
           TransitionEffect.IDENTITY,
-          TransitionEffect.OPACITY.animation({ duration: this.loadBarGrowMs, curve: Curve.EaseOut })
+          TransitionEffect.OPACITY.animation({
+            duration: this.isHomeSurface() ? 0 : this.loadBarGrowMs,
+            curve: Curve.EaseOut
+          })
         ))
         // 纯指示：不参与命中，顶部滑动照常下发到网页。
         .hitTestBehavior(HitTestMode.None)
