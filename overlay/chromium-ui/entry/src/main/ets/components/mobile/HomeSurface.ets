@@ -95,7 +95,7 @@ const TONE_DARK_SCRIM_LUM: number = 0.114;
 // 回主页的进场缩放：从 1.035 回到 1（约 190ms）。
 // 为什么用"放大回落"而不是淡入：整层是不透明的，放大起步**永远盖满屏**，
 // 不会像淡入那样把下面的旧网页 / 引擎白 NTP 透出来（那正是之前闪烁的来源）。
-const HOME_ENTER_SCALE: number = 1.035;
+const HOME_ENTER_SCALE: number = 1.05;
 
 // favicon 请求合批窗口（ms）。同一帧里几十个磁贴
 // 各自 want() → 攒一拍合成**一次** getFavicons（引擎一次最多 100 个 url，
@@ -629,11 +629,16 @@ export struct HomeSurface {
     if (this.bgPainted) {
       return;
     }
+    // 先把 1.05 这一帧**真正画出来**，下一拍再动：节点刚从 opacity 0 变可见时
+    // ArkUI 没有可插值的上一帧，同一帧里改 scale 会直接落到终值（实测看不到动画，
+    // 用户反馈「按主页键还是没有动画」）。
     this.bgPainted = true;
     this.syncStatusBarIcons(true);
-    animateTo({ duration: 190, curve: Curve.EaseOut }, (): void => {
-      this.enterScale = 1;
-    });
+    setTimeout((): void => {
+      animateTo({ duration: 200, curve: Curve.EaseOut }, (): void => {
+        this.enterScale = 1;
+      });
+    }, 16);
   }
 
   // 主页整层能不能显示。三个门：
