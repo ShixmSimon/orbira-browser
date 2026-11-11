@@ -2676,7 +2676,11 @@ export struct HomeSurface {
               .height(48)
               .borderRadius(24)
               .backgroundColor(this.homeGlass())
-              .backdropBlur(20)
+              // 拖位置滑块时关掉模糊：搜索框会跟着 offset 每帧移动，而 backdropBlur
+              // 是**按节点背后的实际像素**重采样的 —— 节点一动，每帧都要重做一次
+              // 20vp 半径的模糊，这是最典型的掉帧源（用户反馈「开布局面板拖滑块卡」）。
+              // 松手恢复模糊；静止时模糊结果可缓存，不产生逐帧开销。
+              .backdropBlur(this.layoutDragging ? 0 : 20)
               .padding({ left: 16, right: 10 })
               .margin({ top: 0 })
             }
