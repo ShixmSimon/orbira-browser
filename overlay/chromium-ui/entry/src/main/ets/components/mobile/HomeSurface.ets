@@ -92,6 +92,10 @@ const TONE_THUMB_W: number = 40;
 // 前景实际压的是**叠完纱**的颜色，判色必须按合成后的亮度算，否则深色模式偏亮。
 const TONE_DARK_SCRIM_ALPHA: number = 0.30;
 const TONE_DARK_SCRIM_LUM: number = 0.114;
+// 回主页的进场缩放：从 1.035 回到 1（约 190ms）。
+// 为什么用"放大回落"而不是淡入：整层是不透明的，放大起步**永远盖满屏**，
+// 不会像淡入那样把下面的旧网页 / 引擎白 NTP 透出来（那正是之前闪烁的来源）。
+const HOME_ENTER_SCALE: number = 1.035;
 
 // favicon 请求合批窗口（ms）。同一帧里几十个磁贴
 // 各自 want() → 攒一拍合成**一次** getFavicons（引擎一次最多 100 个 url，
@@ -343,6 +347,9 @@ export struct HomeSurface {
   // —— 真机逐帧复核（44fps）抓到的就是这一帧。等偏好到位再决定显不显示。
   @State private customLoaded: boolean = false;
   private customLoadTimer: number = -1;
+  // 进场缩放（见 HOME_ENTER_SCALE）。稳态恒 1；只有"壁纸刚画出来"那一拍从
+  // 1.035 回落 —— 给回主页一个轻微动效，同时不引入任何透明帧。
+  @State private enterScale: number = 1;
   // 是否已有判色结论（缓存命中或解码完成，含"确认没有壁纸/判定失败回落主题"）。
   // 壁纸画出来但还没判色时不下发状态栏，否则会先按默认黑、再翻白地闪一次。
   private toneApplied: boolean = false;
@@ -583,22 +590,26 @@ export struct HomeSurface {
   private applyBackgroundPath(path: string): void {
     if (path.length === 0) {
       this.bgUri = '';
+      this.enterScale = 1;
       this.resetWallpaperTone();
       return;
     }
     try {
       if (!fs.accessSync(path)) {
         this.bgUri = '';
+        this.enterScale = 1;
         this.resetWallpaperTone();
         return;
       }
       this.bgUri = fileUri.getUriFromPath(path);
     } catch (error) {
       this.bgUri = '';
+      this.enterScale = 1;
       this.resetWallpaperTone();
       return;
     }
     // 新壁纸还没画出来：关闭整层显示，等 Image 的 onComplete 再打开（见 bgLayerReady）。
+    this.enterScale = HOME_ENTER_SCALE;
     this.bgPainted = false;
     if (this.bgPaintTimer !== -1) {
       clearTimeout(this.bgPaintTimer);
@@ -606,10 +617,23 @@ export struct HomeSurface {
     // 兜底：图坏了/onComplete 不来，也不能让主页永远不显示。
     this.bgPaintTimer = setTimeout((): void => {
       this.bgPaintTimer = -1;
-      this.bgPainted = true;
-      this.syncStatusBarIcons(true);
+      this.openHomeLayer();
     }, 400);
     this.analyzeWallpaperTone();
+  }
+
+  // 壁纸画好了：整层上屏 + 状态栏一次性跟上 + 轻微放大回落。
+  // 缩放走 animateTo（只有 scale 有动画），透明度直接切 1 —— 保证第一帧就不透明，
+  // 不会把下面的网页/白 NTP 透出来。
+  private openHomeLayer(): void {
+    if (this.bgPainted) {
+      return;
+    }
+    this.bgPainted = true;
+    this.syncStatusBarIcons(true);
+    animateTo({ duration: 190, curve: Curve.EaseOut }, (): void => {
+      this.enterScale = 1;
+    });
   }
 
   // 主页整层能不能显示。三个门：
@@ -2482,13 +2506,11 @@ export struct HomeSurface {
           // 也不能让主页永远不显示。
           .onComplete((): void => {
             setTimeout((): void => {
-              this.bgPainted = true;
-              this.syncStatusBarIcons(true);
+              this.openHomeLayer();
             }, 16);
           })
           .onError((): void => {
-            this.bgPainted = true;
-            this.syncStatusBarIcons(true);
+            this.openHomeLayer();
           })
         // 主题色薄纱：仅深色模式保留——暗纱压暗亮壁纸、保证白字可读（用户实测浅色
         // 模式这层=30% 白纱会把壁纸洗白发雾，故浅色不盖，壁纸保持清晰；文字可读性
@@ -2717,6 +2739,8 @@ export struct HomeSurface {
     // 图未解码」会露出下层网页，出现半透明主页叠在网页上的过渡帧。不加动画：
     // 要的就是一帧硬切，加淡入等于把闪烁换个样子。
     .opacity(this.bgLayerReady() ? 1 : 0)
+    // 进场缩放：起点 1.035 永远盖满屏，**不产生任何透明帧**。
+    .scale({ x: this.enterScale, y: this.enterScale })
     // 旋转/分屏/窗口尺寸变化都从这里重算锚点，但**不能直接用这一帧的 area**。
     // 实测（2026-10-27 横屏 logo 只剩一条弧线）：转屏时 onAreaChange 先以
     // 「宽度已变、高度还是键盘压矮后的值」的中间帧回调一次 —— 竖屏 419×920、
