@@ -506,6 +506,10 @@ struct AuraShell {
   private releaseHomeTransition(): void {
     hilog.info(0x0000, 'NtpCover', 'transition release waits=%{public}s',
       String(this.homeTransitionWaitsLoading));
+    // 同 releaseNavCover：落到主页时不要白纱淡出（主页自带放大进场）。
+    if (this.isNewTabPage()) {
+      this.navCoverFadeMs = 0;
+    }
     this.homeTransition = false;
     this.homeTransitionWaitsLoading = false;
     if (this.homeTransitionTimer >= 0) {
@@ -649,6 +653,12 @@ struct AuraShell {
   private releaseNavCover(): void {
     if (!this.navCover) {
       return;
+    }
+    // 落到**主页**时不铺"白纱淡出"：主页自己带 1.035→1 的轻微放大进场，两条
+    // 返回路径（返回键/主页键）观感才一致；网页之间的过渡仍保留淡出。
+    // 用户实测：从 Google 按返回回主页有一条白纱动画，从别的网页按主页键是硬切。
+    if (this.isNewTabPage()) {
+      this.navCoverFadeMs = 0;
     }
     this.navCover = false;
     this.navCoverSawLoading = false;
