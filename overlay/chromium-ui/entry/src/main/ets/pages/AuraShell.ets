@@ -1847,6 +1847,9 @@ struct AuraShell {
             // 引擎其实停在自己的新标签页（失败导航）时告诉顶栏层，让它按主页
             // 处理（不画地址栏、菜单显示"新标签页"、顶部不留条带命中区）。
             engineHomeCover: this.engineHomeCovered(),
+            // 回主页的意图（按主页键/返回）。顶栏只有把它算进「是否主页」才
+            // 不会在转场里冒出一条上一页的地址栏（见 overlay 里的注释）。
+            homeIntent: this.homeReturnCover,
             incognito: this.incognito,
             onCommand: (command: BrowserCommandPayload): void => {
               // Back is asked of the page before it is asked of the tab. A

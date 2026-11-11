@@ -280,6 +280,12 @@ export struct MobileBrowserOverlay {
   // 由 AuraShell 判定后传下来（见 AuraShell.isNewTabPage）；这里据此把顶栏、
   // 命中区、菜单文案都按「主页」处理，否则会出现「主页 + 一条 github.com 地址栏」。
   @Prop engineHomeCover: boolean = false;
+  // 「用户已经按了主页键/返回回主页」的意图标志（= AuraShell.homeReturnCover）。
+  // 回主页时 url 要等引擎导航提交（实测 65~107ms）才变 newtab；在主页上再按
+  // 主页键更糟：引擎重载 NTP 的过程中会把 url 短暂报成上一页（录屏里地址栏冒出
+  // 一条 `www.bing.com` 挂了约 0.5s）。只看 url 就会出现「主页 + 一条地址栏」，
+  // 所以顶栏/进度条/dock 的「是否主页」判定必须把意图也算进去。
+  @Prop homeIntent: boolean = false;
   // 无痕会话（重启进来的那一种，见 utils/IncognitoSwitch.ets）。
   @Prop incognito: boolean = false;
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
@@ -4157,7 +4163,9 @@ export struct MobileBrowserOverlay {
   }
 
   private isHomeSurface(): boolean {
-    return this.engineHomeCover || this.isNewTabUrl(this.browserState.url);
+    // homeIntent 优先：用户已经按了主页键，画面正被主页层盖住，此时即使引擎
+    // 还把 url 报成上一页（NTP 重载期间就是这样），顶栏也不该画地址栏。
+    return this.homeIntent || this.engineHomeCover || this.isNewTabUrl(this.browserState.url);
   }
 
   // 主页键统一入口。**已经在主页时**先让主页自己复位（清空搜索框 + 收起联想 +
@@ -4167,6 +4175,14 @@ export struct MobileBrowserOverlay {
     if (this.isHomeSurface()) {
       const seq: number = Number(AppStorage.get('auraHomeReset') ?? 0);
       AppStorage.setOrCreate('auraHomeReset', seq + 1);
+      // 引擎**确实**已经停在 newtab 时，到这儿就结束，不再发 home 命令。
+      // 注释里"对已经在 newtab 的标签是空操作"与实际不符：实测会重新载入一遍
+      // NTP —— 画面先白 ~400ms，期间 url 还会短暂报成上一页，顶栏据此冒出一条
+      // `www.bing.com` 地址栏（录屏：主页按主页键 → 地址栏挂 0.5s 才消退）。
+      // 只把它当"没在主页"的兜底（比如失败导航残留在 url 上）时才继续下发。
+      if (this.isNewTabUrl(this.browserState.url)) {
+        return;
+      }
     } else {
       // 回主页这一瞬必须立刻收掉进度条。isHomeSurface() 看的是 browserState.url，
       // 而 url 要等引擎导航提交（实测 65~107ms）才变成 newtab；在这段窗口里
