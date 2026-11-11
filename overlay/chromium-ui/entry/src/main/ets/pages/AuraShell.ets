@@ -1738,7 +1738,7 @@ struct AuraShell {
         if (this.homeHold) {
           if (this.isNewTabPage()) {
             if (this.homeHoldSawLoading) {
-              this.releaseHomeHold();
+              this.releaseHomeHold(true);
             }
           } else if (state.loading) {
             this.homeHoldSawLoading = true;
@@ -1802,6 +1802,7 @@ struct AuraShell {
         // homeHold 的 180ms 淡出仍由 opacity 负责。
         if (this.isMobilePhoneUi()) {
           HomeSurface({
+            homeVisible: this.homeSurfaceVisible(),
             incognito: this.incognito,
             onCommand: (command: BrowserCommandPayload): void => {
               if (command.command === 'navigate' && this.isNewTabPage()) {
@@ -3278,10 +3279,12 @@ struct AuraShell {
     this.homeExitHold = false;
   }
 
-  private releaseHomeHold(): void {
+  // cancelExitInk 只在「回主页 / 导航被撤销」时传 true：那时主页仍可见，
+  // 交还主题色会让壁纸上闪一下黑图标。导航确实进了网页时不能取消，否则
+  // 状态栏会一直停在壁纸反色上，白图标压在浅色网页顶栏。
+  private releaseHomeHold(cancelExitInk: boolean = false): void {
     this.homeHold = false;
-    // 回主页/导航撤销时取消交还，否则壁纸会配到主题色图标。
-    if (this.homeExitInkTimer !== -1) {
+    if (cancelExitInk && this.homeExitInkTimer !== -1) {
       clearTimeout(this.homeExitInkTimer);
       this.homeExitInkTimer = -1;
     }
@@ -3300,7 +3303,7 @@ struct AuraShell {
   private beginHomeReturnCover(): void {
     // 回主页必须立刻可见：网页未加载完就按主页键时 homeHold 可能仍为 true，
     // 不撤会露出下面的白底垫层，并多一次半透明淡入。
-    this.releaseHomeHold();
+    this.releaseHomeHold(true);
     // 已经在回主页的路上了：顶栏的「延迟切网页态」立刻取消，别让它再晚 120ms。
     this.cancelHomeExitHold();
     this.homeReturnCover = true;
