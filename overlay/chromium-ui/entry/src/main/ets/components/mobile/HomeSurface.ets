@@ -392,6 +392,8 @@ export struct HomeSurface {
   //    那一套（黑图标），而 setStatusBarLightIcon 的去重还记着"上次发的白色"，
   //    不会再发一次，表现就是「回到浏览器，状态栏不反色」。
   @StorageLink('auraShellPageHidden') @Watch('onShellPageShown') shellPageHidden: boolean = false;
+  // 主页正在被网页顶掉（AuraShell 在淡出过半时发）：把状态栏交回主题色。
+  @StorageLink('auraHomeExitInk') @Watch('onHomeExitInk') homeExitInk: number = 0;
   // 主页搜索框的输入控制器：清空时要连系统键盘一起收掉（stopEditing）。
   private homeInputController: TextInputController = new TextInputController();
   // （1.0.111 移除 auraOpenHomeTile 信号：「网址主页」语义纠正为"设置自定义主页
@@ -1001,6 +1003,16 @@ export struct HomeSurface {
     }
     this.lastStatusBarLightIcon = -1;
     this.syncStatusBarIcons(true);
+  }
+
+  // 主页被网页顶掉（AuraShell 在淡出过半 ~120ms 时发）：状态栏交回主题色。
+  // 以前挂在 aboutToDisappear 上，实测要等 426ms（homeHold 淡出 + 卸载），
+  // 这期间网页顶栏已经上屏、白图标在浅色顶栏上等于消失。
+  private onHomeExitInk(): void {
+    if (this.incognito) {
+      return;
+    }
+    this.setStatusBarLightIcon(this.colorScheme === 'dark', true);
   }
 
   // 有壁纸时前景文字随壁纸亮度反色；无壁纸（或隐身）回落系统深浅色。
