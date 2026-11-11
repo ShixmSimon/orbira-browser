@@ -282,6 +282,8 @@ struct AuraShell {
   private homeHoldExtensions: number = 0;
   // 「秒开页」的快速撤防确认（见 onBrowserState 的 homeHold 分支）。
   private homeHoldQuickTimer: number = -1;
+  // 离开主页后「状态栏交回主题色」的延时器（见 holdHomeForPaint）。
+  private homeExitInkTimer: number = -1;
   @State private homeReturnCover: boolean = false;
   // 「回主页又弹回原网页」的自愈重试：兜底撤防时若引擎还没把 tab 带回新标签
   // 页，重发一次 home。只重试一次，防引擎真不可用时永久捂住主页层。
@@ -1533,6 +1535,10 @@ struct AuraShell {
     if (this.homeTransitionGraceTimer >= 0) {
       clearTimeout(this.homeTransitionGraceTimer);
       this.homeTransitionGraceTimer = -1;
+    }
+    if (this.homeExitInkTimer !== -1) {
+      clearTimeout(this.homeExitInkTimer);
+      this.homeExitInkTimer = -1;
     }
     this.clearImeHideTimers();
     this.clearForceDarkStartupRetryTimers();
@@ -3202,6 +3208,17 @@ struct AuraShell {
       this.homeHoldQuickTimer = -1;
     }
     this.armHomeHoldTimer(8000);
+    // 状态栏图标色交回主题色：主页淡出用 180ms，取过半（120ms）那一刻交。
+    // 太早 → 壁纸还看得见就闪一下黑图标；太晚（原来挂在 HomeSurface 卸载上）
+    // → 网页顶栏已经上屏 400ms 了，白图标在浅色顶栏上等于消失。
+    if (this.homeExitInkTimer !== -1) {
+      clearTimeout(this.homeExitInkTimer);
+    }
+    this.homeExitInkTimer = setTimeout((): void => {
+      this.homeExitInkTimer = -1;
+      const seq: number = Number(AppStorage.get('auraHomeExitInk') ?? 0);
+      AppStorage.setOrCreate('auraHomeExitInk', seq + 1);
+    }, 120);
   }
 
   private armHomeHoldTimer(ms: number): void {
@@ -3224,6 +3241,12 @@ struct AuraShell {
 
   private releaseHomeHold(): void {
     this.homeHold = false;
+    // 又回主页了/导航被撤：这次"交还主题色"不该发生（122ms 后主页还在的话，
+    // 交还就会让壁纸配黑图标）。
+    if (this.homeExitInkTimer !== -1) {
+      clearTimeout(this.homeExitInkTimer);
+      this.homeExitInkTimer = -1;
+    }
     if (this.homeHoldTimer !== -1) {
       clearTimeout(this.homeHoldTimer);
       this.homeHoldTimer = -1;
