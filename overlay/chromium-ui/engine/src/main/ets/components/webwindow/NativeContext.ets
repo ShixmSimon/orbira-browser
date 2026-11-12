@@ -308,6 +308,10 @@ export interface BrowserRuntimeEvent {
   scrollY?: number;
   pageWidth?: number;
   pageHeight?: number;
+  // pageScrollSettled and pageContinuation: 1 if the document can scroll,
+  // 0 if it fits the viewport or a modal has locked scrolling. The shell
+  // pins the top bar on a non-scrollable page; the engine changes no layout.
+  scrollable?: number;
   // browserControlsRatio: how much of the shell's top bar the page shows, 0-1.
   ratio?: number;
   // findResult: the match count, the active match (1-based; 0 for none) and

@@ -175,6 +175,10 @@ struct AuraShell {
   // 滚动时隐藏地址栏（设置-外观）：默认开；关掉时 minTop 抬到顶栏全高，
   // 顶栏常显、不随滚动收起（引擎把 ratio 锁在 1）。
   @StorageLink('auraHideTopBarOnScroll') @Watch('onHideTopBarPrefChanged') hideTopBarOnScroll: boolean = true;
+  // 页面滚不动时顶栏永远收不起来，页内元素的命中坐标会整体偏下。只对该页
+  // 把 minTop 抬到顶栏全高（等价临时关掉本开关），其余页面保持 1.1.9 几何。
+  private topBarPinnedForPage: boolean = false;
+  private topBarPinnedUrl: string = '';
   // 地址栏编辑态（MobileBrowserOverlay 同步）：编辑时控件被钉住，上滑兜底让位。
   @StorageLink('auraAddressEditing') addressEditing: boolean = false;
   // “滚动时隐藏底部栏”（dock）：默认开（两栏跟手同收）；关掉后 dock 常驻，
@@ -840,6 +844,27 @@ struct AuraShell {
     this.applyDockViewportInset();
   }
 
+  // 页面位置探针回报：只在「滚不动」的页面上钉住顶栏。同一页内只许钉住、
+  // 不许放开 —— 页面高度在加载/滚动中会变，反复重发 setBrowserControls 会让
+  // 页面瞬移；换页（url 变化）才允许解除。
+  private updatePageTopBarPin(url: string, scrollable: number, scrollY: number): void {
+    // 只采信页面停在顶部时的读数：顶栏收起会改变 innerHeight，滚动停下时
+    // 量到的文档余量偏小，会把知乎这类正常页面误判成「滚不动」。
+    const pin: boolean = scrollable === 0 && scrollY === 0;
+    const samePage: boolean = url.length > 0 && url === this.topBarPinnedUrl;
+    if (samePage && this.topBarPinnedForPage && !pin) {
+      return;
+    }
+    if (url.length > 0) {
+      this.topBarPinnedUrl = url;
+    }
+    if (this.topBarPinnedForPage === pin) {
+      return;
+    }
+    this.topBarPinnedForPage = pin;
+    this.sendBrowserControls();
+  }
+
   // 把顶栏的 browser controls（高度 + 收起许可）发给引擎：启动、设置开关
   // 切换、启动后的兜底重发共用这一份。
   private sendBrowserControls(): void {
@@ -861,7 +886,7 @@ struct AuraShell {
     if (this.homeStyle === 'chrome') {
       if (this.dockPosition === 'top') {
         const top = CHROME_DOCK_EXTENT_VP + topSafe;
-        const collapsing: boolean = this.hideTopBarOnScroll;
+        const collapsing: boolean = this.hideTopBarOnScroll && !this.topBarPinnedForPage;
         // 同简约分支——「上滑时隐藏状态栏」关着时收起下限=topSafe，
         // 收起后网页停在状态栏底（那一条由外壳常驻垫底显示页面底色）。
         this.executeBrowserCommand({
@@ -892,7 +917,7 @@ struct AuraShell {
       return;
     }
     const top = TOP_BAR_EXTENT_VP + topSafe;
-    const collapsing: boolean = this.hideTopBarOnScroll;
+    const collapsing: boolean = this.hideTopBarOnScroll && !this.topBarPinnedForPage;
     const immersive: boolean = this.hideStatusBarOnScroll;
     const minTop: number = collapsing ? (immersive ? 0 : topSafe) : top;
     this.executeBrowserCommand({
@@ -903,7 +928,7 @@ struct AuraShell {
     });
     this.executeBrowserCommand({
       command: 'setBrowserControlsState',
-      state: this.hideTopBarOnScroll ? 'both' : 'shown',
+      state: collapsing ? 'both' : 'shown',
       animate: true
     });
   }
@@ -2334,6 +2359,11 @@ struct AuraShell {
   private backRequestId: number = 0;
 
   private handleRuntimeEvent(event: BrowserRuntimeEvent): void {
+    // 页面位置探针：只在「滚不动」的页面上钉住顶栏，修页内按钮命中偏下；
+    // 可滚动页面（知乎/搜狐/贴吧等）的几何一律保持 1.1.9。
+    if (event.event === 'pageScrollSettled' || event.event === 'pageContinuation') {
+      this.updatePageTopBarPin(event.url ?? '', event.scrollable ?? 1, event.scrollY ?? 0);
+    }
     // The page had first refusal on the back gesture and did not take it, so
     // the tab goes back after all. An answer to an older request is ignored:
     // the reader may have pressed back twice before the first one came.
