@@ -389,6 +389,9 @@ export struct MobileBrowserOverlay {
   // 简约底栏 dock / Chrome 风格 dock 均有 ⋮ 菜单槽位）。
   // “滚动时隐藏地址栏”：dockRatio() 用它判断组合（常驻地址栏时 dock 走触摸）。
   @StorageLink('auraHideTopBarOnScroll') hideTopBarOnScroll: boolean = true;
+  // 该页被判为「滚不动」时 AuraShell 置位：与手动关掉上面的开关同一档，
+  // 顶栏比例下限、dock 取值都必须跟着切，否则顶栏与页面各用一套基准。
+  @StorageLink('auraTopBarPinnedForPage') topBarPinnedForPage: boolean = false;
   // 「地址栏常驻 + 收起 dock」组合：引擎比例被锁死，dock 改由 AuraShell 的
   // 触摸观察层驱动（1 = 全显）。见 AuraShell.onDockObserverTouch。
   @StorageLink('auraTouchDockRatio') touchDockRatio: number = 1;
@@ -1588,8 +1591,12 @@ export struct MobileBrowserOverlay {
     return Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 1) : 1;
   }
 
+  private isTopBarCollapsing(): boolean {
+    return this.hideTopBarOnScroll && !this.topBarPinnedForPage;
+  }
+
   private topBarRatioFloor(): number {
-    if (!this.hideTopBarOnScroll || this.hideStatusBarOnScroll || this.topSafeVp <= 0) {
+    if (!this.isTopBarCollapsing() || this.hideStatusBarOnScroll || this.topSafeVp <= 0) {
       return 0;
     }
     return this.topSafeVp / (TOP_BAR_EXTENT_VP + this.topSafeVp);
@@ -2684,7 +2691,7 @@ export struct MobileBrowserOverlay {
       return 1;
     }
     // 引擎不产比例（页面不滚动）时，外壳用触摸直接收放 dock 并置这一位。
-    if (!this.hideTopBarOnScroll || this.swipeDockRatioOn) {
+    if (!this.isTopBarCollapsing() || this.swipeDockRatioOn) {
       const touch: number = Number.isFinite(this.touchDockRatio) ? this.touchDockRatio : 1;
       return Math.min(Math.max(touch, 0), 1);
     }

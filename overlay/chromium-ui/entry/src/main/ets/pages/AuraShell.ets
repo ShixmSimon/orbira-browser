@@ -175,9 +175,11 @@ struct AuraShell {
   // 滚动时隐藏地址栏（设置-外观）：默认开；关掉时 minTop 抬到顶栏全高，
   // 顶栏常显、不随滚动收起（引擎把 ratio 锁在 1）。
   @StorageLink('auraHideTopBarOnScroll') @Watch('onHideTopBarPrefChanged') hideTopBarOnScroll: boolean = true;
-  // 页面滚不动时顶栏永远收不起来，页内元素的命中坐标会整体偏下。只对该页
-  // 把 minTop 抬到顶栏全高（等价临时关掉本开关），其余页面保持 1.1.9 几何。
-  private topBarPinnedForPage: boolean = false;
+  // 页面滚不动时顶栏永远收不起来，页内元素的命中坐标会整体偏下。该页必须
+  // 与「设置里手动关掉本开关」走完全相同的路径：只抬 minTop 会留下「开关开着
+  // 但地址栏不藏」的混合态，视口内距少让出一条顶栏高度，底部内容被切。
+  // 放进 AppStorage 是为了让顶栏组件也读到同一个有效状态。
+  @StorageLink('auraTopBarPinnedForPage') @Watch('onPageTopBarPinChanged') topBarPinnedForPage: boolean = false;
   private topBarPinnedUrl: string = '';
   // 地址栏编辑态（MobileBrowserOverlay 同步）：编辑时控件被钉住，上滑兜底让位。
   @StorageLink('auraAddressEditing') addressEditing: boolean = false;
@@ -361,6 +363,8 @@ struct AuraShell {
   private savedTabsChecked: boolean = false;
 
   aboutToAppear(): void {
+    // 按页顶栏常显档是会话内的临时状态，冷启动一律从「未钉住」起。
+    AppStorage.setOrCreate('auraTopBarPinnedForPage', false);
     this.startKnockShare();
     this.useSystemDownloadDirectory();
     this.readCrashReport();
@@ -828,7 +832,7 @@ struct AuraShell {
     if (this.swipeDockTaken) {
       this.releaseSwipeDock();
     }
-    if (!this.hideTopBarOnScroll) {
+    if (!this.isTopBarCollapsing()) {
       // 刚切入「地址栏常驻」：dock 的触摸驱动从当前可见度续上，避免跳变。
       const seeded: number = Math.min(Math.max(this.scrolledRatio, 0), 1);
       this.touchDockHidden = (1 - seeded) * Math.max(1,
@@ -844,9 +848,22 @@ struct AuraShell {
     this.applyDockViewportInset();
   }
 
-  // 页面位置探针回报：只在「滚不动」的页面上钉住顶栏。同一页内只许钉住、
-  // 不许放开 —— 页面高度在加载/滚动中会变，反复重发 setBrowserControls 会让
-  // 页面瞬移；换页（url 变化）才允许解除。
+  // 「有效」隐藏开关：页面被钉住时取 false，与设置里手动关开关完全同档。
+  // 几何、内距、触摸驱动一律读这里，不允许直接读 hideTopBarOnScroll，
+  // 否则就会出现「引擎以为常显、外壳仍按可收起」的混合态。
+  private isTopBarCollapsing(): boolean {
+    return this.hideTopBarOnScroll && !this.topBarPinnedForPage;
+  }
+
+  // 钉住状态翻转 = 手动切了一次设置开关：browser controls、dock 交还、
+  // 收起标志、视口内距整套重算。少算任何一项，页面底部都会少让出顶栏高度。
+  private onPageTopBarPinChanged(): void {
+    this.onHideTopBarPrefChanged();
+  }
+
+  // 页面位置探针回报：只在「滚不动」的页面上把顶栏切到常显档。同一页内只许
+  // 钉住、不许放开 —— 页面高度在加载/滚动中会变，反复重发控件会让页面瞬移；
+  // 换页（url / 标签变化）由状态快照回调解除。
   private updatePageTopBarPin(url: string, scrollable: number, scrollY: number): void {
     // 只采信页面停在顶部时的读数：顶栏收起会改变 innerHeight，滚动停下时
     // 量到的文档余量偏小，会把知乎这类正常页面误判成「滚不动」。
@@ -861,8 +878,8 @@ struct AuraShell {
     if (this.topBarPinnedForPage === pin) {
       return;
     }
+    // @Watch 负责把整套几何重算一遍（等价于手动切开关）。
     this.topBarPinnedForPage = pin;
-    this.sendBrowserControls();
   }
 
   // 把顶栏的 browser controls（高度 + 收起许可）发给引擎：启动、设置开关
@@ -886,7 +903,7 @@ struct AuraShell {
     if (this.homeStyle === 'chrome') {
       if (this.dockPosition === 'top') {
         const top = CHROME_DOCK_EXTENT_VP + topSafe;
-        const collapsing: boolean = this.hideTopBarOnScroll && !this.topBarPinnedForPage;
+        const collapsing: boolean = this.isTopBarCollapsing();
         // 同简约分支——「上滑时隐藏状态栏」关着时收起下限=topSafe，
         // 收起后网页停在状态栏底（那一条由外壳常驻垫底显示页面底色）。
         this.executeBrowserCommand({
@@ -917,7 +934,7 @@ struct AuraShell {
       return;
     }
     const top = TOP_BAR_EXTENT_VP + topSafe;
-    const collapsing: boolean = this.hideTopBarOnScroll && !this.topBarPinnedForPage;
+    const collapsing: boolean = this.isTopBarCollapsing();
     const immersive: boolean = this.hideStatusBarOnScroll;
     const minTop: number = collapsing ? (immersive ? 0 : topSafe) : top;
     this.executeBrowserCommand({
@@ -991,7 +1008,7 @@ struct AuraShell {
     if (this.homeStyle === 'chrome' && this.dockPosition === 'bottom') {
       return this.hideStatusBarOnScroll ? 0 : topSafe;   // 底置沿用 1.0.111 的常量
     }
-    if (!this.hideTopBarOnScroll) {
+    if (!this.isTopBarCollapsing()) {
       return TOP_BAR_EXTENT_VP + topSafe;
     }
     return this.hideStatusBarOnScroll ? 0 : topSafe;
@@ -1015,7 +1032,7 @@ struct AuraShell {
     let bottom: number;
     if (this.homeStyle === 'chrome') {
       if (this.dockPosition === 'bottom') {
-        const dockCover: number = this.hideTopBarOnScroll ? 0 : dockCoveredHeightVp(bottomSafe);
+        const dockCover: number = this.isTopBarCollapsing() ? 0 : dockCoveredHeightVp(bottomSafe);
         bottom = dockCover + (this.hideStatusBarOnScroll ? 0 : topSafe);
       } else {
         bottom = this.topBarPushVp();
@@ -1065,7 +1082,7 @@ struct AuraShell {
       // 底置不靠这个标志（applyDockViewportInset 已直接给 topSafe）。
       return false;
     }
-    if (!this.hideTopBarOnScroll || this.hideStatusBarOnScroll) {
+    if (!this.isTopBarCollapsing() || this.hideStatusBarOnScroll) {
       return false;
     }
     const topSafe = Number(AppStorage.get('auraTopSafeVp') ?? 0);
@@ -1092,7 +1109,7 @@ struct AuraShell {
   private touchDockRatioValue: number = 1;
 
   private touchDockModeActive(): boolean {
-    return this.isMobilePhoneUi() && !this.hideTopBarOnScroll &&
+    return this.isMobilePhoneUi() && !this.isTopBarCollapsing() &&
       this.hideDockOnScroll && !this.isNewTabPage();
   }
 
@@ -1158,7 +1175,7 @@ struct AuraShell {
 
   private touchChromeBottomActive(): boolean {
     return this.isMobilePhoneUi() && this.homeStyle === 'chrome' &&
-      this.dockPosition === 'bottom' && this.hideTopBarOnScroll &&
+      this.dockPosition === 'bottom' && this.isTopBarCollapsing() &&
       !this.addressEditing && !this.isNewTabPage() &&
       !this.homeHold && !this.homeReturnCover;
   }
@@ -1242,7 +1259,7 @@ struct AuraShell {
   private swipeDockTravel: number = 1;        // 收起行程（vp）
 
   private swipeControlsActive(): boolean {
-    return this.isMobilePhoneUi() && this.hideTopBarOnScroll && !this.addressEditing &&
+    return this.isMobilePhoneUi() && this.isTopBarCollapsing() && !this.addressEditing &&
       !this.isNewTabPage() && !this.homeHold && !this.homeReturnCover;
   }
 
@@ -1301,7 +1318,7 @@ struct AuraShell {
       // 分母与 MobileBrowserOverlay 的顶栏 floor 保持一致。
       const topSafe: number = Number(AppStorage.get('auraTopSafeVp') ?? 0);
       const floor: number =
-        (!this.hideTopBarOnScroll || this.hideStatusBarOnScroll || topSafe <= 0)
+        (!this.isTopBarCollapsing() || this.hideStatusBarOnScroll || topSafe <= 0)
           ? 0 : topSafe / (TOP_BAR_EXTENT_VP + topSafe);
       const rawRatio: number =
         Number.isFinite(this.scrolledRatio) ? this.scrolledRatio : 1;
@@ -1712,7 +1729,16 @@ struct AuraShell {
           }
           const wasNewTab: boolean = this.isNewTabPage();
           const prevUrl: string = this.browserState.url;
+          const prevTabIndex: number = this.browserState.activeTabIndex ?? -1;
           this.browserState = state;
+          // 换页/换标签：解除上一页的顶栏常显档，别把「关了隐藏开关」带到新页。
+          // @Watch 会把内距、dock 与 browser controls 整套重算回 1.1.9。
+          if (this.topBarPinnedForPage &&
+            ((state.url ?? '') !== prevUrl ||
+              (state.activeTabIndex ?? -1) !== prevTabIndex)) {
+            this.topBarPinnedUrl = '';
+            this.topBarPinnedForPage = false;
+          }
           // 关掉重复主页标签后，等标签数真的回落再放开徽标：否则会先显示
           // 恢复后的「多一个」数量，再跳回实际数量。
           if (this.badgeWaitForCount >= 0 &&
