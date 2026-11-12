@@ -588,6 +588,28 @@ void ClearPageSiteData(const ShellCommandContext& context,
   // nothing while the settings page's BrowsingDataRemover path worked.
   auto* contents = PageForInfo(context, command, false);
   if (!contents) {
+    // The panel's tabId comes from a cache the shell fills from state pushes,
+    // so it can be missing or stale while the page the user is looking at is
+    // right here. Fall back to the active tab -- but only when the command
+    // names the origin it means, so a stale tabId can never clear a site the
+    // user did not ask for.
+    auto* active = context.browser
+                       ? context.browser->GetTabStripModel()->GetActiveWebContents()
+                       : nullptr;
+    const std::optional<GURL> wanted = ReadOrigin(command);
+    if (active && wanted) {
+      const GURL active_origin =
+          url::Origin::Create(active->GetLastCommittedURL()).GetURL();
+      if (active_origin == *wanted) {
+        contents = active;
+        LOG(WARNING) << "OHOS clear site data: tabId missed, using the active "
+                        "tab for "
+                     << active_origin;
+      }
+    }
+  }
+  if (!contents) {
+    LOG(WARNING) << "OHOS clear site data: no tab matches this window";
     ReplyToShell(context, std::move(reply));
     return;
   }
@@ -598,6 +620,7 @@ void ClearPageSiteData(const ShellCommandContext& context,
   // login lives in Domain cookies -- e.g. ".baidu.com" -- survives it. Chain
   // a second pass with a URL-matching filter, which catches the domain
   // cookies the first pass skips, then report once both have landed.
+  LOG(WARNING) << "OHOS clear site data: start for " << origin;
   contents->GetPrimaryMainFrame()->GetStoragePartition()->ClearDataForOrigin(
       content::StoragePartition::REMOVE_DATA_MASK_ALL, origin,
       base::BindOnce(
@@ -609,8 +632,14 @@ void ClearPageSiteData(const ShellCommandContext& context,
                           ->GetCookieManagerForBrowserProcess()
                     : nullptr;
             if (!cookie_manager) {
+              // Still reload: the storage is gone either way, and a page left
+              // showing the old signed-in state reads as "it did not work".
               LOG(WARNING) << "OHOS clear site data: no cookie manager for "
                            << url;
+              if (contents) {
+                contents->GetController().Reload(content::ReloadType::NORMAL,
+                                                 /*check_for_repost=*/false);
+              }
               return;
             }
             network::mojom::CookieDeletionFilterPtr filter =

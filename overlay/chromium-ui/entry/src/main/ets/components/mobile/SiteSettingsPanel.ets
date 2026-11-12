@@ -186,14 +186,14 @@ export struct SiteSettingsPanel {
           // ① 权限 / 站点设置（按 origin 字符串）。
           this.onCommand({ command: 'resetSiteSettings', origin: this.origin });
           // ② 站点存储（cookie / localStorage / IndexedDB / CacheStorage…）：
-          //    引擎 clearPageSiteData 按 tabId 定位当前标签、取它的 origin 清理
-          //    （REMOVE_DATA_MASK_ALL），state 里没有 navigationId，tabId 从
-          //    AppStorage 的 auraActiveTabId 来（MBO 随状态推送写入）。旧引擎
-          //    不认这条命令时会静默忽略，不影响 ①。
+          //    引擎 clearPageSiteData 取它的 origin 清理（REMOVE_DATA_MASK_ALL）
+          //    再按 url 补删 domain cookie，最后重载页面。origin 一定要带上：
+          //    tabId 来自 auraActiveTabId 这个状态推送缓存，可能还没写进来或是
+          //    旧值，引擎认不出标签时会拿 origin 核对活动标签再决定要不要清——
+          //    所以这里不做「tabId 为空就不发」的门禁，否则一次静默跳过就是
+          //    数据没清、页面没刷新，看起来和没点一样。
           const tabId: string = (AppStorage.get('auraActiveTabId') as string) ?? '';
-          if (tabId.length > 0) {
-            this.onCommand({ command: 'clearPageSiteData', tabId: tabId });
-          }
+          this.onCommand({ command: 'clearPageSiteData', tabId: tabId, origin: this.origin });
           this.onBack();
         }
       }
