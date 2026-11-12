@@ -644,7 +644,33 @@ void ClearPageSiteData(const ShellCommandContext& context,
             }
             network::mojom::CookieDeletionFilterPtr filter =
                 network::mojom::CookieDeletionFilter::New();
-            filter->url = url;
+            // A url filter goes through CanonicalCookie::IncludeForRequestURL,
+            // which answers "would this cookie be sent with such a request?".
+            // A cookie marked SameSite=Lax or Strict is not sent on a
+            // cross-site request, so it is reported as no match and kept --
+            // which is every login cookie of a Discuz forum: club.honor.com
+            // keeps its session in SameSite=Lax, HttpOnly a3ps_2132_auth and
+            // friends, and the url pass deleted none of them while deleting
+            // 24 SameSite=None cookies of a Bing page.
+            //
+            // Name the domains instead: that matches on where the cookie is
+            // stored, not on whether it would travel with a request. The
+            // site's own parent goes in as well, because a page on
+            // www.example.com can keep its login in a .example.com cookie and
+            // a host-only match would leave that one behind. One level up
+            // only -- browsers refuse to store cookies on a public suffix, so
+            // this cannot reach into a neighbour's.
+            const std::string host{url.host()};
+            std::vector<std::string> domains{host};
+            const size_t first_dot = host.find('.');
+            if (first_dot != std::string::npos) {
+              const std::string parent = host.substr(first_dot + 1);
+              if (parent.find('.') != std::string::npos) {
+                domains.push_back(parent);
+              }
+            }
+            LOG(WARNING) << "OHOS clear site data: domains=" << host;
+            filter->including_domains = std::move(domains);
             cookie_manager->DeleteCookies(
                 std::move(filter),
                 base::BindOnce(
