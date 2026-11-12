@@ -37,6 +37,11 @@ constexpr base::TimeDelta kScrollSettleDelay = base::Milliseconds(300);
 // -- the position is restored anyway rather than never.
 constexpr base::TimeDelta kRestoreFallbackDelay = base::Seconds(4);
 
+// A moment later than the load event, so pages that fill in their content
+// from script have laid out before their scrollability is judged. Reading
+// too early reported a normal feed as "cannot scroll" and pinned its bar.
+constexpr base::TimeDelta kLoadProbeDelay = base::Milliseconds(600);
+
 // Both numbers the shell needs, in CSS pixels, read from the document rather
 // than from the compositor: the compositor's copy of the scroll offset is
 // marked "only sent during tests" and its document size is compiled in for
@@ -48,6 +53,31 @@ constexpr char16_t kReadPositionScript[] =
     uR"(JSON.stringify({
       scrollX: Math.round(window.scrollX),
       scrollY: Math.round(window.scrollY),
+      // 1 = the page can scroll (so the reader can collapse the top bar),
+      // 0 = it cannot, either because the document fits the viewport or a
+      // modal has locked scrolling. Reported to the shell, which pins the
+      // top bar on such a page; the engine itself changes no geometry here.
+      scrollable: (function() {
+        try {
+          // While the document is still filling in, say "scrollable" -- a
+          // half-built page must never pin the top bar.
+          if (document.readyState !== 'complete') { return 1; }
+          var de = document.documentElement;
+          var b = document.body;
+          var root = de || b;
+          if (!root) { return 1; }
+          var cs = window.getComputedStyle(root);
+          var bs = b ? window.getComputedStyle(b) : null;
+          if (cs.overflowY === 'hidden' || cs.overflow === 'hidden' ||
+              (bs && (bs.overflowY === 'hidden' || bs.overflow === 'hidden'))) {
+            return 0;
+          }
+          var h = Math.max(de ? de.scrollHeight : 0, b ? b.scrollHeight : 0);
+          var v = window.innerHeight || (de ? de.clientHeight : 0);
+          return (h - v > 24) ? 1 : 0;
+        } catch (err) {}
+        return 1;
+      })(),
       pageWidth: Math.round(Math.max(
           document.documentElement ? document.documentElement.scrollWidth : 0,
           document.body ? document.body.scrollWidth : 0)),
@@ -107,6 +137,15 @@ class PagePositionWatcher
                     const blink::WebInputEvent& event,
                     InputEventSource source) override {
     switch (event.GetType()) {
+      case blink::WebInputEvent::Type::kGestureTap:
+        // A modal opened by a tap often locks page scrolling. Re-read the
+        // page state once it has had time to appear, without touching the
+        // restore bookkeeping below (a tap is not the reader scrolling).
+        probe_timer_.Start(
+            FROM_HERE, kScrollSettleDelay,
+            base::BindOnce(&PagePositionWatcher::ReportSettled,
+                           weak_factory_.GetWeakPtr()));
+        return;
       case blink::WebInputEvent::Type::kGestureScrollUpdate:
       case blink::WebInputEvent::Type::kGestureScrollEnd:
       case blink::WebInputEvent::Type::kMouseWheel:
@@ -134,11 +173,18 @@ class PagePositionWatcher
 
   void PrimaryPageChanged(content::Page& page) override {
     settle_timer_.Stop();
+    probe_timer_.Stop();
     StartWatchingInput();
   }
 
   void DocumentOnLoadCompletedInPrimaryMainFrame() override {
     ApplyRestore();
+    // A page that cannot scroll never produces a scroll-settled event, so
+    // report its state after load instead of waiting for a gesture that will
+    // never come. Delayed so script-built pages have finished laying out.
+    probe_timer_.Start(FROM_HERE, kLoadProbeDelay,
+                       base::BindOnce(&PagePositionWatcher::ReportSettled,
+                                      weak_factory_.GetWeakPtr()));
   }
 
   void WebContentsDestroyed() override { StopWatchingInput(); }
@@ -224,6 +270,7 @@ class PagePositionWatcher
 
   raw_ptr<content::RenderWidgetHost> watched_ = nullptr;
   base::OneShotTimer settle_timer_;
+  base::OneShotTimer probe_timer_;
   base::OneShotTimer restore_fallback_;
   std::optional<double> restore_ratio_;
   bool reader_has_scrolled_ = false;
