@@ -19,6 +19,7 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { inputMethod } from '@kit.IMEKit';
 import { ShellUiPrefs } from '../utils/appearance/ShellUiPrefs';
+import { isNewTabUrl } from '../utils/NewTabUrl';
 import { SearchEnginesPrefs } from '../utils/appearance/SearchEnginesPrefs';
 import { IncognitoSwitch, SavedTab } from '../utils/IncognitoSwitch';
 import { WebWindow, PictureInPictureSurface } from 'engine';
@@ -115,16 +116,9 @@ const KEYBOARD_INSET_EXTRA_VP: number = 85;
 // 由引擎侧 gutter 色兜底，深色下与页面底色一致，观感等价硬切。
 const HISTORY_NAV_COVER_HOME_ONLY: boolean = true;
 
-// 引擎原生新标签页的几种 URL 形态。引擎自己 newTab 用的是 chrome://newtab/
-// （aura_shell_runtime_bridge.cc 里 NavigateOnUiThread(GURL("chrome://newtab/"))），
-// 但 Chromium 的 WebUI 别名、以及部分版本用的 chrome-native:// 都可能出现——
-// 与 MobileBrowserOverlay.isNewTabUrl 保持同一份判据（历史上两边只认了一种，
-// 引擎换一种写法就会「盖不住原生新标签页」）。
-function isNewTabUrl(url: string): boolean {
-  return url.startsWith('chrome://newtab') ||
-    url.startsWith('chrome://new-tab-page') ||
-    url.startsWith('chrome-native://newtab');
-}
+// 判据统一放在 ../utils/NewTabUrl：主页层、顶栏、扩展面板共用一份。
+// 注意本文件里的 backUrl/forwardUrl 为空表示「没有历史条目」，不能按主页
+// 处理；共享函数只判 URL 形态，空串语义留给调用方。
 
 const EMPTY_BROWSER_STATE: BrowserStateSnapshot = {
   version: 1,
@@ -298,6 +292,8 @@ struct AuraShell {
   private homeReturnTimer: number = -1;
   @State private navCover: boolean = false;
   private navCoverTimer: number = -1;
+  // 主页态判定的诊断摘要：只在关键位变化时打一条，避免状态快照高频刷屏。
+  private ntpDiagKey: string = '';
   // 起防那一刻的 url：只有 url 离开了它，才算新页面已切换过来（主页键从某个
   // 网页跳自定义主页时，起防瞬间 url 本来就不是 newtab，必须靠这个判据）。
   private navCoverFromUrl: string = '';
@@ -865,6 +861,14 @@ struct AuraShell {
   // 钉住、不许放开 —— 页面高度在加载/滚动中会变，反复重发控件会让页面瞬移；
   // 换页（url / 标签变化）由状态快照回调解除。
   private updatePageTopBarPin(url: string, scrollable: number, scrollY: number): void {
+    // 新标签页本来就没有可滚动内容，会被探针报成「滚不动」；钉住顶栏
+    // 会把它带进网页态几何，主页底部处理就变了。
+    if (this.isNewTabPage() || isNewTabUrl(url)) {
+      if (this.topBarPinnedForPage) {
+        this.topBarPinnedForPage = false;
+      }
+      return;
+    }
     // 只采信页面停在顶部时的读数：顶栏收起会改变 innerHeight，滚动停下时
     // 量到的文档余量偏小，会把知乎这类正常页面误判成「滚不动」。
     const pin: boolean = scrollable === 0 && scrollY === 0;
@@ -1731,6 +1735,18 @@ struct AuraShell {
           const prevUrl: string = this.browserState.url;
           const prevTabIndex: number = this.browserState.activeTabIndex ?? -1;
           this.browserState = state;
+          const ntpNow: boolean = this.isNewTabPage();
+          const diagKey: string = (state.url ?? '') + '|' + String(state.loading) +
+            '|' + String(ntpNow) + '|' + String(this.homeHold) + '|' +
+            String(this.navCover) + '|' + String(this.homeSurfaceVisible());
+          if (diagKey !== this.ntpDiagKey) {
+            this.ntpDiagKey = diagKey;
+            hilog.info(0x0000, 'NtpCover',
+              'state url=%{public}s loading=%{public}s ntp=%{public}s hold=%{public}s cover=%{public}s homeVisible=%{public}s',
+              state.url ?? '', String(state.loading), String(ntpNow),
+              String(this.homeHold), String(this.navCover),
+              String(this.homeSurfaceVisible()));
+          }
           // 换页/换标签：解除上一页的顶栏常显档，别把「关了隐藏开关」带到新页。
           // @Watch 会把内距、dock 与 browser controls 整套重算回 1.1.9。
           if (this.topBarPinnedForPage &&
@@ -1788,9 +1804,10 @@ struct AuraShell {
           }
         if (this.homeHold) {
           if (this.isNewTabPage()) {
-            if (this.homeHoldSawLoading) {
-              this.releaseHomeHold(true);
-            }
+            // 停加载/历史导航回落到新标签页时可能一次 loading 都没报过；
+            // 只要引擎确实停在 NTP 就立刻撤掉淡出，别让透明的主页层
+            // 露出引擎原生磁贴页。
+            this.releaseHomeHold(true);
           } else if (state.loading) {
             this.homeHoldSawLoading = true;
           } else if (this.homeHoldSawLoading) {
@@ -1865,7 +1882,7 @@ struct AuraShell {
             .width('100%')
             .height('100%')
             .visibility(this.homeSurfaceVisible() ? Visibility.Visible : Visibility.None)
-            .opacity(this.homeHold ? 0 : 1)
+            .opacity(this.homeHold && !this.isNewTabPage() ? 0 : 1)
             // 不能用 .animation()：它对按住/放开一视同仁，回主页会多一次淡入。
             // 淡出由 holdHomeForPaint() 的 animateTo 显式驱动，放开瞬时生效。
             // 淡出期间不吃触摸，避免点击落到旧主页。
@@ -3403,13 +3420,19 @@ struct AuraShell {
     if (this.popupHomeHold > 0) {
       return false;
     }
+    // 引擎确实停在新标签页时主页层必须在场，且不能被转场状态藏掉：
+    // 少挂一帧就会露出引擎的原生磁贴页。回主页、前进后退、停止加载
+    // 都靠这一条收口，不再让 navCover 的判定参与主页态。
+    if (this.isNewTabPage()) {
+      return true;
+    }
     if (this.homeHold || this.homeReturnCover) {
       return true;
     }
     if (this.navCover && !this.navCoverHistoryNav) {
       return false;
     }
-    return this.isNewTabPage();
+    return false;
   }
 
   // 主页层缺席时是否要铺同色底。native popup 让位期间不铺，避免盖住 popup。

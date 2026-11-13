@@ -1400,6 +1400,16 @@ BrowserTargetState BuildBrowserTargetState(gfx::AcceleratedWidget widget,
   return target;
 }
 
+// The engine's own new-tab-page URL shapes. The shell uses the same set to
+// decide whether it must draw its own home surface, so both sides have to
+// agree on what counts as "home".
+bool IsAuraShellNewTabUrl(const GURL& url) {
+  const std::string_view spec = url.possibly_invalid_spec();
+  return spec.starts_with("chrome://newtab") ||
+         spec.starts_with("chrome://new-tab-page") ||
+         spec.starts_with("chrome-native://newtab");
+}
+
 // The URL as the shell sees it. The state is rebuilt, serialised and compared
 // on the UI thread up to ten times a second, so its cost is paid in touch
 // latency: one 137 KB data: URL made each rebuild take 25 ms (48 ms worst)
@@ -3515,7 +3525,22 @@ std::string BuildBrowserStateJson(std::string_view ui_family,
   EnsureShellServices(browser->GetProfile());
   content::WebContents* active = tabs->GetActiveWebContents();
   if (active) {
-    const GURL url = active->GetVisibleURL();
+    GURL url = active->GetVisibleURL();
+    // Cancelling a load (the shell's "stop" command) can leave GetVisibleURL()
+    // reporting the abandoned destination while the frame already shows the
+    // last committed page - usually the engine's own new tab page. The shell
+    // then treats the tab as a web page and drops its home surface, exposing
+    // the engine's tile grid. Only correct the report in this narrow case:
+    // idle, committed page is a new tab page, visible URL is not. During a
+    // normal load GetVisibleURL() is still used, so the address bar keeps
+    // showing the destination as soon as the user navigates.
+    const GURL committed = active->GetLastCommittedURL();
+    if (!active->IsLoading() && IsAuraShellNewTabUrl(committed) &&
+        !IsAuraShellNewTabUrl(url)) {
+      LOG(WARNING) << "OHOS state url corrected: visible=" << UrlForLog(url)
+                   << " committed=" << UrlForLog(committed);
+      url = committed;
+    }
     state.Set("bookmarked", IsUrlBookmarked(browser->GetProfile(), url));
     const std::string visible_url = ShellVisibleUrl(url);
     state.Set("url", visible_url);
@@ -4207,7 +4232,16 @@ class BrowserStateWatcher : public TabStripModelObserver,
 
   // content::WebContentsObserver, for the active tab:
   void DidStartLoading() override { RequestBrowserStateUpdate(); }
-  void DidStopLoading() override { RequestBrowserStateUpdate(); }
+  void DidStopLoading() override {
+    content::WebContents* contents = web_contents();
+    if (contents &&
+        contents->GetVisibleURL() != contents->GetLastCommittedURL()) {
+      LOG(WARNING) << "OHOS did stop loading: visible="
+                   << UrlForLog(contents->GetVisibleURL())
+                   << " committed=" << UrlForLog(contents->GetLastCommittedURL());
+    }
+    RequestBrowserStateUpdate();
+  }
   void LoadProgressChanged(double progress) override {
     RequestBrowserStateUpdate();
   }
