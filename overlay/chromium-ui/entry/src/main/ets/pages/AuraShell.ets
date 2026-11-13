@@ -198,8 +198,6 @@ struct AuraShell {
 
   private onPopupHomeHoldChanged(): void {
     hilog.info(0x0000, 'ExtPanel', 'popupHomeHold -> %{public}d', this.popupHomeHold);
-    hilog.info(0x0000, 'NtpCover', 'popupHomeHold=%{public}d homeVisible=%{public}s',
-      this.popupHomeHold, String(this.homeSurfaceVisible()));
     if (this.popupHomeHold > 0) {
       // 让位时刻 = 转场结束、popup 已上屏：撤掉跳转遮盖，弹窗即可见。
       if (this.extensionJumpCover > 0) {
@@ -295,8 +293,6 @@ struct AuraShell {
   private homeReturnTimer: number = -1;
   @State private navCover: boolean = false;
   private navCoverTimer: number = -1;
-  // 主页态判定的诊断摘要：只在关键位变化时打一条，避免状态快照高频刷屏。
-  private ntpDiagKey: string = '';
   // 起防那一刻的 url：只有 url 离开了它，才算新页面已切换过来（主页键从某个
   // 网页跳自定义主页时，起防瞬间 url 本来就不是 newtab，必须靠这个判据）。
   private navCoverFromUrl: string = '';
@@ -492,8 +488,6 @@ struct AuraShell {
     this.homeTransitionFromUrl = this.browserState.url ?? '';
     this.homeTransitionFromTabIndex = this.browserState.activeTabIndex ?? -1;
     this.navCoverFadeMs = 100;
-    hilog.info(0x0000, 'NtpCover', 'transition begin waits=%{public}s from=%{public}s',
-      String(waitsLoading), this.homeTransitionFromUrl);
     if (this.homeTransitionGraceTimer >= 0) {
       clearTimeout(this.homeTransitionGraceTimer);
       this.homeTransitionGraceTimer = -1;
@@ -539,8 +533,6 @@ struct AuraShell {
   }
 
   private releaseHomeTransition(): void {
-    hilog.info(0x0000, 'NtpCover', 'transition release waits=%{public}s',
-      String(this.homeTransitionWaitsLoading));
     // 同 releaseNavCover：落到主页时不要白纱淡出（主页自带放大进场）。
     if (this.isNewTabPage()) {
       this.navCoverFadeMs = 0;
@@ -650,10 +642,6 @@ struct AuraShell {
           this.beginHomeTransition(discarded);
         }
       }
-      hilog.info(0x0000, 'NtpCover',
-        'activateTab id=%{public}s idx=%{public}d hit=%{public}s discarded=%{public}s fromHome=%{public}s tabs=%{public}d from=%{public}s',
-        requestedId, requestedIndex, String(hit), String(discarded), String(fromHome),
-        tabs.length, this.browserState.url ?? '');
       return;
     }
     if (this.isNewTabPage()) {
@@ -1580,8 +1568,6 @@ struct AuraShell {
     this.startKnockShare();
     // 不能在这里清 popup 让位态：点扩展时先设让位、再收起面板页回到本页，
     // 最后才由引擎弹 popup；清掉会让主页层盖住 popup。只记录状态供排查。
-    hilog.info(0x0000, 'NtpCover', 'pageShow hold=%{public}d homeVisible=%{public}s',
-      this.popupHomeHold, String(this.homeSurfaceVisible()));
   }
 
   onPageHide(): void {
@@ -1612,6 +1598,14 @@ struct AuraShell {
     if (this.homeTransitionGraceTimer >= 0) {
       clearTimeout(this.homeTransitionGraceTimer);
       this.homeTransitionGraceTimer = -1;
+    }
+    if (this.homeHoldGraceTimer >= 0) {
+      clearTimeout(this.homeHoldGraceTimer);
+      this.homeHoldGraceTimer = -1;
+    }
+    if (this.homeControlsTimer >= 0) {
+      clearTimeout(this.homeControlsTimer);
+      this.homeControlsTimer = -1;
     }
     if (this.homeExitInkTimer !== -1) {
       clearTimeout(this.homeExitInkTimer);
@@ -1767,18 +1761,6 @@ struct AuraShell {
           const prevUrl: string = this.browserState.url;
           const prevTabIndex: number = this.browserState.activeTabIndex ?? -1;
           this.browserState = state;
-          const ntpNow: boolean = this.isNewTabPage();
-          const diagKey: string = (state.url ?? '') + '|' + String(state.loading) +
-            '|' + String(ntpNow) + '|' + String(this.homeHold) + '|' +
-            String(this.navCover) + '|' + String(this.homeSurfaceVisible());
-          if (diagKey !== this.ntpDiagKey) {
-            this.ntpDiagKey = diagKey;
-            hilog.info(0x0000, 'NtpCover',
-              'state url=%{public}s loading=%{public}s ntp=%{public}s hold=%{public}s cover=%{public}s homeVisible=%{public}s',
-              state.url ?? '', String(state.loading), String(ntpNow),
-              String(this.homeHold), String(this.navCover),
-              String(this.homeSurfaceVisible()));
-          }
           // 换页/换标签：解除上一页的顶栏常显档，别把「关了隐藏开关」带到新页。
           // @Watch 会把内距、dock 与 browser controls 整套重算回 1.1.9。
           if (this.topBarPinnedForPage &&
@@ -2849,7 +2831,6 @@ struct AuraShell {
     // （@Watch('onPopupHomeHoldChanged') 见 popupHomeHold 声明处）。
     if (event.event === 'extensionPopupClosed') {
       hilog.info(0x0000, 'ExtPanel', 'extensionPopupClosed received, hold -> 0');
-      hilog.info(0x0000, 'NtpCover', 'extensionPopupClosed hold -> 0');
       // 关闭时刻留戳：让位是转场结束后才置位的（ExtensionPanel.runExtension），
       // 置位前要比一下，避免 popup 早关后又被置位、主页层挂到 10 分钟兜底。
       AppStorage.setOrCreate('auraPopupClosedAt', Date.now());
@@ -3498,15 +3479,10 @@ struct AuraShell {
     return false;
   }
 
-  // 主页层缺席时是否要铺同色底。native popup 让位期间不铺，避免盖住 popup。
+  // 主页层缺席时是否要铺同色底。过渡态（离开/返回主页、历史导航落点）铺，盖住
+  // 引擎原生 NTP 磁贴页到首帧的空窗；主页态本身不透明、popup 让位期不铺。
   private needsHomeBackdrop(): boolean {
-    if (this.navCover || this.homeTransition) {
-      return true;
-    }
-    if (this.popupHomeHold > 0) {
-      return false;
-    }
-    return this.isNewTabPage() && !this.homeSurfaceVisible();
+    return this.navCover || this.homeTransition;
   }
 
   // 导航预热层。用 browser_canvas（外壳底同色）铺满，淡出时不会
