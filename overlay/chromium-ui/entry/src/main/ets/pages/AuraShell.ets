@@ -1892,8 +1892,13 @@ struct AuraShell {
           .height('100%')
         // 主页退场时先铺同色垫底盖住引擎清屏到首帧的空窗，再让主页淡出。
         // 顺序固定：垫底在下、HomeSurface 在上，否则淡出露不出垫底。
-        if (this.isMobilePhoneUi() && (this.homeHold || this.isNewTabPage()) &&
-            this.homeSurfaceVisible()) {
+        // 主页态与整个离开/返回过渡期都垫一层不透明同色底：引擎 WebContents
+        // 在主页态显示的是原生 NTP 磁贴页，只要有一帧没垫住就会漏出来。
+        // 不能挂在 homeSurfaceVisible() 上——state 切到目标网址的那一拍它正好
+        // 变 false，正是断档的那一帧。
+        if (this.isMobilePhoneUi() &&
+            (this.homeHold || this.isNewTabPage() || this.homeTransition ||
+              this.navCover || this.homeReturnCover)) {
           Column()
             .width('100%')
             .height('100%')
@@ -3512,7 +3517,12 @@ struct AuraShell {
       .backgroundColor($r('app.color.browser_canvas'))
       // 历史导航用短淡出：切换不该因为过渡动画再等 200ms。值在起防时定，
       // releaseNavCover 不清它，这样淡出这一帧读到的仍是本次起防设定的时长。
-      .transition(TransitionEffect.opacity(0).animation({ duration: this.navCoverFadeMs, curve: Curve.Friction }))
+      // 出现时硬切不透明：双向 opacity 会在插入那一帧淡入，正好露出引擎
+      // 还没换掉的原生 NTP 磁贴。只在移除时淡出。
+      .transition(TransitionEffect.asymmetric(
+        TransitionEffect.opacity(1),
+        TransitionEffect.opacity(0).animation({ duration: this.navCoverFadeMs, curve: Curve.Friction })
+      ))
   }
 
   // 打开已休眠标签的遮盖：复用 browser_canvas 同色底，与 NavCoverView 画法一致，
