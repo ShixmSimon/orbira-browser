@@ -280,6 +280,9 @@ struct AuraShell {
   private homeHoldExtensions: number = 0;
   // 「秒开页」的快速撤防确认（见 onBrowserState 的 homeHold 分支）。
   private homeHoldQuickTimer: number = -1;
+  // 从主页点书签/磁贴后等渲染器上帧的首帧宽限，避免 loading=false 立刻撤防
+  // 露出引擎历史里那张原生 NTP 磁贴页。
+  private homeHoldGraceTimer: number = -1;
   // 离开主页后的 120ms 内顶栏仍按主页态画，与主页 180ms 淡出对齐。
   // homeExitInkTimer 负责同一时刻把状态栏图标色交回主题色。
   @State private homeExitHold: boolean = false;
@@ -1840,7 +1843,9 @@ struct AuraShell {
           } else if (state.loading) {
             this.homeHoldSawLoading = true;
           } else if (this.homeHoldSawLoading) {
-            this.releaseHomeHold();
+            // loading=false 只代表提交完成，渲染器未必已上帧；立刻撤会露出
+            // 引擎历史里那张原生 NTP 磁贴页（点书签 / 主页磁贴）。
+            this.scheduleHomeHoldRelease();
           } else if (this.homeHoldQuickTimer === -1) {
             this.homeHoldQuickTimer = setTimeout((): void => {
               this.homeHoldQuickTimer = -1;
@@ -1848,7 +1853,7 @@ struct AuraShell {
                 return;
               }
               if (!this.browserState.loading) {
-                this.releaseHomeHold();
+                this.scheduleHomeHoldRelease();
                 return;
               }
               const pendingUrl: string = this.browserState.url ?? '';
@@ -1887,7 +1892,8 @@ struct AuraShell {
           .height('100%')
         // 主页退场时先铺同色垫底盖住引擎清屏到首帧的空窗，再让主页淡出。
         // 顺序固定：垫底在下、HomeSurface 在上，否则淡出露不出垫底。
-        if (this.isMobilePhoneUi() && this.homeHold && this.homeSurfaceVisible()) {
+        if (this.isMobilePhoneUi() && (this.homeHold || this.isNewTabPage()) &&
+            this.homeSurfaceVisible()) {
           Column()
             .width('100%')
             .height('100%')
@@ -3325,6 +3331,10 @@ struct AuraShell {
       clearTimeout(this.homeHoldQuickTimer);
       this.homeHoldQuickTimer = -1;
     }
+    if (this.homeHoldGraceTimer !== -1) {
+      clearTimeout(this.homeHoldGraceTimer);
+      this.homeHoldGraceTimer = -1;
+    }
     this.armHomeHoldTimer(8000);
     // 顶部装饰（状态栏/地址栏）跟着主页淡出一起走：延迟 120ms 再切成网页态，
     // 与 180ms 淡出重合，避免「地址栏先出来、网页区后到」的割裂。
@@ -3384,8 +3394,25 @@ struct AuraShell {
   // cancelExitInk 只在「回主页 / 导航被撤销」时传 true：那时主页仍可见，
   // 交还主题色会让壁纸上闪一下黑图标。导航确实进了网页时不能取消，否则
   // 状态栏会一直停在壁纸反色上，白图标压在浅色网页顶栏。
+  // 落地后再留一小段首帧宽限，与 homeTransition 的判据一致。
+  private scheduleHomeHoldRelease(): void {
+    if (!this.homeHold || this.homeHoldGraceTimer !== -1) {
+      return;
+    }
+    this.homeHoldGraceTimer = setTimeout((): void => {
+      this.homeHoldGraceTimer = -1;
+      if (this.homeHold) {
+        this.releaseHomeHold();
+      }
+    }, 120);
+  }
+
   private releaseHomeHold(cancelExitInk: boolean = false): void {
     this.homeHold = false;
+    if (this.homeHoldGraceTimer !== -1) {
+      clearTimeout(this.homeHoldGraceTimer);
+      this.homeHoldGraceTimer = -1;
+    }
     if (cancelExitInk && this.homeExitInkTimer !== -1) {
       clearTimeout(this.homeExitInkTimer);
       this.homeExitInkTimer = -1;
