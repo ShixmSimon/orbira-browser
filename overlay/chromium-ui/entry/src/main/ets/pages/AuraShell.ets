@@ -471,7 +471,10 @@ struct AuraShell {
     this.navCoverFromUrl = this.browserState.url ?? '';
     this.navCoverTargetUrl = '';
     this.navCoverFromTabIndex = this.browserState.activeTabIndex ?? -1;
-    this.armNavCoverTimer(250);
+    // 回主页这一侧：引擎 commit 原生 NTP 到状态快照回来要 20~70ms，旧值
+    // 250ms 上限实测只留下约 100ms 有效遮盖，抖动时会漏 1 帧磁贴。放宽到
+    // 400ms；主页层一挂上 NavCoverView 就不再铺，延长不会带来白屏副作用。
+    this.armNavCoverTimer(400);
   }
 
   // 过渡态：铺同色底盖住 commit 到首帧的空窗。已有显式遮盖时不重复起。
@@ -737,7 +740,9 @@ struct AuraShell {
     }
     // 历史导航要把主页层挂载算进去：引擎先把 url 切到 newtab，
     // 壳层下一拍才挂 HomeSurface；普通导航等首帧画稳再撤。
-    const wait: number = this.navCoverHistoryNav ? 80 : (this.navCoverQuick ? 120 : 260);
+    // 历史导航落地后再多留一拍：等主页层真正上屏，别在 commit 与状态快照
+    // 之间的缝隙撤掉同色底。
+    const wait: number = this.navCoverHistoryNav ? 160 : (this.navCoverQuick ? 120 : 260);
     this.navCoverGraceTimer = setTimeout((): void => {
       this.navCoverGraceTimer = -1;
       this.releaseNavCover();
