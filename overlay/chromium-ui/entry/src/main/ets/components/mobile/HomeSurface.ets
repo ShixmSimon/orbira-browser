@@ -333,7 +333,7 @@ export struct HomeSurface {
 
   // -- 主页布局 ----------------------------------------------------------------
   @State private custom: HomeCustom = defaultHomeCustom();
-  @State private bgUri: string = '';
+  @State @Watch('onWallpaperPresenceChanged') private bgUri: string = '';
   // 壁纸首帧是否已画出（Image.onComplete）。有壁纸时底色透明，
   // 图未解码就显示会透出下层网页；等首帧到位后整层一次性硬切上屏。
   @State private bgPainted: boolean = false;
@@ -752,6 +752,18 @@ export struct HomeSurface {
     AppStorage.setOrCreate('auraWallpaperIsLight', this.wallpaperIsLight);
     AppStorage.setOrCreate('auraWallpaperTopIsLight', this.wallpaperTopIsLight);
     AppStorage.setOrCreate('auraWallpaperBottomIsLight', this.wallpaperBottomIsLight);
+    this.publishWallpaperPresence();
+  }
+
+  // 有没有壁纸是「图标该不该按壁纸反色」的前提。状态栏判据里本来就有
+  // 这道门禁，但顶栏/dock 图标在 overlay 层，只能靠 AppStorage 同步这个事实。
+  private onWallpaperPresenceChanged(): void {
+    this.publishWallpaperPresence();
+  }
+
+  private publishWallpaperPresence(): void {
+    AppStorage.setOrCreate('auraWallpaperPresent',
+      this.bgUri.length > 0 && !this.incognito);
   }
 
   // 把落盘结论套到当前状态（同一张壁纸才认），供挂载期与解码失败时兜底。
@@ -1009,6 +1021,8 @@ export struct HomeSurface {
   }
 
   private syncStatusBarIcons(force: boolean = false): void {
+    // 无痕状态可能变化而 bgUri 不变，补一次下发覆盖这条路径。
+    this.publishWallpaperPresence();
     // 网页态（主页层不可见）一律按主题色：顶栏是实色，不跟壁纸走。
     const useWallpaper: boolean = this.homeVisible && this.bgUri.length > 0 && !this.incognito;
     // 壁纸未画出/未判色时不下发：此刻画面可能仍是旧网页或偏好还没读回。

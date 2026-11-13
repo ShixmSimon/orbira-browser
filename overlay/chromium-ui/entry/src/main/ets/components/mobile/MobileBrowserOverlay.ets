@@ -11,6 +11,7 @@ import display from '@ohos.display';
 import { showSystemPasteDialog } from './SystemPasteDialog';
 import { ScanService } from './ScanService';
 import { TabThumbnailStore } from '../../utils/TabThumbnailStore';
+import { isNewTabUrl as isNewTabUrlShared } from '../../utils/NewTabUrl';
 import {
   AutocompleteItem,
   BrowserCommandPayload,
@@ -385,6 +386,9 @@ export struct MobileBrowserOverlay {
   // 顶/底亮度常相反，不能用同一个信号。
   @StorageProp('auraWallpaperTopIsLight') wallpaperTopIsLight: boolean = true;
   @StorageProp('auraWallpaperBottomIsLight') wallpaperBottomIsLight: boolean = true;
+  // 只有壁纸真的铺在主页上时，顶栏/dock 图标才按壁纸判色；无壁纸时一律
+  // 回落系统图标色，否则残留的深色壁纸判据会把图标画成白色、在浅色 dock 上消失。
+  @StorageProp('auraWallpaperPresent') wallpaperPresent: boolean = false;
   // auraRequestMenuOpen 信号随主页右上角菜单按钮一并去除（入口冗余：
   // 简约底栏 dock / Chrome 风格 dock 均有 ⋮ 菜单槽位）。
   // “滚动时隐藏地址栏”：dockRatio() 用它判断组合（常驻地址栏时 dock 走触摸）。
@@ -1833,7 +1837,7 @@ export struct MobileBrowserOverlay {
   // 主页态顶栏（Chrome 顶栏 / 简约风格顶部那条）图标色：压在壁纸**顶带**上，
   // 认顶带判据。非主页态回落系统 icon_primary，网页界面行为不变。
   private chromeDockIconColor(): ResourceColor {
-    if (this.isHomeSurface()) {
+    if (this.isHomeSurface() && this.wallpaperPresent) {
       return this.wallpaperTopIsLight ? '#202124' : '#F5F5F5';
     }
     return $r('app.color.icon_primary');
@@ -1841,7 +1845,7 @@ export struct MobileBrowserOverlay {
 
   // 主页态**底部** dock 图标色：压壁纸底带，认底带判据。顶置 dock 用上面那个。
   private bottomDockIconColor(): ResourceColor {
-    if (this.isHomeSurface()) {
+    if (this.isHomeSurface() && this.wallpaperPresent) {
       return this.wallpaperBottomIsLight ? '#202124' : '#F5F5F5';
     }
     return $r('app.color.icon_primary');
@@ -1850,7 +1854,7 @@ export struct MobileBrowserOverlay {
   // 同上，但给「经典风格」的材质 dock 用：那个 dock 是独立 struct，
   // 颜色只能以字符串 @Prop 传进去（空串 = 让它回落 icon_primary）。
   private bottomDockInkHex(): string {
-    if (this.isHomeSurface()) {
+    if (this.isHomeSurface() && this.wallpaperPresent) {
       return this.wallpaperBottomIsLight ? '#202124' : '#F5F5F5';
     }
     return '';
@@ -4881,15 +4885,9 @@ export struct MobileBrowserOverlay {
 
 
   private isNewTabUrl(url: string): boolean {
-    // 空 URL 按主页处理（与 ExtensionPanel.isNewTabUrl 同一份判据）。
-    if (url.length === 0) {
-      return true;
-    }
-    return url.startsWith('chrome://newtab') ||
-      url.startsWith('chrome://new-tab-page') ||
-      url.startsWith('chrome://new-tab-page-third-party') ||
-      // 与 AuraShell.isNewTabUrl 同一份判据（引擎换 URL 写法时两边一起改）。
-      url.startsWith('chrome-native://newtab');
+    // 当前页 url 为空 = 主页态；历史落点 url 为空则是「没有历史条目」，
+    // 语义不同，所以空串判定留在本方法，URL 形态交给共享判据。
+    return url.length === 0 || isNewTabUrlShared(url);
   }
 
   private beginAddressEdit(): void {

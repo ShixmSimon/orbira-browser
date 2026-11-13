@@ -13,6 +13,7 @@ import { fileIo as fs, picker } from '@kit.CoreFileKit';
 import { BrowserCommandPayload, ExtensionActionItem, ExtensionDetailsEvent, ExtensionSiteAccess } from 'engine';
 import { glassHeaderInsetVp } from './GlassPage';
 import { ExtIconCache } from './ExtIconCache';
+import { isNewTabUrl as isNewTabUrlShared } from '../../utils/NewTabUrl';
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
@@ -532,18 +533,11 @@ export struct ExtensionPanel {
     }
   }
 
-  // 与 MobileBrowserOverlay.isNewTabUrl 同一份判据（引擎换 URL 写法时一起改）。
   private isNewTabUrl(url: string): boolean {
     // 空 URL 按主页处理：引擎还没上报（冷启动 / 刚回主页）时 HomeSurface 正盖
-    // 着整屏，popup 必须让它让位，否则表现为「点扩展没反应」。与
-    // MobileBrowserOverlay.isNewTabUrl 保持同一份判据。
-    if (url.length === 0) {
-      return true;
-    }
-    return url.startsWith('chrome://newtab') ||
-      url.startsWith('chrome://new-tab-page') ||
-      url.startsWith('chrome://new-tab-page-third-party') ||
-      url.startsWith('chrome-native://newtab');
+    // 着整屏，popup 必须让它让位，否则表现为「点扩展没反应」。
+    // URL 形态与主页层/顶栏共用一份判据，空串语义留在本方法。
+    return url.length === 0 || isNewTabUrlShared(url);
   }
 
   // 扩展的选项页：引擎 ExtensionTabUtil::OpenOptionsPage 新开标签页打开
