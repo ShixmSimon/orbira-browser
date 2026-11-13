@@ -1895,8 +1895,10 @@ struct AuraShell {
         // 主页态与整个离开/返回过渡期都垫一层不透明同色底：引擎 WebContents
         // 在主页态显示的是原生 NTP 磁贴页，只要有一帧没垫住就会漏出来。
         // 不能挂在 homeSurfaceVisible() 上——state 切到目标网址的那一拍它正好
-        // 变 false，正是断档的那一帧。
-        if (this.isMobilePhoneUi() &&
+        // 变 false，正是断档的那一帧。但扩展 popup 让位期间必须例外：那时
+        // popupHomeHold > 0 会主动撤掉主页层给 popup 让路，这里再铺满实底
+        // 就会把整个界面盖成白屏（popup 的关闭事件可能迟到，兜底是 10 分钟）。
+        if (this.isMobilePhoneUi() && this.popupHomeHold <= 0 &&
             (this.homeHold || this.isNewTabPage() || this.homeTransition ||
               this.navCover || this.homeReturnCover)) {
           Column()
