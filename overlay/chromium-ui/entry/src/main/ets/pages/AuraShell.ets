@@ -325,6 +325,8 @@ struct AuraShell {
   private homeTransitionFromTabIndex: number = -1;
   // 切到需重新加载的标签时，撤防要等引擎报加载结束；瞬时切换不等。
   private homeTransitionWaitsLoading: boolean = false;
+  // 从主页出发的历史导航：目标页还在加载时遮盖续命的次数，封顶防卡死。
+  private homeTransitionExtensions: number = 0;
   // 主页键（自定义网址主页）导航落地后主动收一次输入法。
   // 很多站点的搜索框带 autofocus（cn.bing.com 的 sb_form_q 就是
   // `type="search" ... autofocus`），页面一提交就自己抢焦点、把键盘顶起来
@@ -480,6 +482,7 @@ struct AuraShell {
     }
     this.homeTransition = true;
     this.homeTransitionWaitsLoading = waitsLoading;
+    this.homeTransitionExtensions = 0;
     this.homeTransitionFromUrl = this.browserState.url ?? '';
     this.homeTransitionFromTabIndex = this.browserState.activeTabIndex ?? -1;
     this.navCoverFadeMs = 100;
@@ -489,19 +492,38 @@ struct AuraShell {
       clearTimeout(this.homeTransitionGraceTimer);
       this.homeTransitionGraceTimer = -1;
     }
+    this.armHomeTransitionTimer(waitsLoading ? 300 : 250);
+  }
+
+  // 从主页前进/后退到网页时，url 一变就撤会露出引擎上一帧（原生 NTP 磁贴）：
+  // 历史里主页那条就是引擎自带的新标签页。目标页还在加载就续命，封顶 8 次
+  // 防引擎卡死时永远盖着；loading=false 由状态回调的落地判据提前收口。
+  private armHomeTransitionTimer(ms: number): void {
     if (this.homeTransitionTimer >= 0) {
       clearTimeout(this.homeTransitionTimer);
     }
     this.homeTransitionTimer = setTimeout((): void => {
       this.homeTransitionTimer = -1;
+      if (!this.homeTransition) {
+        return;
+      }
+      if (this.homeTransitionWaitsLoading && this.browserState.loading &&
+          this.homeTransitionExtensions < 8) {
+        this.homeTransitionExtensions += 1;
+        this.armHomeTransitionTimer(600);
+        return;
+      }
       this.releaseHomeTransition();
-    }, waitsLoading ? 300 : 250);
+    }, ms);
   }
 
   // 落地后不立刻撤：loading=false 只代表提交完成，渲染器未必已上帧，此时撤防
   // 露出的正是引擎底板。补一小段首帧宽限，复用历史导航那套已验证的判据。
   private scheduleHomeTransitionRelease(): void {
     if (!this.homeTransition || this.homeTransitionGraceTimer >= 0) {
+      return;
+    }
+    if (this.homeTransitionWaitsLoading && this.browserState.loading) {
       return;
     }
     this.homeTransitionGraceTimer = setTimeout((): void => {
@@ -519,6 +541,7 @@ struct AuraShell {
     }
     this.homeTransition = false;
     this.homeTransitionWaitsLoading = false;
+    this.homeTransitionExtensions = 0;
     if (this.homeTransitionTimer >= 0) {
       clearTimeout(this.homeTransitionTimer);
       this.homeTransitionTimer = -1;
@@ -628,7 +651,8 @@ struct AuraShell {
       return;
     }
     if (this.isNewTabPage()) {
-      this.beginHomeTransition();
+      // 从主页前进/后退到网页：等新页首帧再撤遮盖，别露出历史里那张原生磁贴页。
+      this.beginHomeTransition(name === 'back' || name === 'forward');
     }
   }
 
