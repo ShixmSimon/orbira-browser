@@ -21,11 +21,11 @@
 set -euo pipefail
 
 # ---- 可调环境变量（按你本机实际情况改）------------------------------------
-UPSTREAM_DIR="${UPSTREAM_DIR:-/home/administrator/upstream-chromium-hmos}"   # 克隆的上游只读副本
+UPSTREAM_DIR="${UPSTREAM_DIR:-$HOME/upstream-chromium-hmos}"   # 克隆的上游只读副本
 BR154="${BR154:-hmos-154-adapter}"                                           # 上游 154 分支（注意带 -adapter 后缀）
 BR155="${BR155:-hmos-155-adapter}"                                           # 上游 155 分支
-SRC154="${SRC154:-/home/administrator/chromium-work/chromium/src}"           # 我们的 154 树
-SRC155="${SRC155:-/home/administrator/chromium-155/src}"                     # 准备好的 155 树
+SRC154="${SRC154:-$HOME/chromium-work/chromium/src}"           # 我们的 154 树
+SRC155="${SRC155:-$HOME/chromium-155/src}"                     # 准备好的 155 树
 REL="chrome/browser/ui/ohos"                                                # 155 树内相对路径
 UP_REL="${UP_REL:-chrome/browser/ui/ohos}"                                   # 上游仓内相对路径（可覆盖；脚本会同时尝试候选前缀）
 # ---------------------------------------------------------------------------

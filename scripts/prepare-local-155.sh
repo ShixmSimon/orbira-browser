@@ -6,7 +6,7 @@ set -euo pipefail
 
 readonly repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # 155 目标根目录：默认 /root/chromium-155（CI 约定）。本地若以普通用户跑、/root 不可写，
-# 请用 CHROMIUM_155_ROOT 指到有权限的位置，例如 /home/administrator/chromium-155
+# 请用 CHROMIUM_155_ROOT 指到有权限的位置，例如 $HOME/chromium-155
 readonly root="${CHROMIUM_155_ROOT:-/root/chromium-155}"
 export CHROMIUM_155_ROOT="${root}"
 readonly src="${root}/src"
@@ -21,7 +21,7 @@ if [[ ! -d "$seed_src/.git" || ! -f "$seed_root/.gclient" ]]; then
 （需要该目录下有 .git，且其父目录有 .gclient）
 
 请确认你本机 154 的 Chromium 源码 checkout 在哪，然后用环境变量指过去，例如：
-  CHROMIUM_154_SRC=/home/administrator/chromium-154/src \\
+  CHROMIUM_154_SRC=$HOME/chromium-154/src \\
     bash /mnt/d/WorkBuddy/鸿蒙Chrome/chromium-hmos-155/scripts/prepare-local-155.sh
 
 若不确定位置，可在 WSL 里执行：

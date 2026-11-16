@@ -17,7 +17,7 @@
 # ============================================================================
 set -euo pipefail
 
-SRC155="${SRC155:-/home/administrator/chromium-155/src}"
+SRC155="${SRC155:-$HOME/chromium-155/src}"
 REL="chrome/browser/ui/ohos"
 H="$SRC155/$REL/aura_shell_runtime_bridge.h"
 CC="$SRC155/$REL/aura_shell_runtime_bridge.cc"
