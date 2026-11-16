@@ -35,7 +35,7 @@
 - `.github/workflows/`：GitHub Actions 适配检查、增量构建、运行时检查与稳定版跟踪；原生构建沿用 `self-hosted, harmonyos-chromium` 运行器。
 - `_bak/depot-workflows/`：Depot 工作流归档，不自动执行；历史配置见 [Depot CI](docs/DEPOT_CI.md)。
 - `licenses/`：许可证正文与第三方许可证清单。
-- `SOURCE_MANIFEST.sha256`：原始源码公开快照的校验清单；当前迁移输入以 Git 提交和迁移清单为准。
+- `SOURCE_MANIFEST.sha256`：本分支源码树全部受版本控制文件（含符号链接）的 SHA-256 校验清单，不含清单自身。
 
 源码仓库不包含私有 HarmonyOS SDK 和签名材料。CI 打包未签名 engine HAR，并将 HAR、原生符号和校验清单发布到 GitHub 预发布版本；HAP 签名留在开发机。
 
