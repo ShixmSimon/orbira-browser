@@ -75,7 +75,7 @@ echo "   已备好自动化脚本（三方合并 ours=154版 / base=上游154 / 
 echo "     export CHROMIUM_154_SRC=$src154"
 echo "     export CHROMIUM_155_ROOT=$(dirname "$src155")"
 echo "     bash $(dirname "${BASH_SOURCE[0]}")/merge-3-special-files.sh"
-echo "   脚本会先把上游只读 clone 好的路径用 UPSTREAM_DIR 指过去（默认 /home/administrator/upstream-chromium-hmos）。"
+echo "   脚本会先把上游只读 clone 好的路径用 UPSTREAM_DIR 指过去（默认 $HOME/upstream-chromium-hmos）。"
 echo "   154 与本仓的对应关系见《155升级-本土优化迁移清单.md》§2。"
 echo
 echo "✅ patch 叠加完成（vulkan-gate/touch-slop 由 overlay 承载；3 个重锚 patch 见上方汇总；特殊文件用 merge-3-special-files.sh 合并）。之后即可全量编 155 引擎。"

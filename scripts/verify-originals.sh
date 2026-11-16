@@ -6,10 +6,10 @@
 # 这是"同步上游不会覆盖本地改动"的运行时兜底——编译前必跑。
 #
 # 用法（在 WSL 中）：
-#   bash verify-originals.sh /home/administrator/chromium-work/chromium/src
+#   bash verify-originals.sh $HOME/chromium-work/chromium/src
 set -uo pipefail
 
-SRC="${1:-/home/administrator/chromium-work/chromium/src}"
+SRC="${1:-$HOME/chromium-work/chromium/src}"
 if [[ ! -d "${SRC}" ]]; then
   echo "usage: $0 /path/to/chromium/src"
   exit 2

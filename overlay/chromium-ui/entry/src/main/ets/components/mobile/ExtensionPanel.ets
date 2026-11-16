@@ -524,7 +524,7 @@ export struct ExtensionPanel {
       setTimeout((): void => {
         const closedAt: number = (AppStorage.get('auraPopupClosedAt') as number) ?? 0;
         if (closedAt >= holdToken) {
-          // popup 已关过，别再让位（会让主页层挂满 10 分钟兜底）。
+          // popup 已关闭，无需继续让位；否则主页层会一直保留到 10 分钟兜底超时。
           AppStorage.setOrCreate('auraExtensionJumpCover', 0);
           return;
         }

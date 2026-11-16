@@ -922,8 +922,8 @@ struct AuraShell {
   // 钉住、不许放开 —— 页面高度在加载/滚动中会变，反复重发控件会让页面瞬移；
   // 换页（url / 标签变化）由状态快照回调解除。
   private updatePageTopBarPin(url: string, scrollable: number, scrollY: number): void {
-    // 每次探针都刷新封面页判定位：换页即翻转，不靠 pin 档是否变化来触发，
-    // 避免上一页的值残留（此前就栽在这里）。
+    // 每次探针都刷新封面页判定位：换页即翻转，不依赖 pin 档变化触发，
+    // 以避免上一页的判定位残留到新页面。
     const bingCover: boolean = this.isBingCoverPage(url);
     if (bingCover !== this.probeOnBingCover) {
       this.probeOnBingCover = bingCover;
@@ -1091,9 +1091,9 @@ struct AuraShell {
       return this.hideStatusBarOnScroll ? 0 : topSafe;   // 底置沿用 1.0.111 的常量
     }
     // 常显档必须补 TOP_BAR_EXTENT_VP+topSafe：minTop 让 renderer 视口底部恒少这一截，
-    // 154/155 起就是常量补偿（按 ratio 连续补 1.0.130 已证会跳动，禁止照搬）。
-    // 必应封面页的「缩一圈」单独在探针里禁止钉住解决；这里绝不能扣掉补偿，
-    // 否则页脚最后一行被裁（2026-11-16 真机反馈：必应最下边少一行字）。
+    // 补偿须为常量；按滚动比例动态下发会导致视口频繁 resize 与页面跳动。
+    // 必应封面页的整图缩放单独在探针里禁止钉住解决，此处不可扣减补偿，
+    // 否则页脚最后一行会被裁切（真机反馈：必应页面最下边少一行字）。
     if (!this.isTopBarCollapsing()) {
       return TOP_BAR_EXTENT_VP + topSafe;
     }
