@@ -1,15 +1,16 @@
 # Corresponding Source
 
 This branch provides the reusable Chromium/HarmonyOS engine source mapping for
-the locally validated downstream test HAP with SHA-256:
+the locally validated downstream HAP with SHA-256:
 
-`babb4439520275fbe34573b6537c7afb237ac785af06ec3dcd35dd424d9b0d53`
+`785d1dfef7adf0d07fee803401b88eb4f1c98679cfdce25e289355e615cd7327`
 
 The corresponding source consists of:
 
-1. Chromium revision `f405107495a07cb1bfcf687d4af8d91117098db6` and the
+1. Chromium revision `f043649a0ef1fd96e48d56ddbfc8a4a99aa2ca37` and the
    third-party revisions pinned by its DEPS file.
-2. `patches/chromium-154-harmonyos.patch`.
+2. `patches/chromium-154-harmonyos.patch` and the 155 relocation under
+   `patches/migration-155/`.
 3. The complete `overlay/` and `external/` trees in this branch.
 4. `config/args.plan_kirin_pc.gn` and the build instructions in `BUILDING.md`.
 5. `SOURCE_MANIFEST.sha256`, which verifies every published regular file other

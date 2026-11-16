@@ -54,8 +54,8 @@ endorsed by Google, Chromium, Huawei, or the OpenHarmony project.
 - `_bak/depot-workflows/`: archived Depot workflows (not automatically executed);
   see [docs/DEPOT_CI.md](docs/DEPOT_CI.md) for historical setup.
 - `licenses/`: applicable license texts and the generated third-party credits.
-- `SOURCE_MANIFEST.sha256`: the original source-publication checksum list;
-  current migration inputs are pinned by Git and the migration manifest.
+- `SOURCE_MANIFEST.sha256`: SHA-256 checksums for every tracked file in this
+  branch's source tree (excluding the manifest itself), including symlink blobs.
 
 The source tree excludes the private HarmonyOS SDK and signing material.
 CI packages the unsigned engine HAR and publishes it with native symbols and
