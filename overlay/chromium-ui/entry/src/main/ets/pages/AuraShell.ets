@@ -175,6 +175,11 @@ struct AuraShell {
   // 放进 AppStorage 是为了让顶栏组件也读到同一个有效状态。
   @StorageLink('auraTopBarPinnedForPage') @Watch('onPageTopBarPinChanged') topBarPinnedForPage: boolean = false;
   private topBarPinnedUrl: string = '';
+  // 当前活动页是否「整页一张 fixed 铺满视口的 cover 背景图」（必应首页/结果页）。
+  // 这类页面被探针钉住时，补偿档会从 topSafe 翻到 TOP_BAR_EXTENT_VP+topSafe，
+  // fixed 背景图随之缩一圈；所以只禁止钉住、保持设置档恒定，补偿本身仍照常下发。
+  // 每次探针回报与换页都刷新，不留跨页残留。
+  private probeOnBingCover: boolean = false;
   // 地址栏编辑态（MobileBrowserOverlay 同步）：编辑时控件被钉住，上滑兜底让位。
   @StorageLink('auraAddressEditing') addressEditing: boolean = false;
   // “滚动时隐藏底部栏”（dock）：默认开（两栏跟手同收）；关掉后 dock 常驻，
@@ -871,6 +876,42 @@ struct AuraShell {
     return this.hideTopBarOnScroll && !this.topBarPinnedForPage;
   }
 
+  // 只对必应自家域名的首页/结果页返回 true（host 为 bing.com 或 *.bing.com，
+  // 路径 / /search /index.html）。理由见 probeOnBingCover 注释。
+  private isBingCoverPage(url: string): boolean {
+    const lower: string = url.toLowerCase();
+    const schemeAt: number = lower.indexOf('://');
+    if (schemeAt < 0) {
+      return false;
+    }
+    const afterScheme: string = lower.substring(schemeAt + 3);
+    const slashAt: number = afterScheme.indexOf('/');
+    let host: string = slashAt < 0 ? afterScheme : afterScheme.substring(0, slashAt);
+    const at: number = host.indexOf('@');
+    if (at >= 0) {
+      host = host.substring(at + 1);
+    }
+    const portAt: number = host.indexOf(':');
+    if (portAt >= 0) {
+      host = host.substring(0, portAt);
+    }
+    if (host !== 'bing.com' && !(host.length > 5 && host.endsWith('.bing.com'))) {
+      return false;
+    }
+    const pathPart: string = slashAt < 0 ? '/' : afterScheme.substring(slashAt);
+    let end: number = pathPart.length;
+    const queryAt: number = pathPart.indexOf('?');
+    if (queryAt >= 0 && queryAt < end) {
+      end = queryAt;
+    }
+    const hashAt: number = pathPart.indexOf('#');
+    if (hashAt >= 0 && hashAt < end) {
+      end = hashAt;
+    }
+    const pathname: string = pathPart.substring(0, end);
+    return pathname === '/' || pathname === '/search' || pathname === '/index.html';
+  }
+
   // 钉住状态翻转 = 手动切了一次设置开关：browser controls、dock 交还、
   // 收起标志、视口内距整套重算。少算任何一项，页面底部都会少让出顶栏高度。
   private onPageTopBarPinChanged(): void {
@@ -881,6 +922,23 @@ struct AuraShell {
   // 钉住、不许放开 —— 页面高度在加载/滚动中会变，反复重发控件会让页面瞬移；
   // 换页（url / 标签变化）由状态快照回调解除。
   private updatePageTopBarPin(url: string, scrollable: number, scrollY: number): void {
+    // 每次探针都刷新封面页判定位：换页即翻转，不靠 pin 档是否变化来触发，
+    // 避免上一页的值残留（此前就栽在这里）。
+    const bingCover: boolean = this.isBingCoverPage(url);
+    if (bingCover !== this.probeOnBingCover) {
+      this.probeOnBingCover = bingCover;
+      this.applyDockViewportInset();
+    }
+    // 必应封面页禁止钉住：钉住会把补偿档从 topSafe 翻到 84+topSafe，整张
+    // fixed 背景图（.img_cont / background-size:cover）缩一圈。保持设置档恒定，
+    // 补偿按 154/155 常量照发 —— 图片不跳，页脚最后一行也不会被裁。
+    if (bingCover) {
+      if (this.topBarPinnedForPage) {
+        this.topBarPinnedUrl = '';
+        this.topBarPinnedForPage = false;
+      }
+      return;
+    }
     // 新标签页本来就没有可滚动内容，会被探针报成「滚不动」；钉住顶栏
     // 会把它带进网页态几何，主页底部处理就变了。
     if (this.isNewTabPage() || isNewTabUrl(url)) {
@@ -1032,6 +1090,10 @@ struct AuraShell {
     if (this.homeStyle === 'chrome' && this.dockPosition === 'bottom') {
       return this.hideStatusBarOnScroll ? 0 : topSafe;   // 底置沿用 1.0.111 的常量
     }
+    // 常显档必须补 TOP_BAR_EXTENT_VP+topSafe：minTop 让 renderer 视口底部恒少这一截，
+    // 154/155 起就是常量补偿（按 ratio 连续补 1.0.130 已证会跳动，禁止照搬）。
+    // 必应封面页的「缩一圈」单独在探针里禁止钉住解决；这里绝不能扣掉补偿，
+    // 否则页脚最后一行被裁（2026-11-16 真机反馈：必应最下边少一行字）。
     if (!this.isTopBarCollapsing()) {
       return TOP_BAR_EXTENT_VP + topSafe;
     }
@@ -1763,11 +1825,20 @@ struct AuraShell {
           this.browserState = state;
           // 换页/换标签：解除上一页的顶栏常显档，别把「关了隐藏开关」带到新页。
           // @Watch 会把内距、dock 与 browser controls 整套重算回 1.1.9。
-          if (this.topBarPinnedForPage &&
-            ((state.url ?? '') !== prevUrl ||
-              (state.activeTabIndex ?? -1) !== prevTabIndex)) {
+          const pageChanged: boolean = (state.url ?? '') !== prevUrl ||
+            (state.activeTabIndex ?? -1) !== prevTabIndex;
+          if (this.topBarPinnedForPage && pageChanged) {
             this.topBarPinnedUrl = '';
             this.topBarPinnedForPage = false;
+          }
+          // 必应封面页判定位提前到「换页这一刻」：只等探针（load 后 600ms）的话，
+          // 背景图会先按上一页的补偿档画一帧、探针到达再缩，视觉上被拉一下。
+          // 解钉必须放在内距下发之前，否则第一帧仍是旧档（84vp）再落回 36。
+          // 这里定档后第一次下发就是最终值，全程零二次布局。
+          const coverNow: boolean = this.isBingCoverPage(state.url ?? '');
+          if (coverNow !== this.probeOnBingCover) {
+            this.probeOnBingCover = coverNow;
+            this.applyDockViewportInset();
           }
           // 关掉重复主页标签后，等标签数真的回落再放开徽标：否则会先显示
           // 恢复后的「多一个」数量，再跳回实际数量。
