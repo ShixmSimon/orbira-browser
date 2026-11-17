@@ -14,7 +14,7 @@
 - V8：构建包含 JIT 编译器，启动时探测能否映射可执行内存，能则启用 JIT（平板、2in1），不能则以 JITless 运行（手机正式包）。JITless 时 WebAssembly 由 DrumBrake 解释器执行
 - UI：大屏使用 Chromium Aura/Views；手机使用 ArkUI 浏览器栏和 Chromium 内容层
 - 媒体：测试配置启用 AAC/H.264 构建开关；不包含 Widevine CDM
-- 公开身份：Chromium HarmonyOS Adapter（`com.caidingding233.chromium`）；商业品牌和 AppGallery 签名保留在独立下游
+- 公开身份：Chromium HarmonyOS Adapter；商业品牌和 AppGallery 签名保留在独立下游。公共树中的示例 bundleName 为 `com.orbira.browser`，下游发行方应在发布前替换为自己的标识
 
 ## HarmonyOS 集成
 

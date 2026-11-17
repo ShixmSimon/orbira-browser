@@ -16,8 +16,10 @@ endorsed by Google, Chromium, Huawei, or the OpenHarmony project.
 - V8: JIT compilers in the build, used when the launch can map executable memory (tablets, 2in1); JITless otherwise (released phone packages), where WebAssembly runs on the DrumBrake interpreter
 - UI: Aura/Views on large screens; ArkUI mobile shell on phones
 - Media: AAC/H.264 build flags enabled; Widevine CDM disabled
-- Public identity: Chromium HarmonyOS Adapter (`com.caidingding233.chromium`).
-  Product brands and AppGallery signing remain in separate downstream trees.
+- Public identity: Chromium HarmonyOS Adapter. Product brands and AppGallery
+  signing remain in separate downstream trees. The public tree ships a
+  reference bundleName of `com.orbira.browser`; downstream distributors should
+  replace it with their own identifier before release.
 
 ## HarmonyOS Integration
 
