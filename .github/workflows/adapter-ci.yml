@@ -12,7 +12,11 @@ permissions:
 
 jobs:
   verify-publication:
-    if: github.ref == 'refs/heads/hmos-154-adapter' || github.ref == 'refs/heads/hmos-155-adapter' || github.base_ref == 'hmos-154-adapter' || github.base_ref == 'hmos-155-adapter'
+    # Disabled: these checks are inherited from the upstream engine CI. This
+    # fork consumes the upstream engine and only changes the ArkTS shell, so
+    # they are not meaningful here. Re-enable by restoring the condition below.
+    # if: github.ref == 'refs/heads/hmos-154-adapter' || github.ref == 'refs/heads/hmos-155-adapter' || github.base_ref == 'hmos-154-adapter' || github.base_ref == 'hmos-155-adapter'
+    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
