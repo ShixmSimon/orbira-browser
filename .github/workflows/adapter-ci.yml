@@ -39,7 +39,10 @@ jobs:
           path: build-status/cloud-inspect.json
 
   verify-publication:
-    if: inputs.cloud_run_id == '' && (github.ref == 'refs/heads/hmos-157-adapter' || github.ref == 'refs/heads/hmos-155-adapter' || github.base_ref == 'hmos-157-adapter' || github.base_ref == 'hmos-155-adapter')
+    # Disabled: inherited from the upstream engine CI; this repo consumes locally built engines.
+    # Restore by putting the original condition back.
+    #     if: inputs.cloud_run_id == '' && (github.ref == 'refs/heads/hmos-157-adapter' || github.ref == 'refs/heads/hmos-155-adapter' || github.base_ref == 'hmos-157-adapter' || github.base_ref == 'hmos-155-adapter')
+    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
