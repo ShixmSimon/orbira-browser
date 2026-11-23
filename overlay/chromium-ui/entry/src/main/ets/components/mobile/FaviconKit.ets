@@ -27,8 +27,9 @@ const FAVICON_BATCH_MAX: number = 100;
 // 补 2 次基本能覆盖；再问不到就当该站点确实没有 favicon，不再骚扰引擎。
 const FAVICON_RETRY_MS: number = 1200;
 const FAVICON_MAX_ATTEMPTS: number = 3;
+// 与 HomeSurface 的占位色表保持一致：同一站点在首页磁贴与各面板显示同一底色。
 const PLACEHOLDER_TINTS: string[] = [
-  '#4285F4', '#0F9D58', '#DB4437', '#F4B400', '#7B1FA2', '#00897B', '#E8710A', '#546E7A'
+  '#4285F4', '#0F9D58', '#DB4437', '#F4B400', '#7B61FF', '#00897B', '#E8710A', '#546E7A'
 ];
 
 function isHttp(url: string): boolean {

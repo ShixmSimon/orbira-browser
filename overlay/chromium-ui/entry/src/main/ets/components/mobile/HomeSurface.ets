@@ -72,8 +72,10 @@ const TILE_FAVICON_RADIUS: number = 8;
 // 时能拿到真像素再**缩着画**（Interpolation.High），比放大清楚；没有大图的
 // 站点退化为和以前一样的放大，那一档靠上面的小绘制尺寸兜住。
 const TILE_FAVICON_REQUEST_VP: number = TILE_FAVICON_VP * 2;
-// 冷启动缓存里 favicon base64 的字符上限（≈192KB）。超了就不缓存图标，只留磁贴。
-const MAX_CACHE_FAVICONS_CHARS: number = 262144;
+// 冷启动缓存里 favicon base64 的字符上限（512KB）。写缓存时只保留首页磁贴
+// 用到的图标（见 serializeFavicons），体积远小于全量书签；这里再留一道兜底，
+// 正常用量不会触及。超限不再整个丢弃图标，而是按磁贴顺序截断保留。
+const MAX_CACHE_FAVICONS_CHARS: number = 524288;
 // 壁纸分区取样（占可见壁纸高度的比例），按消费者落点划分：
 //   顶带 0~14%   → 状态栏 + Chrome 风格顶栏
 //   中带 18~68%  → Logo、搜索框、书签磁贴
@@ -567,13 +569,12 @@ export struct HomeSurface {
   // 都在内存里，避免读-改-写）。
   private persistCache(): void {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
-    // 图标 base64 会随书签数量线性增长；超过上限就只缓存磁贴列表（缓存是加速
-    // 手段，不值得为它写一个几百 KB 的文件）。
-    const faviconsJson: string = this.cacheFaviconsJson.length > MAX_CACHE_FAVICONS_CHARS ?
-      '' : this.cacheFaviconsJson;
+    // favicon 只序列化首页磁贴用到的、且在 serializeFavicons 内按上限截断，
+    // 这里直接用其结果：不再因为"总量超限"把整个图标缓存清空（那会让每次
+    // 冷启动都先画字母块）。
     const data: HomeCacheData = {
       tilesJson: this.cacheTilesJson,
-      faviconsJson: faviconsJson,
+      faviconsJson: this.cacheFaviconsJson,
       faviconSizeVp: TILE_FAVICON_REQUEST_VP
     };
     HomeCache.save(context, data);
@@ -1624,10 +1625,40 @@ export struct HomeSurface {
     this.favicons = map;
   }
 
+  // 序列化冷启动要用的 favicon。只保留**当前首页磁贴**用到的 url：
+  // 引擎回包会把面板/历史问过的图标也并进 faviconBase64，全量落盘很容易超
+  // 上限而被整个丢弃（表现为每次冷启动都先出字母块、图标才慢慢到）。磁贴
+  // 才是首帧要命中的目标，按磁贴顺序写入并在上限处截断，剩余图标下次联网
+  // 会自动补回，不影响正确性。
   private serializeFavicons(): string {
+    const wanted: Set<string> = new Set();
+    for (const node of this.fullNodes) {
+      if (node.type === 'url') {
+        const url: string = node.url ?? '';
+        if (url.length > 0) {
+          wanted.add(url);
+        }
+      }
+    }
     const items: FaviconImage[] = [];
-    this.faviconBase64.forEach((base64: string, url: string): void => {
-      items.push({ url: url, pngBase64: base64 });
+    let chars: number = 2; // "[]"
+    let truncated: boolean = false;
+    wanted.forEach((url: string): void => {
+      if (truncated) {
+        return;
+      }
+      const base64: string | undefined = this.faviconBase64.get(url);
+      if (base64 === undefined || base64.length === 0) {
+        return;
+      }
+      const item: FaviconImage = { url: url, pngBase64: base64 };
+      const entryChars: number = JSON.stringify(item).length + 1; // +1 = 逗号
+      if (chars + entryChars > MAX_CACHE_FAVICONS_CHARS) {
+        truncated = true;
+        return;
+      }
+      items.push(item);
+      chars += entryChars;
     });
     return JSON.stringify(items);
   }
