@@ -1657,8 +1657,8 @@ export struct PasswordsPanel {
         .backgroundColor($r('app.color.page_background'))
 
         // 导入模式弹窗 / 批量操作栏：悬浮层挂列表这层（viewport 固定）。
-        // 搜索回顶入口由标题栏 menu 的「回到搜索」项统一提供，此处不再添加
-        // 内容层悬浮按钮：其位置与命中区域均不如 menu 中的入口。
+        // （搜索回顶入口已上移到标题栏 menu 的「回到搜索」项，勿在此再加
+        // 内容层悬浮按钮/overlay——位置和命中都不如 menu，均翻过车。）
         this.ImportDialog()
         this.BatchActionBar()
       }

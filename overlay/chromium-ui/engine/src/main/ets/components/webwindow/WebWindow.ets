@@ -541,7 +541,7 @@ export struct WebWindow {
       // Remove the previous version when the new package omits it; otherwise
       // an old extracted file could silently survive an app upgrade.
       const rawFiles = hostContext.resourceManager.getRawFileListSync('chromium');
-      for (const rulesName of ['ohos_phishing_rules.json', 'ohos_phishing_updates.json']) {
+      for (const rulesName of ['v8_context_snapshot.bin', 'ohos_phishing_rules.json', 'ohos_phishing_updates.json']) {
         const rulesPath = `${runtimeDir}/${rulesName}`;
         if (rawFiles.some((name: string): boolean =>
           name === rulesName || name === `chromium/${rulesName}`)) {
@@ -551,6 +551,19 @@ export struct WebWindow {
         }
       }
       this.writeFile(markerPath, runtimeVersion);
+    }
+    // A runtime directory created by an older shell can carry a completion
+    // marker while missing v8_context_snapshot.bin: the 155-era shell never
+    // unpacked it, and the marker then blocks the whole extraction block.
+    // The engine needs this file in resourcesDir at startup (V8 snapshot),
+    // so repair it even when the marker says the directory is complete.
+    const contextSnapshotPath = `${runtimeDir}/v8_context_snapshot.bin`;
+    if (!fileIo.accessSync(contextSnapshotPath)) {
+      const snapshotRawFiles = hostContext.resourceManager.getRawFileListSync('chromium');
+      if (snapshotRawFiles.some((name: string): boolean =>
+        name === 'v8_context_snapshot.bin' || name === 'chromium/v8_context_snapshot.bin')) {
+        this.extractRawFile(hostContext, 'chromium/v8_context_snapshot.bin', contextSnapshotPath);
+      }
     }
 
     const localeFiles = hostContext.resourceManager.getRawFileListSync('chromium/locales');

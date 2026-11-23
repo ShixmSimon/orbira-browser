@@ -24,6 +24,7 @@ import { SearchEnginesPrefs } from '../../utils/appearance/SearchEnginesPrefs';
 import { HuaweiAccountInfo } from '../../utils/account/HuaweiAccountService';
 import { HuaweiAccountView } from './AccountPanel';
 import { AdBlockPanel } from './AdBlockPanel';
+import { ProxyPanel } from './ProxyPanel';
 import { AuraNavIconRow, AuraSectionLabel, AuraSearchBar } from './AuraKit';
 import { searchTemplateForSite } from './ShellUtils';
 import {
@@ -210,6 +211,7 @@ export struct SettingsPanel {
   @StorageLink('auraPanelAbout') @Watch('onAboutPayload') aboutJson: string = '';
   @StorageLink('auraPanelEvent') @Watch('onPanelEvent') panelEventJson: string = '';
   @StorageLink('auraBrowsingDataCounts') @Watch('onBrowsingCounts') browsingCountsJson: string = '';
+
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
   onBack: () => void = (): void => {};
   onOpenExtensions: () => void = (): void => {};
@@ -256,6 +258,8 @@ export struct SettingsPanel {
   // 广告拦截页（内容由 AdBlockPanel 自渲染，Scroller 由本组件持有后传入，
   // 否则 bindToScrollable 拿不到实例，标题栏没有渐变模糊）。
   private adblockScroller: Scroller = new Scroller();
+  // 代理页（ProxyPanel 自渲染，Scroller 同上由本组件持有后传入）。
+  private proxyScroller: Scroller = new Scroller();
   private clearScroller: Scroller = new Scroller();
   @State private toggleItems: PrefToggleItem[] = [];
   // 搜索引擎：baseEngines = 引擎返回的（不含自定义）；customEngines = 用户自定义
@@ -1100,6 +1104,9 @@ export struct SettingsPanel {
     if (name === 'adblock') {
       return '广告拦截';
     }
+    if (name === 'proxy') {
+      return '代理';
+    }
     if (name === 'clear') {
       return '清除浏览数据';
     }
@@ -1525,6 +1532,15 @@ export struct SettingsPanel {
               value: '',
               onTap: (): void => {
                 this.pushPage('adblock');
+              }
+            })
+            this.CardDivider()
+            SettingsNavRow({
+              icon: $r('app.media.aura_proxy'),
+              label: '代理',
+              value: '',
+              onTap: (): void => {
+                this.pushPage('proxy');
               }
             })
             this.CardDivider()
@@ -2645,6 +2661,13 @@ export struct SettingsPanel {
         } else if (name === 'adblock') {
           AdBlockPanel({
             scroller: this.adblockScroller,
+            onCommand: (command: BrowserCommandPayload): void => {
+              this.onCommand(command);
+            }
+          })
+        } else if (name === 'proxy') {
+          ProxyPanel({
+            scroller: this.proxyScroller,
             onCommand: (command: BrowserCommandPayload): void => {
               this.onCommand(command);
             }

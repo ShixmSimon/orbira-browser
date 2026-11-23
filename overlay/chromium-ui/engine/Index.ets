@@ -19,6 +19,7 @@ export {
   BrowserRuntimeEvent,
   ContextMenuAction,
   ContextMenuMediaFlags,
+  ShellProxyConfig,
   BrowserStateSnapshot,
   BrowserTabState,
   PwaMenuButtonState,

@@ -175,11 +175,6 @@ struct AuraShell {
   // 放进 AppStorage 是为了让顶栏组件也读到同一个有效状态。
   @StorageLink('auraTopBarPinnedForPage') @Watch('onPageTopBarPinChanged') topBarPinnedForPage: boolean = false;
   private topBarPinnedUrl: string = '';
-  // 当前活动页是否「整页一张 fixed 铺满视口的 cover 背景图」（必应首页/结果页）。
-  // 这类页面被探针钉住时，补偿档会从 topSafe 翻到 TOP_BAR_EXTENT_VP+topSafe，
-  // fixed 背景图随之缩一圈；所以只禁止钉住、保持设置档恒定，补偿本身仍照常下发。
-  // 每次探针回报与换页都刷新，不留跨页残留。
-  private probeOnBingCover: boolean = false;
   // 地址栏编辑态（MobileBrowserOverlay 同步）：编辑时控件被钉住，上滑兜底让位。
   @StorageLink('auraAddressEditing') addressEditing: boolean = false;
   // “滚动时隐藏底部栏”（dock）：默认开（两栏跟手同收）；关掉后 dock 常驻，
@@ -251,6 +246,11 @@ struct AuraShell {
   // 追加 topSafe 补偿——否则滚到页尾最后 ~topSafe 够不到（见 applyDockViewportInset
   // 与 computeTopBarHiddenForInset）。
   private topBarHiddenForInset: boolean = false;
+  // 当前活动页是否「整页一张 fixed 铺满视口的 cover 背景图」（必应首页/结果页）。
+  // 这类页面被探针钉住时，补偿档会从 topSafe 翻到 TOP_BAR_EXTENT_VP+topSafe，
+  // fixed 背景图随之缩一圈；所以只禁止钉住、保持设置档恒定，补偿本身仍照常下发。
+  // 每次探针回报与换页都刷新，不留跨页残留。
+  private probeOnBingCover: boolean = false;
   // 键盘避让高度（EntryAbility 写；RESIZE 模式为 0，不重复扣减）。键盘弹起时底部
   // 内距必须换成它——setViewportInsets 是替换式，留着 dock 的值会把键盘 inset
   // 盖掉，页内固定底栏（评论输入条等）会跑到键盘后面被遮。
@@ -922,8 +922,8 @@ struct AuraShell {
   // 钉住、不许放开 —— 页面高度在加载/滚动中会变，反复重发控件会让页面瞬移；
   // 换页（url / 标签变化）由状态快照回调解除。
   private updatePageTopBarPin(url: string, scrollable: number, scrollY: number): void {
-    // 每次探针都刷新封面页判定位：换页即翻转，不依赖 pin 档变化触发，
-    // 以避免上一页的判定位残留到新页面。
+    // 每次探针都刷新封面页判定位：换页即翻转，不靠 pin 档是否变化来触发，
+    // 避免上一页的值残留（此前就栽在这里）。
     const bingCover: boolean = this.isBingCoverPage(url);
     if (bingCover !== this.probeOnBingCover) {
       this.probeOnBingCover = bingCover;
@@ -939,6 +939,8 @@ struct AuraShell {
       }
       return;
     }
+    // 凤凰页 #root{overflow:auto} 自滚曾被怀疑「误钉住导致重排掉帧」，实测
+    // 禁用钉住后凤凰仍顿，且钉住本身无碍 —— 钉住与掉帧无关，勿再在此加开关。
     // 新标签页本来就没有可滚动内容，会被探针报成「滚不动」；钉住顶栏
     // 会把它带进网页态几何，主页底部处理就变了。
     if (this.isNewTabPage() || isNewTabUrl(url)) {
@@ -1091,9 +1093,9 @@ struct AuraShell {
       return this.hideStatusBarOnScroll ? 0 : topSafe;   // 底置沿用 1.0.111 的常量
     }
     // 常显档必须补 TOP_BAR_EXTENT_VP+topSafe：minTop 让 renderer 视口底部恒少这一截，
-    // 补偿须为常量；按滚动比例动态下发会导致视口频繁 resize 与页面跳动。
-    // 必应封面页的整图缩放单独在探针里禁止钉住解决，此处不可扣减补偿，
-    // 否则页脚最后一行会被裁切（真机反馈：必应页面最下边少一行字）。
+    // 154/155 起就是常量补偿（按 ratio 连续补 1.0.130 已证会跳动，禁止照搬）。
+    // 必应封面页的「缩一圈」单独在探针里禁止钉住解决；这里绝不能扣掉补偿，
+    // 否则页脚最后一行被裁（2026-11-16 真机反馈：必应最下边少一行字）。
     if (!this.isTopBarCollapsing()) {
       return TOP_BAR_EXTENT_VP + topSafe;
     }
@@ -2496,6 +2498,19 @@ struct AuraShell {
   // acted on twice.
   private backRequestId: number = 0;
 
+  // 面板事件写入用的单调序号：两次事件 JSON 若逐字节相同，setOrCreate
+  // 不算变化、@Watch 不触发（重进面板时引擎回包常与上次相同，面板就会
+  // 卡在加载态）。注入 _seq 让每次写入都可被观察；面板解析时忽略该字段。
+  private panelEventSeq: number = 0;
+
+  private writePanelEvent(storageKey: string, event: BrowserRuntimeEvent): void {
+    this.panelEventSeq += 1;
+    const rec: Record<string, Object> =
+      JSON.parse(JSON.stringify(event)) as Record<string, Object>;
+    rec['_seq'] = this.panelEventSeq;
+    AppStorage.setOrCreate(storageKey, JSON.stringify(rec));
+  }
+
   private handleRuntimeEvent(event: BrowserRuntimeEvent): void {
     // 页面位置探针：只在「滚不动」的页面上钉住顶栏，修页内按钮命中偏下；
     // 可滚动页面（知乎/搜狐/贴吧等）的几何一律保持 1.1.9。
@@ -2726,10 +2741,14 @@ struct AuraShell {
     if (event.event === 'browserControlsRatio') {
       this.sawControlsRatio = true;
       const ratio = event.ratio ?? 1;
-      if (ratio !== this.lastControlsRatio) {
-        const prev: number = this.lastControlsRatio;
-        this.lastControlsRatio = ratio;
-        AppStorage.setOrCreate('auraBrowserControlsRatio', ratio);
+      // 引擎每帧回调 ratio，直接写 AppStorage 会让这条 @StorageLink 绑定的
+      // 巨型 UI 树每帧重算一遍（早期排查滚动顿时就卡在这里，一度整段停推，
+      // 副作用是顶栏永远收不起来）。折中：量化到 1/48 —— 顶栏位移精度约
+      // 1vp（48vp ≈ 顶栏全高），视觉上仍然跟手，状态变化最多 48 次。
+      const quantized: number = Math.round(ratio * 48) / 48;
+      if (quantized !== this.lastControlsRatio) {
+        this.lastControlsRatio = quantized;
+        AppStorage.setOrCreate('auraBrowserControlsRatio', quantized);
       }
       return;
     }
@@ -2804,7 +2823,20 @@ struct AuraShell {
     if (event.event === 'adBlockState' ||
       event.event === 'adBlockConfigResult' ||
       event.event === 'adBlockStateChanged') {
-      AppStorage.setOrCreate('auraPanelAdBlock', JSON.stringify(event));
+      this.writePanelEvent('auraPanelAdBlock', event);
+      return;
+    }
+    // 代理面板：proxySettings / proxySettingsChanged（全量快照）与
+    // proxyApplyResult / proxyTestResult / proxyCredentials（回包，带
+    // requestId）/ proxyTestInvalidated（配置变更使测试失效）原样转存，
+    // ProxyPanel 按 event.event 分流解析。
+    if (event.event === 'proxySettings' ||
+      event.event === 'proxySettingsChanged' ||
+      event.event === 'proxyApplyResult' ||
+      event.event === 'proxyTestResult' ||
+      event.event === 'proxyCredentials' ||
+      event.event === 'proxyTestInvalidated') {
+      this.writePanelEvent('auraPanelProxy', event);
       return;
     }
     // 小锁快捷面板：广告拦截/防钓鱼的「单站」回包（读-改-写协议的两半）。

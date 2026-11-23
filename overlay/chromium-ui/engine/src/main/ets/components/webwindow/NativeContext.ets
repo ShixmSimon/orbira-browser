@@ -207,8 +207,15 @@ export interface ContextMenuMediaFlags {
 }
 
 export interface BrowserRuntimeEvent {
+  /** Explicit, URL-free display diagnostics; only returned on request. */
+  diagnosticStatus?: string;
+  displayMetrics?: Record<string, number | boolean>;
+  startupToken?: string;
+  startupPhase?: 'ready' | 'frame';
+  startupStatus?: 'waiting' | 'ready' | 'presented';
   version: number;
-  event: 'pictureInPictureState' | 'systemPrintReady' | 'systemPrintFailed' | 'shareRequested' |
+  event: 'proxyCredentials' | 'proxySettings' | 'proxyApplyResult' | 'proxyTestResult' | 'proxySettingsChanged' | 'proxyTestInvalidated' | 'resourceList' | 'resourcesChanged' | 'resourceActionResult' | 'resourcesRequested' |
+    'startupAck' | 'pictureInPictureState' | 'systemPrintReady' | 'systemPrintFailed' | 'shareRequested' |
     'castRequested' | 'filePickerRequested' | 'pwaInstalled' | 'pwaMenuModel' |
     'pwaMenuClosed' | 'inputRecovered' | 'systemActionRequested' |
     'permissionsRequested' | 'sitePermissionRequested' |
@@ -219,6 +226,8 @@ export interface BrowserRuntimeEvent {
     'gpuContextLost' | 'lastSessionRestorable' | 'lastSessionRestored' | 'extensionInstallFailed' |
     'pageFullscreenChanged' | 'pullToRefresh' |
     'extensionDetails' | 'extensionCommandFailed' |
+    'extensionUpdateCapabilities' | 'extensionUpdateProgress' |
+    'extensionSettingsSnapshot' | 'extensionSettingApplied' | 'extensionSettingsChanged' | 'extensionSyncSnapshot' | 'extensionSyncApplied' |
     'pageDragStarted' | 'pageDragEnded' |
     'recentlyClosed' | 'recentlyClosedChanged' | 'extensionActions' |
     'recentBookmarks' |
@@ -236,6 +245,9 @@ export interface BrowserRuntimeEvent {
     'adBlockPageState' | 'adBlockSiteResult' |
     'siteProtectionState' | 'siteProtectionConfigResult' |
     'browserControlsRatio' | 'findResult' | 'pageText' |
+    'translationCapabilities' | 'translationState' | 'translationSessionResult' |
+    'translationBatch' | 'translationBatchResult' | 'translationWorkAvailable' |
+    'translationStateChanged' | 'translationSessionEnded' | 'translationBatchInvalidated' |
     'contextMenuRequested' | 'externalUrlRequested' | 'popupBlocked' |
     'fileOpenRequested' | 'dateTimePickerRequested' | 'dateTimePickerClosed' |
     'selectPopupRequested' | 'selectPopupClosed' | 'contactsPickerRequested' |
@@ -251,13 +263,13 @@ export interface BrowserRuntimeEvent {
     'clearBrowsingDataDone' | 'browsingDataCounts' | 'searchEngines' |
     'adBlockState' | 'adBlockConfigResult' | 'adBlockStateChanged' |
     'prefs' | 'prefsChanged' | 'siteSettings' | 'aboutInfo' | 'favicons' |
+    'pageInfo' | 'pageInfoActionResult' | 'pageDisplayDiagnostics' |
     'urlProtectionState' | 'urlProtectionConfigResult' | 'urlProtectionStateChanged' |
     'urlProtectionRulesUpdateResult' |
     'protectionRuleSources' | 'protectionRuleSourceResult' | 'protectionRuleSourcesChanged' |
-    'siteProtectionState' | 'siteProtectionConfigResult' | 'siteProtectionStateChanged' |
+    'siteProtectionStateChanged' |
     'savedPasswords' | 'passwordRevealed' | 'passwordCommandResult' |
-    'passwordsExported' | 'passwordsImported' | 'savedPasswordsChanged' |
-    'resourceList' | 'resourceActionResult' | 'resourcesChanged' | 'resourcesRequested';
+    'passwordsExported' | 'passwordsImported' | 'savedPasswordsChanged';
   // gpuContextLost: whether the engine could rebuild after the GPU lost
   // its context. False means the picture will not come back on its own.
   recovered?: boolean;
@@ -498,7 +510,23 @@ export interface DroppedFileRef {
   viewPath?: string;
 }
 
+export interface ShellProxyConfig {
+  version: number;
+  mode: 'system' | 'direct' | 'custom';
+  scheme: 'http' | 'https' | 'socks5';
+  host: string;
+  port: number;
+  bypassRules: string;
+  bypassPrivateAddresses: boolean;
+  revision?: number;
+  hasCredentials?: boolean;
+}
+
 export interface BrowserCommandPayload {
+  proxyConfig?: ShellProxyConfig;
+  credentialAction?: 'keep' | 'replace' | 'remove';
+  proxyUsername?: string;
+  proxyPassword?: string;
   popupWidget?: number;
   startupToken?: string;
   startupPhase?: 'ready' | 'frame' | 'cancel';

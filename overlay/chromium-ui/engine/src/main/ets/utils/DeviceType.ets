@@ -300,6 +300,29 @@ export class DeviceRoutingPolicy {
       // 同样强制外壳画长按/右键菜单，不要引擎的原生菜单（功能不全）。
       contextMenu: 'shell',
       jitless: false,
+      // 157 新增字段（155 的 ArkTS 接口没有）。引擎启动时 ProbeOhosJitMemory
+      // 探测 JIT CodeRange，本字段决定探测失败时是否请求系统放宽兼容性。
+      // 说明：真机落盘实测本机探测本就成功（before_avail=1/after_avail=1,
+      // fallback_applied=0, js_flags 为空），JIT 从未降级 —— 所以它不是
+      // "凤凰掉帧"的原因（该结论此前写在这里，是错的，已改正）。保留 true
+      // 只是因为语义正确（允许必要时请求兼容），对性能无副作用。
+      jitCompatibility: true,
+      // ★ 157 手机端关键：本机（Pura80 / API 26）**没有 libchild_process.so**，
+      // 引擎的 SupportsNativeChildProcess() 于是走 device_class 回退，
+      // phone 被判为不支持 → BuildArgumentsLocked 只能加 --single-process，
+      // renderer 与 browser 同进程抢 CPU。
+      // 真机 trace 实测（15s，凤凰滑动）：线程累计 CPU
+      // Chrome_InProcRe 31.08s vs Compositor 3.97s / VizCompositorTh 3.11s
+      // （8 倍差）；且 H:WM_51294_RequestNextVSync 只有 1077 次 ≈ 72fps，
+      // 而 ArkUI 主线程与 WM vsync 都是 ~120fps —— 瓶颈就在 renderer。
+      // 引擎自带 fork server：libnweb_render.so 里 ChromiumNativeChildMain /
+      // NativeChildProcess_MainProc 等符号齐全，启用后改走
+      // --renderer-process-limit=16 + --ohos-phone-fork，获得独立 renderer
+      // 子进程（同 UID、无沙箱）。真机实测：资源密集的文章页（广告/推荐流）
+      // 在 fork 下加载慢、加载完成后滑动仍持续卡，单进程则正常 —— renderer
+      // 与 browser 的逐帧跨进程提交在重页面上是瓶颈。默认单进程；
+      // auraDiagPhoneFork 设 true 可重新启用做 A/B。
+      experimentalPhoneFork: Boolean(AppStorage.get('auraDiagPhoneFork') ?? false),
       fullscreenRequested: routing.fullscreenRequested
     };
     // 1.0.144「Vulkan 渲染加速」：默认关 → ANGLE 走 HarmonyOS 自带的 EGL/GLES，

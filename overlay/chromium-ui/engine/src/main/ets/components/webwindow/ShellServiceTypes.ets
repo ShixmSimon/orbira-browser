@@ -136,7 +136,9 @@ export type ShellPrefKey =
   'webRtcIpHandling' |
   // JSON {mode: allow/session_only/block, managed}; default Cookie storage.
   'cookieStorage' |
-  'imageLoading';
+  'imageLoading' |
+  // JSON {mode: on/off, managed}; Chromium extension developer tools.
+  'extensionDeveloperMode';
 
 export interface ShellPrefValue {
   key: ShellPrefKey;
@@ -625,6 +627,8 @@ export interface SiteSettingsEvent extends ShellServiceEvent {
 }
 
 export interface AboutInfoEvent extends ShellServiceEvent {
+  proxyApiVersion?: number;
+  proxySocks5Auth?: boolean;
   requestId: number;
   chromiumVersion: string;
   engineCommit: string;
@@ -643,6 +647,7 @@ export interface AboutInfoEvent extends ShellServiceEvent {
   // passwordSyncAuthorize, getPasswordsForSync, applyPasswords and
   // passwordsChanged. Absent means none.
   passwordApiVersion?: number;
+  passkeySyncApiVersion?: number;
   // Whether the user has authorized password sync on this profile.
   passwordSyncAuthorized?: boolean;
   // Whether V8 runs with its JIT this launch: false when the launch config
