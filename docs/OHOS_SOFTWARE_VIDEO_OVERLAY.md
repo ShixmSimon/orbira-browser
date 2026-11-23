@@ -154,3 +154,121 @@ visible and has a buffer. A candidate log alone does not prove presentation.
 Pause/scroll, resume, fullscreen/exit, navigation, and an isolated GPU restart
 must preserve controls and restore the layer. Use H264/HEVC as decoder-path
 regressions and 10-bit VP9 as a non-promoted software HDR control.
+
+## RGB crop implementation (2026-11-05; device qualification failed)
+
+The candidate gate now accepts visible source/viewport/clip intersections for
+software SDR video when the resulting full-allocation geometry is representable.
+A context-owned RSCanvasNode clips the video child. For RGB buffers, its bounds
+are the visible destination; the child displays the full allocation translated
+and scaled so the requested source rectangle maps exactly into those bounds.
+The submitted delegate source is the full RGB allocation, avoiding dependence
+on whether a particular firmware honors RGB delegate source cropping. There is
+no additional pixel copy. Native YUV keeps its prior source/destination mapping
+under an origin-aligned full-primary clipping parent.
+
+The clipping parent survives video queue recreation and is removed on drain.
+It uses the existing UI context, paired transaction completion and buffer lease
+retirement. Its factory has independently inspected full-function fingerprints
+for both retained client-library profiles. Unknown implementations fail closed.
+The shared geometry tests cover the measured 1320-to-1316 viewport intersection,
+non-full source rectangles, all clipped edges, fractional positions, invalid
+inputs and extreme enlargement. Full Chromium build and screenshot comparisons
+are required before claiming device support; older validation above still
+reflects the previous cropped-software fallback policy.
+
+Implementation `db9beeaa` passed Adapter CI and the full Chromium 155
+incremental build (runs 41953801090 / 41953801043). The NDK bridge and the
+ASan/UBSan overlay suite also passed locally. The generated asymmetric VP9
+fixture and `software_crop_validation.mjs` / `compare_software_crop.py` provide
+seven crop cases and independent pixel comparisons. The comparator was checked
+with both identical screenshots and an intentional one-pixel displacement.
+
+Device qualification was postponed at the user's request. An attempted
+old-package baseline was interrupted during its initial full-visibility case
+when the app became hidden; it did not reach a cropped case. Its test tab,
+media and wake lock were cleaned up. No cropped-software device success or
+visual correctness is claimed for this implementation yet.
+
+### Device crop qualification, 2026-11-05
+
+Installed full Chromium 155 build `e14ce50e` (includes `db9beeaa`) on Mate 70
+Pro+, Ganesh Vulkan. HAR checksum, engine cache, and all 67 packaged native/raw
+payloads were verified; installation and launch smoke passed. Default runtime
+UA no longer includes the OpenHarmony product suffix.
+
+All seven final cases showed visible RS webpage/video buffers, advancing video
+(at least 60 additional frames per promoted case), and successful CSS-filter
+fallback. GPU process crash count stayed 0; test media, tab and wake lock were
+cleaned up. **Presentation success did not establish crop correctness.**
+
+Pixel comparisons against ordinary webpage composition failed overall:
+
+| Case | Pixel result | Mean absolute RGB error (0–255) |
+| --- | --- | ---: |
+| Unclipped control | Pass | 0.0036 |
+| Right viewport overflow | Fail | 1.3772 |
+| Left viewport crop | Fail | 6.8744 |
+| Top viewport crop | Pass | 0.0074 |
+| Bottom viewport crop | Fail | 39.8924 |
+| Object-fit cover | Pass | 0.0001 |
+| Overflow-hidden parent | Fail | 42.6651 |
+
+The parent crop captures visibly select/scale a different part of the test
+pattern. The RSCanvasNode parent workaround is therefore not qualified on this
+firmware; do not describe general software crop promotion as complete. These
+captures localize a source/destination mapping failure but do not yet identify
+the exact RS command/property responsible.
+
+Initial small-visible-region bottom/cover/parent cases did not promote despite
+advancing playback. Enlarging those regions permitted promotion, so the final
+suite uses larger cases to exercise actual crop presentation. The runner now
+records per-case failures and continues instead of suppressing later cases.
+
+Local evidence: `/tmp/lumie-software-crop/device-e14ce50e-final/report.json`,
+`presenter.log`, fourteen screenshots and `pixel-comparison.json`. Earlier
+repetitions in `device-e14ce50e`, `device-e14ce50e-repeat` and
+`device-e14ce50e-large` reproduce the failing crops.
+
+
+### Viewport-boundary safety guard, 2026-11-05
+
+A retail RS trace for the left case shows delegate source `(0,0,640,360)`
+becoming `(16,0,624,360)` while the draw destination remains the full
+`800x450` node. The parent then clips the already cropped/stretched image.
+The installed service's `UpdateRectForDelegateMode` reads its computed layer
+source and the original node bounds, unlike current upstream's explicit
+source handling. Changing delegate destination, frame gravity, normal-mode
+flags or fixed-rotation flags did not correct the device captures; those
+experiments are not included in the production implementation.
+
+`RgbVideoFitsPrimary` now checks the entire transformed allocation, not just
+its visible intersection. Both the candidate oracle (before punching a hole)
+and the RS backend reject RGB allocations extending outside the primary.
+Interior source/parent crops remain eligible; viewport-crossing RGB video
+uses Chromium webpage composition. This is a correctness fallback, not a
+claim that viewport-crossing independent-layer promotion has been completed.
+Native YUV/HDR geometry and all release/transaction protocols are unchanged.
+
+The strict seven-case promotion test remains the default. Its explicit
+`--viewport-fallback` mode checks the five viewport-crossing cases use webpage
+composition, while full, cover and a new interior parent crop use independent
+layers. Both paths must advance frames and match the CSS-filter baseline at
+the existing pixel-error thresholds.
+
+Commit `ad598d07` passed Incremental build `41978867711` and Adapter CI
+`41978867914`. ASan/UBSan ownership/geometry/transport tests, software upload
+regressions and the actual NDK bridge build also passed. The published HAR
+checksum, refreshed engine cache and all 67 HAP payloads were verified. The
+signed package was installed without uninstalling and passed launch smoke.
+The compiled engine contains the new candidate rejection reason.
+
+Before that installation, the full/cover/interior-parent cases all passed
+pixel comparison in a focused device run, confirming the interior mapping;
+this is not qualification of the new guard. The phone disconnected after
+installation, before the eight-case guard regression could connect to CDP.
+No complete device or HDR regression result is claimed for `ad598d07` yet.
+
+Evidence: `/tmp/lumie-install-ad598d07/verified.json`, signed HAP and install
+log; `/tmp/lumie-software-crop/interior-before-guard/` (three-case diagnostic,
+not the complete suite).

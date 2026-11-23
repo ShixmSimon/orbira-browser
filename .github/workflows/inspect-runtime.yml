@@ -1,9 +1,6 @@
 name: Inspect runtime sources
 
 on:
-  push:
-    branches: [hmos-154-adapter, hmos-154-dev]
-    paths: ['.github/workflows/inspect-runtime.yml']
   workflow_dispatch:
 
 permissions:
@@ -16,10 +13,13 @@ concurrency:
 
 jobs:
   snapshot:
+    if: github.ref == 'refs/heads/hmos-157-adapter' || github.ref == 'refs/heads/hmos-155-adapter'
     runs-on: [self-hosted, harmonyos-chromium]
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      - name: Select isolated engine checkout
+        run: python3 scripts/select-ci-engine.py
       - name: Read startup and utility sources
         shell: bash
         run: |
@@ -31,7 +31,7 @@ jobs:
           import subprocess
           import tarfile
 
-          root = Path(os.environ.get('CHROMIUM_SRC', '/root/chromium-154/src'))
+          root = Path(os.environ.get('CHROMIUM_SRC', '/root/chromium-157/src'))
           paths = '''
           out/ohos_arm64/args.gn
           components/viz/service/display_embedder/skia_output_surface_impl.cc

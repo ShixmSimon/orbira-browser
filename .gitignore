@@ -43,13 +43,16 @@ build-status/hap-path.txt
 # branch. Keeping it out of the working branch stops the runner and whoever is
 # developing from racing on the same files.
 build-status/
+/cloud-artifacts/
 
 # Screenshots pulled off a device while debugging. Written over on every
 # capture, never worth keeping.
 /shot.jpeg
 
-# Python bytecode from running the helper scripts.
-__pycache__/
+# Private device captures, experimental probes, signed test packages and caches.
+/artifacts/
+/overlay/chromium-ui/.cache/
 
-# Reanchor diagnostics: regenerated on every 155-reanchor-patches.py run.
-reanchor-conflicts/
+# Python diagnostic bytecode is local-only.
+__pycache__/
+*.py[cod]

@@ -1,0 +1,61 @@
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "ram:DecodeDiagnosticMessage",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["ecs:DescribeInstances", "ecs:DescribeDisks", "ecs:DescribeImages"],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "ecs:DescribeLaunchTemplateVersions",
+      "Resource": "acs:ecs:eu-central-1:1349864334375917:launchtemplate/lt-gw8eis82pr9mv0e4sqjt"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "ecs:RunInstances",
+      "Resource": "acs:ecs:eu-central-1:1349864334375917:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "acs:RequestTag/ci-project": "chromium-hmos",
+          "ecs:InstanceChargeType": "PostPaid"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "ecs:RunInstances",
+      "Resource": [
+        "acs:ecs:eu-central-1:1349864334375917:disk/*",
+        "acs:ecs:eu-central-1:1349864334375917:image/m-gw85t860gzx0tuy0jnap",
+        "acs:ecs:eu-central-1:1349864334375917:securitygroup/sg-gw83t06rmmodnp0agb7x",
+        "acs:ecs:eu-central-1:1349864334375917:keypair/chromium-155",
+        "acs:ecs:eu-central-1:1349864334375917:snapshot/s-gw85t860gzx0tuxvbvdn",
+        "acs:ecs:eu-central-1:1349864334375917:launchtemplate/lt-gw8eis82pr9mv0e4sqjt",
+        "acs:vpc:eu-central-1:1349864334375917:vswitch/vsw-gw8ntm18raa3sqromi7q5"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": "ecs:TagResources",
+      "Resource": "acs:ecs:eu-central-1:1349864334375917:instance/*",
+      "Condition": {"StringEquals": {"acs:RequestTag/ci-project": "chromium-hmos"}}
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["ecs:StopInstance", "ecs:DeleteInstance", "ecs:AttachDisk", "ecs:DetachDisk"],
+      "Resource": "acs:ecs:eu-central-1:1349864334375917:instance/*",
+      "Condition": {"StringEquals": {"acs:ResourceTag/ci-project": "chromium-hmos"}}
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["ecs:AttachDisk", "ecs:DetachDisk"],
+      "Resource": "acs:ecs:eu-central-1:1349864334375917:disk/d-gw8hklmz2vbu7gozleno"
+    }
+  ]
+}

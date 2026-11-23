@@ -410,6 +410,7 @@ Chromium 自己的安装确认框,用户确认后才装。
 | `pwaInstalled`、`pwaMenuModel`、`pwaMenuClosed` | 否 | PWA 相关,需要时参考 `entry/` 的实现。 |
 | `systemPrintFailed`、`inputRecovered` | 否 | 记日志即可。 |
 | `findResult` | 否 | `matches` 匹配总数，`activeMatch` 当前是第几个（从 1 开始，0 表示没有），`finalUpdate` 为 true 时计数已定 |
+| `startupAck` | 否 | 启动专用应答：`startupToken`、`requestId`、`startupPhase`（`ready` / `frame`）、`startupStatus`（`waiting` / `ready` / `presented`）。只回请求对应的窗口，不能用于通用页面内容读取 |
 | `pageText` | 否 | 回复 `getPageText`：`requestId`、`text` |
 | `contextMenuRequested` | **是**(手机) | 长按网页元素。引擎这时不弹自己的菜单，由外壳画，见下文"长按菜单"。**每次都要回一条命令**：选了某项发 `contextMenuAction`，没选就关掉发 `contextMenuDismissed`。 |
 | `browserControlsRatio` | 否 | 用了 `setBrowserControls` 才会有。`ratio` 为顶栏当前露出的比例（1 全部显示，0 完全滑走），外壳把顶栏往上移 `(1 - ratio) × 顶栏高度`；传了 `bottom` 时，底栏按归一化的比例 `n = (ratio - minTop/top) / (1 - minTop/top)`（`minTop` 为 0 时 `n = ratio`）往下移 `(1 - n) × bottom`：两栏同时开始、同时收完，底栏完全收起。传了 `minTop` 时，比例的下限是 `minTop / top`（顶栏收起到 `minTop` 就不会再往上滑了）。 |
@@ -493,6 +494,7 @@ function report() {
 | `setBrowserControlsState` | `state`: `'shown' \| 'hidden' \| 'both'`, `animate?` | 主动把顶栏收起或展开，而不是等网页滚动触发。`'shown'` 强制展开、`'hidden'` 强制收起（收到 `minTop`）、`'both'`（默认）交还给滚动控制。`animate` 默认 true |
 | `findInPage` | `text`, `forward?` | 在当前标签页查找，同一段文字再发一次即跳到下一个（`forward: false` 为上一个）。结果通过 `findResult` 事件返回 |
 | `stopFind` | | 结束查找，清除高亮 |
+| `startupProbe` | `startupToken`、`requestId`、`startupPhase` | `ready` 在 renderer 独立世界核对离线探针的 `data-lumie-startup` 属性；`frame` 必须在 ready 后、恢复页导航及标签选择完成后请求，等待当前文档 VisualState 提交和窗口成功 presentation 反馈；`cancel` 取消该 token。外壳应短超时重试，按 token/phase/requestId 匹配，后台不确认；原生去重在途工作，标签/导航变化会使旧回调失效 |
 | `getPageText` | `requestId` | 读取当前网页的可见文字（最多 20000 字），在独立的脚本环境里执行，网页自己的脚本看不到。结果通过 `pageText` 事件返回 |
 | `contextMenuAction` | `requestId`, `action` | 回复 `contextMenuRequested`：执行选中的项。`action` 必须是事件 `supportedActions` 里的一项 |
 | `contextMenuDismissed` | `requestId` | 回复 `contextMenuRequested`：用户没选任何项就关掉了菜单 |
@@ -802,7 +804,7 @@ ECH 保留 Chromium 的协商/重试逻辑；`secure` 是严格 DNS 模式，不
 它读取/修改 HostContentSettingsMap 的 `ContentSettingsType::COOKIES` 全局默认值：对应 ALLOW、SESSION_ONLY、BLOCK。使用与默认网站权限相同的注册表合法性和有效 provider 检查；策略/扩展控制时禁用并拒写，旧 HAR 缺键禁用，写入后必须读回。
 这是 Cookie 默认保存策略，与第三方 Cookie 控制、站点例外共同决定实际行为；修改不重置例外、不修改第三方偏好、不立即清除已有资料。会话 Cookie 的结束/恢复按内核现有机制处理，不保证强制结束应用或恢复会话后立即删除，也不等同于退出清理全部网站数据。范围仍为当前实例原始 Profile。
 
-- `textScale` 是 50–200 的百分比。桌面版 Chromium 没有只放大文字的设置，所以这里改的是网页的默认缩放比例，整页一起放大。网页实际的默认缩放还要乘上系统字体大小（设置 > 显示 > 字体大小，`Configuration.fontSizeScale`，限制在 0.8–2.0），由引擎 HAR 的 `fontscale` 服务自动跟随，外壳不用处理；`textScale` 读出来的仍是外壳设的值，不含系统字体部分。自己设过缩放的网站保持自己的比例。`--disable-features=OhosFollowSystemFontSize` 可关闭跟随。
+- `textScale` 是 50–200 的百分比，历史名称保留；它设置网页的默认整页缩放，自己设过缩放的网站保持自己的比例。157 的系统字体大小（设置 > 显示 > 字体大小，`Configuration.fontSizeScale`，限制在 0.8–2.0）由引擎 HAR 的 `fontscale` 服务独立传入 `WebPreferences.font_scale_factor`，经 Mojo 传给 Blink 的 `accessibility_font_scale_factor`，不再乘到默认或站点的整页缩放上。普通网页通过 Blink 的 `TextZoom` 放大文字并重新排版，固定像素大小的图片、视频和整页布局缩放不随之放大；依赖文字或 em 尺寸的布局仍可能变化。声明 `<meta name="text-scale" content="scale">` 的页面使用 Blink 的原生适配规则，避免与文字缩放叠加。新文档、同进程及跨进程 iframe 均按各自文档的适配声明处理。系统倍率变化会更新普通、无痕及应用窗口内已打开标签的网页偏好，无需刷新；新页面直接使用最新倍率。`--disable-features=OhosFollowSystemFontSize` 可关闭系统字体跟随，此时文字倍率为 1；外壳不用额外处理。
 - `urlProtectionApiVersion>=1` 将 `safeBrowsing` 映射为独立 OHOS 防钓鱼总开关，见下方“防钓鱼”。新配置默认关闭、来源 local；已有 standard/enhanced 不视为云查询同意。旧版/没有该能力字段时不能承诺安全浏览保护。新版使用原子配置接口切换来源；legacy `setPref` 仍作用于普通 Profile，且不会授予云查询权限。
 - 没有 `passwordFillRequiresAuth`（已去掉）：把已保存的密码填进网页总要验证身份，和查看、复制、编辑、导出一样，没有开关。设备上没有锁屏也没有录入生物特征时没有东西可以拿来验证，照常填充。
 - `passwordVault` 默认关。打开后由系统密码保险箱填充和保存网页密码：点登录框时内核直接调起保险箱（每个表单问一次），用户选的账号由内核填进网页；登录成功后保险箱询问是否保存，同时 Chromium 不弹提示、悄悄存一份，关掉开关后照常可用。打开期间 Chromium 自己的填充建议、自动填充和强密码提示都不出现。保险箱调用由外壳用 `registerShellSystemService('passwordvault', …)` 实现（`autoFillManager` 的 ViewData 接口要 API 26，引擎 HAR 按 API 20 编译）。保险箱要求设备设了锁屏密码，外壳只在可用时让开关可点。
@@ -1389,3 +1391,128 @@ changes do not create new translation requests. Native device acceptance is pend
 ### 图片默认加载策略
 
 `imageLoading` 是字符串偏好，读取 JSON `{ "mode": "allow" | "block", "managed": boolean }`，写入 `{ "mode": "allow" | "block" }`。使用当前 Profile 的 IMAGES 默认内容设置，仅接受注册表允许的默认值；策略或扩展控制时拒写。保留站点例外，不改 Cookie、JavaScript 或媒体权限。未注册或旧 HAR 缺键时不可用；外壳保存后必须读回确认。修改后重新加载页面，已加载图片不保证立即移除；不代表阻止所有媒体或所有图片相关流量。
+
+
+### 插件同步 v1
+
+普通 Profile 就绪后，`getExtensionsForSync { requestId }` 返回
+`extensionSyncSnapshot { requestId, protocolVersion: 1, ok, items }`。
+`items` 是完整的用户插件清单（含停用、异常终止，排除内置与策略插件）；
+每项包含 `id, name, source: "webstore" | "local", enabled`。
+`enabled` 表示用户是否关闭，安全策略导致的停用不跨设备传播。失败时 `ok: false`，
+调用方不能把失败或超时当作空清单生成卸载记录。
+
+`extensionSyncSession { token }` 设置同步会话，空 token 撤销会话。改变会话会取消
+原会话未完成的安装请求。外壳须在关闭同步、账号切换和窗口解绑时撤销。
+`applyExtensionForSync { requestId, token, id, source, enabled, removed }` 每次应用一条，
+返回 `extensionSyncApplied { requestId, ok }`。只有成功回执才能确认云端记录；
+失败、取消或超时应保留远端状态等待重试。
+
+缺少的 `webstore` 插件由 Chromium 商店安装器验证并下载，沿用权限确认界面，
+不接受云端下发任意下载 URL。`local` 插件缺包时由外壳显示手动安装提示并延后确认。
+已有插件的启停与卸载沿用 Chromium 管理策略检查；安全停用原因不会通过同步获得授权。
+不包含插件内部存储、规则、脚本、网站访问授权或安装包上传。
+
+### 扩展设置云同步（storage.sync）
+
+扩展清单成功回执新增 `storageSyncVersion: 1` 能力字段。旧内核未声明此字段时仅同步清单。
+普通 Profile 的非空 `extensionSyncSession` token 同时授权以下命令：
+
+- `getExtensionSettingsForSync { requestId, token, id }` 返回
+  `extensionSettingsSnapshot { requestId, protocolVersion: 1, ok, items: [{storageKey, value}] }`。
+  value 是 JSON 文本；读取失败不是空存储。
+- `applyExtensionSettingForSync { requestId, token, id, storageKey, value, removed }`
+  逐项写入或删除，返回 `extensionSettingApplied { requestId, ok }`。
+- `extensionSettingsChanged` 仅作失效通知，不携带设置值。
+
+仅操作 Chromium StorageFrontend 的 kSync 区域，保留配额校验和插件 onChanged 通知。
+local/session、IndexedDB、Cookie 不在此协议范围。拒绝访客、隐身、组件、策略扩展及无效会话。
+尚未安装插件的云端设置由外壳暂存，安装完成后恢复；卸载本机插件不等于删除云端设置。
+同一设置的并发远端变更由云端记录合并结果决定，不合并 JSON 值内部字段。
+
+外壳云表 `extensionSetting` 使用字段：
+`id String`（SHA256(extensionId/key 的 JSON 数组)，端侧去重主键）、
+`extensionId String`、`storageKey Encrypted String`、`value Encrypted String`、
+`modified Integer`、`deleted Integer`。
+新增表须部署到签名对应环境后，才能进行端云验收。
+
+
+### On-demand page display diagnostics (157)
+
+`{command:"getPageDisplayDiagnostics", requestId, tabId}` replies with
+`{event:"pageDisplayDiagnostics", requestId, diagnosticStatus, displayMetrics?}`.
+The target must still be the active tab of the requesting browser window.
+`diagnosticStatus` is `ok`, `unavailable`, `stale-document`, or `renderer-unavailable`.
+Shells must bound the wait (Lumie: 2 seconds) and handle older engines that do not reply.
+The callback verifies the weak document identity and active tab before returning metrics.
+
+`displayMetrics` contains only allowlisted finite numbers/booleans: `capturedAtMs`,
+`zoomPercent`, `pageFullscreen`, rendering view `view{X,Y,Width,Height}Dip`,
+`inner{Width,Height}Css`, `outer{Width,Height}Css`, `devicePixelRatio`,
+`screen{Width,Height}Css`, `root{Client,Scroll}{Width,Height}Css`,
+`visualViewportAvailable`, `visual{Width,Height}Css`, `visualScale`,
+`visualOffset{Left,Top}Css`, `domFullscreen`,
+`fullscreen{X,Y,Width,Height}Css`, `viewportMetaPresent`, `videoPresent`,
+`video{X,Y,Width,Height}Css`, and `videoIntrinsic{Width,Height}`.
+The video is the first video within the fullscreen element (or the document when not fullscreen).
+An isolated, fixed script reads main-frame geometry only. No URL, title, text,
+form data, DOM serialization, arbitrary selectors, or caller script is accepted.
+View and DOM samples straddle an asynchronous renderer callback; this is a diagnostic
+snapshot, not an atomic rendering transaction. Absent visual viewport/fullscreen
+geometry is zero with the corresponding availability flag false.
+
+### Proxy configuration (proxyApiVersion 1)
+
+`getAboutInfo` advertises `proxyApiVersion:1` and `proxySocks5Auth:true`.
+All proxy commands are native shell commands, unavailable to web content.
+
+- `getProxySettings {requestId}` → `proxySettings`.
+- `applyProxySettings {requestId, expectedRevision, proxyConfig, credentialAction,
+  proxyUsername?, proxyPassword?}` → `proxyApplyResult` after an atomic disk write.
+- `testProxySettings` uses the same draft and credential fields, without saving.
+  → `proxyTestResult {requestId,status,httpStatus,elapsedMs,testUrl}`.
+- `cancelProxyTest` cancels only the calling window's test. A network change
+  invalidates the test, including previously successful results.
+
+Config contains `version:1, mode:system|direct|custom, scheme:http|https|socks5,
+host, port, bypassRules` (newline-separated explicit hosts or `*.domain`),
+`bypassPrivateAddresses`. Readback adds `revision,hasCredentials`. Credentials
+use `keep|replace|remove`; keeping credentials requires the same endpoint.
+They never appear in ordinary snapshots, URLs or plain preferences. Immutable device-only
+AssetStoreKit records are retired after restart. Nonsecret selection is shared
+by regular and temporary phone profiles in `files/lumie-proxy.json`.
+
+Snapshots advertising `retainsCustomConfig:true` keep the last committed custom
+endpoint, bypass settings and Asset reference when saving system/direct mode.
+Only the active mode changes; hidden unsaved custom edits are not committed.
+Readback therefore retains the custom fields and `hasCredentials` in inactive
+modes too. Returning to custom can use `keep` for that same endpoint, even if
+the previous mode was system/direct. Inactive credentials are not loaded into
+network contexts or retired on restart. Explicitly saving custom mode without
+authentication still removes its saved credential reference.
+
+Snapshots carry `desired`, `effective`, `revision`, `effectiveRevision`,
+`source`, `controlled`, `restartRequired`, `effectiveBlocked`, `status`, `httpAuth`, `socks5Auth`.
+`effectiveBlocked` remains true until restart even after a successful recovery
+save; a malformed file exposes an editable default draft without enabling it.
+`proxySettingsChanged` broadcasts committed changes. `savedRestartRequired`
+means **persisted, not applied to the current process**. The old effective
+selection stays in force for all existing/new contexts until full restart.
+No arbitrary timer signifies success. Compare-and-swap conflicts return
+`conflict`; missing replies require readback before retrying writes.
+
+Manual routing has no DIRECT fallback except explicit bypass and Chromium's
+implicit loopback rules. Custom mode disables QUIC and direct NetworkContext
+UDP/TCP socket APIs and WebTransport, and overlays the WebRTC IP policy without
+changing the user's saved policy. Tests use a disposable in-memory context and
+HTTPS headers from IANA's `https://example.com/`, no browser cookies, no redirects,
+no IP lookup and no bypass exceptions. Failure codes distinguish authentication,
+TLS, handshake, unreachable proxy, timeout and target failure. SOCKS5 auth
+advertises only method 2, rejects downgrade and sends destination hostnames.
+
+Scope is Profile traffic (pages, downloads, workers, normal extension fetches).
+System NetworkContexts (including component updates), ArkTS HTTP, Huawei account
+and Cloud DB SDK requests are **not** covered and the settings page says so.
+PAC editing and a guarantee that every OS/app request is proxied are not exposed.
+
+Proxy credential readback: the settings page may explicitly issue `getProxyCredentials` with `expectedRevision`. A targeted `proxyCredentials` response contains `revision`, `status` and, on success, `proxyUsername` / `proxyPassword`. Readback is advertised by `credentialReadback:true` in proxy snapshots. Secrets are never included in `getProxySettings` or broadcasts. The shell must discard late responses and clear secret fields after consumption. `proxyTestResult` now includes `netError`, `netErrorName`, and `httpStatus`; tunnel establishment and target HTTP failures have distinct statuses.

@@ -2,21 +2,44 @@ name: Adapter CI
 
 on:
   push:
-    branches: [hmos-154-adapter, hmos-155-adapter]
+    branches: [hmos-157-adapter, hmos-155-adapter]
   pull_request:
-    branches: [hmos-154-adapter, hmos-155-adapter]
+    branches: [hmos-157-adapter, hmos-155-adapter]
   workflow_dispatch:
+    inputs:
+      cloud_run_id:
+        description: 'Optional existing cloud build run ID to inspect (read only)'
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
+  inspect-cloud-builder:
+    if: github.event_name == 'workflow_dispatch' && inputs.cloud_run_id != '' && github.ref == 'refs/heads/hmos-157-adapter'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install -r .github/cloud/requirements.txt
+      - name: Inspect tagged instances without changing them
+        env:
+          CLOUD_INSPECT_RUN: ${{ inputs.cloud_run_id }}
+        run: python3 .github/cloud/cloud.py inspect --run-id "$CLOUD_INSPECT_RUN"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cloud-inspect-${{ inputs.cloud_run_id }}
+          path: build-status/cloud-inspect.json
+
   verify-publication:
-    # Disabled: these checks are inherited from the upstream engine CI. This
-    # fork consumes the upstream engine and only changes the ArkTS shell, so
-    # they are not meaningful here. Re-enable by restoring the condition below.
-    # if: github.ref == 'refs/heads/hmos-154-adapter' || github.ref == 'refs/heads/hmos-155-adapter' || github.base_ref == 'hmos-154-adapter' || github.base_ref == 'hmos-155-adapter'
-    if: false
+    if: inputs.cloud_run_id == '' && (github.ref == 'refs/heads/hmos-157-adapter' || github.ref == 'refs/heads/hmos-155-adapter' || github.base_ref == 'hmos-157-adapter' || github.base_ref == 'hmos-155-adapter')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,6 +51,13 @@ jobs:
         run: python3 scripts/tests/test-ci-engine-selection.py
       - name: Preserve completed 155 objects across snapshot retries
         run: python3 scripts/tests/test-155-snapshot.py
+      - name: Verify 157 migration cannot access stable engine trees
+        run: python3 scripts/tests/test-157-isolation.py
+      - name: Check phone file picker and desktop window size policy
+        run: python3 scripts/tests/test-file-chooser-window-size.py
+      - name: Check disposable cloud builder and retained-disk lifecycle
+        if: env.CHROMIUM_MAJOR == '157'
+        run: python3 scripts/tests/test-cloud-ci.py
       - name: Verify public tree
         run: scripts/verify-public-tree.sh
       - name: Check scripts
@@ -38,12 +68,19 @@ jobs:
           python3 scripts/tests/test-v8-context-snapshot.py
       - name: Check JIT startup opt-in and interpreter fallback
         run: scripts/test-jit-startup.sh
+      - name: Check IME edit key events and focus lifetime
+        run: python3 scripts/tests/test-ime-key-events.py
       - name: Check incremental patches in Chromium and DEPS checkouts
         run: python3 scripts/tests/test-incremental-patches.py
       - name: Check AppGallery UA compatibility and mobile viewport wiring
         run: python3 scripts/tests/test-appgallery-user-agent.py
+      - name: Standard default user agents
+        run: python3 scripts/tests/test-standard-user-agent.py
       - name: Check browser and web-app viewport isolation
         run: python3 scripts/tests/test-web-app-viewport.py
+      - name: Check viewport-fixed browser controls eligibility
+        if: env.CHROMIUM_MAJOR == '157'
+        run: python3 scripts/tests/test-fullscreen-root-scroller.py
       - name: Check experimental OHOS fork server transport
         run: scripts/test-ohos-fork-server.sh
       - name: Check inherited trace descriptors and GPU state recovery
@@ -58,11 +95,26 @@ jobs:
         run: scripts/test-extension-updates.sh
       - name: Check memfd write-seal contract
         run: python3 scripts/check-memfd-seals.py
+      - name: Check SOCKS5 authenticated handshake
+        run: |
+          python3 scripts/tests/test-shell-settings-routing.py
+          python3 scripts/tests/test-proxy-mode-retention.py
+          python3 scripts/tests/test-proxy-socks5.py
+          python3 scripts/tests/test-proxy-http-auth.py
       - name: Check test-page media byte ranges
         run: python3 scripts/tests/test-serve-test-pages.py
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Check content-free page display diagnostics
+        run: node --test scripts/tests/page-display-diagnostics.test.mjs
+      - name: Check system font scaling independently of page zoom
+        if: env.CHROMIUM_MAJOR == '157'
+        run: python3 scripts/tests/test-system-font-scale.py
+      - name: Check history restoration loading UI
+        run: python3 scripts/tests/test-history-loading-ui.py
+      - name: Check BFCache protection cancellation and policy races
+        run: python3 scripts/tests/test-bfcache-protection.py
       - name: Check URL protection policy and SDK boundary
         run: node --test scripts/tests/url-check-service.test.mjs
       - name: Check passkey persistence and authentication cancellation

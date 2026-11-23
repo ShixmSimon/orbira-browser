@@ -1,12 +1,16 @@
 # OHOS security component updates
 
-The OHOS browser enables four platform-independent data components signed
+The OHOS browser enables an explicit allowlist of data components signed
 with Chromium's pinned CRX component keys:
 
 - **CRLSet** (`hfnkpimlhhgieaddgfemjhofmfblmnib`).
 - **PKI Metadata** (`efniojlnjndmcbiieegkicadnoecjjef`).
 - **Safety Tips** (`jflookgnkcckhobaglndicnbbgbonegd`).
 - **Certificate Error Assistant** (`giekcmmlnklenlaomppkphknjmnnpneh`).
+- **File Type Policies** (`khaoiebndkojlmppeemjhbpbandiljpe`).
+- **Origin Trials** (`llkgjffcdpffmhiakmfcdcblohccpfmo`).
+- **Hyphenation** (`jamhcnnkihinmdlkakkaopbjbbcngflc`).
+- **Crowd Deny** (`ggkkehgbnfjpeggfpleeakpidbkibbmn`).
 
 This does not enable Google account sync, arbitrary component registration,
 speech/AI models, Widevine, or browser binary updates.
@@ -17,7 +21,7 @@ speech/AI models, Widevine, or browser binary updates.
   no longer forces `--disable-component-update` for that opt-in; an explicit
   caller-supplied disable switch is still honored. Other OHOS embedders retain
   their previous disabled default.
-- `RegisterComponentsForUpdate()` registers just these four components on OHOS.
+- `RegisterComponentsForUpdate()` registers only the explicitly allowed components on OHOS.
   The component service also rejects every other ID, including registrations
   attempted later by individual features. SODA installation stays disabled.
 - Existing `disable-background-networking` and sync restrictions remain.
@@ -134,7 +138,7 @@ against the pinned 154.0.8037.97 upstream files plus the platform prerequisites.
 Required CI/device acceptance:
 
 1. Compile through push-triggered CI; package phone and Pad from that HAR.
-2. Inspect `chrome://components`: the four allowed security components
+2. Inspect `chrome://components`: the allowed security components
    register. Check update failures separately from up-to-date status.
 3. Confirm accepted-sequence/root-store diagnostics, HTTPS transfers and no
    Cookie or separate ping requests. Listing an installed component alone is
@@ -147,3 +151,98 @@ Required CI/device acceptance:
 6. With no existing profile data and networking disabled, verify the builtin
    emergency block already applies. A test run using an existing downloaded
    CRLSet does not establish this first-run guarantee.
+
+
+## Additional data components: File Type Policies
+
+The additive `ohos-file-type-component.patch` enables the local file-type
+policy library, built-in data resource and signed updater even when
+`safe_browsing_mode=0`. It does not enable online Safe Browsing checks.
+`DownloadTargetDeterminer::GetDangerLevel` and DownloadPrefs auto-open checks
+consume the active policy on OHOS; existing dangerous-download events and
+keep/discard UI remain responsible for user decisions. The installer requires
+HTTPS; package/hash/pinned CRX verification and protobuf version checks stay
+upstream. An INFO log reports dynamic-load result and active policy version,
+not filenames or visited URLs. Unknown component IDs still fail closed.
+
+The patch applies against both pinned 154 and migrated 155 sources. Host
+allowlist/security regression tests passed. Native 155 build `1ef52ac9` passed the existing Incremental build workflow.
+Device acceptance remains pending; registration alone is not proof of active policy.
+
+## Origin Trials
+
+`ohos-origin-trials-component.patch` registers the pinned
+`llkgjffcdpffmhiakmfcdcblohccpfmo` component and requires HTTPS on OHOS.
+The existing Chrome installer writes the manifest configuration to local
+state. `ChromeBrowserMainParts` already invokes
+`SetupOriginTrialsCommandLineAndSettings` and distributes those settings to
+Blink at startup, so changes take effect after restarting Lumie. This does not
+force-enable all experimental APIs. The diagnostic reports only staged
+component version/restart requirement. Both pinned branches pass patch
+forward/reverse checks and the allowlist host checks; native acceptance is recorded below; device acceptance remains pending.
+
+## Hyphenation
+
+`ohos-hyphenation-component.patch` registers dictionaries behind the existing
+`USE_MINIKIN_HYPHENATION` build flag (already enabled on OHOS). The installer
+publishes its directory to `ChromeContentBrowserClient`'s non-Android dictionary
+service; Blink's Minikin implementation requests and maps language dictionaries
+through that service. No separate renderer downloader is introduced. HTTPS and
+the upstream pinned CRX key are required. The ready log reports the version.
+Both pinned branches pass patch forward/reverse checks and host policy checks.
+Native acceptance is recorded below. Device acceptance remains pending: update
+the component, then compare a
+narrow English paragraph with `lang=en; hyphens:auto` against `hyphens:none`.
+
+## Crowd Deny
+
+The additive patch registers the pinned component over HTTPS and reuses the
+upstream protobuf loader, HTTPS-only origin lookup and private-registry-aware
+subdomain matching. A non-blocking local query adds an optional warning to
+OHOS notification permission events. Lumie's permission sheet displays that
+hint, preserving all existing user decisions. No online Safe Browsing request,
+automatic denial or quiet-prompt enforcement is added. UNKNOWN, ACCEPTABLE,
+absent/loading data and unknown future enum values leave the ordinary prompt.
+All four known negative qualities produce an informational warning, including
+warning-only entries. Other permissions do not query notification reputation.
+The load diagnostic reports version and entry count only (zero also covers an
+empty list or load failure); it does not certify that a nonempty list loaded.
+
+Both pinned branches pass forward/reverse patch checks. The host harness
+compiles the actual decision method and tests all enum values, no data and
+loading. It also compiles all eight actual OHOS registration calls. Native
+acceptance is recorded below; device acceptance remains pending. Device checks
+must cover a
+controlled listed HTTPS origin, unrelated permissions, unavailable data,
+allow/deny/dismiss behavior and persistence after restart. Do not substitute
+component registration status for these checks.
+
+## Official package check, 2026-11-05
+
+An update request identifying OHOS/arm64 advertised Hyphenation 120.0.6050.0
+and Crowd Deny 2026.11.2.137. HTTPS downloads matched their response hashes,
+CRX3 IDs and signatures from the publishers pinned in the 155 installers.
+The dictionary package contains 52 `.hyb` files including English; the Crowd
+Deny format-1 payload contains 12,442 reputation entries. Public metadata is
+in `scripts/tests/fixtures/security-components/additional-20261105.json`.
+The same request returned `noupdate` for File Type Policies and Origin Trials;
+registration does not guarantee that the server currently offers those packages
+to this platform. File Type Policies retains its compiled-in fallback, and
+Origin Trials retains its default configuration. No OS substitution or signature
+bypass is introduced. These are host package checks, not device activation.
+
+Lumie's optional notification hint and localized permission text passed ArkTS
+checking and full phone/wide packaging using the currently installed engine
+HAR. Older HAR events omit the hint and retain ordinary prompt behavior.
+The new kernel's Adapter CI and Incremental build both passed.
+
+## Integrated build acceptance
+
+Kernel `e671a9bf` passed Adapter CI and Incremental build
+(run 42019109103), including native rule validation and HAR publication.
+The published HAR was downloaded through the proxy and its SHA-256 verified.
+Lumie's engine cache was refreshed, then both phone and wide signed HAPs built
+successfully with the notification warning consumer (`4d10225`). All 67 engine
+library/resource payloads in the phone HAP matched the HAR byte for byte.
+The packages are prepared, not installed by this component-integration task;
+real-device update/activation and permission/dictionary UI checks remain pending.
