@@ -102,6 +102,10 @@ export struct ExtensionPanel {
   // （脚本猫这类用户脚本管理器正是如此）；不开它，用户脚本跑不了。
   @State private detailUserScriptsAvailable: boolean = false;
   @State private detailUserScriptsAllowed: boolean = false;
+  // 「固定到工具栏」随 extensionActions 回包更新；未打包扩展的目录输入。
+  @State private detailPinned: boolean = false;
+  @State private showUnpackedInput: boolean = false;
+  @State private unpackedPath: string = '';
   // 标题栏「开发者模式」开关：profile 级设置（加载未打包的前提），
   // 状态永远以引擎为准——setDeveloperMode 成功后引擎会回 developerMode 事件。
   @State private developerMode: boolean = false;
@@ -208,6 +212,14 @@ export struct ExtensionPanel {
     }
     try {
       this.items = this.mergeIconCache(JSON.parse(this.extensionsJson) as ExtensionActionItem[]);
+      if (this.page === 'detail' && this.detailId.length > 0) {
+        for (const entry of this.items) {
+          if (entry.id === this.detailId) {
+            this.detailPinned = entry.pinned === true;
+            break;
+          }
+        }
+      }
       this.scheduleIconCatchup();
       this.decodeIcons(this.items);
     } catch (error) {
@@ -607,6 +619,7 @@ export struct ExtensionPanel {
     this.detailOptionsUrl = item.optionsUrl ?? '';
     this.detailUserScriptsAvailable = false;
     this.detailUserScriptsAllowed = false;
+    this.detailPinned = item.pinned === true;
     // 1.0.157：改用真 Navigation 路由栈（GlassPage 内嵌原生 Navigation+NavPathStack）。
     // 详情作为 navDestination('detail') 推入，系统自动走鸿蒙7层级转场（干净减速、零过冲）。
     this.page = 'detail';
@@ -678,6 +691,47 @@ export struct ExtensionPanel {
 
   private setSiteAccess(mode: ExtensionSiteAccess): void {
     this.onCommand({ command: 'setExtensionSiteAccess', id: this.detailId, mode: mode });
+  }
+
+  private setPinned(pinned: boolean): void {
+    // 工具栏可见性由引擎的 ToolbarActionsModel 决定；列表回包会带回最新
+    // pinned 值，这里只做即时反馈。
+    this.detailPinned = pinned;
+    this.onCommand({ command: 'setExtensionPinned', id: this.detailId, pinned: pinned });
+  }
+
+  private loadUnpacked(): void {
+    const path: string = this.unpackedPath.trim();
+    if (path.length === 0) {
+      this.getUIContext().getPromptAction().showToast({ message: '请先填写扩展目录', duration: 2000 });
+      return;
+    }
+    if (!this.developerMode) {
+      this.getUIContext().getPromptAction().showToast({
+        message: '请先打开标题栏的「开发者模式」',
+        duration: 2500
+      });
+      return;
+    }
+    try {
+      if (!fs.accessSync(`${path}/manifest.json`)) {
+        this.getUIContext().getPromptAction().showToast({
+          message: '目录里没有找到 manifest.json',
+          duration: 2500
+        });
+        return;
+      }
+    } catch (error) {
+      this.getUIContext().getPromptAction().showToast({
+        message: '无法访问这个目录，请检查路径',
+        duration: 2500
+      });
+      return;
+    }
+    this.onClose();
+    this.onCommand({ command: 'loadUnpackedExtension', path: path });
+    this.showUnpackedInput = false;
+    this.unpackedPath = '';
   }
 
   private setDeveloperMode(enabled: boolean): void {
@@ -1064,10 +1118,68 @@ export struct ExtensionPanel {
           .backgroundColor($r('app.color.card_background'))
           .clip(true)
 
-          // 「加载未打包」去向：1.0.147 装机反馈——zip 安装已覆盖分发场景，
-          // 调试用目录加载走「原生扩展页」里的桌面版入口（那里本来就有），
-          // 原生页不再单列一行。引擎侧 loadUnpackedExtension 命令保留，
-          // 原生扩展页照常可用。
+          // 加载已解压扩展：开发者模式开着时，输入含 manifest.json 的目录。
+          Column() {
+            Row({ space: 12 }) {
+              Image($r('app.media.aura_open_in_new'))
+                .width(22)
+                .height(22)
+                .fillColor($r('app.color.icon_primary'))
+
+              Column({ space: 3 }) {
+                Text('加载已解压扩展')
+                  .fontSize(16)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor($r('app.color.text_primary'))
+                Text('目录里要有 manifest.json（需先开开发者模式）')
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_secondary'))
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              Image($r('app.media.aura_chevron'))
+                .width(16)
+                .height(16)
+                .fillColor($r('app.color.icon_secondary'))
+                .opacity(0.65)
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 10, bottom: 10 })
+            .onClick(() => {
+              this.showUnpackedInput = !this.showUnpackedInput;
+            })
+
+            if (this.showUnpackedInput) {
+              Column({ space: 8 }) {
+                TextInput({ placeholder: '扩展目录的绝对路径' })
+                  .width('100%')
+                  .height(42)
+                  .fontSize(14)
+                  .onChange((value: string): void => {
+                    this.unpackedPath = value;
+                  })
+                Row({ space: 8 }) {
+                  Button('取消').onClick(() => {
+                    this.showUnpackedInput = false;
+                  })
+                  Button('加载').onClick(() => {
+                    this.loadUnpacked();
+                  })
+                }
+                .width('100%')
+                .justifyContent(FlexAlign.End)
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, bottom: 12 })
+            }
+          }
+          .width('100%')
+          .borderRadius(16)
+          .backgroundColor($r('app.color.card_background'))
+          .clip(true)
+          .margin({ top: 12 })
+
           Text('更多')
             .fontSize(13)
             .fontColor($r('app.color.text_secondary'))
@@ -1272,11 +1384,37 @@ export struct ExtensionPanel {
               .opacity(this.developerMode ? 1 : 0.5)
             }
 
+            // 固定到工具栏：开关状态来自 extensionActions 的 pinned 字段。
+            Row({ space: 12 }) {
+              Column({ space: 3 }) {
+                Text('固定到工具栏')
+                  .fontSize(16)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor($r('app.color.text_primary'))
+                Text('把这个扩展的按钮常驻在工具栏')
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_secondary'))
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              Toggle({ type: ToggleType.Switch, isOn: this.detailPinned })
+                .onChange((isOn: boolean): void => {
+                  this.setPinned(isOn);
+                })
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+            .borderRadius(16)
+            .backgroundColor($r('app.color.card_background'))
+            .clip(true)
+            .margin({ top: 12 })
+
             Text('权限')
               .fontSize(13)
               .fontColor($r('app.color.text_secondary'))
               .width('100%')
-              .margin({ top: 6, bottom: 10 })
+              .margin({ top: 16, bottom: 10 })
 
             if (this.detailPermissions.length > 0) {
               Column() {

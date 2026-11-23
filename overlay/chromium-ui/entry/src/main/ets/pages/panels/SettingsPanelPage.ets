@@ -22,6 +22,11 @@ struct SettingsPanelPage {
             console.error('openExtensionPanelPage pushUrl failed:', error);
           });
         },
+        onOpenWebApps: (): void => {
+          router.pushUrl({ url: 'pages/panels/WebAppsPanelPage' }).catch((error: Error): void => {
+            console.error('openWebAppsPanelPage pushUrl failed:', error);
+          });
+        },
         onOpenSitePermissions: (): void => {
           router.pushUrl({ url: 'pages/panels/SitePermissionsPanelPage' })
             .catch((error: Error): void => {

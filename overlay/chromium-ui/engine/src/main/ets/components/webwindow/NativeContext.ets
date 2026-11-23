@@ -29,6 +29,7 @@ import {
   HistoryVisitRef,
   ShellAnchorRect,
   ShellPrefKey,
+  SitePermission,
   SitePermissionDecision,
   SiteSettingType,
   SiteSettingValue,
@@ -378,6 +379,10 @@ export interface BrowserRuntimeEvent {
   reason?: string;
   requestId?: number;
   permissions?: string[];
+  // sitePermissionRequested: the origin asking and what it asks for. Answer
+  // exactly once with sitePermissionDecision carrying the same requestId.
+  isSecure?: boolean;
+  webPermissions?: SitePermission[];
   pickerType?: 'open' | 'openMultiple' | 'save' | 'folder' | 'none';
   defaultName?: string;
   suffixFilters?: string[];

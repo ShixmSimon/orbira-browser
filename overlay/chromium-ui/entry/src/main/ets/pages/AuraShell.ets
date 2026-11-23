@@ -24,6 +24,7 @@ import { SearchEnginesPrefs } from '../utils/appearance/SearchEnginesPrefs';
 import { IncognitoSwitch, SavedTab } from '../utils/IncognitoSwitch';
 import { WebWindow, PictureInPictureSurface } from 'engine';
 import { MobileBrowserOverlay, TOP_BAR_EXTENT_VP, CHROME_DOCK_EXTENT_VP, CHROME_DOCK_FLOAT_MARGIN_VP, dockCoveredHeightVp } from '../components/mobile/MobileBrowserOverlay';
+import { SitePromptOverlays } from '../components/mobile/SitePromptOverlays';
 import { MobileBackRouter } from '../components/mobile/MobileBackRouter';
 import { HomeSurface } from '../components/mobile/HomeSurface';
 import { CurrentTabCastSession } from '../components/mobile/CurrentTabCastSession';
@@ -75,6 +76,7 @@ import {
   SearchEngine,
   SearchEnginesEvent,
   ShellDownloadDirectory,
+  SiteSettingType,
   SiteSettingsEvent,
   TabThumbnailsEvent,
   TopSitesEvent,
@@ -2063,6 +2065,18 @@ struct AuraShell {
             }
           })
         }
+        // 网页请求的权限 / 表单面板：盖在浏览器与所有 overlay 之上，且只在
+        // 手机 UI 挂（这些 picker 事件本身也只在手机端下发）。
+        if (this.isMobilePhoneUi()) {
+          SitePromptOverlays({
+            onAnswer: (command: BrowserCommandPayload): void => {
+              this.answerSitePrompt(command);
+            },
+            onResolved: (requestId: number): void => {
+              this.dropSitePrompt(requestId);
+            }
+          })
+        }
         if (this.auxiliaryWindows.length > 0) {
           this.AuxiliaryWindowLayer()
         }
@@ -2509,6 +2523,100 @@ struct AuraShell {
       JSON.parse(JSON.stringify(event)) as Record<string, Object>;
     rec['_seq'] = this.panelEventSeq;
     AppStorage.setOrCreate(storageKey, JSON.stringify(rec));
+  }
+
+  // 网页原生交互（权限 / <select> / 日期 / 通讯录 / 语音）的请求队列。
+  // 引擎一条请求只认一次应答；后一条不能把前一条覆盖掉，所以排队而不是
+  // 用单个 AppStorage 值。出队也走 _seq，保证同内容回包仍能唤醒面板。
+  private sitePromptQueue: BrowserRuntimeEvent[] = [];
+
+  private flushSitePromptQueue(): void {
+    this.panelEventSeq += 1;
+    AppStorage.setOrCreate('auraSitePromptQueue', JSON.stringify({
+      _seq: this.panelEventSeq,
+      items: this.sitePromptQueue
+    }));
+  }
+
+  private pushSitePrompt(event: BrowserRuntimeEvent): void {
+    this.sitePromptQueue = this.sitePromptQueue.concat([event]);
+    this.flushSitePromptQueue();
+  }
+
+  private dropSitePrompt(requestId: number): void {
+    if (requestId <= 0) {
+      return;
+    }
+    const kept: BrowserRuntimeEvent[] = [];
+    for (const item of this.sitePromptQueue) {
+      if ((item.requestId ?? 0) !== requestId) {
+        kept.push(item);
+      }
+    }
+    if (kept.length === this.sitePromptQueue.length) {
+      return;
+    }
+    this.sitePromptQueue = kept;
+    this.flushSitePromptQueue();
+  }
+
+  private sitePermissionType(permission: string): SiteSettingType | undefined {
+    if (permission === 'location' || permission === 'camera' || permission === 'microphone' ||
+      permission === 'notifications' || permission === 'clipboard') {
+      return permission;
+    }
+    return undefined;
+  }
+
+  private activeTabId(): string {
+    const tabs = this.browserState.tabs;
+    for (const tab of tabs) {
+      if (tab.active && tab.id !== undefined) {
+        return tab.id;
+      }
+    }
+    return '';
+  }
+
+  // 权限面板的「始终允许 / 拒绝」还要把选择写成本站的权限例外。引擎的
+  // sitePermissionDecision 只处理这一次，setPagePermission 才是持久化那一
+  // 份（要求 tabId 与当前活动标签一致，且页面是 http(s)）。
+  private answerSitePrompt(command: BrowserCommandPayload): void {
+    this.executeBrowserCommand(command);
+    if (command.command !== 'sitePermissionDecision') {
+      return;
+    }
+    const decision: string = command.decision ?? '';
+    if (decision !== 'allowAlways' && decision !== 'block') {
+      return;
+    }
+    const tabId: string = this.activeTabId();
+    if (tabId.length === 0) {
+      return;
+    }
+    let source: BrowserRuntimeEvent | undefined;
+    for (const item of this.sitePromptQueue) {
+      if ((item.requestId ?? 0) === (command.requestId ?? 0)) {
+        source = item;
+        break;
+      }
+    }
+    if (source === undefined || source.isSecure !== true) {
+      return;
+    }
+    const permissions: string[] = source.webPermissions ?? [];
+    for (const permission of permissions) {
+      const type = this.sitePermissionType(permission);
+      if (type === undefined) {
+        continue;
+      }
+      this.executeBrowserCommand({
+        command: 'setPagePermission',
+        tabId: tabId,
+        type: type,
+        setting: decision === 'allowAlways' ? 'allow' : 'block'
+      });
+    }
   }
 
   private handleRuntimeEvent(event: BrowserRuntimeEvent): void {
@@ -3052,6 +3160,31 @@ struct AuraShell {
         AppStorage.setOrCreate('auraContextMenu', '');
         this.executeBrowserCommand({ command: 'contextMenuDismissed', requestId: dragged.requestId });
       }
+      return;
+    }
+
+    // 网页原生交互的请求：排队交给 SitePromptOverlays；引擎撤销请求时只出队，
+    // 不再回复（回复一条已经取消的请求没有意义）。
+    if (event.event === 'sitePermissionRequested' || event.event === 'selectPopupRequested' ||
+      event.event === 'dateTimePickerRequested' || event.event === 'contactsPickerRequested' ||
+      event.event === 'speechRecognitionRequested') {
+      this.pushSitePrompt(event);
+      return;
+    }
+    if (event.event === 'sitePermissionCancelled' || event.event === 'selectPopupClosed' ||
+      event.event === 'dateTimePickerClosed' || event.event === 'speechRecognitionStop' ||
+      event.event === 'speechRecognitionAbort') {
+      this.dropSitePrompt(event.requestId ?? 0);
+      return;
+    }
+    if (event.event === 'pageInfoActionResult') {
+      this.writePanelEvent('auraPanelSiteAction', event);
+      return;
+    }
+    // WebApp 列表 / 图标导出 / 卸载回包：WebAppsPanel 按 event + requestId 认领。
+    if (event.event === 'webApps' || event.event === 'webAppIcon' ||
+      event.event === 'webAppUninstalled') {
+      this.writePanelEvent('auraPanelWebApps', event);
       return;
     }
 

@@ -93,6 +93,13 @@ export struct SitePermissionsPanel {
   // 站点图标：引擎回包统一落 'auraFavicons'（AuraShell 转存），本页只从该键读取。
   @StorageLink('auraFavicons') @Watch('onFaviconsChanged') faviconsJson: string = '';
   @State private faviconMap: Map<string, string> = new Map();
+  // 默认规则：引擎没有对应的读取命令，外壳记住自己写过的四档值，写入后
+  // 仍以引擎为准（策略接管时会拒绝，界面只反映这次会话的设置）。
+  @StorageLink('auraDefaultSiteRules') @Watch('onDefaultRulesChanged') defaultRulesJson: string = '';
+  @State private defaultRules: Record<string, SiteSettingValue> = {};
+  private readonly defaultRuleTypes: SiteSettingType[] =
+    ['location', 'camera', 'microphone', 'notifications'];
+  private readonly defaultRuleChoices: SiteSettingValue[] = ['allow', 'ask', 'block', 'default'];
 
   aboutToAppear(): void {
     // Seed from storage first: a @StorageLink does not fire @Watch for its
@@ -100,6 +107,7 @@ export struct SitePermissionsPanel {
     // either, so a re-opened panel would otherwise stay on "loading".
     // 站点图标同理：先吃一次已有回包，否则首帧全是占位色块。
     this.onFaviconsChanged();
+    this.onDefaultRulesChanged();
     this.onSettingsPayload();
     this.reloadList();
     this.retryTimer = setTimeout((): void => {
@@ -122,6 +130,32 @@ export struct SitePermissionsPanel {
     this.requestSeq += 1;
     this.listRequestId = this.requestSeq;
     this.onCommand({ command: 'getSiteSettings', requestId: this.requestSeq });
+  }
+
+  private onDefaultRulesChanged(): void {
+    if (this.defaultRulesJson.length === 0) {
+      return;
+    }
+    try {
+      this.defaultRules = JSON.parse(this.defaultRulesJson) as Record<string, SiteSettingValue>;
+    } catch (error) {
+    }
+  }
+
+  private ruleValue(type: SiteSettingType): SiteSettingValue {
+    const saved: SiteSettingValue | undefined = this.defaultRules[type];
+    return saved !== undefined ? saved : 'ask';
+  }
+
+  private setDefaultRule(type: SiteSettingType, setting: SiteSettingValue): void {
+    const next: Record<string, SiteSettingValue> = {};
+    for (const item of this.defaultRuleTypes) {
+      next[item] = this.ruleValue(item);
+    }
+    next[type] = setting;
+    this.defaultRules = next;
+    AppStorage.setOrCreate('auraDefaultSiteRules', JSON.stringify(next));
+    this.onCommand({ command: 'setDefaultSiteSetting', type: type, setting: setting });
   }
 
   private refreshDetail(): void {
@@ -248,6 +282,46 @@ export struct SitePermissionsPanel {
     return count;
   }
 
+  @Builder
+  private DefaultRules() {
+    Column({ space: 8 }) {
+      Text('默认规则（新网站）')
+        .fontSize(13)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
+        .margin({ top: 12, bottom: 2 })
+      ForEach(this.defaultRuleTypes, (type: SiteSettingType): void => {
+        Row() {
+          Text(typeLabel(type))
+            .fontSize(14)
+            .fontColor($r('app.color.text_primary'))
+            .layoutWeight(1)
+          ForEach(this.defaultRuleChoices, (choice: SiteSettingValue): void => {
+            Text(valueLabel(choice))
+              .fontSize(12)
+              .fontColor(this.ruleValue(type) === choice ?
+                $r('app.color.accent_primary') : $r('app.color.text_secondary'))
+              .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+              .borderRadius(8)
+              .backgroundColor(this.ruleValue(type) === choice ?
+                $r('app.color.surface_secondary') : Color.Transparent)
+              .onClick(() => {
+                this.setDefaultRule(type, choice);
+              })
+          }, (choice: SiteSettingValue): string => choice)
+        }
+        .width('100%')
+        .constraintSize({ minHeight: 40 })
+      }, (type: SiteSettingType): string => type)
+      Text('「默认」恢复为浏览器的通用设置')
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
+    }
+    .width('100%')
+    .padding({ left: 16, right: 16, bottom: 16 })
+  }
+
   build() {
     // 1.0.160：弃 GlassPage，自持 HdsNavigation + NavPathStack（同
     // SettingsPanel 1.0.159）。列表是 Navigation 内容、常驻挂载 —— 详情
@@ -260,6 +334,7 @@ export struct SitePermissionsPanel {
             Text(this.loading ? '加载中…' : '还没有单独设置过权限的网站')
               .fontSize(15)
               .fontColor($r('app.color.text_secondary'))
+            this.DefaultRules()
           }
           .width('100%')
           .layoutWeight(1)
@@ -313,6 +388,7 @@ export struct SitePermissionsPanel {
               .borderRadius(16)
               .backgroundColor($r('app.color.card_background'))
               .clip(true)
+              this.DefaultRules()
             }
             .width('100%')
             // 大标题带：滚动内容穿过大标题时逐渐虚化（见 GlassPage 文件头）。
