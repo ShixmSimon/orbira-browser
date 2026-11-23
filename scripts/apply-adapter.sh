@@ -45,6 +45,7 @@ git -C "${chromium_src}" apply \
   "${project_root}/patches/ohos-rule-sources.patch"
 git -C "${chromium_src}" apply \
   "${project_root}/patches/ohos-extension-updates.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-extension-settings-sync.patch"
 git -C "${chromium_src}" apply \
   "${project_root}/patches/ohos-adblock-rust.patch" \
   "${project_root}/patches/ohos-adblock-execution.patch" \
@@ -79,6 +80,12 @@ git -C "${chromium_src}" apply "${project_root}/patches/ohos-phone-vulkan-video.
 git -C "${chromium_src}" apply "${project_root}/patches/ohos-webnn-nnrt.patch"
 git -C "${chromium_src}" apply "${project_root}/patches/ohos-startup-probes.patch"
 git -C "${chromium_src}" apply "${project_root}/patches/ohos-video-overlay-presenter.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-security-assistants.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-file-type-component.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-file-type-danger-154.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-origin-trials-component.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-hyphenation-component.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-crowd-deny-component.patch"
 git -C "${chromium_src}" apply "${project_root}/patches/ohos-software-video-overlay.patch"
 while read -r deps_path deps_patch; do
   [[ -z "${deps_path}" || "${deps_path}" == \#* ]] && continue
@@ -92,15 +99,11 @@ git -C "${chromium_src}/third_party/angle" apply \
   "${project_root}/patches/ohos-angle-vulkan-msrt.patch"
 git -C "${chromium_src}" apply "${project_root}/patches/ohos-secure-dns-ech.patch"
 git -C "${chromium_src}" apply "${project_root}/patches/ohos-https-first-warning.patch"
-# Local blocks: A = transparent Init background (cold-start/new-tab white
-# flash), B = finite navigation-gap deadline (black-gutter flash), bottom crop
-# = keep the page full height when the shell controls do not shrink it.
-git -C "${chromium_src}" apply "${project_root}/patches/ohos-paint-hold-a.patch"
-git -C "${chromium_src}" apply "${project_root}/patches/ohos-paint-hold-b.patch"
-git -C "${chromium_src}" apply "${project_root}/patches/ohos-bottom-crop.patch"
 git -C "${chromium_src}" apply "${project_root}/patches/ohos-shell-preloading.patch"
 git -C "${chromium_src}" apply "${project_root}/patches/ohos-extensions-mobile-ui.patch"
 git -C "${chromium_src}" apply "${project_root}/patches/ohos-phone-gl-hdr.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-phone-ua-openharmony.patch"
+git -C "${chromium_src}" apply "${project_root}/patches/ohos-standard-user-agent.patch"
 rsync -a "${project_root}/overlay/" "${chromium_src}/"
 
 deps_root="$(dirname "${chromium_src}")/deps_code/webview"

@@ -1,0 +1,215 @@
+{
+  "source_adapter": "60fa7e9617ebada93d9050d262a2155b11147943",
+  "source_chromium": "155.0.8059.91",
+  "target_chromium": "157.0.8103.77",
+  "target_revision": "7d4508cbfffd289d7015f7703bce215d3ab123bf",
+  "repositories": [
+    {
+      "path": ".",
+      "patch": "chromium.patch",
+      "sha256": "f32b540386521a21f0b89f2dce922b5921cc4512b6fefbbe85931bf53e6960a0",
+      "bytes": 1792148,
+      "source_base": "7d4508cbfffd289d7015f7703bce215d3ab123bf"
+    },
+    {
+      "path": "v8",
+      "patch": "v8.patch",
+      "sha256": "0f0e282bd57e146aa3a29eab83130237b5c3813f2c57096ec76708c7b435609e",
+      "bytes": 14676,
+      "source_base": "712e1808de2d7416f1276d0deb1ee4ac978132b8"
+    },
+    {
+      "path": "third_party/angle",
+      "patch": "third_party_angle.patch",
+      "sha256": "b3e7c4b1ceee6fd721749f8fb170c7bb68950f6602c6d66416e5cc032ec6de8c",
+      "bytes": 41192,
+      "source_base": "c56e2a4a9b8cb0040920c995a268be559ba53f1c"
+    },
+    {
+      "path": "third_party/dawn",
+      "patch": "third_party_dawn.patch",
+      "sha256": "c82e6ef4f19aadd523625c388010e73e412cb5bbfb7464499cb30f2340cc7013",
+      "bytes": 129973,
+      "source_base": "106245fa2b9e1cf8b59b1bb8e010af3c7ca8b600"
+    },
+    {
+      "path": "third_party/ffmpeg",
+      "patch": "third_party_ffmpeg.patch",
+      "sha256": "de682aaedd69b26cc1e7ca9034d315d576d4f114bb03821c92d95b99a5440c96",
+      "bytes": 1002,
+      "source_base": "ba5e7eaea38b6a54157870e0085b2e8c75aa6bcb"
+    },
+    {
+      "path": "third_party/pdfium",
+      "patch": "third_party_pdfium.patch",
+      "sha256": "ad786e31553ca45f39101ae00e67cbf8c1f2626158e3bb05fd26103fc3ebf29a",
+      "bytes": 2566,
+      "source_base": "a4d199fba716a1edcc5d032a1d875f9a8ef2c283"
+    },
+    {
+      "path": "third_party/perfetto",
+      "patch": "third_party_perfetto.patch",
+      "sha256": "052f25473ee1498092003166f1df51306af43f3bcbdf36dbe25e78d7a9e317fb",
+      "bytes": 811,
+      "source_base": "d10115a34cfa887efd75606c460f541d1b854e23"
+    },
+    {
+      "path": "third_party/skia",
+      "patch": "third_party_skia.patch",
+      "sha256": "01814b055790fb28784edba37f4a86c8e8de92c6b4fa14ce6d56a16973b03250",
+      "bytes": 11271,
+      "source_base": "851b8fee76806e84c668d40bdaf17a6468e1ce6f"
+    },
+    {
+      "path": "third_party/vulkan-loader/src",
+      "patch": "third_party_vulkan-loader_src.patch",
+      "sha256": "0d1f9ffa819d9c09809cbe0e75721b16d164dbc03151ea14e81a100e52ca10c7",
+      "bytes": 455,
+      "source_base": "bde79ad2dd832db9180c4a6eca2e84ceb12b1bb0"
+    },
+    {
+      "path": "third_party/webrtc",
+      "patch": "third_party_webrtc.patch",
+      "sha256": "cf233507221db9a9e5f2f37a7553cddc7669af9bce27e15bbfc40b93f6a8316d",
+      "bytes": 3641,
+      "source_base": "5bd86a2f17a35dfc986b87d058f511e45805bd1d"
+    }
+  ],
+  "added_native_files": [
+    {
+      "path": "base/ohos_startup_probe.h",
+      "sha256": "2d36ddc1f458c67960167e2d99fb29b3382bc2fd4eb7bb39c75ea7f2d87b2fe7"
+    },
+    {
+      "path": "chrome/renderer/ohos/resource_throttle.cc",
+      "sha256": "bea3ef649c73fd2bcf05bf0f2e1c61989552f4052d10e4c6164ccafda848efdc"
+    },
+    {
+      "path": "chrome/renderer/ohos/resource_throttle.h",
+      "sha256": "146bcd80d368334831c3e1e6fa3c9d2a12b9dd1d65c03fde886d4c8b5b373e14"
+    },
+    {
+      "path": "gpu/config/gpu_driver_bug_list.ohos.json",
+      "sha256": "752a9ce6831cf995f7c4b95edb7546811eecca231d4b6e00e5b8943775f52aca"
+    },
+    {
+      "path": "gpu/config/software_rendering_list.ohos.json",
+      "sha256": "2e052b5292c09d78552010b5f480771d83bb79a3d31a7150dda92e6108ff3f3c"
+    },
+    {
+      "path": "gpu/vulkan/ohos/BUILD.gn",
+      "sha256": "5c43d16d2122921304ecb57cae8fe164ee872fa68fe2a45b52383823864cad89"
+    },
+    {
+      "path": "gpu/vulkan/ohos/vulkan_implementation_ohos.cc",
+      "sha256": "34f005ac98d147d723c7c1abcf6a0d1fc93f871ffabeaa44b2f657d338e3bbdb"
+    },
+    {
+      "path": "gpu/vulkan/ohos/vulkan_implementation_ohos.h",
+      "sha256": "cfd11746331b4fb8c5d2f1579348f8eb5367ee6e9fb85e119cac9c31eaf2cd44"
+    },
+    {
+      "path": "ui/ozone/platform/ohos/ohos_gpu_capability_probe.cc",
+      "sha256": "0eb15b6545182ec1cd7daf6953077a4e82ddede57662607a9160b8704f4c1a4c"
+    },
+    {
+      "path": "ui/ozone/platform/ohos/ohos_gpu_capability_probe.h",
+      "sha256": "548648d4b9e5e031210841e59d8f79889e3a58abd0b4f1650c33b096ef493cf3"
+    },
+    {
+      "path": "ui/ozone/platform/ohos/ohos_native_buffer_probe.cc",
+      "sha256": "b570eb10d7d1fa25e7a1a22aa101190c739da928c808b215696503748a4604c6"
+    },
+    {
+      "path": "ui/ozone/platform/ohos/ohos_native_buffer_probe.h",
+      "sha256": "f4b77a77b032440296d270eff551293c93faad8edb1d4e160ef87ce663fada27"
+    },
+    {
+      "path": "third_party/angle/src/libANGLE/renderer/vulkan/ohos/DisplayVkOhos.cpp",
+      "sha256": "d3343695746666b0dbb2834183e53112a1dc7c2251cb1adc5ea43bad3a58c612"
+    },
+    {
+      "path": "third_party/angle/src/libANGLE/renderer/vulkan/ohos/DisplayVkOhos.h",
+      "sha256": "6142dc4ad96c32107c45119fbce577e9f0e001acb35a0bfe08bf0b5d66db2d92"
+    },
+    {
+      "path": "third_party/angle/src/libANGLE/renderer/vulkan/ohos/NativeBufferImageSiblingVkOhos.cpp",
+      "sha256": "9420a3c1b625728562a654b56b23321a0fdadf802c601ad62b0789383fcac504"
+    },
+    {
+      "path": "third_party/angle/src/libANGLE/renderer/vulkan/ohos/NativeBufferImageSiblingVkOhos.h",
+      "sha256": "1eb8d87c33ed2c16c5f27bf8dfea1c99474a0857324caf2de97296ba5cee4819"
+    },
+    {
+      "path": "third_party/angle/src/libANGLE/renderer/vulkan/ohos/WindowSurfaceVkOhos.cpp",
+      "sha256": "891166e9d0a008d694f3b13fd21b20bd185fd016bcb75e484a0bd17a5d05110f"
+    },
+    {
+      "path": "third_party/angle/src/libANGLE/renderer/vulkan/ohos/WindowSurfaceVkOhos.h",
+      "sha256": "397f209d720444a2a52864e5421e610d166a18d125ab62a103248a6a6ff39b99"
+    },
+    {
+      "path": "arkweb/ohos_nweb/src/aura_shell/ohos_startup_bundle_probe.h",
+      "sha256": "c505d208838c24bab4870a52bc175fdaee3460f3c21aea88d8ff67ab9b788720"
+    }
+  ],
+  "resolved_root_conflicts": 29,
+  "moved_native_files": {
+    "components/viz/common/gpu/vulkan_in_process_context_provider.cc": "gpu/command_buffer/service/vulkan_in_process_context_provider.cc"
+  },
+  "resolved_deps_conflicts": 1,
+  "included_incremental_patches": [
+    {
+      "patch": "ohos-secure-dns-ech.patch",
+      "sha256": "0a437c380247a3f802803437650a8566a7938155b979566cff12366b82782745"
+    },
+    {
+      "patch": "ohos-https-first-warning.patch",
+      "sha256": "42aaf08296d94e94d5e3d10be15b4abd730e6e7771c77b3eba6fed45c55019c4"
+    },
+    {
+      "patch": "ohos-shell-preloading.patch",
+      "sha256": "9e439ffe68c811f8625fcedfe67fdebbd882be3c1e696916a47ff0dfe86806a0"
+    },
+    {
+      "patch": "ohos-extension-settings-sync.patch",
+      "sha256": "9215eac9a5860a2782c37fb57fdbfae4ca173d14527aa77f4b2d83bab2cc845d"
+    },
+    {
+      "patch": "ohos-standard-user-agent.patch",
+      "sha256": "ca2c5a3ddc7883f220b0ab5af37f5faf72767eb651f44175aacaa82d06566a1e"
+    },
+    {
+      "patch": "ohos-phone-fullscreen-hint.patch",
+      "sha256": "1c794339d252c88b68fa15d430b63e3459159b7dafd8b279d6285dfcafec1059"
+    },
+    {
+      "patch": "ohos-security-assistants.patch",
+      "sha256": "04020e98cb9e08c09a00c425d40ae1189ac7b6b5b520b3dd32059a83dec3de2d"
+    },
+    {
+      "patch": "ohos-file-type-component.patch",
+      "sha256": "cfb4f151a992cb2e7e70de92701c1aaf60870c6055d58df66af675b4d4513512"
+    },
+    {
+      "patch": "ohos-file-type-danger-155.patch",
+      "sha256": "a7a622a939816e0c0671f090b0b13236be7f1681701a9af179c0a77b4d5e93ba"
+    },
+    {
+      "patch": "ohos-origin-trials-component.patch",
+      "sha256": "5286332beca4364c93e86261eba315ccf72ce2c41f03dd8dabfb57734cd4019b"
+    },
+    {
+      "patch": "ohos-hyphenation-component.patch",
+      "sha256": "f02e4983420418a5684ed63c4bae2bc08f792770db70e5e67db4bd08b58fae49"
+    },
+    {
+      "patch": "ohos-crowd-deny-component.patch",
+      "sha256": "cca3d6e66ec9b2436ba66151826296b0d3ab27b98ed2b57c40e00b514e2a1036"
+    },
+    {
+      "patch": "ohos-software-video-overlay.patch",
+      "sha256": "d56365ca153d863e7b1c3ed4ae3d9fe5557b8d41e304b538599253b40f8a1eb7"
+    }
+  ]
+}

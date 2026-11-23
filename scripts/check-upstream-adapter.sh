@@ -5,8 +5,12 @@ set -euo pipefail
 readonly project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly version="${1:?usage: $0 VERSION REVISION}"
 readonly revision="${2:?usage: $0 VERSION REVISION}"
-if [[ "$version" == 155.* && -f "${project_root}/scripts/check-155-adapter.py" ]]; then
+readonly engine_major="${CHROMIUM_MAJOR:-${version%%.*}}"
+if [[ "$engine_major" == 155 && -f "${project_root}/scripts/check-155-adapter.py" ]]; then
   exec python3 "${project_root}/scripts/check-155-adapter.py" "$version" "$revision"
+fi
+if [[ "$engine_major" == 157 ]]; then
+  exec python3 "${project_root}/scripts/check-157-adapter.py" "$version" "$revision"
 fi
 readonly work_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/chromium-adapter-check.XXXXXX")"
 readonly checkout="${work_root}/src"
@@ -26,6 +30,7 @@ grep '^diff --git ' "${project_root}/patches/chromium-154-harmonyos.patch" \
   "${project_root}/patches/ohos-url-protection-updates.patch" \
   "${project_root}/patches/ohos-rule-sources.patch" \
   "${project_root}/patches/ohos-extension-updates.patch" \
+  "${project_root}/patches/ohos-extension-settings-sync.patch" \
   "${project_root}/patches/ohos-adblock-rust.patch" \
   "${project_root}/patches/ohos-adblock-execution.patch" \
   "${project_root}/patches/ohos-viewport-translation.patch" \
@@ -61,6 +66,8 @@ if [[ "${compatible}" == true ]]; then
   git -C "${checkout}" apply --binary \
     "${project_root}/patches/chromium-154-harmonyos.patch"
   if ! git -C "${checkout}" apply \
+      "${project_root}/patches/ohos-phone-ua-openharmony.patch" \
+      "${project_root}/patches/ohos-standard-user-agent.patch" \
       "${project_root}/patches/ohos-mobile-ua-viewport.patch" 2>"${failure_log}"; then
     compatible=false
   fi
@@ -130,6 +137,10 @@ if [[ "${compatible}" == true ]]; then
   fi
   if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \
       "${project_root}/patches/ohos-extension-updates.patch" 2>"${failure_log}"; then
+    compatible=false
+  fi
+  if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \
+      "${project_root}/patches/ohos-extension-settings-sync.patch" 2>"${failure_log}"; then
     compatible=false
   fi
   if [[ "${compatible}" == true ]] && ! git -C "${checkout}" apply \

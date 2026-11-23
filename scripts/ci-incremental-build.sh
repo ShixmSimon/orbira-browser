@@ -25,14 +25,14 @@
 #   SKIP_HAR=1     scripts/ci-incremental-build.sh   # HAP but no engine HAR
 #
 # Environment:
-#   CHROMIUM_SRC   default /root/chromium-154/src
+#   CHROMIUM_SRC   default /root/chromium-157/src
 #   OUT_DIR        default out/ohos_arm64
 #   NINJA_JOBS     default 16
 
 set -uo pipefail
 
 readonly repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly src="${CHROMIUM_SRC:-/root/chromium-154/src}"
+readonly src="${CHROMIUM_SRC:-/root/chromium-157/src}"
 readonly out="${OUT_DIR:-out/ohos_arm64}"
 readonly jobs="${NINJA_JOBS:-16}"
 readonly status_dir="${repo_root}/build-status"
@@ -168,12 +168,20 @@ if [[ -n "${PACKAGE_ONLY:-}" ]]; then
 else
   compiled_here=true
 
+  if [[ "${CHROMIUM_MAJOR:-157}" == 157 ]]; then
+    # Preparation applies the rebased snapshot, including the shared patches
+    # recorded by checksum in migration-157/manifest.json. Replaying the 155
+    # hunks here would restore interfaces removed by Chromium 157.
+    say "157 uses the complete migrated native snapshot"
+    bash "${repo_root}/scripts/setup-adblock-rust.sh" || die "Rust toolchain setup failed"
+  else
   # Shared by 154 and the prepared 155 snapshot.
   apply_incremental_patch "${repo_root}/patches/ohos-secure-dns-ech.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-https-first-warning.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-shell-preloading.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-extension-settings-sync.patch"
 
-  if [[ "${CHROMIUM_MAJOR:-154}" == 155 ]]; then
+  if [[ "${CHROMIUM_MAJOR:-157}" == 155 ]]; then
     say "155 uses the complete migrated native snapshot"
     bash "${repo_root}/scripts/setup-adblock-rust.sh" || die "Rust toolchain setup failed"
   else
@@ -199,8 +207,9 @@ else
   # A cached Skia shader that fails to compile clears the cache in place
   # rather than crashing the in-process GPU, and the browser with it.
   apply_incremental_patch "${repo_root}/patches/ohos-cached-shader-no-crash.patch"
-  # OpenHarmony/<version> at the end of the phone's User-Agent; inside the
-  # platform section it failed Cloudflare Turnstile.
+  # Unstack the final UA policy before checking its 154 prerequisite.
+  retire_incremental_patch "${repo_root}/patches/ohos-standard-user-agent.patch"
+  # Preserve the standard Android/Linux platform sections.
   apply_incremental_patch "${repo_root}/patches/ohos-phone-ua-openharmony.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-external-protocol-to-shell.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-phone-android-web-prefs.patch"
@@ -307,11 +316,6 @@ else
   apply_incremental_patch "${repo_root}/patches/ohos-camera-frame-layout.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-camera-lifecycle.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-camera-timeline.patch"
-  # Paint-holding fixes: A = transparent Init background (cold-start/new-tab
-  # white flash), B = finite navigation-gap deadline (black-gutter flash).
-  apply_incremental_patch "${repo_root}/patches/ohos-paint-hold-a.patch"
-  apply_incremental_patch "${repo_root}/patches/ohos-paint-hold-b.patch"
-  apply_incremental_patch "${repo_root}/patches/ohos-bottom-crop.patch"
   # An early updater revision inserted deps inside the base protection hunk.
   # Back that dependent patch out before checking/upgrading its prerequisite.
   if ! git -C "$src" apply -C0 --reverse --check \
@@ -340,11 +344,19 @@ else
 
   fi
 
+  apply_incremental_patch "${repo_root}/patches/ohos-standard-user-agent.patch"
+
   # Shared touch fullscreen UI, after the 154 fullscreen prerequisites or
   # their migrated 155 equivalents. Keep it additive to both baselines.
   apply_incremental_patch "${repo_root}/patches/ohos-phone-fullscreen-hint.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-security-assistants.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-file-type-component.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-file-type-danger-${CHROMIUM_MAJOR:-157}.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-origin-trials-component.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-hyphenation-component.patch"
+  apply_incremental_patch "${repo_root}/patches/ohos-crowd-deny-component.patch"
   apply_incremental_patch "${repo_root}/patches/ohos-software-video-overlay.patch"
+  fi
 
   # ---- sync overlay into the tree -------------------------------------------
   # The overlay holds whole files the adapter adds or replaces. Copying by
@@ -430,7 +442,8 @@ else
   # Check the new native execution paths before a public-header rebuild can
   # spend an hour reaching them. Ninja still regenerates GN inputs normally.
   migration_checks=()
-  if [[ "${CHROMIUM_MAJOR:-154}" == 155 ]]; then
+  preflight_failures=1
+  if [[ "${CHROMIUM_MAJOR:-157}" == 155 || "${CHROMIUM_MAJOR:-157}" == 157 ]]; then
     # Exercise the moved GPU interfaces and OHOS integration before the full
     # browser link graph can spend hours reaching an incompatible declaration.
     migration_checks=(
@@ -479,7 +492,38 @@ else
       obj/third_party/angle/src/libANGLE/renderer/vulkan/angle_vulkan_backend/NativeBufferImageSiblingVkOhos.o
     )
   fi
-  ( cd "$src" && third_party/ninja/ninja -C "$out" -j "$jobs" -k 1 \
+  if [[ "${CHROMIUM_MAJOR:-157}" == 157 ]]; then
+    # Production objects modified by OHOS overlays and snapshots in the
+    # pinned 157 GN graph.
+    # Catch platform API changes before building tens of thousands of common
+    # dependencies. Unit-test targets stay in the full build graph.
+    mapfile -t adaptation_checks < "$repo_root/config/native-checks-157.txt"
+    migration_checks+=("${adaptation_checks[@]}")
+    preflight_failures=10
+    # These interfaces changed in 157. Compile the real production objects
+    # early so API migration failures do not wait behind the full link graph.
+    migration_checks+=(
+      obj/base/base/sampling_profiler_thread_token.o
+      obj/chrome/browser/core/device_authenticator_ohos.o
+      obj/chrome/browser/password_manager/impl/chrome_password_manager_client.o
+      obj/media/gfx/gfx/video_resource_updater.o
+      obj/media/gfx/gfx/mappable_shared_image_video_frame_pool.o
+      obj/cc/paint/paint/paint_image.o
+      obj/third_party/blink/renderer/platform/platform/canvas_resource_dispatcher.o
+      obj/third_party/dawn/src/dawn/native/sources/RenderPipelineVk.o
+      obj/third_party/dawn/src/dawn/native/sources/SharedTextureMemoryVk.o
+      obj/components/viz/service/service/image_context_impl.o
+      obj/components/viz/service/service/skia_output_surface_impl.o
+      obj/gpu/command_buffer/service/gles2_sources/shared_context_state.o
+      obj/third_party/blink/renderer/modules/canvas/canvas/base_rendering_context_2d.o
+      obj/third_party/blink/renderer/modules/canvas/canvas/canvas_rendering_context_2d.o
+      obj/third_party/blink/renderer/modules/webgpu/webgpu/external_texture_helper.o
+    )
+  fi
+  if grep -Eq '^[[:space:]]*use_v8_context_snapshot[[:space:]]*=[[:space:]]*true([[:space:]]|$)' "${src}/${out}/args.gn"; then
+    migration_checks+=(snapshot_blob.bin v8_context_snapshot.bin)
+  fi
+  ( cd "$src" && third_party/ninja/ninja -C "$out" -j "$jobs" -k "$preflight_failures" \
       obj/chrome/common/ohos/adblock/execution/decision_throttle.o \
       obj/chrome/browser/core/adblock.o obj/chrome/renderer/renderer/adblock.o \
       obj/chrome/browser/core/translation.o "${migration_checks[@]}" && \
@@ -487,12 +531,13 @@ else
       -k "${NINJA_MAX_FAILURES:-20}" gn_all ) \
     2>&1 | tee "$log" \
     | awk -v every="${PROGRESS_EVERY:-50}" '
-        /^FAILED:/ || /error:|undefined symbol:|ninja: error:/ {
+        /^FAILED:/ || /error:|undefined symbol:|ninja: error:|FATAL:|Traceback|[A-Za-z]+Error:/ {
           print; fflush(); next
         }
         /^\[[0-9]+\/[0-9]+\]/ {
           last = $0
-          if (++n == 1 || n % every == 0) {
+          split($1, progress, /[^0-9]+/)
+          if (progress[2] == 1 || progress[2] % every == 0 || progress[2] == progress[3]) {
             print; fflush(); last = ""
           }
         }
@@ -514,7 +559,7 @@ else
       tr '\r' '\n' <"$log" | grep '^FAILED:' | sed 's/^FAILED: //' | cut -c1-110 | sort -u
       printf '\n## diagnostics\n'
       tr '\r' '\n' <"$log" \
-        | grep -E '^\.\./\.\.[^ ]*: *(error|fatal error): |undefined symbol:' \
+        | grep -E '^\.\./\.\.[^ ]*: *(error|fatal error): |undefined symbol:|FATAL:|Error:|failed with exit code' \
         | sed -E 's#^\.\./\.\./##' | sort -u | head -60
       printf '\n## log tail\n'
       tr '\r' '\n' <"$log" | tail -120

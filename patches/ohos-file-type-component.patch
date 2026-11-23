@@ -1,0 +1,129 @@
+Enable signed download file policies independently of online Safe Browsing.
+
+diff --git a/chrome/browser/component_updater/registration.cc b/chrome/browser/component_updater/registration.cc
+--- a/chrome/browser/component_updater/registration.cc
++++ b/chrome/browser/component_updater/registration.cc
+@@ -109,3 +109,3 @@
+ 
+-#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
++#if BUILDFLAG(SAFE_BROWSING_AVAILABLE) || BUILDFLAG(IS_OHOS)
+ #include "chrome/browser/component_updater/file_type_policies_component_installer.h"
+@@ -154,2 +154,3 @@
+   RegisterSSLErrorAssistantComponent(cus);
++  RegisterFileTypePoliciesComponent(cus);
+ #else
+diff --git a/chrome/browser/component_updater/BUILD.gn b/chrome/browser/component_updater/BUILD.gn
+--- a/chrome/browser/component_updater/BUILD.gn
++++ b/chrome/browser/component_updater/BUILD.gn
+@@ -105,3 +105,3 @@
+ 
+-  if (safe_browsing_mode != 0) {
++  if (safe_browsing_mode != 0 || is_ohos) {
+     public += [ "file_type_policies_component_installer.h" ]
+@@ -198,3 +198,3 @@
+   }
+-  if (safe_browsing_mode != 0) {
++  if (safe_browsing_mode != 0 || is_ohos) {
+     deps += [ "//components/safe_browsing/content/common:file_type_policies" ]
+@@ -305,3 +305,3 @@
+ 
+-  if (safe_browsing_mode != 0) {
++  if (safe_browsing_mode != 0 || is_ohos) {
+     sources += [ "file_type_policies_component_installer.cc" ]
+diff --git a/components/safe_browsing/content/common/BUILD.gn b/components/safe_browsing/content/common/BUILD.gn
+--- a/components/safe_browsing/content/common/BUILD.gn
++++ b/components/safe_browsing/content/common/BUILD.gn
+@@ -24,3 +24,3 @@
+ 
+-if (safe_browsing_mode != 0) {
++if (safe_browsing_mode != 0 || is_ohos) {
+   source_set("file_type_policies") {
+diff --git a/components/resources/BUILD.gn b/components/resources/BUILD.gn
+--- a/components/resources/BUILD.gn
++++ b/components/resources/BUILD.gn
+@@ -107,3 +107,3 @@
+ 
+-  if (safe_browsing_mode > 0) {
++  if (safe_browsing_mode > 0 || is_ohos) {
+     deps += [
+diff --git a/components/resources/safe_browsing_resources.grdp b/components/resources/safe_browsing_resources.grdp
+--- a/components/resources/safe_browsing_resources.grdp
++++ b/components/resources/safe_browsing_resources.grdp
+@@ -5,3 +5,3 @@
+   </if>
+-  <if expr="safe_browsing_mode != 0">
++  <if expr="safe_browsing_mode != 0 or is_ohos">
+     <include name="IDR_DOWNLOAD_FILE_TYPES_PB" file="${root_gen_dir}\components\safe_browsing\content\resources\download_file_types.pb" use_base_dir="false" type="BINDATA" compress="gzip" />
+diff --git a/chrome/browser/download/BUILD.gn b/chrome/browser/download/BUILD.gn
+--- a/chrome/browser/download/BUILD.gn
++++ b/chrome/browser/download/BUILD.gn
+@@ -381,2 +381,6 @@
+ 
++  if (is_ohos) {
++    deps += [ "//components/safe_browsing/content/common:file_type_policies" ]
++  }
++
+   if (safe_browsing_mode != 0) {
+diff --git a/chrome/browser/download/download_target_determiner.cc b/chrome/browser/download/download_target_determiner.cc
+--- a/chrome/browser/download/download_target_determiner.cc
++++ b/chrome/browser/download/download_target_determiner.cc
+@@ -91,2 +91,5 @@
+ #include "components/safe_browsing/content/browser/download/download_stats.h"
++#endif
++
++#if BUILDFLAG(SAFE_BROWSING_AVAILABLE) || BUILDFLAG(IS_OHOS)
+ #include "components/safe_browsing/content/common/file_type_policies.h"
+diff --git a/chrome/browser/download/download_prefs.cc b/chrome/browser/download/download_prefs.cc
+--- a/chrome/browser/download/download_prefs.cc
++++ b/chrome/browser/download/download_prefs.cc
+@@ -65,3 +65,3 @@
+ 
+-#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
++#if BUILDFLAG(SAFE_BROWSING_AVAILABLE) || BUILDFLAG(IS_OHOS)
+ #include "components/safe_browsing/content/common/file_type_policies.h"
+@@ -73,3 +73,3 @@
+ 
+-#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
++#if BUILDFLAG(SAFE_BROWSING_AVAILABLE) || BUILDFLAG(IS_OHOS)
+ using safe_browsing::FileTypePolicies;
+@@ -334,3 +334,3 @@
+ 
+-#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
++#if BUILDFLAG(SAFE_BROWSING_AVAILABLE) || BUILDFLAG(IS_OHOS)
+     // Note that the list of file types that are not allowed to open
+@@ -526,3 +526,3 @@
+   base::FilePath::StringType extension = file_name.Extension();
+-#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
++#if BUILDFLAG(SAFE_BROWSING_AVAILABLE) || BUILDFLAG(IS_OHOS)
+   if (!FileTypePolicies::GetInstance()->IsAllowedToOpenAutomatically(
+diff --git a/chrome/browser/component_updater/file_type_policies_component_installer.cc b/chrome/browser/component_updater/file_type_policies_component_installer.cc
+--- a/chrome/browser/component_updater/file_type_policies_component_installer.cc
++++ b/chrome/browser/component_updater/file_type_policies_component_installer.cc
+@@ -12,2 +12,3 @@
+ 
++#include "build/build_config.h"
+ #include "base/files/file_path.h"
+@@ -67,3 +68,7 @@
+     const {
++#if BUILDFLAG(IS_OHOS)
++  return true;
++#else
+   return false;
++#endif
+ }
+diff --git a/components/safe_browsing/content/common/file_type_policies.cc b/components/safe_browsing/content/common/file_type_policies.cc
+--- a/components/safe_browsing/content/common/file_type_policies.cc
++++ b/components/safe_browsing/content/common/file_type_policies.cc
+@@ -7,2 +7,4 @@
+ #include "base/check_op.h"
++#include "base/logging.h"
++#include "build/build_config.h"
+ #include "base/files/file_path.h"
+@@ -124,2 +126,7 @@
+   RecordUpdateMetrics(result, "DynamicUpdate");
++#if BUILDFLAG(IS_OHOS)
++  LOG(INFO) << "OHOS component data: File Type Policies result="
++            << static_cast<int>(result)
++            << " active_version=" << (config_ ? config_->version_id() : 0);
++#endif
+ }

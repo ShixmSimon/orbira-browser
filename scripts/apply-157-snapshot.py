@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Port all pinned 155 adaptations, reporting every conflicted repository."""
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location('snapshot155', ROOT / 'scripts/apply-155-snapshot.py')
+snapshot = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(snapshot)
+
+
+def snapshot_is_current(target, receipt, index_receipt, expected):
+    """A receipt alone cannot survive a gclient/reset of the adapted index."""
+    result = subprocess.run(['git', '-C', str(target), 'write-tree'],
+                            capture_output=True, text=True)
+    index = result.stdout.strip() if result.returncode == 0 else ''
+    return bool(index and receipt.exists() and receipt.read_text().strip() == expected and
+                index_receipt.exists() and index_receipt.read_text().strip() == index)
+
+
+def main():
+    # 默认 WSL 路径 /home/administrator/chromium-157；可用 CHROMIUM_157_ROOT 覆盖。
+    # 兼容上游 CI 的 /root/chromium-157：把它也列入允许集合。
+    allowed = [
+        Path(os.environ.get('CHROMIUM_157_ROOT', '/home/administrator/chromium-157')).resolve(),
+        Path('/root/chromium-157').resolve(),
+        Path('/mnt/chromium-157/source').resolve(),
+    ]
+    expected = (allowed[0] / 'src').resolve()
+    src = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else expected
+    # 校验的是 src 目录本身（.../chromium-157/src），故把 allowed 根目录都补上 /src 再比较
+    allowed_src = [a / 'src' for a in allowed]
+    if src not in allowed_src:
+        raise ValueError('157 migration must modify one of %s (got %s)' % (
+            ', '.join(str(a) for a in allowed_src), src))
+    manifest = json.loads((ROOT / 'patches/migration-157/manifest.json').read_text())
+    for entry in manifest['included_incremental_patches']:
+        patch = ROOT / 'patches' / entry['patch']
+        if hashlib.sha256(patch.read_bytes()).hexdigest() != entry['sha256']:
+            raise ValueError(f'Shared patch changed; port it to the 157 snapshot: {patch.name}')
+    def git(target, *args):
+        return subprocess.check_output(['git', '-C', str(target), *args], text=True).strip()
+    if git(src, 'rev-parse', 'HEAD') != manifest['target_revision']:
+        raise ValueError('157 source revision mismatch')
+    failures = []
+    for entry in manifest['repositories']:
+        target = src / entry['path']
+        patch = ROOT / 'patches/migration-157' / entry['patch']
+        digest = hashlib.sha256(patch.read_bytes()).hexdigest()
+        if digest != entry['sha256']:
+            raise ValueError(f'Patch checksum mismatch: {patch.name}')
+        actual = git(target, 'rev-parse', 'HEAD')
+        receipt = target / '.git/ohos-157-snapshot'
+        index_receipt = target / '.git/ohos-157-snapshot-index'
+        expected = actual + ':' + digest
+        # gclient/reset can remove adaptations while leaving an untracked
+        # receipt behind. The index written by git apply --3way must match the
+        # recorded tree as well. Legacy receipts are revalidated once.
+        if snapshot_is_current(target, receipt, index_receipt, expected):
+            continue
+        try:
+            # Unported repositories still need the 155 base; rebased patches
+            # record the actual 157 DEPS revision as their source base.
+            base_present = subprocess.run(
+                ['git', '-C', str(target), 'cat-file', '-e',
+                 entry['source_base'] + '^{commit}'], capture_output=True)
+            if base_present.returncode:
+                subprocess.run(['git', '-C', str(target), '-c', 'gc.auto=0', 'fetch',
+                                '--depth=1', 'origin', entry['source_base']], check=True)
+            snapshot.apply_snapshot(target, patch)
+            receipt.write_text(expected + '\n')
+            index_receipt.write_text(git(target, 'write-tree') + '\n')
+        except subprocess.CalledProcessError as error:
+            failures.append({'repository': entry['path'], 'target_revision': actual,
+                             'returncode': error.returncode,
+                             'conflicts': git(target, 'diff', '--name-only', '--diff-filter=U').splitlines()})
+    report = ROOT / 'build-status/migration-157-conflicts.json'
+    report.parent.mkdir(exist_ok=True)
+    report.write_text(json.dumps(failures, indent=2) + '\n')
+    if failures:
+        raise SystemExit(f'157 adaptation has {len(failures)} repository failures; see {report}')
+
+
+if __name__ == '__main__':
+    main()
