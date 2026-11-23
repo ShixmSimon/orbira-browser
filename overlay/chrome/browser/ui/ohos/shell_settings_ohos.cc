@@ -14,6 +14,7 @@
 #include <string_view>
 #include <utility>
 
+#include "chrome/browser/ui/ohos/shell_proxy_ohos.h"
 #include "base/command_line.h"
 #include "base/process/ohos_jit_startup.h"
 #include "base/values.h"
@@ -94,11 +95,14 @@ void GetAboutInfo(const ShellCommandContext& context,
   event.Set("urlProtectionApiVersion", 2);
   event.Set("siteProtectionApiVersion", 1);
   event.Set("pageInfoApiVersion", 1);
+  event.Set("proxyApiVersion", 1);
+  event.Set("proxySocks5Auth", true);
   event.Set("ruleSourcesApiVersion", 1);
   // What the password sync commands understand. 1 is passwordSyncAuthorize,
   // getPasswordsForSync, applyPasswords and the passwordsChanged event. The
   // shell offers password sync only from 1.
   event.Set("passwordApiVersion", 1);
+  event.Set("passkeySyncApiVersion", 1);
   event.Set("passwordSyncAuthorized",
             IsPasswordSyncAuthorized(context.profile));
   // Whether V8 runs with its JIT this launch. The runner decides it before
@@ -117,8 +121,8 @@ struct SettingsCommand {
   SettingsCommandHandler handler;
 };
 
-// Every settings command the shell may send. Adding one is one line here and
-// a handler in the file of its group.
+// Every settings command the shell may send. Also register its route in
+// shell_services_ohos.cc so the runtime bridge can reach this dispatcher.
 constexpr SettingsCommand kSettingsCommands[] = {
     // Browsing data (shell_browsing_data_ohos.cc).
     {"clearBrowsingData", &settings_internal::ClearBrowsingData},
@@ -127,6 +131,11 @@ constexpr SettingsCommand kSettingsCommands[] = {
     {"getSearchEngines", &settings_internal::GetSearchEngines},
     {"setDefaultSearchEngine", &settings_internal::SetDefaultSearchEngine},
     // Preferences (shell_prefs_ohos.cc).
+    {"getProxySettings", &settings_internal::GetProxySettings},
+    {"getProxyCredentials", &settings_internal::GetProxyCredentials},
+    {"applyProxySettings", &settings_internal::ApplyProxySettings},
+    {"testProxySettings", &settings_internal::TestProxySettings},
+    {"cancelProxyTest", &settings_internal::CancelProxyTest},
     {"getPrefs", &settings_internal::GetPrefs},
     {"setPref", &settings_internal::SetPref},
     // Site settings (shell_site_settings_ohos.cc).

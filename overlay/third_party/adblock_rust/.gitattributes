@@ -1,8 +1,0 @@
-# adblock 资源/清单是纯文本，强制 LF：否则 Windows 检出时全局 autocrlf=true 会把 *.txt 转成 CRLF，
-# rsync 原样进源码树后 build.py 的 SHA256 完整性校验（resources/SOURCES.json）必然不符 → 编译失败。
-*.txt eol=lf
-
-# 二进制资产：禁任何行尾转换（sources.tar.gz / vendor.tar.gz 等）。
-*.gz binary
-*.zip binary
-*.tar binary

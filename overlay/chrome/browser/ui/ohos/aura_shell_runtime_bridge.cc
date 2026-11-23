@@ -79,6 +79,8 @@
 #include "chrome/browser/sessions/session_service.h"
 #include "chrome/browser/sessions/session_service_factory.h"
 #include "chrome/browser/ui/browser_tabrestore.h"
+#include "components/sessions/core/command_storage_read_status.h"
+#include "components/sessions/core/session_service_commands.h"
 #include "components/sessions/core/session_types.h"
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
 #include "components/sessions/core/tab_restore_service.h"
@@ -206,6 +208,7 @@
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/browser/web_contents_user_data.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/referrer.h"
 #include "content/public/renderer/render_thread.h"
@@ -1030,10 +1033,9 @@ void RequestOhosPermissionsFor(ContentSettingsType content_type,
   DispatchRuntimeEvent(std::move(event));
 }
 
-// Page zoom follows the system font size (Settings > Display > Font size):
-// the engine HAR's "fontscale" service reports Configuration.fontSizeScale,
-// which ChromeZoomLevelPrefs applies on top of the default zoom pref (the
-// shell's textScale). Off with --disable-features=OhosFollowSystemFontSize.
+// The engine HAR's "fontscale" service reports Configuration.fontSizeScale.
+// Like Chrome Android, send it to Blink's accessibility font scale rather
+// than multiplying page zoom. Off with --disable-features=OhosFollowSystemFontSize.
 BASE_FEATURE(kOhosFollowSystemFontSize,
              "OhosFollowSystemFontSize",
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -1044,6 +1046,8 @@ class OhosSystemFontScaleWatcher {
     static base::NoDestructor<OhosSystemFontScaleWatcher> instance;
     return *instance;
   }
+
+  float scale() const { return scale_; }
 
   void Start() {
     if (std::exchange(started_, true) ||
@@ -1099,13 +1103,37 @@ class OhosSystemFontScaleWatcher {
   }
 
   void Apply(std::optional<double> scale) {
-    if (!scale || !(*scale > 0)) {
+    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    if (!scale || !std::isfinite(*scale) || !(*scale > 0)) {
       return;
     }
-    LOG(WARNING) << "OHOS font scale: system " << *scale;
-    ChromeZoomLevelPrefs::SetOhosSystemFontScale(*scale);
+    // Preserve the existing supported system-font range independently of zoom.
+    const float next = static_cast<float>(std::clamp(*scale, 0.8, 2.0));
+    if (next == scale_) {
+      return;
+    }
+    scale_ = next;
+    LOG(WARNING) << "OHOS font scale: Blink text " << scale_;
+    // New pages read scale_ in OverrideWebPreferences. Update existing tabs
+    // (including background, incognito and app windows) without a navigation.
+    // WebContents also propagates these preferences to its inner contents.
+    auto* browsers = GlobalBrowserCollection::GetInstance();
+    if (!browsers) {
+      return;
+    }
+    browsers->ForEach([](BrowserWindowInterface* browser) {
+      if (TabStripModel* tabs = browser->GetTabStripModel()) {
+        for (int index = 0; index < tabs->count(); ++index) {
+          if (auto* contents = tabs->GetWebContentsAt(index)) {
+            contents->OnWebPreferencesChanged();
+          }
+        }
+      }
+      return true;
+    });
   }
 
+  float scale_ = 1.0f;
   bool started_ = false;
   std::unique_ptr<ohos_system_service::EventSubscription> events_;
 };
@@ -3253,7 +3281,9 @@ void RestoreLastSessionTabs(gfx::AcceleratedWidget widget,
       [](decltype(answer) answer, gfx::AcceleratedWidget widget,
          bool keep_current_tab,
          std::vector<std::unique_ptr<sessions::SessionWindow>> windows,
-         SessionID active_window_id, bool read_error) {
+         SessionID active_window_id,
+         sessions::CommandStorageReadStatus read_status,
+         sessions::SessionReplayResult replay_result) {
         BrowserWindowInterface* browser = FindBrowserForWidget(widget);
         const sessions::SessionWindow* main = nullptr;
         for (const auto& window : windows) {
@@ -3266,7 +3296,8 @@ void RestoreLastSessionTabs(gfx::AcceleratedWidget widget,
         TabStripModel* tabs = browser ? browser->GetTabStripModel() : nullptr;
         if (!main || !tabs) {
           LOG(WARNING) << "OHOS last session has no main window to restore"
-                       << (read_error ? " (read error)" : "");
+                       << " read_status=" << static_cast<int>(read_status)
+                       << " replay_result=" << static_cast<int>(replay_result);
           answer(widget, 0);
           return;
         }
@@ -3349,6 +3380,103 @@ void AnswerLastSession(gfx::AcceleratedWidget widget,
       SessionRestore::RestoreSessionAfterCrash(browser);
     }
   }
+}
+
+void RequestBrowserStateUpdate();
+
+// IsLoading (and, for a cross-document restore, ShouldShowLoadingUI) can be
+// true while BFCache reactivates an existing document. Exposing that as a page
+// load makes the shell animate a progress bar and expand its browser controls.
+// Track only confirmed cached restores; an eviction/restart is a new ordinary
+// navigation and must regain normal loading UI immediately.
+class ShellLoadingUiState
+    : public content::WebContentsObserver,
+      public content::WebContentsUserData<ShellLoadingUiState> {
+ public:
+  bool ShouldShow() const {
+    const bool real =
+        web_contents()->ShouldShowLoadingUI() && !cached_navigation_;
+    if (!real) {
+      loading_since_ = base::TimeTicks();
+      return false;
+    }
+    // 页面只要还有任意子资源请求（凤凰这类广告/图片/统计密集的站点几乎一直
+    // 有），ShouldShowLoadingUI() 就会长期为 true，壳的转圈于是永远不停 ——
+    // 用户看到的是「内容都出来了还在转」，观感就是打不开。
+    // Chrome 自己靠 kLoadingUITimeout 兜底；这里补一条同样的上限：从首次
+    // 判定要显示起最多 5 秒，之后不再显示加载 UI（真实加载状态不受影响，
+    // 只是不再转圈）。再次进入加载时计时会重置。
+    if (loading_since_.is_null()) {
+      loading_since_ = base::TimeTicks::Now();
+      return true;
+    }
+    const base::TimeDelta shown = base::TimeTicks::Now() - loading_since_;
+    // 诊断：加载超过 2 秒说明有资源迟迟不结束（155/lumie 同页 1~2 秒就完成，
+    // 157 却能挂很久）。每 ~500ms 打一次进度与状态，用来判断是「进度卡在
+    // 0.9x」（个别子资源不完成）还是「进度已 1.0 但 IsLoading 仍 true」
+    // （状态不一致），两者修法完全不同。
+    if (shown > base::Seconds(2)) {
+      static base::TimeTicks last_stuck_log;
+      const base::TimeTicks now = base::TimeTicks::Now();
+      if (last_stuck_log.is_null() ||
+          now - last_stuck_log > base::Milliseconds(500)) {
+        last_stuck_log = now;
+        content::WebContents* wc = web_contents();
+        LOG(WARNING) << "OHOS loading stuck: progress="
+                     << wc->GetLoadProgress()
+                     << " loading=" << (wc->IsLoading() ? 1 : 0)
+                     << " waiting_response="
+                     << (wc->IsWaitingForResponse() ? 1 : 0)
+                     << " url=" << UrlForLog(wc->GetVisibleURL());
+      }
+    }
+    if (shown > base::Seconds(5)) {
+      static std::atomic<int> capped{0};
+      if (capped.fetch_add(1) < 5) {
+        LOG(WARNING) << "OHOS loading UI capped after "
+                     << shown.InMilliseconds() << "ms";
+      }
+      return false;
+    }
+    return true;
+  }
+  void DidStartNavigation(content::NavigationHandle* handle) override {
+    if (!handle->IsInPrimaryMainFrame())
+      return;
+    cached_navigation_ = handle->IsServedFromBackForwardCache()
+                             ? std::make_optional(handle->GetNavigationId())
+                             : std::nullopt;
+    RequestBrowserStateUpdate();
+  }
+  void DidFinishNavigation(content::NavigationHandle* handle) override {
+    if (cached_navigation_ != handle->GetNavigationId())
+      return;
+    if (!handle->HasCommitted() || !handle->IsServedFromBackForwardCache())
+      cached_navigation_.reset();
+    // A successful restore can finish before DidStopLoading. Keep suppressing
+    // its final loading/progress update, otherwise the bar flashes at commit.
+    RequestBrowserStateUpdate();
+  }
+  void DidStopLoading() override {
+    cached_navigation_.reset();
+    RequestBrowserStateUpdate();
+  }
+
+ private:
+  friend class content::WebContentsUserData<ShellLoadingUiState>;
+  explicit ShellLoadingUiState(content::WebContents* contents)
+      : WebContentsObserver(contents),
+        WebContentsUserData<ShellLoadingUiState>(*contents) {}
+  std::optional<int64_t> cached_navigation_;
+  // ShouldShow() 是 const，且会在每次状态刷新时被调用，所以计时器用 mutable。
+  mutable base::TimeTicks loading_since_;
+  WEB_CONTENTS_USER_DATA_KEY_DECL();
+};
+WEB_CONTENTS_USER_DATA_KEY_IMPL(ShellLoadingUiState);
+
+bool ShouldShowShellLoading(content::WebContents* contents) {
+  ShellLoadingUiState::CreateForWebContents(contents);
+  return ShellLoadingUiState::FromWebContents(contents)->ShouldShow();
 }
 
 std::string BuildBrowserStateJson(std::string_view ui_family,
@@ -3504,7 +3632,7 @@ std::string BuildBrowserStateJson(std::string_view ui_family,
       const GURL url = contents->GetVisibleURL();
       tab.Set("url", ShellVisibleUrl(url));
       tab.Set("title", base::UTF16ToUTF8(contents->GetTitle()));
-      tab.Set("loading", contents->IsLoading());
+      tab.Set("loading", ShouldShowShellLoading(contents));
       // The tab strip shows a speaker on a tab making noise and a crossed-out
       // one on a tab the user silenced; they are different states and a tab
       // can be muted without ever having made a sound.
@@ -3546,10 +3674,10 @@ std::string BuildBrowserStateJson(std::string_view ui_family,
     state.Set("url", visible_url);
     state.Set("domain", url.host().empty() ? visible_url : url.host());
     state.Set("title", base::UTF16ToUTF8(active->GetTitle()));
-    state.Set("loading", active->IsLoading());
-    state.Set("loadProgress",
-              active->IsLoading() ? active->GetLoadProgress() : 1.0);
-    state.Set("requestDesktopSite", IsRequestingDesktopSite(active));
+    const bool show_loading = ShouldShowShellLoading(active);
+    state.Set("loading", show_loading);
+    state.Set("loadProgress", show_loading ? active->GetLoadProgress() : 1.0);
+    state.Set("requestDesktopSite", IsAuraShellRequestingDesktopSite(active));
     state.Set("zoomPercent", ShellZoomPercent(active));
     state.Set("inReaderMode", IsInReaderMode(active));
     state.Set("readerModeAvailable", IsReaderModeAvailable(active));
@@ -3642,6 +3770,9 @@ void ApplyTopControlsOffset(content::WebContents* contents, float ratio);
 // controls here only shrank the visual viewport and left the layout one the
 // size of the window, so with the bars showing the end of the page sat
 // behind the dock and a short page scrolled.
+void ApplyViewportInsets(content::WebContents* contents, int bottom_dip);
+
+
 void ApplyViewportInsets(content::WebContents* contents, int bottom_dip) {
   if (!contents) {
     return;
@@ -3784,6 +3915,95 @@ class ScopedBrowserStateUpdate {
   ~ScopedBrowserStateUpdate() { RequestBrowserStateUpdate(); }
 };
 
+// Opt-in history diagnostics. No URLs/origins or page content are logged.
+// Visual-state and presentation callbacks are milestones after commit, not
+// proof that the first frame contained meaningful content or was never white.
+class HistoryNavigationDiagnostics : public content::WebContentsObserver {
+ public:
+  explicit HistoryNavigationDiagnostics(content::WebContents* contents)
+      : content::WebContentsObserver(contents) {}
+  void DidStartNavigation(content::NavigationHandle* handle) override {
+    if (handle->IsInPrimaryMainFrame())
+      weak_factory_.InvalidateWeakPtrs();
+  }
+  void DidFinishNavigation(content::NavigationHandle* handle) override {
+    if (!VLOG_IS_ON(1) || !handle->IsInPrimaryMainFrame())
+      return;
+    const bool history =
+        (handle->GetPageTransition() & ui::PAGE_TRANSITION_FORWARD_BACK) != 0;
+    VLOG(1) << "OHOS navigation id=" << handle->GetNavigationId()
+            << " history=" << history
+            << " reload=" << static_cast<int>(handle->GetReloadType())
+            << " same_document=" << handle->IsSameDocument()
+            << " committed=" << handle->HasCommitted()
+            << " error=" << handle->IsErrorPage()
+            << " bfcache=" << handle->IsServedFromBackForwardCache()
+            << " elapsed_ms="
+            << (base::TimeTicks::Now() - handle->NavigationStart())
+                   .InMilliseconds();
+    if (!history || !handle->HasCommitted() || handle->IsSameDocument() ||
+        web_contents()->GetVisibility() != content::Visibility::VISIBLE)
+      return;
+    weak_factory_.InvalidateWeakPtrs();
+    navigation_id_ = handle->GetNavigationId();
+    committed_ = base::TimeTicks::Now();
+    document_ = web_contents()->GetPrimaryMainFrame()->GetWeakDocumentPtr();
+    // Let the pending entry clear before probing the committed document.
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(&HistoryNavigationDiagnostics::Probe,
+                                 weak_factory_.GetWeakPtr()));
+  }
+  void OnVisibilityChanged(content::Visibility visibility) override {
+    if (visibility != content::Visibility::VISIBLE)
+      weak_factory_.InvalidateWeakPtrs();
+  }
+  void WebContentsDestroyed() override { weak_factory_.InvalidateWeakPtrs(); }
+
+ private:
+  bool Matches() const {
+    auto* frame = document_.AsRenderFrameHostIfValid();
+    return frame && web_contents() &&
+           web_contents()->GetPrimaryMainFrame() == frame &&
+           web_contents()->GetVisibility() == content::Visibility::VISIBLE &&
+           !web_contents()->GetController().GetPendingEntry();
+  }
+  void Probe() {
+    if (!Matches())
+      return;
+    document_.AsRenderFrameHostIfValid()->InsertVisualStateCallback(
+        base::BindOnce(&HistoryNavigationDiagnostics::OnSubmitted,
+                       weak_factory_.GetWeakPtr()));
+  }
+  void OnSubmitted(bool success) {
+    if (!success || !Matches())
+      return;
+    Milestone("visual_state");
+    const auto widget =
+        GetBrowserWidget(FindBrowserForWebContents(web_contents()));
+    auto* host = aura::WindowTreeHost::GetForAcceleratedWidget(widget);
+    if (!host || !host->compositor())
+      return;
+    host->compositor()->RequestSuccessfulPresentationTimeForNextFrame(
+        base::BindOnce(&HistoryNavigationDiagnostics::OnPresented,
+                       weak_factory_.GetWeakPtr()));
+    // Diagnostic-only redraw allows observing otherwise static restored pages.
+    host->compositor()->ScheduleFullRedraw();
+  }
+  void OnPresented(const viz::FrameTimingDetails&) {
+    if (Matches())
+      Milestone("presentation");
+  }
+  void Milestone(const char* stage) const {
+    VLOG(1) << "OHOS history id=" << navigation_id_ << " stage=" << stage
+            << " since_commit_ms="
+            << (base::TimeTicks::Now() - committed_).InMilliseconds();
+  }
+  int64_t navigation_id_ = 0;
+  base::TimeTicks committed_;
+  content::WeakDocumentPtr document_;
+  base::WeakPtrFactory<HistoryNavigationDiagnostics> weak_factory_{this};
+};
+
 // Watches one tab, active or not, for what the tab list reports of every tab:
 // its title and whether it is making a sound. The tab strip hears of both too,
 // but only after Chromium's 200 ms UI coalescing.
@@ -3918,7 +4138,12 @@ class TabStateWatcher
 
   explicit TabStateWatcher(content::WebContents* contents)
       : content::WebContentsObserver(contents),
-        content::WebContentsUserData<TabStateWatcher>(*contents) {}
+        content::WebContentsUserData<TabStateWatcher>(*contents),
+        history_diagnostics_(contents) {
+    ShellLoadingUiState::CreateForWebContents(contents);
+  }
+
+  HistoryNavigationDiagnostics history_diagnostics_;
 
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 };
@@ -4241,6 +4466,15 @@ class BrowserStateWatcher : public TabStripModelObserver,
                    << " committed=" << UrlForLog(contents->GetLastCommittedURL());
     }
     RequestBrowserStateUpdate();
+  }
+  // 首次「有内容的绘制」= 用户真正看到页面的时刻。此前只有 nav start 与
+  // did stop loading，中间那段空白无从判断，导致「打开慢」分不清是白屏久
+  // 还是加载久。hilog 自带毫秒时间戳，与 nav start 相减即首屏耗时。
+  void DidFirstVisuallyNonEmptyPaint() override {
+    content::WebContents* contents = web_contents();
+    const std::string url =
+        contents ? UrlForLog(contents->GetVisibleURL()) : std::string();
+    LOG(WARNING) << "OHOS first contentful paint: url=" << url;
   }
   void LoadProgressChanged(double progress) override {
     RequestBrowserStateUpdate();
@@ -5475,6 +5709,116 @@ void ExecuteBrowserCommandOnUiThread(gfx::AcceleratedWidget widget,
     }
     return;
   }
+  if (*name == "getPageDisplayDiagnostics") {
+    base::DictValue event;
+    event.Set("event", "pageDisplayDiagnostics");
+    event.Set("requestId", command.FindInt("requestId").value_or(0));
+    auto* target = FindTabById(tabs, command.FindString("tabId"));
+    auto* frame = target ? target->GetPrimaryMainFrame() : nullptr;
+    if (!target || target != active || !frame || !frame->IsRenderFrameLive()) {
+      event.Set("diagnosticStatus", "unavailable");
+      DispatchRuntimeEvent(widget, std::move(event));
+      return;
+    }
+    base::DictValue metrics;
+    metrics.Set("capturedAtMs", static_cast<double>(
+        base::Time::Now().InMillisecondsSinceUnixEpoch()));
+    metrics.Set("zoomPercent", ShellZoomPercent(target));
+    metrics.Set("pageFullscreen", IsPageFullscreen(browser));
+    if (auto* view = target->GetRenderWidgetHostView()) {
+      const gfx::Rect bounds = view->GetViewBounds();
+      metrics.Set("viewXDip", bounds.x());
+      metrics.Set("viewYDip", bounds.y());
+      metrics.Set("viewWidthDip", bounds.width());
+      metrics.Set("viewHeightDip", bounds.height());
+    }
+    // Fixed read-only geometry probe: no URL, text, attributes, arbitrary
+    // selectors, or caller-provided script. The isolated world prevents page
+    // scripts from replacing the JavaScript globals used by the probe.
+    constexpr char16_t kDisplayProbe[] = uR"JS((() => {
+      const root = document.documentElement;
+      const viewport = window.visualViewport;
+      const full = document.fullscreenElement;
+      const rect = full ? full.getBoundingClientRect() : null;
+      const video = full && full.tagName === 'VIDEO' ? full :
+          (full || document).querySelector('video');
+      const videoRect = video ? video.getBoundingClientRect() : null;
+      return {
+        innerWidthCss: window.innerWidth, innerHeightCss: window.innerHeight,
+        outerWidthCss: window.outerWidth, outerHeightCss: window.outerHeight,
+        devicePixelRatio: window.devicePixelRatio,
+        screenWidthCss: screen.width, screenHeightCss: screen.height,
+        rootClientWidthCss: root ? root.clientWidth : 0,
+        rootClientHeightCss: root ? root.clientHeight : 0,
+        rootScrollWidthCss: root ? root.scrollWidth : 0,
+        rootScrollHeightCss: root ? root.scrollHeight : 0,
+        visualViewportAvailable: !!viewport,
+        visualWidthCss: viewport ? viewport.width : 0,
+        visualHeightCss: viewport ? viewport.height : 0,
+        visualScale: viewport ? viewport.scale : 0,
+        visualOffsetLeftCss: viewport ? viewport.offsetLeft : 0,
+        visualOffsetTopCss: viewport ? viewport.offsetTop : 0,
+        videoPresent: !!video,
+        videoXCss: videoRect ? videoRect.x : 0, videoYCss: videoRect ? videoRect.y : 0,
+        videoWidthCss: videoRect ? videoRect.width : 0,
+        videoHeightCss: videoRect ? videoRect.height : 0,
+        videoIntrinsicWidth: video ? video.videoWidth : 0,
+        videoIntrinsicHeight: video ? video.videoHeight : 0,
+        domFullscreen: !!full,
+        fullscreenXCss: rect ? rect.x : 0, fullscreenYCss: rect ? rect.y : 0,
+        fullscreenWidthCss: rect ? rect.width : 0,
+        fullscreenHeightCss: rect ? rect.height : 0,
+        viewportMetaPresent: !!document.querySelector('meta[name="viewport" i]')
+      };
+    })())JS";
+    frame->ExecuteJavaScriptInIsolatedWorld(
+        kDisplayProbe,
+        base::BindOnce(
+            [](gfx::AcceleratedWidget widget,
+               content::WeakDocumentPtr document,
+               base::DictValue event, base::DictValue metrics,
+               base::Value result) {
+              auto* browser = FindBrowserForWidget(widget);
+              auto* frame = document.AsRenderFrameHostIfValid();
+              auto* active = browser ? browser->GetTabStripModel()
+                                           ->GetActiveWebContents() : nullptr;
+              if (!frame || !active || active->GetPrimaryMainFrame() != frame) {
+                event.Set("diagnosticStatus", "stale-document");
+              } else if (!result.is_dict()) {
+                event.Set("diagnosticStatus", "renderer-unavailable");
+              } else {
+                // Renderer output is untrusted. Only finite numeric geometry
+                // and the named flags may cross the export boundary.
+                constexpr const char* kNumbers[] = {
+                    "innerWidthCss", "innerHeightCss", "outerWidthCss", "outerHeightCss",
+                    "devicePixelRatio", "screenWidthCss", "screenHeightCss",
+                    "rootClientWidthCss", "rootClientHeightCss", "rootScrollWidthCss",
+                    "rootScrollHeightCss", "visualWidthCss", "visualHeightCss",
+                    "visualScale", "visualOffsetLeftCss", "visualOffsetTopCss",
+                    "fullscreenXCss", "fullscreenYCss", "fullscreenWidthCss", "fullscreenHeightCss",
+                    "videoXCss", "videoYCss", "videoWidthCss", "videoHeightCss",
+                    "videoIntrinsicWidth", "videoIntrinsicHeight"};
+                for (const char* key : kNumbers) {
+                  auto value = result.GetDict().FindDouble(key);
+                  if (value && std::isfinite(*value)) {
+                    metrics.Set(key, *value);
+                  }
+                }
+                for (const char* key : {"visualViewportAvailable", "domFullscreen",
+                                        "viewportMetaPresent", "videoPresent"}) {
+                  if (auto value = result.GetDict().FindBool(key)) {
+                    metrics.Set(key, *value);
+                  }
+                }
+                event.Set("diagnosticStatus", "ok");
+                event.Set("displayMetrics", std::move(metrics));
+              }
+              DispatchRuntimeEvent(widget, std::move(event));
+            },
+            widget, frame->GetWeakDocumentPtr(), std::move(event), std::move(metrics)),
+        ISOLATED_WORLD_ID_CHROME_INTERNAL);
+    return;
+  }
   if (*name == "getPageText" && active) {
     // The shell's summarizer reads the page's text. An isolated world keeps
     // the page's own scripts from seeing, or tampering with, the read.
@@ -6097,6 +6441,10 @@ void ReloadThemeFontsOnUiThread(std::string font_id) {
 
 }  // namespace
 
+// Called from the page-position watcher after every document load: the CSS
+// lives in the document, so a new document needs it injected again. Reading
+// the value from the shared state keeps this independent of the shell's
+// command timing (a navigation can happen before the next inset resend).
 content::WebContents* GetAuraShellAccessibilityContents(
     gfx::AcceleratedWidget widget) {
   BrowserWindowInterface* browser = FindBrowserForWidget(widget);
@@ -6774,6 +7122,11 @@ bool PostBrowserCommand(gfx::AcceleratedWidget widget,
       "getExtensionActions",
       "runExtensionAction",
       "installExtensionFromFile",
+      "extensionSyncSession",
+      "applyExtensionForSync",
+      "getExtensionsForSync",
+      "getExtensionSettingsForSync",
+      "applyExtensionSettingForSync",
       "setExtensionEnabled",
       "uninstallExtension",
       "getExtensionDetails",
@@ -6827,6 +7180,8 @@ bool PostBrowserCommand(gfx::AcceleratedWidget widget,
       "findInPage",
       "stopFind",
       "getPageText",
+      "getPageDisplayDiagnostics",
+      "startupProbe",
       "contextMenuAction",
       "contextMenuDismissed",
   };
@@ -7563,6 +7918,11 @@ void NotifyAuraShellWebAppInstalled(const std::string& app_id,
   event.Set("url", start_url);
   event.Set("pwaStartUrl", start_url);
   DispatchRuntimeEvent(std::move(event));
+}
+
+float GetAuraShellSystemFontScale() {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  return OhosSystemFontScaleWatcher::GetInstance().scale();
 }
 
 bool IsAuraShellMobilePhoneUi() {

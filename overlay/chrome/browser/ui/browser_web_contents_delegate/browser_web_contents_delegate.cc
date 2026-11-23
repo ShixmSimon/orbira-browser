@@ -45,6 +45,8 @@
 #endif
 #include "chrome/browser/ui/browser_window/public/desktop_browser_window_capabilities.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
+#include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
+#include "chrome/browser/ui/exclusive_access/fullscreen_tab_params.h"
 #include "chrome/browser/ui/exclusive_access/keyboard_lock_controller.h"
 #include "chrome/browser/ui/exclusive_access/pointer_lock_controller.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
@@ -89,6 +91,7 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/site_instance.h"
+#include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/drop_data.h"
 #include "content/public/common/url_constants.h"
@@ -133,11 +136,6 @@
 #if BUILDFLAG(IS_OHOS)
 #include "chrome/browser/ui/ohos/aura_shell_runtime_bridge.h"
 #endif
-
-// Kill switch for merge safety for a fix for https://crbug.com/489205993
-// TODO(crbug.com/489205993): Remove in M150 or later.
-BASE_FEATURE(kBackgroundActorTaskPopupsOpenInBackground,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 DEFINE_USER_DATA(BrowserWebContentsDelegate);
 
@@ -360,12 +358,6 @@ void BrowserWebContentsDelegate::LostPointerLock() {
       ->ExitExclusiveAccessToPreviousState();
 }
 
-bool BrowserWebContentsDelegate::IsWaitingForPointerLockPrompt(
-    content::WebContents* web_contents) {
-  return exclusive_access_manager_->pointer_lock_controller()
-      ->IsWaitingForPointerLockPrompt(web_contents);
-}
-
 bool BrowserWebContentsDelegate::AllowKeyboardLockForInnerContents(
     content::WebContents* web_contents) {
   return capabilities_->AllowKeyboardLockForInnerContents(web_contents);
@@ -425,15 +417,12 @@ bool BrowserWebContentsDelegate::DoBrowserControlsShrinkRendererSize(
   if (app_browser_controller_) {
     return false;
   }
-  // AuraShell 的顶/底条带都是**浮在满屏页面之上的半透明覆盖层**（overlay 式），
-  // 不是布局占位（layout-owning）。上游在这里写的是
-  //   顶栏显隐态驱动的收缩（按 AreAuraShellBrowserControlsHidden 的返回值决定）
-  // —— 顶栏一显示就收缩 renderer、一收起就长回来，页面高度随滚动来回变：
-  // 知乎这类 position:fixed 固定在视口底的元素（「欢迎参与讨论」条）会跟着上下跳，
-  // 页面底部也会被裁。154 的适配层把它改成恒定 false：只要顶栏存在
-  // （GetAuraShellTopControlsHeight() > 0）就永不收缩，与顶栏显隐无关。
-  // 注意：这里必须保留 if 条件，不能写成无条件 return ——
-  // 后面那句 return 会变成不可达代码，-Wunreachable-code-return 直接报错。
+  // [155 对齐] AuraShell 的顶/底条带都是浮在满屏页面之上的覆盖层，不是布局
+  // 占位。上游/157 写成“顶栏显示就收缩 renderer、收起就长回来”，页面高度会
+  // 随顶栏显隐来回变：知乎这类 position:fixed 贴视口底的元素（「欢迎参与讨论」
+  // 条）会跟着上下跳、页面底部也会被裁。155 v1.1.10 实测正常，原因就在这里
+  // —— 154 的适配层把它改成恒定 false：只要顶栏存在就永不收缩，与显隐无关。
+  // 注意：if 条件必须保留，否则后面那句 return 变成不可达代码，-Werror 报错。
   if (chrome::ohos::GetAuraShellTopControlsHeight() > 0) {
     return false;
   }
@@ -550,6 +539,7 @@ void BrowserWebContentsDelegate::OnDidBlockNavigation(
     const GURL& blocked_url,
     const GURL& initiator_url,
     const url::Origin& initiator_origin,
+    scoped_refptr<content::InitiatorNavigationState> initiator_navigation_state,
     blink::mojom::NavigationBlockedReason reason) {
   if (reason ==
       blink::mojom::NavigationBlockedReason::kRedirectWithNoUserGesture) {
@@ -558,6 +548,7 @@ void BrowserWebContentsDelegate::OnDidBlockNavigation(
     if (auto* framebust_helper =
             tab ? FramebustBlockTabHelper::From(tab) : nullptr) {
       framebust_helper->AddBlockedUrl(blocked_url, initiator_origin,
+                                      initiator_navigation_state,
                                       base::NullCallback());
     }
   }
@@ -812,9 +803,7 @@ content::WebContents* BrowserWebContentsDelegate::AddNewContents(
 
   // If a backgrounded actor task triggered a new tab/popup, don't interrupt the
   // user.
-  if (base::FeatureList::IsEnabled(
-          kBackgroundActorTaskPopupsOpenInBackground) &&
-      source && actor::IsRunningBackgroundActorTask(*source)) {
+  if (source && actor::IsRunningBackgroundActorTask(*source)) {
     if (disposition == WindowOpenDisposition::NEW_POPUP) {
       window_action = NavigateParams::WindowAction::kShowWindowInactive;
     } else if (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB) {
@@ -854,9 +843,7 @@ void BrowserWebContentsDelegate::LoadingStateChanged(
 }
 
 void BrowserWebContentsDelegate::CloseContents(content::WebContents* source) {
-  if (unload_controller_->CanCloseContents(source)) {
-    chrome::CloseWebContents(&browser_.get(), source, true);
-  }
+  unload_controller_->CloseContents(source);
 }
 
 void BrowserWebContentsDelegate::SetContentsBounds(content::WebContents* source,
@@ -1461,17 +1448,31 @@ void BrowserWebContentsDelegate::RegisterProtocolHandler(
   permissions::PermissionRequestManager* permission_request_manager =
       permissions::PermissionRequestManager::FromWebContents(web_contents);
   if (permission_request_manager) {
+    // ForSecurityDropFullscreen() can exit fullscreen across related
+    // WebContents, which can execute observers or spin a nested event pump that
+    // synchronously destroys the requesting frame (e.g. if an iframe is
+    // detached). Track the frame weakly and ensure it is still alive and active
+    // before adding the request.
+    content::WeakDocumentPtr weak_document =
+        requesting_frame->GetWeakDocumentPtr();
     auto blocker = web_contents->ForSecurityDropFullscreen(
         /*display_id=*/display::kInvalidDisplayId);
-    if (!blocker) {
+    content::RenderFrameHost* rfh = weak_document.AsRenderFrameHostIfValid();
+    if (!blocker || !rfh || !rfh->IsActive()) {
       return;
     }
 
+    // The permission prompt must attribute the request to the initiator frame
+    // that called navigator.registerProtocolHandler, rather than the target
+    // handler URL. For web pages these are always same-origin, but extensions
+    // can register cross-origin HTTPS endpoints; attributing the prompt to the
+    // target URL would allow an extension to spoof the prompt as coming from
+    // the target origin.
     permission_request_manager->AddRequest(
-        requesting_frame,
-        std::make_unique<
-            custom_handlers::RegisterProtocolHandlerPermissionRequest>(
-            registry, handler, url, std::move(*blocker)));
+        rfh, std::make_unique<
+                 custom_handlers::RegisterProtocolHandlerPermissionRequest>(
+                 registry, handler, rfh->GetLastCommittedOrigin(),
+                 std::move(*blocker)));
   }
 }
 
@@ -1493,23 +1494,6 @@ void BrowserWebContentsDelegate::UnregisterProtocolHandler(
   custom_handlers::ProtocolHandlerRegistry* registry =
       ProtocolHandlerRegistryFactory::GetForBrowserContext(context);
   registry->RemoveHandler(handler);
-}
-
-void BrowserWebContentsDelegate::FindReply(content::WebContents* web_contents,
-                                           int request_id,
-                                           int number_of_matches,
-                                           const gfx::Rect& selection_rect,
-                                           int active_match_ordinal,
-                                           bool final_update) {
-  find_in_page::FindTabHelper* find_tab_helper =
-      find_in_page::FindTabHelper::FromWebContents(web_contents);
-  if (!find_tab_helper) {
-    return;
-  }
-
-  find_tab_helper->HandleFindReply(request_id, number_of_matches,
-                                   selection_rect, active_match_ordinal,
-                                   final_update);
 }
 
 void BrowserWebContentsDelegate::RequestMediaAccessPermission(

@@ -63,6 +63,70 @@ JitCompatibilityRequest RequestJitCompatibility() {
   return {result, result < 0 ? errno : 0};
 }
 
+// 256MiB 的 CodeRange 预留失败，只说明"预留不了这么大"，不代表设备不允许
+// 可执行内存。旧线（154/155）没有这套探测、JIT 一直开着且实测正常；157 加了
+// 探测后，在预留受限的设备上会直接判 JIT 不可用并追加 --jitless，把 V8 打成
+// 解释器（重 JS 页面打开极慢、滚动监听每帧解释执行 → 滑动掉帧）。
+// 这里用 1MiB 复测：只要能完成 RWX + DONTNEED + RW→RX，就认为 JIT 可用，
+// 由 V8 自己按实际可用大小建 CodeRange；只有小尺寸也失败才保留降级。
+base::internal::JitMemoryProbe ProbeJitSmallRange() {
+  base::internal::JitMemoryProbe result;
+  const long page_size = sysconf(_SC_PAGESIZE);
+  const size_t size = static_cast<size_t>(1024) * 1024;  // 1MiB
+  if (page_size <= 0 || size % static_cast<size_t>(page_size)) {
+    result.map_error = EINVAL;
+    result.failure_stage = "small-page-size";
+    return result;
+  }
+  void* range = mmap(nullptr, size, PROT_NONE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+  if (range == MAP_FAILED) {
+    result.map_error = errno;
+    result.failure_stage = "small-reserve";
+    return result;
+  }
+  if (mprotect(range, size, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+    result.protect_error = errno;
+    result.failure_stage = "small-rwx";
+  } else if (madvise(range, size, MADV_DONTNEED) != 0) {
+    result.discard_error = errno;
+    result.failure_stage = "small-discard";
+  } else if (mprotect(range, static_cast<size_t>(page_size),
+                      PROT_READ | PROT_WRITE) != 0) {
+    result.protect_error = errno;
+    result.failure_stage = "small-rw";
+  } else {
+    *static_cast<volatile unsigned char*>(range) = 0;
+    if (mprotect(range, static_cast<size_t>(page_size),
+                 PROT_READ | PROT_EXEC) != 0) {
+      result.protect_error = errno;
+      result.failure_stage = "small-rx";
+    } else {
+      result.available = true;
+    }
+  }
+  munmap(range, size);
+  return result;
+}
+
+// 只有"预留 256MiB 失败"才值得用小尺寸复测；protect/discard 失败说明系统
+// 确实不允许可执行内存，继续保持原本的降级路径。
+base::internal::JitMemoryProbe ProbeJitWithFallback() {
+  auto probe = base::internal::ProbeOhosJitMemory();
+  if (probe.available || probe.map_error == 0) {
+    return probe;
+  }
+  auto small = ProbeJitSmallRange();
+  AURA_LOG_I("AuraShell JIT probe retry 1MiB: available=%{public}d "
+             "stage=%{public}s map=%{public}d protect=%{public}d "
+             "discard=%{public}d (256MiB map_error=%{public}d)",
+             small.available,
+             small.failure_stage ? small.failure_stage : "-",
+             small.map_error, small.protect_error, small.discard_error,
+             probe.map_error);
+  return small;
+}
+
 void ConfigureJitStartup(const AuraStartupConfig& config,
                          std::vector<std::string>* output,
                          bool allow_compatibility) {
@@ -78,7 +142,7 @@ void ConfigureJitStartup(const AuraStartupConfig& config,
   const auto jit = PrepareJitStartup(
       config.jitless || JitlessRequested(js_flags),
       allow_compatibility && config.jit_compatibility,
-      &base::internal::ProbeOhosJitMemory, &RequestJitCompatibility);
+      &ProbeJitWithFallback, &RequestJitCompatibility);
   AURA_LOG_I("AuraShell JIT %{public}s (config jitless=%{public}d "
              "compatibility=%{public}d requested=%{public}d)",
              jit.disabled ? "disabled" :
@@ -101,6 +165,47 @@ void ConfigureJitStartup(const AuraStartupConfig& config,
                jit.after.map_error, jit.after.protect_error,
                jit.after.discard_error, jit.after.unmap_error);
   }
+  // [诊断] 把探测结果落到 user_data_dir；壳的「复制帧率诊断」会一并读出，
+  // 这样无需 hdc 也能拿到 JIT 的真实状态与失败阶段。
+  {
+    std::string diag = "jitless=" + std::to_string(config.jitless ? 1 : 0) +
+                       " compat=" + std::to_string(config.jit_compatibility ? 1 : 0) +
+                       " disabled=" + std::to_string(jit.disabled ? 1 : 0) +
+                       " before_avail=" + std::to_string(jit.before.available ? 1 : 0) +
+                       " after_avail=" + std::to_string(jit.after.available ? 1 : 0) +
+                       " map_err=" + std::to_string(jit.before.map_error) +
+                       " protect_err=" + std::to_string(jit.before.protect_error) +
+                       " discard_err=" + std::to_string(jit.before.discard_error) +
+                       " unmap_err=" + std::to_string(jit.before.unmap_error) +
+                       " stage=" + (jit.before.failure_stage
+                                        ? jit.before.failure_stage
+                                        : "-") +
+                       " req_attempted=" + std::to_string(jit.request_attempted ? 1 : 0) +
+                       " req_result=" + std::to_string(jit.request.result) +
+                       " req_errno=" + std::to_string(jit.request.error) +
+                       " after_map_err=" + std::to_string(jit.after.map_error) +
+                       " after_protect_err=" + std::to_string(jit.after.protect_error) +
+                       " after_discard_err=" + std::to_string(jit.after.discard_error) +
+                       " js_flags=[" + js_flags + "]" +
+                       " fallback_applied=" +
+                       std::to_string(jit.disabled ? 1 : 0) +
+                       " probe_failed_but_jit_kept=" +
+                       std::to_string((!jit.disabled && !jit.after.available) ? 1 : 0) +
+                       "\n";
+    if (!config.user_data_dir.empty()) {
+      base::WriteFile(base::FilePath(config.user_data_dir +
+                                     "/aura-jit-diag.txt"),
+                      diag);
+    }
+  }
+  // [实验/对齐 154] 只有壳显式要求 jitless 时才降级；探测失败不再追加
+  // --jitless。理由：154/155 引擎根本没有这套探测（二进制里无
+  // "CodeRange probe failed"/"using interpreter"），V8 一直是开 JIT 的，且
+  // 在同一台设备上长期正常 —— 说明"预留 256MiB 失败"不等于 JIT 不可用，
+  // [已恢复原逻辑] 曾为验证"探测失败是否被误判"临时改成仅看 jit.disabled，
+  // 让探测失败也继续用 JIT。诊断落盘实测 before_avail=1/after_avail=1/
+  // fallback_applied=0，JIT 一直是好的 ⇒ 该实验与掉帧无关，恢复上游降级，
+  // 避免将来在真禁可执行内存的设备上让 V8 拿不到 CodeRange 直接崩。
   if (jit.disabled || !jit.after.available) {
     std::erase_if(arguments, [](const std::string& argument) {
       return argument == "--js-flags" || argument.starts_with("--js-flags=");
@@ -632,11 +737,19 @@ std::vector<std::string> OhosChromeMainRunner::BuildArgumentsLocked(
   // ships and mobile sites and players use to tell a phone and follow its
   // rotation. Not on a tablet or PC: their desktop User-Agent is there to get
   // desktop pages, and sites take window.orientation for a phone.
+  // ImplicitRootScroller is also Android-only upstream. It lets a full-screen
+  // scrolling container drive the phone's browser controls, not just <html>.
   arguments.push_back(
       config.ui_family == "mobile_phone"
+          // [已回滚] 曾按上游 1b3a2cbe 加 ImplicitRootScroller + Blink
+          // root_scroller_controller.cc 的 OHOS 分支，想让 #root{overflow:auto}
+          // 这类自滚容器作为 root scroller。实测：凤凰仍慢仍顿，且**顶栏不再
+          // 自动隐藏**（implicit root scroller 接管后 browser controls 的隐藏
+          // 驱动被打断）。属负收益，已全部撤回，保持上游默认。
           ? "--enable-blink-features=BarcodeDetector,FaceDetector,"
             "TextDetector,WebShare,MediaCapture,ContactsManager,"
-            "ContactsManagerExtraProperties,WebNFC,OrientationEvent"
+            "ContactsManagerExtraProperties,WebNFC,OrientationEvent,"
+            "ImplicitRootScroller"
           : "--enable-blink-features=BarcodeDetector,FaceDetector,"
             "TextDetector,WebShare,MediaCapture,ContactsManager,"
             "ContactsManagerExtraProperties");
