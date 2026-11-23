@@ -562,8 +562,10 @@ export struct SitePromptOverlays {
   }
 
   build() {
-    Stack({ alignContent: Alignment.Center }) {
-      if (this.kind.length > 0) {
+    // 没有请求时整个组件都不存在：若只让内层 if 为空、外层留下全屏 Stack，
+    // 它会盖在浏览器层之上吞掉主页磁贴与底栏的点击（真机实测）。
+    if (this.kind.length > 0) {
+      Stack({ alignContent: Alignment.Center }) {
         Column()
           .width('100%')
           .height('100%')
@@ -599,8 +601,8 @@ export struct SitePromptOverlays {
         .borderRadius(20)
         .backgroundColor($r('app.color.card_background'))
       }
+      .width('100%')
+      .height('100%')
     }
-    .width('100%')
-    .height('100%')
   }
 }
