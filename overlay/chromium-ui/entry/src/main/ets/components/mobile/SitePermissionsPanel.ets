@@ -112,6 +112,7 @@ export struct SitePermissionsPanel {
   // 给出会被引擎拒绝的"允许"档。AuraShell 把该 pref 转写到这个 key。
   @StorageLink('auraDefaultSiteSettings') @Watch('onDefaultRulesChanged') defaultRulesJson: string = '';
   @State private defaultRuleItems: DefaultRuleItem[] = [];
+  @State private defaultRulesExpanded: boolean = false;
   private defaultRuleRequestTimer: number = -1;
 
   aboutToAppear(): void {
@@ -328,50 +329,70 @@ export struct SitePermissionsPanel {
 
   @Builder
   private DefaultRules() {
-    Column({ space: 8 }) {
-      Text('默认规则（新网站）')
-        .fontSize(13)
-        .fontColor($r('app.color.text_secondary'))
-        .width('100%')
-        .margin({ top: 12, bottom: 2 })
-      ForEach(this.defaultRuleItems, (item: DefaultRuleItem): void => {
-        Row() {
-          Text(typeLabel(item.type))
-            .fontSize(14)
-            .fontColor($r('app.color.text_primary'))
-            .layoutWeight(1)
-          ForEach(item.choices, (choice: string): void => {
-            Text(valueLabel(choice))
+    Column() {
+      // 折叠行：默认收起只占一行，点开才列出全部类型。
+      Row() {
+        Text('默认规则（新网站）')
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+          .layoutWeight(1)
+        Image($r('app.media.aura_chevron'))
+          .width(16)
+          .height(16)
+          .fillColor($r('app.color.icon_secondary'))
+          .rotate({ angle: this.defaultRulesExpanded ? 0 : 90 })
+      }
+      .width('100%')
+      .constraintSize({ minHeight: 44 })
+      .onClick(() => {
+        this.defaultRulesExpanded = !this.defaultRulesExpanded;
+      })
+
+      if (this.defaultRulesExpanded) {
+        Column({ space: 8 }) {
+          ForEach(this.defaultRuleItems, (item: DefaultRuleItem): void => {
+            Row() {
+              Text(typeLabel(item.type))
+                .fontSize(14)
+                .fontColor($r('app.color.text_primary'))
+                .layoutWeight(1)
+              ForEach(item.choices, (choice: string): void => {
+                Text(valueLabel(choice))
+                  .fontSize(12)
+                  .fontColor(this.ruleValue(item.type) === choice ?
+                    $r('app.color.accent_primary') : $r('app.color.text_secondary'))
+                  .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+                  .borderRadius(8)
+                  .backgroundColor(this.ruleValue(item.type) === choice ?
+                    $r('app.color.surface_secondary') : Color.Transparent)
+                  .onClick(() => {
+                    if (!item.managed) {
+                      this.setDefaultRule(item.type, choice);
+                    }
+                  })
+              }, (choice: string): string => choice)
+            }
+            .width('100%')
+            .constraintSize({ minHeight: 40 })
+          }, (item: DefaultRuleItem): string => item.type)
+          if (this.defaultRuleItems.length === 0) {
+            Text('正在读取默认规则…')
               .fontSize(12)
-              .fontColor(this.ruleValue(item.type) === choice ?
-                $r('app.color.accent_primary') : $r('app.color.text_secondary'))
-              .padding({ left: 8, right: 8, top: 5, bottom: 5 })
-              .borderRadius(8)
-              .backgroundColor(this.ruleValue(item.type) === choice ?
-                $r('app.color.surface_secondary') : Color.Transparent)
-              .onClick(() => {
-                if (!item.managed) {
-                  this.setDefaultRule(item.type, choice);
-                }
-              })
-          }, (choice: string): string => choice)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+          }
+          Text('对没有单独设置的网站生效；已单独设过的网站以该网站的设置为准。')
+            .fontSize(12)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
         }
         .width('100%')
-        .constraintSize({ minHeight: 40 })
-      }, (item: DefaultRuleItem): string => item.type)
-      if (this.defaultRuleItems.length === 0) {
-        Text('正在读取默认规则…')
-          .fontSize(12)
-          .fontColor($r('app.color.text_secondary'))
-          .width('100%')
+        .padding({ top: 4, bottom: 8 })
       }
-      Text('对没有单独设置的网站生效；已单独设过的网站以该网站的设置为准。')
-        .fontSize(12)
-        .fontColor($r('app.color.text_secondary'))
-        .width('100%')
     }
     .width('100%')
-    .padding({ left: 16, right: 16, bottom: 16 })
+    .padding({ left: 16, right: 16, bottom: 12 })
   }
 
   build() {
@@ -394,6 +415,7 @@ export struct SitePermissionsPanel {
         } else {
           Scroll(this.listScroller) {
             Column() {
+              this.DefaultRules()
               Column() {
                 ForEach(this.origins, (origin: string, index: number) => {
                   Column() {
@@ -440,7 +462,6 @@ export struct SitePermissionsPanel {
               .borderRadius(16)
               .backgroundColor($r('app.color.card_background'))
               .clip(true)
-              this.DefaultRules()
             }
             .width('100%')
             // 大标题带：滚动内容穿过大标题时逐渐虚化（见 GlassPage 文件头）。
