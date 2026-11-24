@@ -529,15 +529,27 @@ export struct SitePromptOverlays {
 
   @Builder
   private PromptActions() {
-    Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.End }) {
-      if (this.kind === KIND_PERMISSION) {
-        Button('忽略本次').margin({ left: 8, top: 6 }).onClick(() => this.answerPermission('dismiss'))
-        Button('拒绝').margin({ left: 8, top: 6 }).onClick(() => this.answerPermission('block'))
-        Button('允许一次').margin({ left: 8, top: 6 }).onClick(() => this.answerPermission('allowOnce'))
-        if (this.isSecure) {
-          Button('始终允许').margin({ left: 8, top: 6 }).onClick(() => this.answerPermission('allowAlways'))
+    // 权限有四个动作，两行两列对齐排布；其余面板保持右对齐横排。
+    // 用 Row + layoutWeight 均分，避免 Flex 换行后长短不一。
+    if (this.kind === KIND_PERMISSION) {
+      Column({ space: 8 }) {
+        Row({ space: 8 }) {
+          Button('忽略本次').layoutWeight(1).onClick(() => this.answerPermission('dismiss'))
+          Button('拒绝').layoutWeight(1).onClick(() => this.answerPermission('block'))
         }
-      } else if (this.kind === KIND_SELECT) {
+        .width('100%')
+        Row({ space: 8 }) {
+          Button('允许一次').layoutWeight(1).onClick(() => this.answerPermission('allowOnce'))
+          if (this.isSecure) {
+            Button('始终允许').layoutWeight(1).onClick(() => this.answerPermission('allowAlways'))
+          }
+        }
+        .width('100%')
+      }
+      .width('100%')
+    } else {
+    Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.End }) {
+      if (this.kind === KIND_SELECT) {
         Button('取消').margin({ left: 8, top: 6 }).onClick(() => this.answerSelect(true))
         if (this.multiple) {
           Button('确定').margin({ left: 8, top: 6 }).onClick(() => this.answerSelect(false))
@@ -557,8 +569,9 @@ export struct SitePromptOverlays {
         Button('无结果').margin({ left: 8, top: 6 }).onClick(() => this.failSpeech('no-speech'))
         Button('完成').margin({ left: 8, top: 6 }).onClick(() => this.answerSpeech(this.speechText.trim()))
       }
+      }
+      .width('100%')
     }
-    .width('100%')
   }
 
   build() {
@@ -591,7 +604,9 @@ export struct SitePromptOverlays {
             .width('100%')
           }
           .width('100%')
-          .layoutWeight(1)
+          // 不能 layoutWeight(1)：那会把 Scroll 撑满剩余高度，权限项只有两行
+          // 时弹窗也跟着变成接近整屏（真机实测）。高度交给内容，最多 220vp。
+          .constraintSize({ maxHeight: 220 })
           .scrollBar(BarState.Off)
           this.PromptActions()
         }

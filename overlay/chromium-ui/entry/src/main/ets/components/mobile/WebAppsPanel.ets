@@ -4,10 +4,20 @@
  *
  * 回包统一由 AuraShell 写到 'auraPanelWebApps'（含 _seq，保证同内容也刷新）。
  * 按 event 区分列表 / 卸载 / 图标导出，按 requestId 过滤迟到回包。
+ *
+ * 页面外壳走官方 HdsNavigation（和设置/扩展面板同一套：标题栏沉浸光感
+ * 材质 + 渐变模糊滚动 + 系统安全区），不再自绘标题栏，观感与其它页对齐。
  */
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { BrowserCommandPayload, InstalledWebApp } from 'engine';
+import { glassHeaderInsetVp } from './GlassPage';
+import {
+  HdsNavigation,
+  HdsNavigationTitleMode,
+  hdsMaterial,
+  ScrollEffectType
+} from '@kit.UIDesignKit';
 
 interface WebAppsPayload {
   event?: string;
@@ -28,6 +38,8 @@ export struct WebAppsPanel {
 
   @State private apps: InstalledWebApp[] = [];
   @State private loading: boolean = true;
+  @State private pathStack: NavPathStack = new NavPathStack();
+  private listScroller: Scroller = new Scroller();
   private requestSeq: number = 0;
   private exportSeq: number = 0;
 
@@ -70,6 +82,10 @@ export struct WebAppsPanel {
       } else {
         this.getUIContext().getPromptAction().showToast({ message: '卸载失败', duration: 2000 });
       }
+    } else if (payload.event === 'pwaInstalled') {
+      // 安装完成（通常来自网页上的 Chromium 安装气泡）：面板正开着就重取，
+      // 省得用户退出重进才看到新应用。
+      this.reload();
     } else if (payload.event === 'webAppIcon') {
       if ((payload.requestId ?? 0) !== this.exportSeq) {
         return;
@@ -84,7 +100,7 @@ export struct WebAppsPanel {
 
   private install(): void {
     // 引擎把 Chromium 的安装确认气泡画在当前标签的网页层，面板盖在上面就
-    // 看不见；先收面板再下发。
+    // 看不见；先收面板再下发（所以用户看到的是「返回网页后弹出」，正常）。
     this.onClose();
     this.onCommand({ command: 'installWebApp' });
   }
@@ -142,30 +158,8 @@ export struct WebAppsPanel {
   }
 
   build() {
-    Column() {
-      Row({ space: 12 }) {
-        Button({ type: ButtonType.Circle }) {
-          SymbolGlyph($r('sys.symbol.chevron_backward'))
-            .fontSize(18)
-            .fontColor([$r('app.color.icon_primary')])
-        }
-        .width(36)
-        .height(36)
-        .backgroundColor($r('app.color.surface_secondary'))
-        .onClick(() => {
-          this.onBack();
-        })
-
-        Text('Web 应用')
-          .fontSize(20)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
-        Blank()
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16, top: 12, bottom: 12 })
-
-      Scroll() {
+    HdsNavigation(this.pathStack) {
+      Scroll(this.listScroller) {
         Column({ space: 12 }) {
           Text('把网页安装成独立窗口后，可以从这里启动、卸载，或导出它的图标。')
             .fontSize(12)
@@ -222,24 +216,58 @@ export struct WebAppsPanel {
             }, (app: InstalledWebApp): string => app.appId)
           }
 
-          Button('安装当前网页')
+          Button('安装当前网页到桌面')
             .width('100%')
             .height(46)
             .fontSize(16)
-            .margin({ top: 8 })
+            .margin({ top: 8, bottom: 24 })
             .onClick(() => this.install())
         }
         .width('100%')
-        .padding({ left: 16, right: 16, bottom: 24 })
+        .padding({
+          left: 16,
+          right: 16,
+          top: glassHeaderInsetVp(),
+          bottom: 16
+        })
       }
-      .layoutWeight(1)
       .width('100%')
+      .height('100%')
       .scrollBar(BarState.Off)
       .align(Alignment.TopStart)
     }
+    .titleBar({
+      content: {
+        title: { mainTitle: 'Web 应用' },
+        backIcon: {
+          icon: $r('sys.symbol.chevron_backward'),
+          isEnabled: true,
+          action: (): void => {
+            this.onBack();
+          }
+        },
+        menu: undefined
+      },
+      style: {
+        scrollEffectOpts: {
+          enableScrollEffect: true,
+          scrollEffectType: ScrollEffectType.GRADIENT_BLUR
+        },
+        systemMaterialEffect: {
+          materialType: hdsMaterial.MaterialType.ADAPTIVE,
+          materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+        }
+      },
+      avoidLayoutSafeArea: true,
+      enableComponentSafeArea: false
+    })
+    .titleMode(HdsNavigationTitleMode.MINI)
+    .hideBackButton(false)
+    .mode(NavigationMode.Stack)
+    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+    .bindToScrollable([this.listScroller])
+    .backgroundColor($r('app.color.page_background'))
     .width('100%')
     .height('100%')
-    .padding({ top: 20 })
-    .backgroundColor($r('app.color.page_background'))
   }
 }

@@ -9,7 +9,7 @@ import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { fileIo as fs, picker } from '@kit.CoreFileKit';
+import { fileIo as fs, picker, fileUri } from '@kit.CoreFileKit';
 import { BrowserCommandPayload, ExtensionActionItem, ExtensionDetailsEvent, ExtensionSiteAccess } from 'engine';
 import { glassHeaderInsetVp } from './GlassPage';
 import { ExtIconCache } from './ExtIconCache';
@@ -211,7 +211,19 @@ export struct ExtensionPanel {
       return;
     }
     try {
-      this.items = this.mergeIconCache(JSON.parse(this.extensionsJson) as ExtensionActionItem[]);
+      const incoming = this.mergeIconCache(JSON.parse(this.extensionsJson) as ExtensionActionItem[]);
+      // 手机端把 pinned 当作列表置顶：开关拨动后回包会带新 pinned 值，
+      // 排序要跟着回包走，否则下次刷新又弹回原顺序。
+      const pinned: ExtensionActionItem[] = [];
+      const rest: ExtensionActionItem[] = [];
+      for (const entry of incoming) {
+        if (entry.pinned === true) {
+          pinned.push(entry);
+        } else {
+          rest.push(entry);
+        }
+      }
+      this.items = pinned.concat(rest);
       if (this.page === 'detail' && this.detailId.length > 0) {
         for (const entry of this.items) {
           if (entry.id === this.detailId) {
@@ -694,10 +706,61 @@ export struct ExtensionPanel {
   }
 
   private setPinned(pinned: boolean): void {
-    // 工具栏可见性由引擎的 ToolbarActionsModel 决定；列表回包会带回最新
-    // pinned 值，这里只做即时反馈。
+    // 手机端没有 PC 那套工具栏渲染位，引擎的 ToolbarActionsModel 改动在
+    // 这里看不到。把同一个 pinned 状态落在扩展列表里：置顶 + 角标，
+    // 让开关在手机上有可见效果；引擎侧状态照常同步（将来桌面形态仍生效）。
     this.detailPinned = pinned;
     this.onCommand({ command: 'setExtensionPinned', id: this.detailId, pinned: pinned });
+    this.applyPinnedOrder();
+  }
+
+  // pinned 的扩展排到列表前面；同组内保持引擎原来的顺序。
+  private applyPinnedOrder(): void {
+    const pinned: ExtensionActionItem[] = [];
+    const rest: ExtensionActionItem[] = [];
+    for (const item of this.items) {
+      if (item.id === this.detailId) {
+        item.pinned = this.detailPinned;
+      }
+      if (item.pinned === true) {
+        pinned.push(item);
+      } else {
+        rest.push(item);
+      }
+    }
+    this.items = pinned.concat(rest);
+  }
+
+  // 点整行时弹系统目录选择器；picker 给的是 file:// URI，引擎要绝对路径，
+  // 这里解出 path 再填进输入框让用户确认（不同来源的 URI 口径不一致，
+  // 留一个可见可改的输入框最稳），保留手输兜底。
+  private async pickUnpackedDir(): Promise<void> {
+    if (!this.developerMode) {
+      this.getUIContext().getPromptAction().showToast({
+        message: '请先打开标题栏的「开发者模式」',
+        duration: 2500
+      });
+      return;
+    }
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext | undefined;
+    if (context === undefined) {
+      return;
+    }
+    try {
+      const options = new picker.DocumentSelectOptions();
+      options.maxSelectNumber = 1;
+      options.selectMode = picker.DocumentSelectMode.FOLDER;
+      const uris: string[] = await new picker.DocumentViewPicker(context).select(options);
+      if (uris.length > 0) {
+        this.unpackedPath = new fileUri.FileUri(uris[0]).path;
+      }
+    } catch (error) {
+      this.getUIContext().getPromptAction().showToast({
+        message: '无法读取所选目录，请改用手动输入',
+        duration: 2500
+      });
+    }
+    this.showUnpackedInput = true;
   }
 
   private loadUnpacked(): void {
@@ -1010,6 +1073,15 @@ export struct ExtensionPanel {
                           .fontColor($r('app.color.text_primary'))
                           .maxLines(1)
                           .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        // 手机端 pinned 的可见效果：置顶 + 角标。
+                        if (item.pinned === true) {
+                          Text('已置顶')
+                            .fontSize(10)
+                            .fontColor($r('app.color.text_secondary'))
+                            .padding({ left: 5, right: 5, top: 1, bottom: 1 })
+                            .borderRadius(6)
+                            .backgroundColor($r('app.color.surface_secondary'))
+                        }
                       }
 
                       Text(item.userEnabled ?
@@ -1118,7 +1190,8 @@ export struct ExtensionPanel {
           .backgroundColor($r('app.color.card_background'))
           .clip(true)
 
-          // 加载已解压扩展：开发者模式开着时，输入含 manifest.json 的目录。
+          // 加载未打包扩展：点整行弹系统目录选择器，选中后路径落到输入框
+          // 供确认；开发者模式开着 + 目录里含 manifest.json 才能加载。
           Column() {
             Row({ space: 12 }) {
               Image($r('app.media.aura_open_in_new'))
@@ -1127,11 +1200,11 @@ export struct ExtensionPanel {
                 .fillColor($r('app.color.icon_primary'))
 
               Column({ space: 3 }) {
-                Text('加载已解压扩展')
+                Text('加载未打包扩展')
                   .fontSize(16)
                   .fontWeight(FontWeight.Medium)
                   .fontColor($r('app.color.text_primary'))
-                Text('目录里要有 manifest.json（需先开开发者模式）')
+                Text('从文件管理器选目录（含 manifest.json，需先开开发者模式）')
                   .fontSize(12)
                   .fontColor($r('app.color.text_secondary'))
               }
@@ -1147,12 +1220,12 @@ export struct ExtensionPanel {
             .width('100%')
             .padding({ left: 16, right: 16, top: 10, bottom: 10 })
             .onClick(() => {
-              this.showUnpackedInput = !this.showUnpackedInput;
+              this.pickUnpackedDir();
             })
 
             if (this.showUnpackedInput) {
               Column({ space: 8 }) {
-                TextInput({ placeholder: '扩展目录的绝对路径' })
+                TextInput({ text: this.unpackedPath, placeholder: '扩展目录的绝对路径（可手动修改）' })
                   .width('100%')
                   .height(42)
                   .fontSize(14)
@@ -1384,14 +1457,15 @@ export struct ExtensionPanel {
               .opacity(this.developerMode ? 1 : 0.5)
             }
 
-            // 固定到工具栏：开关状态来自 extensionActions 的 pinned 字段。
+            // 置顶：手机端没有 PC 工具栏渲染位，pinned 在这里体现为列表置顶
+            // + 角标（见列表项），开关拨动立即能看到效果。
             Row({ space: 12 }) {
               Column({ space: 3 }) {
-                Text('固定到工具栏')
+                Text('在列表中置顶')
                   .fontSize(16)
                   .fontWeight(FontWeight.Medium)
                   .fontColor($r('app.color.text_primary'))
-                Text('把这个扩展的按钮常驻在工具栏')
+                Text('打开后这个扩展排到列表最前并标「已置顶」')
                   .fontSize(12)
                   .fontColor($r('app.color.text_secondary'))
               }

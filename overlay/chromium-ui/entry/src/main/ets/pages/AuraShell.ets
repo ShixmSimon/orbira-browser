@@ -3183,8 +3183,16 @@ struct AuraShell {
     }
     // WebApp 列表 / 图标导出 / 卸载回包：WebAppsPanel 按 event + requestId 认领。
     if (event.event === 'webApps' || event.event === 'webAppIcon' ||
-      event.event === 'webAppUninstalled') {
+      event.event === 'webAppUninstalled' || event.event === 'pwaInstalled') {
       this.writePanelEvent('auraPanelWebApps', event);
+      if (event.event === 'pwaInstalled' && this.isMobilePhoneUi()) {
+        // 手机端没有桌面端那条 AlertDialog；用 toast 明确告诉用户安装成功，
+        // 否则从网页气泡点「安装」后毫无反馈。
+        this.getUIContext().getPromptAction().showToast({
+          message: '已添加到桌面，可在 Web 应用里启动',
+          duration: 2500
+        });
+      }
       return;
     }
 
