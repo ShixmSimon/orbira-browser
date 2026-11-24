@@ -1136,9 +1136,9 @@ export struct ExtensionPanel {
                   }
                 }
                 .width('100%')
-              // 键并入 userEnabled：只拿 id 当键的话，启停后同键复用旧组件，
-              // Toggle 的 isOn 停在旧值（ref/04 铁律）。
-              }, (item: ExtensionActionItem): string => `${item.id}-${item.userEnabled ? 1 : 0}`)
+              // 键并入启用态与置顶态，状态变化时组件随之刷新而不复用旧节点。
+              }, (item: ExtensionActionItem): string =>
+                `${item.id}-${item.userEnabled ? 1 : 0}-${item.pinned === true ? 1 : 0}`)
             }
             .width('100%')
             .borderRadius(16)

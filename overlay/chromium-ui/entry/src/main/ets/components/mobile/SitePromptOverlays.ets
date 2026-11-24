@@ -111,16 +111,26 @@ export struct SitePromptOverlays {
     return result;
   }
 
+  // 队列字符串未变时复用上次解析结果，避免同一条请求的多次队列刷新反复
+  // 全量 JSON.parse（select 的 options 可能很大）。
+  private parsedQueueSig: string = '';
+  private parsedQueueHead: Record<string, Object> | null = null;
+
   private head(): Record<string, Object> | null {
+    if (this.parsedQueueSig === this.queueJson) {
+      return this.parsedQueueHead;
+    }
+    this.parsedQueueSig = this.queueJson;
+    this.parsedQueueHead = null;
     try {
       const root = JSON.parse(this.queueJson) as Record<string, Object>;
       const items = root['items'] as Object[];
       if (items.length > 0) {
-        return items[0] as Record<string, Object>;
+        this.parsedQueueHead = items[0] as Record<string, Object>;
       }
     } catch (error) {
     }
-    return null;
+    return this.parsedQueueHead;
   }
 
   private onQueueChanged(): void {
@@ -529,7 +539,7 @@ export struct SitePromptOverlays {
 
   @Builder
   private PromptActions() {
-    // 权限有四个动作，两行两列对齐排布；其余面板保持右对齐横排。
+    // 权限的四个动作排成两行两列，其余面板的按钮横排。
     // 用 Row + layoutWeight 均分，避免 Flex 换行后长短不一。
     if (this.kind === KIND_PERMISSION) {
       Column({ space: 8 }) {
@@ -575,8 +585,8 @@ export struct SitePromptOverlays {
   }
 
   build() {
-    // 没有请求时整个组件都不存在：若只让内层 if 为空、外层留下全屏 Stack，
-    // 它会盖在浏览器层之上吞掉主页磁贴与底栏的点击（真机实测）。
+    // 没有请求时整个组件都不渲染：若只让内层 if 为空、外层留下全屏 Stack，
+    // 会挡住主页磁贴与底栏的点击。
     if (this.kind.length > 0) {
       Stack({ alignContent: Alignment.Center }) {
         Column()
@@ -604,8 +614,8 @@ export struct SitePromptOverlays {
             .width('100%')
           }
           .width('100%')
-          // 不能 layoutWeight(1)：那会把 Scroll 撑满剩余高度，权限项只有两行
-          // 时弹窗也跟着变成接近整屏（真机实测）。高度交给内容，最多 220vp。
+          // 不用 layoutWeight(1)：那会把 Scroll 撑满剩余高度，使内容很少时
+          // 弹窗也接近整屏。高度交给内容，最多 220vp。
           .constraintSize({ maxHeight: 220 })
           .scrollBar(BarState.Off)
           this.PromptActions()

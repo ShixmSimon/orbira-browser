@@ -2069,12 +2069,8 @@ struct AuraShell {
         // 手机 UI 挂（这些 picker 事件本身也只在手机端下发）。
         if (this.isMobilePhoneUi()) {
           SitePromptOverlays({
-            onAnswer: (command: BrowserCommandPayload): void => {
-              this.answerSitePrompt(command);
-            },
-            onResolved: (requestId: number): void => {
-              this.dropSitePrompt(requestId);
-            }
+            onAnswer: this.sitePromptAnswer,
+            onResolved: this.sitePromptResolved
           })
         }
         if (this.auxiliaryWindows.length > 0) {
@@ -2542,6 +2538,13 @@ struct AuraShell {
     this.sitePromptQueue = this.sitePromptQueue.concat([event]);
     this.flushSitePromptQueue();
   }
+
+  // 传给 SitePromptOverlays 的回调用稳定引用：AuraShell 重渲染频繁，
+  // 每次 build 新建闭包会让子组件连带刷新。
+  private readonly sitePromptAnswer: (command: BrowserCommandPayload) => void =
+    (command: BrowserCommandPayload): void => { this.answerSitePrompt(command); };
+  private readonly sitePromptResolved: (requestId: number) => void =
+    (requestId: number): void => { this.dropSitePrompt(requestId); };
 
   private dropSitePrompt(requestId: number): void {
     if (requestId <= 0) {

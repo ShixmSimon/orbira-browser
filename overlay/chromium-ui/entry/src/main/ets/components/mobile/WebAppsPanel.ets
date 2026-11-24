@@ -1,12 +1,9 @@
 /*
- * 已安装 WebApp 管理页。引擎的 getWebApps / launchWebApp / uninstallWebApp /
- * exportWebAppIcon 命令已具备，本页只负责列出、操作和认领回包。
+ * 已安装 WebApp 管理页：列出已安装应用，提供启动、卸载、图标导出操作。
+ * 引擎的 getWebApps / launchWebApp / uninstallWebApp / exportWebAppIcon 命令。
  *
- * 回包统一由 AuraShell 写到 'auraPanelWebApps'（含 _seq，保证同内容也刷新）。
+ * 回包由 AuraShell 写到 'auraPanelWebApps'（含 _seq，保证同内容也刷新）；
  * 按 event 区分列表 / 卸载 / 图标导出，按 requestId 过滤迟到回包。
- *
- * 页面外壳走官方 HdsNavigation（和设置/扩展面板同一套：标题栏沉浸光感
- * 材质 + 渐变模糊滚动 + 系统安全区），不再自绘标题栏，观感与其它页对齐。
  */
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
