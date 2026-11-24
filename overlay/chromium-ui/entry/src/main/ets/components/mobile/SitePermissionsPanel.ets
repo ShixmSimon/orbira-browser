@@ -122,7 +122,9 @@ export struct SitePermissionsPanel {
     // 站点图标同理：先吃一次已有回包，否则首帧全是占位色块。
     this.onFaviconsChanged();
     this.onDefaultRulesChanged();
-    this.onSettingsPayload();
+    // 先吃上次缓存的列表：新页面的 listRequestId 从 0 起，与缓存回包的
+    // requestId 不等，正常校验会丢弃它并闪一下"加载中"。缓存态跳过校验。
+    this.onSettingsPayload(true);
     this.reloadDefaultRules();
     this.reloadList();
     this.retryTimer = setTimeout((): void => {
@@ -209,14 +211,14 @@ export struct SitePermissionsPanel {
     this.onCommand({ command: 'getSiteSettingsForOrigin', requestId: this.requestSeq, origin: this.detailOrigin });
   }
 
-  private onSettingsPayload(): void {
+  private onSettingsPayload(fromCache: boolean = false): void {
     if (this.settingsJson.length === 0) {
       return;
     }
     try {
       const payload = JSON.parse(this.settingsJson) as SiteSettingsPayload;
       const items = payload.items ?? [];
-      if (payload.requestId === this.listRequestId) {
+      if (fromCache || payload.requestId === this.listRequestId) {
         this.listItems = items;
         const seen: Record<string, boolean> = {};
         const hosts: string[] = [];
