@@ -148,9 +148,6 @@ const SETTINGS_ENTRIES: SettingsEntry[] = [
     keywords: ['engine', 'search', '默认', '百度', 'google', '必应', '搜狗'], section: '常规', kind: 'page' },
   { id: 'extensions', title: '扩展程序', subtitle: '管理已安装的扩展',
     keywords: ['extension', '插件', 'addon'], section: '常规', kind: 'shell' },
-  { id: 'webApps', title: 'Web 应用', subtitle: '启动、卸载或导出已安装网页应用的图标',
-    keywords: ['pwa', 'webapp', 'web app', '网页应用', '安装', '桌面'], section: '常规', kind: 'shell' },
-
   { id: 'sitePermissions', title: '网站权限', subtitle: '各网站的相机、定位等权限',
     keywords: ['permission', '权限', '相机', '定位', '麦克风'], section: '隐私与安全', kind: 'shell' },
   { id: 'externalAppLinks', title: '允许跳转本机应用', subtitle: '知乎、B站这类链接交给对应应用打开',
@@ -217,7 +214,6 @@ export struct SettingsPanel {
   onCommand: (command: BrowserCommandPayload) => void = (_command: BrowserCommandPayload): void => {};
   onBack: () => void = (): void => {};
   onOpenExtensions: () => void = (): void => {};
-  onOpenWebApps: () => void = (): void => {};
   onOpenSitePermissions: () => void = (): void => {};
   onOpenPasswords: () => void = (): void => {};
   // 「主页设置 → 自定义主页布局」需先收起设置面板、再打开主页布局弹层
@@ -953,8 +949,6 @@ export struct SettingsPanel {
       this.onOpenSitePermissions();
     } else if (entry.id === 'extensions') {
       this.onOpenExtensions();
-    } else if (entry.id === 'webApps') {
-      this.onOpenWebApps();
     } else if (entry.id === 'about') {
       this.openSubPage('about');
     }
@@ -1351,15 +1345,6 @@ export struct SettingsPanel {
               value: '',
               onTap: (): void => {
                 this.onOpenExtensions();
-              }
-            })
-            this.CardDivider()
-            SettingsNavRow({
-              icon: $r('app.media.aura_window'),
-              label: 'Web 应用',
-              value: '',
-              onTap: (): void => {
-                this.onOpenWebApps();
               }
             })
           }
