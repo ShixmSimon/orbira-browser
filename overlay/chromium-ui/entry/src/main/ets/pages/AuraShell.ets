@@ -3193,17 +3193,24 @@ struct AuraShell {
       if (event.event === 'webApps' &&
           event.requestId === AuraShell.WEBAPP_CLEANUP_REQUEST_ID) {
         const apps = event.apps ?? [];
-        for (const app of apps) {
-          if (app.canUninstall && app.appId.length > 0) {
-            this.executeBrowserCommand({ command: 'uninstallWebApp', appId: app.appId });
+        if (Array.isArray(apps)) {
+          for (const app of apps) {
+            if (app.canUninstall === true && typeof app.appId === 'string' && app.appId.length > 0) {
+              this.executeBrowserCommand({ command: 'uninstallWebApp', appId: app.appId });
+            }
           }
+        }
+        // 卸载命令都已下发后才置标记：中途退出未清完时下次启动能重试。
+        const ctx = this.getUIContext().getHostContext() as common.Context | undefined;
+        if (ctx) {
+          ShellUiPrefs.saveLegacyWebAppsCleanedSync(ctx);
         }
       }
       if (event.event === 'pwaInstalled' && this.isMobilePhoneUi()) {
         // 手机端没有桌面端那条 AlertDialog；用 toast 明确告诉用户安装成功，
         // 否则从网页气泡点「安装」后毫无反馈。
         this.getUIContext().getPromptAction().showToast({
-          message: '已添加到桌面，可在 Web 应用里启动',
+          message: '已添加到桌面，可从桌面图标启动',
           duration: 2500
         });
       }
@@ -3422,11 +3429,11 @@ struct AuraShell {
 
   private cleanupLegacyWebApps(): void {
     // 只清一次：标记持久化，避免把用户以后装的 WebApp 也删掉。
+    // 标记在 webApps 回包处理完（卸载命令已下发）后才写，中途退出可重试。
     const context = this.getUIContext().getHostContext() as common.Context | undefined;
     if (!context || ShellUiPrefs.loadLegacyWebAppsCleanedSync(context)) {
       return;
     }
-    ShellUiPrefs.saveLegacyWebAppsCleanedSync(context);
     this.executeBrowserCommand({
       command: 'getWebApps',
       requestId: AuraShell.WEBAPP_CLEANUP_REQUEST_ID
