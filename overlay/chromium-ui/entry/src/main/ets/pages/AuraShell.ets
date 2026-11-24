@@ -1934,6 +1934,7 @@ struct AuraShell {
             this.configureBrowserControls();
             this.restoreSavedTabs();
             this.syncDesktopSites();
+            this.cleanupLegacyWebApps();
           }
           this.currentTabCastSession.update(state);
           this.knockShareSession.update(state);
@@ -3188,6 +3189,16 @@ struct AuraShell {
     if (event.event === 'webApps' || event.event === 'webAppIcon' ||
       event.event === 'webAppUninstalled' || event.event === 'pwaInstalled') {
       this.writePanelEvent('auraPanelWebApps', event);
+      // 启动清理：这是 cleanupLegacyWebApps 请求的列表，逐个卸载残留 WebApp。
+      if (event.event === 'webApps' &&
+          event.requestId === AuraShell.WEBAPP_CLEANUP_REQUEST_ID) {
+        const apps = event.apps ?? [];
+        for (const app of apps) {
+          if (app.canUninstall && app.appId.length > 0) {
+            this.executeBrowserCommand({ command: 'uninstallWebApp', appId: app.appId });
+          }
+        }
+      }
       if (event.event === 'pwaInstalled' && this.isMobilePhoneUi()) {
         // 手机端没有桌面端那条 AlertDialog；用 toast 明确告诉用户安装成功，
         // 否则从网页气泡点「安装」后毫无反馈。
@@ -3401,6 +3412,24 @@ struct AuraShell {
     this.executeBrowserCommand({
       command: 'getSearchEngines',
       requestId: this.searchEnginesRequestSeq
+    });
+  }
+
+  // WebApp 功能下线后的一次性残留清理：启动时列一次已安装 WebApp，
+  // 把用户装过的全部卸载。引擎注册表里若留着旧 WebApp，它的链接会继续
+  // 走 app 窗口（PWA 形态），与管理页入口已隐藏的状态不一致。
+  private static readonly WEBAPP_CLEANUP_REQUEST_ID: number = -9001;
+
+  private cleanupLegacyWebApps(): void {
+    // 只清一次：标记持久化，避免把用户以后装的 WebApp 也删掉。
+    const context = this.getUIContext().getHostContext() as common.Context | undefined;
+    if (!context || ShellUiPrefs.loadLegacyWebAppsCleanedSync(context)) {
+      return;
+    }
+    ShellUiPrefs.saveLegacyWebAppsCleanedSync(context);
+    this.executeBrowserCommand({
+      command: 'getWebApps',
+      requestId: AuraShell.WEBAPP_CLEANUP_REQUEST_ID
     });
   }
 

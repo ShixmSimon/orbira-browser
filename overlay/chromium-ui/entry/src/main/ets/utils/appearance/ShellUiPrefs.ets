@@ -399,4 +399,23 @@ export class ShellUiPrefs {
     } catch (error) {
     }
   }
+
+  // WebApp 功能下线残留清理的持久标记：只清一次历史遗留，不误伤以后安装的。
+  static loadLegacyWebAppsCleanedSync(context: common.Context): boolean {
+    try {
+      const store = preferences.getPreferencesSync(context, { name: STORE_NAME });
+      return store.getSync('legacyWebAppsCleaned', false) === true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  static saveLegacyWebAppsCleanedSync(context: common.Context): void {
+    try {
+      const store = preferences.getPreferencesSync(context, { name: STORE_NAME });
+      store.putSync('legacyWebAppsCleaned', true);
+      store.flushSync();
+    } catch (error) {
+    }
+  }
 }
