@@ -2925,8 +2925,15 @@ struct AuraShell {
       return;
     }
     if (event.event === 'prefs') {
-      AppStorage.setOrCreate('auraPanelPrefs',
-        JSON.stringify(shellEvent<PrefsEvent>(event).values ?? []));
+      const prefValues = shellEvent<PrefsEvent>(event).values ?? [];
+      AppStorage.setOrCreate('auraPanelPrefs', JSON.stringify(prefValues));
+      // 网站权限页需要引擎返回的默认规则有效档位（相机等敏感权限不允许
+      // 默认允许），单独转写一份，避免与设置页共用 auraPanelPrefs 串数据。
+      for (const pref of prefValues) {
+        if (pref.key === 'defaultSiteSettings' && typeof pref.value === 'string') {
+          AppStorage.setOrCreate('auraDefaultSiteSettings', pref.value);
+        }
+      }
       return;
     }
     // 广告拦截：getAdBlockState / setAdBlock* / updateAdBlockSources 的回包

@@ -23,6 +23,20 @@ interface SiteSettingsPayload {
   items?: SiteSetting[];
 }
 
+// 引擎 getPrefs('defaultSiteSettings') 回包：每类的当前值与有效档位。
+// 敏感权限（相机/麦克风/位置）的 choices 不含 allow——引擎拒绝写入
+// 全局默认允许，界面必须按这个列表显示，否则会给出无效的"允许"档。
+interface DefaultRuleItem {
+  type: string;
+  setting: string;
+  managed: boolean;
+  choices: string[];
+}
+
+interface DefaultRulesPayload {
+  items: DefaultRuleItem[];
+}
+
 const VALUE_LABELS: Record<string, string> = {
   'allow': '允许',
   'ask': '询问',
@@ -93,15 +107,12 @@ export struct SitePermissionsPanel {
   // 站点图标：引擎回包统一落 'auraFavicons'（AuraShell 转存），本页只从该键读取。
   @StorageLink('auraFavicons') @Watch('onFaviconsChanged') faviconsJson: string = '';
   @State private faviconMap: Map<string, string> = new Map();
-  // 默认规则：引擎没有对应的读取命令，外壳记住自己写过的四档值，写入后
-  // 仍以引擎为准（策略接管时会拒绝，界面只反映这次会话的设置）。
-  @StorageLink('auraDefaultSiteRules') @Watch('onDefaultRulesChanged') defaultRulesJson: string = '';
-  @State private defaultRules: Record<string, SiteSettingValue> = {};
-  private readonly defaultRuleTypes: SiteSettingType[] =
-    ['location', 'camera', 'microphone', 'notifications'];
-  // 新网站的默认规则只有三档：引擎的 setDefaultSiteSetting 不接受 'default'
-  // （那是单站点删除例外专用值），传进去会被拒绝且界面误显示已生效。
-  private readonly defaultRuleChoices: SiteSettingValue[] = ['allow', 'ask', 'block'];
+  // 默认规则：以引擎 prefs('defaultSiteSettings') 为真值——它同时给出每类
+  // 的有效档位 choices（相机/麦克风/位置不含 allow），界面据此显示，避免
+  // 给出会被引擎拒绝的"允许"档。AuraShell 把该 pref 转写到这个 key。
+  @StorageLink('auraDefaultSiteSettings') @Watch('onDefaultRulesChanged') defaultRulesJson: string = '';
+  @State private defaultRuleItems: DefaultRuleItem[] = [];
+  private defaultRuleRequestTimer: number = -1;
 
   aboutToAppear(): void {
     // Seed from storage first: a @StorageLink does not fire @Watch for its
@@ -111,6 +122,7 @@ export struct SitePermissionsPanel {
     this.onFaviconsChanged();
     this.onDefaultRulesChanged();
     this.onSettingsPayload();
+    this.reloadDefaultRules();
     this.reloadList();
     this.retryTimer = setTimeout((): void => {
       this.retryTimer = -1;
@@ -125,6 +137,14 @@ export struct SitePermissionsPanel {
       clearTimeout(this.retryTimer);
       this.retryTimer = -1;
     }
+    if (this.defaultRuleRequestTimer !== -1) {
+      clearTimeout(this.defaultRuleRequestTimer);
+      this.defaultRuleRequestTimer = -1;
+    }
+  }
+
+  private reloadDefaultRules(): void {
+    this.onCommand({ command: 'getPrefs' });
   }
 
   private reloadList(): void {
@@ -139,30 +159,47 @@ export struct SitePermissionsPanel {
       return;
     }
     try {
-      this.defaultRules = JSON.parse(this.defaultRulesJson) as Record<string, SiteSettingValue>;
+      const payload = JSON.parse(this.defaultRulesJson) as DefaultRulesPayload;
+      if (Array.isArray(payload.items)) {
+        this.defaultRuleItems = payload.items;
+      }
     } catch (error) {
     }
   }
 
-  private ruleValue(type: SiteSettingType): SiteSettingValue {
-    const saved: SiteSettingValue | undefined = this.defaultRules[type];
-    // 早期版本可能存过 'default'（引擎不接受，实际未生效）；归一到询问，
-    // 保证三档里总有一档高亮，且与实际行为一致。
-    if (saved === 'default') {
-      return 'ask';
+  private ruleValue(type: string): string {
+    for (const item of this.defaultRuleItems) {
+      if (item.type === type) {
+        return item.setting;
+      }
     }
-    return saved !== undefined ? saved : 'ask';
+    return 'ask';
   }
 
-  private setDefaultRule(type: SiteSettingType, setting: SiteSettingValue): void {
-    const next: Record<string, SiteSettingValue> = {};
-    for (const item of this.defaultRuleTypes) {
-      next[item] = this.ruleValue(item);
+  private ruleChoices(type: string): string[] {
+    for (const item of this.defaultRuleItems) {
+      if (item.type === type) {
+        return item.choices;
+      }
     }
-    next[type] = setting;
-    this.defaultRules = next;
-    AppStorage.setOrCreate('auraDefaultSiteRules', JSON.stringify(next));
-    this.onCommand({ command: 'setDefaultSiteSetting', type: type, setting: setting });
+    return [];
+  }
+
+  private setDefaultRule(type: string, setting: string): void {
+    this.onCommand({
+      command: 'setDefaultSiteSetting',
+      type: type as SiteSettingType,
+      setting: setting as SiteSettingValue
+    });
+    // 引擎写入命令没有回包，稍后重新拉取 prefs 确认真实生效值；
+    // 若被策略拒绝或档位无效，界面会回到引擎的真实状态。
+    if (this.defaultRuleRequestTimer !== -1) {
+      clearTimeout(this.defaultRuleRequestTimer);
+    }
+    this.defaultRuleRequestTimer = setTimeout((): void => {
+      this.defaultRuleRequestTimer = -1;
+      this.reloadDefaultRules();
+    }, 400);
   }
 
   private refreshDetail(): void {
@@ -297,29 +334,37 @@ export struct SitePermissionsPanel {
         .fontColor($r('app.color.text_secondary'))
         .width('100%')
         .margin({ top: 12, bottom: 2 })
-      ForEach(this.defaultRuleTypes, (type: SiteSettingType): void => {
+      ForEach(this.defaultRuleItems, (item: DefaultRuleItem): void => {
         Row() {
-          Text(typeLabel(type))
+          Text(typeLabel(item.type))
             .fontSize(14)
             .fontColor($r('app.color.text_primary'))
             .layoutWeight(1)
-          ForEach(this.defaultRuleChoices, (choice: SiteSettingValue): void => {
+          ForEach(item.choices, (choice: string): void => {
             Text(valueLabel(choice))
               .fontSize(12)
-              .fontColor(this.ruleValue(type) === choice ?
+              .fontColor(this.ruleValue(item.type) === choice ?
                 $r('app.color.accent_primary') : $r('app.color.text_secondary'))
               .padding({ left: 8, right: 8, top: 5, bottom: 5 })
               .borderRadius(8)
-              .backgroundColor(this.ruleValue(type) === choice ?
+              .backgroundColor(this.ruleValue(item.type) === choice ?
                 $r('app.color.surface_secondary') : Color.Transparent)
               .onClick(() => {
-                this.setDefaultRule(type, choice);
+                if (!item.managed) {
+                  this.setDefaultRule(item.type, choice);
+                }
               })
-          }, (choice: SiteSettingValue): string => choice)
+          }, (choice: string): string => choice)
         }
         .width('100%')
         .constraintSize({ minHeight: 40 })
-      }, (type: SiteSettingType): string => type)
+      }, (item: DefaultRuleItem): string => item.type)
+      if (this.defaultRuleItems.length === 0) {
+        Text('正在读取默认规则…')
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+          .width('100%')
+      }
       Text('对没有单独设置的网站生效；已单独设过的网站以该网站的设置为准。')
         .fontSize(12)
         .fontColor($r('app.color.text_secondary'))
