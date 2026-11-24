@@ -20,6 +20,12 @@ rem  have both been observed to mangle multi-byte characters in scripts.
 rem ============================================================
 setlocal EnableExtensions
 
+rem Scripts live under a Chinese-named workspace. Passing %~dp0 inline to
+rem powershell -File mangles the path (cmd uses the ANSI code page). Export it
+rem via an environment variable instead: PowerShell reads env vars as UTF-16,
+rem so the Chinese characters survive.
+set "PS_SCRIPTS_DIR=%~dp0"
+
 set "MODE=debug"
 set "BUNDLE=com.orbira.browser11"
 if /i "%~1"=="release" (
@@ -98,7 +104,7 @@ if exist "%BACKUP%" (
 )
 copy /y "%APPJSON%" "%BACKUP%" >nul || ( echo [ERROR] cannot back up app.json5 & exit /b 1 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0set-157-bundle-name.ps1" -AppJson "%APPJSON%" -BundleName "%BUNDLE%"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& (Join-Path $env:PS_SCRIPTS_DIR 'set-157-bundle-name.ps1') -AppJson '%APPJSON%' -BundleName '%BUNDLE%'"
 if errorlevel 1 goto :restore_fail
 
 rem --- 2. Install dependencies ---------------------------------------------
@@ -135,7 +141,7 @@ rem     Non-fatal: a failed archive must not hide an otherwise good HAP, but
 rem     it is reported loudly so the package is not left only in the shared
 rem     build tree where the next build overwrites it.
 if exist "%HAP%" (
-  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0archive-157-hap.ps1" -Hap "%HAP%" -ArtifactDir "%ARTIFACTS%" -Mode "%MODE%" -AppJson "%APPJSON%" -Since "%RUN_START%"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "& (Join-Path $env:PS_SCRIPTS_DIR 'archive-157-hap.ps1') -Hap '%HAP%' -ArtifactDir '%ARTIFACTS%' -Mode '%MODE%' -AppJson '%APPJSON%' -Since '%RUN_START%'"
   if errorlevel 1 echo [WARN] archive failed; HAP is still available at the path above
 ) else (
   echo [WARN] no HAP to archive

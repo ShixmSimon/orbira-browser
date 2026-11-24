@@ -23,15 +23,23 @@ if ($BundleName -notmatch '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$') {
 
 $utf8 = New-Object Text.UTF8Encoding($false)
 $text = [IO.File]::ReadAllText($AppJson)
+$current = [regex]::Match($text, '"bundleName"\s*:\s*"([^"]+)"').Groups[1].Value
+if ($current -eq $BundleName) {
+  # Already the requested name (e.g. a release build on a project that
+  # already carries the release name). Nothing to change; succeed so the
+  # caller can continue instead of aborting as if the field were missing.
+  Write-Host "[ok] bundleName already $BundleName"
+  exit 0
+}
+if ([string]::IsNullOrEmpty($current)) {
+  Write-Error 'bundleName not found in app.json5'
+  exit 1
+}
 $new  = [regex]::Replace(
   $text,
   '("bundleName"\s*:\s*")[^"]+(")',
   ('${1}' + $BundleName + '${2}')
 )
-if ($new -eq $text) {
-  Write-Error 'bundleName not found in app.json5'
-  exit 1
-}
 
 [IO.File]::WriteAllText($AppJson, $new, $utf8)
 $got = [regex]::Match($new, '"bundleName"\s*:\s*"([^"]+)"').Groups[1].Value
