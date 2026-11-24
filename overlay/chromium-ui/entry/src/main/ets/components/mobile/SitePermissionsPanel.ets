@@ -99,7 +99,9 @@ export struct SitePermissionsPanel {
   @State private defaultRules: Record<string, SiteSettingValue> = {};
   private readonly defaultRuleTypes: SiteSettingType[] =
     ['location', 'camera', 'microphone', 'notifications'];
-  private readonly defaultRuleChoices: SiteSettingValue[] = ['allow', 'ask', 'block', 'default'];
+  // 新网站的默认规则只有三档：引擎的 setDefaultSiteSetting 不接受 'default'
+  // （那是单站点删除例外专用值），传进去会被拒绝且界面误显示已生效。
+  private readonly defaultRuleChoices: SiteSettingValue[] = ['allow', 'ask', 'block'];
 
   aboutToAppear(): void {
     // Seed from storage first: a @StorageLink does not fire @Watch for its
@@ -144,6 +146,11 @@ export struct SitePermissionsPanel {
 
   private ruleValue(type: SiteSettingType): SiteSettingValue {
     const saved: SiteSettingValue | undefined = this.defaultRules[type];
+    // 早期版本可能存过 'default'（引擎不接受，实际未生效）；归一到询问，
+    // 保证三档里总有一档高亮，且与实际行为一致。
+    if (saved === 'default') {
+      return 'ask';
+    }
     return saved !== undefined ? saved : 'ask';
   }
 
@@ -313,7 +320,7 @@ export struct SitePermissionsPanel {
         .width('100%')
         .constraintSize({ minHeight: 40 })
       }, (type: SiteSettingType): string => type)
-      Text('「默认」恢复为浏览器的通用设置')
+      Text('对没有单独设置的网站生效；已单独设过的网站以该网站的设置为准。')
         .fontSize(12)
         .fontColor($r('app.color.text_secondary'))
         .width('100%')
